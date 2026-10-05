@@ -1,0 +1,128 @@
+{
+  "Metadata": {
+    "title": "Issue Tracker",
+    "description": "A Kanban-style issue tracking application"
+  },
+  "Login": {
+    "title": "Sign in with email",
+    "email": "Email",
+    "password": "Password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "rememberMe": "Remember me",
+    "submit": "Get Started",
+    "submitting": "Signing in…",
+    "genericError": "Something went wrong. Please try again.",
+    "footerHelp": "Contact your administrator to get access"
+  },
+  "Permissions": {
+    "title": "Permissions",
+    "subtitle": "Tick to grant a role access to a resource. Changes apply after saving.",
+    "columnPermission": "Permission",
+    "save": "Save changes",
+    "saving": "Saving…",
+    "loadError": "Failed to load permissions",
+    "saveError": "Failed to save",
+    "resources": {
+      "boards": "Boards",
+      "columns": "Columns",
+      "issues": "Issues",
+      "comments": "Comments",
+      "labels": "Labels",
+      "users": "Users"
+    }
+  },
+  "Dashboard": {
+    "welcome": "Welcome",
+    "subtitle": "A Kanban-style issue tracking system"
+  },
+  "Boards": {
+    "title": "Boards",
+    "comingSoon": "This page is under development"
+  },
+  "Issues": {
+    "title": "Issues",
+    "comingSoon": "This page is under development"
+  },
+  "Labels": {
+    "title": "Labels",
+    "comingSoon": "This page is under development"
+  },
+  "Comments": {
+    "title": "Comments",
+    "comingSoon": "This page is under development"
+  },
+  "roles": {
+    "admin": "Admin",
+    "programmer": "Programmer",
+    "user": "Customer"
+  },
+  "Users": {
+    "title": "User Management",
+    "tabUsers": "Users",
+    "tabRoles": "Roles",
+    "tabPositions": "Positions",
+    "tabPermissions": "Permissions",
+    "addRole": "Add Role",
+    "editRole": "Edit Role",
+    "addPosition": "Add Position",
+    "editPosition": "Edit Position",
+    "columnPosition": "Position",
+    "columnUserCount": "User Count",
+    "addUser": "Add User",
+    "editUser": "Edit User",
+    "columnName": "Name",
+    "columnEmail": "Email",
+    "columnRole": "Role",
+    "columnPassword": "Password",
+    "columnActions": "Actions",
+    "cancel": "Cancel",
+    "save": "Save",
+    "columnRoleName": "Role Name",
+    "columnStatus": "Status",
+    "active": "Active",
+    "inactive": "Inactive",
+    "template": "Default Permission Template",
+    "noPermission": "You don't have permission to access this page",
+    "cannotDeactivateTitle": "Cannot deactivate",
+    "cannotDeactivateMessage": "Position \"{position}\" has {count} user(s) assigned. Please reassign them first.",
+    "ok": "OK",
+    "deleteConfirmTitle": "Confirm Delete",
+    "deleteConfirmMessage": "Are you sure you want to delete {type} \"{name}\"?",
+    "deleteRoleInUse": "Cannot delete role \"{name}\" because {count} user(s) are assigned to this role.",
+    "deletePositionInUse": "Cannot delete position \"{name}\" because {count} user(s) are assigned to this position.",
+    "delete": "Delete",
+    "role": "role",
+    "position": "position"
+  },
+  "Roles": {
+    "title": "Role Management",
+    "addRole": "Add Role",
+    "editRole": "Edit Role",
+    "columnName": "Role Name",
+    "columnStatus": "Status",
+    "columnActions": "Actions",
+    "active": "Active",
+    "inactive": "Inactive",
+    "template": "Default Permission Template",
+    "cancel": "Cancel",
+    "save": "Save",
+    "noPermission": "You don't have permission to access this page",
+    "cannotDeactivateAdmin": "Cannot deactivate admin role",
+    "cannotDeactivateTitle": "Cannot deactivate",
+    "cannotDeactivateMessage": "Role \"{role}\" has {count} user(s) assigned. Please reassign them first.",
+    "ok": "OK"
+  },
+  "Nav": {
+    "dashboard": "Dashboard",
+    "boards": "Boards",
+    "issues": "Issues",
+    "labels": "Labels",
+    "comments": "Comments",
+    "users": "Users",
+    "roles": "Roles",
+    "permissions": "Permissions",
+    "signOut": "Sign out",
+    "switchLanguage": "Switch language"
+  }
+}

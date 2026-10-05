@@ -1,0 +1,128 @@
+{
+  "Metadata": {
+    "title": "Issue Tracker",
+    "description": "แอปพลิเคชันติดตามปัญหาสไตล์ Kanban"
+  },
+  "Login": {
+    "title": "เข้าสู่ระบบด้วยอีเมล",
+    "email": "อีเมล",
+    "password": "รหัสผ่าน",
+    "showPassword": "แสดงรหัสผ่าน",
+    "hidePassword": "ซ่อนรหัสผ่าน",
+    "rememberMe": "จำฉันไว้",
+    "submit": "เริ่มต้นใช้งาน",
+    "submitting": "กำลังเข้าสู่ระบบ…",
+    "genericError": "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง",
+    "footerHelp": "ติดต่อผู้ดูแลระบบเพื่อขอสิทธิ์เข้าถึง"
+  },
+  "Permissions": {
+    "title": "สิทธิ์การเข้าถึง",
+    "subtitle": "ทำเครื่องหมายเพื่อให้สิทธิ์เข้าถึงทรัพยากรแก่บทบาท การเปลี่ยนแปลงจะมีผลหลังจากบันทึก",
+    "columnPermission": "สิทธิ์",
+    "save": "บันทึกการเปลี่ยนแปลง",
+    "saving": "กำลังบันทึก…",
+    "loadError": "โหลดสิทธิ์ไม่สำเร็จ",
+    "saveError": "บันทึกไม่สำเร็จ",
+    "resources": {
+      "boards": "บอร์ด",
+      "columns": "คอลัมน์",
+      "issues": "ปัญหา",
+      "comments": "ความคิดเห็น",
+      "labels": "ป้ายกำกับ",
+      "users": "ผู้ใช้"
+    }
+  },
+  "Dashboard": {
+    "welcome": "ยินดีต้อนรับ",
+    "subtitle": "ระบบติดตามปัญหาสไตล์ Kanban"
+  },
+  "Boards": {
+    "title": "บอร์ด",
+    "comingSoon": "หน้านี้กำลังอยู่ระหว่างการพัฒนา"
+  },
+  "Issues": {
+    "title": "ปัญหา",
+    "comingSoon": "หน้านี้กำลังอยู่ระหว่างการพัฒนา"
+  },
+  "Labels": {
+    "title": "ป้ายกำกับ",
+    "comingSoon": "หน้านี้กำลังอยู่ระหว่างการพัฒนา"
+  },
+  "Comments": {
+    "title": "ความคิดเห็น",
+    "comingSoon": "หน้านี้กำลังอยู่ระหว่างการพัฒนา"
+  },
+  "roles": {
+    "admin": "แอดมิน",
+    "programmer": "โปรแกรมเมอร์",
+    "user": "ลูกค้า"
+  },
+  "Users": {
+    "title": "จัดการผู้ใช้",
+    "tabUsers": "ผู้ใช้",
+    "tabRoles": "บทบาท",
+    "tabPositions": "ตำแหน่ง",
+    "tabPermissions": "สิทธิ์",
+    "addPosition": "เพิ่มตำแหน่งงาน",
+    "editPosition": "แก้ไขตำแหน่งงาน",
+    "columnPosition": "ตำแหน่งงาน",
+    "columnUserCount": "จำนวนผู้ใช้",
+    "addUser": "เพิ่มผู้ใช้",
+    "editUser": "แก้ไขผู้ใช้",
+    "columnName": "ชื่อ",
+    "columnEmail": "อีเมล",
+    "columnRole": "บทบาท",
+    "columnPassword": "รหัสผ่าน",
+    "columnActions": "การจัดการ",
+    "cancel": "ยกเลิก",
+    "save": "บันทึก",
+    "addRole": "เพิ่มบทบาท",
+    "editRole": "แก้ไขบทบาท",
+    "columnRoleName": "ชื่อบทบาท",
+    "columnStatus": "สถานะ",
+    "active": "เปิดใช้งาน",
+    "inactive": "ปิดใช้งาน",
+    "template": "แม่แบบสิทธิ์เริ่มต้น",
+    "noPermission": "คุณไม่มีสิทธิ์เข้าถึงหน้านี้",
+    "cannotDeactivateTitle": "ไม่สามารถปิดใช้งานได้",
+    "cannotDeactivateMessage": "ตำแหน่ง \"{position}\" มีผู้ใช้งานอยู่ {count} คน กรุณาเปลี่ยนตำแหน่งของผู้ใช้เหล่านี้ก่อน",
+    "ok": "ตกลง",
+    "deleteConfirmTitle": "ยืนยันการลบ",
+    "deleteConfirmMessage": "คุณต้องการลบ{type} \"{name}\" ใช่หรือไม่?",
+    "deleteRoleInUse": "ไม่สามารถลบบทบาท \"{name}\" ได้ เนื่องจากมีผู้ใช้ {count} คนที่ใช้บทบาทนี้",
+    "deletePositionInUse": "ไม่สามารถลบตำแหน่ง \"{name}\" ได้ เนื่องจากมีผู้ใช้ {count} คนที่ใช้ตำแหน่งนี้",
+    "delete": "ลบ",
+    "role": "บทบาท",
+    "position": "ตำแหน่ง"
+  },
+  "Roles": {
+    "title": "จัดการบทบาท",
+    "addRole": "เพิ่มบทบาท",
+    "editRole": "แก้ไขบทบาท",
+    "columnName": "ชื่อบทบาท",
+    "columnStatus": "สถานะ",
+    "columnActions": "การจัดการ",
+    "active": "เปิดใช้งาน",
+    "inactive": "ปิดใช้งาน",
+    "template": "แม่แบบสิทธิ์เริ่มต้น",
+    "cancel": "ยกเลิก",
+    "save": "บันทึก",
+    "noPermission": "คุณไม่มีสิทธิ์เข้าถึงหน้านี้",
+    "cannotDeactivateAdmin": "ไม่สามารถปิดบทบาทแอดมินได้",
+    "cannotDeactivateTitle": "ไม่สามารถปิดใช้งานได้",
+    "cannotDeactivateMessage": "บทบาท \"{role}\" มีผู้ใช้งานอยู่ {count} คน กรุณาเปลี่ยนบทบาทของผู้ใช้เหล่านี้ก่อน",
+    "ok": "ตกลง"
+  },
+  "Nav": {
+    "dashboard": "แดชบอร์ด",
+    "boards": "บอร์ด",
+    "issues": "ปัญหา",
+    "labels": "ป้ายกำกับ",
+    "comments": "ควมคิดเห็น",
+    "users": "จัดการผู้ใช้",
+    "roles": "จัดการบทบาท",
+    "permissions": "สิทธิ์การเข้าถึง",
+    "signOut": "ออกจากระบบ",
+    "switchLanguage": "เปลี่ยนภาษา"
+  }
+}
