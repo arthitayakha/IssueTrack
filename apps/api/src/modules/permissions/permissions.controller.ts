@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Put, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Post, Put, UseGuards } from "@nestjs/common";
 import { PermissionsService } from "./permissions.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -19,5 +19,11 @@ export class PermissionsController {
   @Permissions("permission.update")
   updateMatrix(@Body() body: { grants: Record<string, string[]> }) {
     return this.permissions.updateMatrix(body.grants);
+  }
+
+  @Post("reset")
+  @Permissions("permission.update")
+  resetToDefaults() {
+    return this.permissions.resetToDefaults();
   }
 }

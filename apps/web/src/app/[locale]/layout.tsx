@@ -8,6 +8,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "../../lib/query-client";
 import { theme } from "../../lib/theme";
 import { routing } from "@/i18n/routing";
+import { NotificationProvider } from "@/components/notification";
 
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
@@ -47,7 +48,9 @@ export default async function RootLayout({
           <ThemeProvider theme={theme}>
             <CssBaseline />
             <NextIntlClientProvider messages={messages}>
-              {children}
+              <NotificationProvider>
+                {children}
+              </NotificationProvider>
             </NextIntlClientProvider>
           </ThemeProvider>
         </QueryClientProvider>

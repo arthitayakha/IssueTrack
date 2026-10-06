@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/data-source.ts",
-    "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/data-source.ts"
+    "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/data-source.ts",
+    "seed": "ts-node -r tsconfig-paths/register src/seed.ts"
   },
   "dependencies": {
     "@kanban/shared": "*",

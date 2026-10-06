@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
@@ -51,6 +53,7 @@ export default function RolesPage() {
   const [mounted, setMounted] = useState(false);
   const [warningRole, setWarningRole] = useState<Role | null>(null);
   const [warningUsers, setWarningUsers] = useState<RoleUser[]>([]);
+  const [errorAlert, setErrorAlert] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -141,9 +144,9 @@ export default function RolesPage() {
       );
     } catch (err) {
       if (err instanceof ApiError) {
-        alert(err.message);
+        setErrorAlert(err.message);
       } else {
-        console.error(err);
+        setErrorAlert(t("genericError"));
       }
     }
   }
@@ -269,6 +272,16 @@ export default function RolesPage() {
             </DialogContent>
             <DialogActions>
               <Button onClick={() => setWarningRole(null)}>{t("ok")}</Button>
+            </DialogActions>
+          </Dialog>
+
+          <Dialog open={!!errorAlert} onClose={() => setErrorAlert(null)} maxWidth="xs">
+            <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
+            <DialogContent>
+              <Typography variant="body2">{errorAlert}</Typography>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setErrorAlert(null)}>{t("cancel")}</Button>
             </DialogActions>
           </Dialog>
         </Box>

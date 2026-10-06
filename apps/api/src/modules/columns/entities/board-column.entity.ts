@@ -8,29 +8,32 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from "typeorm";
-import { Board } from "../../boards/entities/board.entity";
 import { Issue } from "../../issues/entities/issue.entity";
+import { Board } from "../../boards/entities/board.entity";
 
 @Entity("board_columns")
 export class BoardColumn {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  @Column({ name: "board_id", type: "int" })
-  boardId!: number;
+  @Column({ name: "board_id", type: "int", nullable: true })
+  boardId!: number | null;
 
-  @ManyToOne(() => Board, (board) => board.columns, { onDelete: "CASCADE" })
+  @ManyToOne(() => Board, (board) => board.columns, { nullable: true, onDelete: "CASCADE" })
   @JoinColumn({ name: "board_id" })
   board?: Board;
 
-  @Column({ length: 100 })
+  @Column({ type: "varchar", length: 100 })
   status!: string;
 
-  @Column({ name: "custom_name", length: 100, nullable: true })
+  @Column({ name: "custom_name", type: "varchar", length: 100, nullable: true })
   customName!: string | null;
 
   @Column({ name: "is_hidden", default: false })
   isHidden!: boolean;
+
+  @Column({ type: "int", default: 0 })
+  position!: number;
 
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;

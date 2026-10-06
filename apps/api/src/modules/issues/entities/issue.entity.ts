@@ -8,12 +8,14 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from "typeorm";
-import { Board } from "../../boards/entities/board.entity";
 import { BoardColumn } from "../../columns/entities/board-column.entity";
 import { Category } from "../../categories/entities/category.entity";
 import { Comment } from "../../comments/entities/comment.entity";
 import { Attachment } from "../../attachments/entities/attachment.entity";
 import { WorkSession } from "../../work-sessions/entities/work-session.entity";
+import { IssueStatus } from "../../issue-statuses/entities/issue-status.entity";
+import { IssuePriority } from "../../issue-priorities/entities/issue-priority.entity";
+import { User } from "../../auth/entities/user.entity";
 
 @Entity("issues")
 export class Issue {
@@ -23,9 +25,9 @@ export class Issue {
   @Column({ name: "programmer_id", type: "int", nullable: true })
   programmerId!: number | null;
 
-  @ManyToOne("User", { nullable: true })
+  @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: "programmer_id" })
-  programmer?: any;
+  programmer?: User;
 
   @Column({ name: "category_id", type: "int" })
   categoryId!: number;
@@ -34,7 +36,7 @@ export class Issue {
   @JoinColumn({ name: "category_id" })
   category?: Category;
 
-  @Column({ length: 300 })
+  @Column({ type: "varchar", length: 300 })
   title!: string;
 
   @Column({ type: "text" })
@@ -55,24 +57,32 @@ export class Issue {
   @Column({ name: "actual_fix_duration", type: "int", nullable: true })
   actualFixDuration!: number | null;
 
+  @Column({ name: "estimate_duration", type: "int", nullable: true })
+  estimateDuration!: number | null;
+
   @UpdateDateColumn({ name: "updated_at" })
   updatedAt!: Date;
 
   @Column({ name: "customer_id", type: "int" })
   customerId!: number;
 
-  @Column({ length: 30, default: "BACKLOG" })
-  status!: string;
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: "customer_id" })
+  customer?: User;
 
-  @Column({ name: "board_id", type: "int", nullable: true })
-  boardId!: number | null;
+  @Column({ name: "status_id", type: "int", nullable: true })
+  statusId!: number | null;
 
-  @ManyToOne(() => Board, (board) => board.issues, { nullable: true })
-  @JoinColumn({ name: "board_id" })
-  board?: Board;
+  @ManyToOne(() => IssueStatus, { nullable: true })
+  @JoinColumn({ name: "status_id" })
+  status?: IssueStatus;
 
-  @Column({ length: 30, nullable: true })
-  priority!: string | null;
+  @Column({ name: "priority_id", type: "int", nullable: true })
+  priorityId!: number | null;
+
+  @ManyToOne(() => IssuePriority, { nullable: true })
+  @JoinColumn({ name: "priority_id" })
+  priority?: IssuePriority;
 
   @Column({ name: "doing_started_at", type: "timestamptz", nullable: true })
   doingStartedAt!: Date | null;

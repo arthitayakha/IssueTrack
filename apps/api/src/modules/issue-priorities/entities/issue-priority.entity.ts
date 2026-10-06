@@ -2,26 +2,22 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from "typeorm";
+import { Issue } from "../../issues/entities/issue.entity";
 
 @Entity("issue_priorities")
 export class IssuePriority {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  @Column({ length: 100 })
+  @Column({ type: "varchar", length: 100 })
   name!: string;
-
-  @Column({ length: 50 })
-  code!: string;
 
   @Column({ type: "text", nullable: true })
   description!: string | null;
-
-  @Column({ length: 20, nullable: true })
-  color!: string | null;
 
   @Column({ name: "sort_order", default: 0 })
   sortOrder!: number;
@@ -34,4 +30,7 @@ export class IssuePriority {
 
   @UpdateDateColumn({ name: "updated_at" })
   updatedAt!: Date;
+
+  @OneToMany(() => Issue, (issue) => issue.priority)
+  issues?: Issue[];
 }

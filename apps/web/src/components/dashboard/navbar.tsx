@@ -23,9 +23,6 @@ export default function Navbar() {
   const { user, logout } = useAuthStore();
 
   const routeTitleKey = pathname.replace(/^\//, "").split("/")[0] || "dashboard";
-  const titleKey = ["dashboard", "boards", "issues", "labels", "comments", "users", "permissions"].includes(routeTitleKey)
-    ? routeTitleKey
-    : "dashboard";
 
   function handleLogout() {
     logout();
@@ -51,7 +48,7 @@ export default function Navbar() {
           color="text.primary"
           sx={{ flexGrow: 1 }}
         >
-          {t(titleKey)}
+          {t(routeTitleKey)}
         </Typography>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
           <LanguageSwitcher />

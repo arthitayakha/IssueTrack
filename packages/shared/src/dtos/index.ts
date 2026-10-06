@@ -9,20 +9,9 @@ export interface LoginDto {
   password: string;
 }
 
-export interface CreateBoardDto {
-  title: string;
-  description: string;
-}
-
-export interface UpdateBoardDto {
-  title?: string;
-  description?: string;
-}
-
 export interface CreateColumnDto {
   title: string;
   order: number;
-  boardId: string;
 }
 
 export interface UpdateColumnDto {

@@ -7,6 +7,7 @@ import {
   PrimaryGeneratedColumn,
 } from "typeorm";
 import { Issue } from "../../issues/entities/issue.entity";
+import { User } from "../../auth/entities/user.entity";
 
 @Entity("comments")
 export class Comment {
@@ -23,9 +24,9 @@ export class Comment {
   @Column({ name: "user_id", type: "int" })
   userId!: number;
 
-  @ManyToOne("User", { onDelete: "CASCADE" })
+  @ManyToOne(() => User, { onDelete: "CASCADE" })
   @JoinColumn({ name: "user_id" })
-  user?: any;
+  user?: User;
 
   @Column({ type: "text" })
   comment!: string;

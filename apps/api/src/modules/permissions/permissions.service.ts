@@ -4,6 +4,7 @@ import { Repository } from "typeorm";
 import { ALL_PERMISSIONS, permissionsForRole } from "@kanban/shared";
 import type { Permission } from "@kanban/shared";
 import { RolePermission } from "./entities/role-permission.entity";
+import { PositionPermission } from "../positions/entities/position-permission.entity";
 import { Role } from "../roles/entities/role.entity";
 
 @Injectable()
@@ -11,11 +12,14 @@ export class PermissionsService implements OnModuleInit {
   constructor(
     @InjectRepository(RolePermission)
     private readonly repo: Repository<RolePermission>,
+    @InjectRepository(PositionPermission)
+    private readonly positionPermissions: Repository<PositionPermission>,
     @InjectRepository(Role)
     private readonly rolesRepo: Repository<Role>,
   ) {}
 
   private cache = new Map<number, Set<string>>();
+  private positionCache = new Map<number, Set<string>>();
 
   async onModuleInit() {
     const dbRoles = await this.getRolesFromDb();
@@ -94,23 +98,45 @@ export class PermissionsService implements OnModuleInit {
     return categories;
   }
 
-  async hasPermission(roleId: number, permission: string): Promise<boolean> {
+  async hasPermission(roleId: number, permission: string, positionId?: number | null): Promise<boolean> {
     const adminRole = await this.rolesRepo.findOne({ where: { name: "admin" } });
     if (adminRole && roleId === adminRole.id) return true;
     const role = await this.rolesRepo.findOne({ where: { id: roleId } });
     if (!role || !role.isActive) return false;
-    return this.cache.get(roleId)?.has(permission) ?? false;
+    if (positionId && this.positionCache.get(positionId)?.has(permission)) return true;
+    if (this.cache.get(roleId)?.has(permission)) return true;
+    return false;
   }
 
   async updateMatrix(grants: Record<string, string[]>) {
+    try {
+      await this.repo.clear();
+      const rows: RolePermission[] = [];
+      for (const [roleName, permissions] of Object.entries(grants)) {
+        if (roleName === "admin") continue;
+        const role = await this.rolesRepo.findOne({ where: { name: roleName } });
+        if (!role) continue;
+        for (const permission of permissions) {
+          if (!ALL_PERMISSIONS.includes(permission as Permission)) continue;
+          rows.push(this.repo.create({ roleId: role.id, permission }));
+        }
+      }
+      await this.repo.save(rows);
+      await this.refreshCache();
+    } catch (err) {
+      console.error("updateMatrix error:", err);
+      throw err;
+    }
+  }
+
+  async resetToDefaults() {
     await this.repo.clear();
+    const dbRoles = await this.getRolesFromDb();
+    const dbPermissions = await this.getPermissionsFromDb();
     const rows: RolePermission[] = [];
-    for (const [roleName, permissions] of Object.entries(grants)) {
-      if (roleName === "admin") continue;
-      const role = await this.rolesRepo.findOne({ where: { name: roleName } });
-      if (!role) continue;
-      for (const permission of permissions) {
-        if (!ALL_PERMISSIONS.includes(permission as Permission)) continue;
+    for (const role of dbRoles) {
+      for (const permission of permissionsForRole(role.name)) {
+        if (!dbPermissions.includes(permission)) continue;
         rows.push(this.repo.create({ roleId: role.id, permission }));
       }
     }
@@ -118,11 +144,16 @@ export class PermissionsService implements OnModuleInit {
     await this.refreshCache();
   }
 
-  private async refreshCache() {
+  async refreshCache() {
     this.cache.clear();
     for (const row of await this.repo.find()) {
       if (!this.cache.has(row.roleId)) this.cache.set(row.roleId, new Set());
       this.cache.get(row.roleId)!.add(row.permission);
+    }
+    this.positionCache.clear();
+    for (const row of await this.positionPermissions.find()) {
+      if (!this.positionCache.has(row.positionId)) this.positionCache.set(row.positionId, new Set());
+      this.positionCache.get(row.positionId)!.add(row.permission);
     }
   }
 }

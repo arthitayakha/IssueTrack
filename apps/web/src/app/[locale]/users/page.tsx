@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   Box,
@@ -27,13 +27,52 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
+import ViewColumnIcon from "@mui/icons-material/ViewColumn";
+import PersonIcon from "@mui/icons-material/Person";
+import WorkIcon from "@mui/icons-material/Work";
+import GroupIcon from "@mui/icons-material/Group";
+import SecurityIcon from "@mui/icons-material/Security";
+import CategoryIcon from "@mui/icons-material/Category";
+import FlagIcon from "@mui/icons-material/Flag";
+import PriorityHighIcon from "@mui/icons-material/PriorityHigh";
+import ChatIcon from "@mui/icons-material/Chat";
+import DashboardIcon from "@mui/icons-material/Dashboard";
+import AssessmentIcon from "@mui/icons-material/Assessment";
+import LockIcon from "@mui/icons-material/Lock";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import RequireAuth from "@/components/require-auth";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermissions, roleLabel } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
-import { PERMISSION_LABELS } from "@kanban/shared";
+import { PERMISSION_LABELS, ALL_PERMISSIONS, permissionsForRole } from "@kanban/shared";
+import { useNotification } from "@/components/notification";
+
+const CATEGORY_GROUPS = [
+  { key: "board", icon: ViewColumnIcon, dbCategories: ["board", "issue", "time"] },
+  { key: "user", icon: PersonIcon, dbCategories: ["user", "ผู้ใช้งาน"] },
+  { key: "position", icon: WorkIcon, dbCategories: ["position"] },
+  { key: "role", icon: GroupIcon, dbCategories: ["role"] },
+  { key: "permission", icon: SecurityIcon, dbCategories: ["permission"] },
+  { key: "category", icon: CategoryIcon, dbCategories: ["category"] },
+  { key: "status", icon: FlagIcon, dbCategories: ["status"] },
+  { key: "priority", icon: PriorityHighIcon, dbCategories: ["priority"] },
+  { key: "comment", icon: ChatIcon, dbCategories: ["comment"] },
+  { key: "dashboard", icon: DashboardIcon, dbCategories: ["dashboard"] },
+  { key: "report", icon: AssessmentIcon, dbCategories: ["report"] },
+  { key: "auth", icon: LockIcon, dbCategories: ["auth"] },
+] as const;
+
+function permissionBelongsToGroup(
+  permission: string,
+  group: (typeof CATEGORY_GROUPS)[number],
+): boolean {
+  return group.dbCategories.some((cat) =>
+    cat === "ผู้ใช้งาน" ? permission === "user.status.update" : permission.startsWith(cat + "."),
+  );
+}
+
+type CategoryGroup = (typeof CATEGORY_GROUPS)[number];
 
 interface User {
   id: string;
@@ -52,15 +91,11 @@ interface Role {
   isActive: boolean;
 }
 
-interface PermissionMatrix {
-  roles: string[];
-  permissions: string[];
-  grants: Record<string, string[]>;
-}
-
 interface Position {
   id: number;
   name: string;
+  roleId: number | null;
+  roleName: string | null;
   isActive: boolean;
   userCount: number;
 }
@@ -75,11 +110,11 @@ export default function UsersPage() {
   const t = useTranslations("Users");
   const { can } = usePermissions();
   const token = useAuthStore((s) => s.token);
+  const { notify } = useNotification();
   const [tab, setTab] = useState(0);
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
-  const [matrix, setMatrix] = useState<PermissionMatrix | null>(null);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -92,7 +127,7 @@ export default function UsersPage() {
   });
   const [positionDialogOpen, setPositionDialogOpen] = useState(false);
   const [editingPosition, setEditingPosition] = useState<Position | null>(null);
-  const [positionForm, setPositionForm] = useState({ name: "" });
+  const [positionForm, setPositionForm] = useState({ name: "", roleId: null as number | null, permissions: [] as string[] });
   const [roleDialogOpen, setRoleDialogOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
   const [roleForm, setRoleForm] = useState({ name: "" });
@@ -101,11 +136,13 @@ export default function UsersPage() {
   const [deleteTarget, setDeleteTarget] = useState<{ type: "role" | "position"; id: number; name: string } | null>(null);
   const [deleteCheck, setDeleteCheck] = useState<{ canDelete: boolean; userCount: number } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [errorAlert, setErrorAlert] = useState<string | null>(null);
+  const [deleteUserTarget, setDeleteUserTarget] = useState<User | null>(null);
+  const [deleteUserLoading, setDeleteUserLoading] = useState(false);
 
   const canViewUsers = can("user.view");
   const canViewRoles = can("role.view");
   const canViewPositions = can("position.view");
-  const canViewPermissions = can("permission.view");
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -113,14 +150,13 @@ export default function UsersPage() {
   }, []);
 
   useEffect(() => {
-    if (!canViewUsers && !canViewPositions && !canViewPermissions) return;
+    if (!canViewUsers && !canViewPositions) return;
     const requests: Promise<any>[] = [];
     if (canViewUsers) {
       requests.push(apiFetch<User[]>("/users", {}, token));
       requests.push(apiFetch<Role[]>("/roles", {}, token));
     }
     if (canViewPositions) requests.push(apiFetch<Position[]>("/positions", {}, token));
-    if (canViewPermissions) requests.push(apiFetch<PermissionMatrix>("/permissions", {}, token));
 
     Promise.all(requests)
       .then((results) => {
@@ -130,13 +166,12 @@ export default function UsersPage() {
           setRoles(results[idx++]);
         }
         if (canViewPositions) setPositions(results[idx++]);
-        if (canViewPermissions) setMatrix(results[idx++]);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [canViewUsers, canViewPositions, canViewPermissions, token]);
+  }, [canViewUsers, canViewPositions, token]);
 
-  if (!canViewUsers && !canViewPositions && !canViewPermissions) {
+  if (!canViewUsers && !canViewPositions) {
     return (
       <DashboardLayout>
         <Box sx={{ py: 4 }}>
@@ -174,36 +209,67 @@ export default function UsersPage() {
       };
       if (editingUser) {
         await apiFetch(`/users/${editingUser.id}`, { method: "PATCH", body: JSON.stringify(payload) }, token);
+        notify(t("userUpdated"));
       } else {
         await apiFetch("/users", { method: "POST", body: JSON.stringify(payload) }, token);
+        notify(t("userCreated"));
       }
       const updated = await apiFetch<User[]>("/users", {}, token);
       setUsers(updated);
       setDialogOpen(false);
     } catch (err) {
-      console.error(err);
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
     }
   }
 
-  async function handleDelete(id: string) {
-    try {
-      await apiFetch(`/users/${id}`, { method: "DELETE" }, token);
-      setUsers((prev) => prev.filter((u) => u.id !== id));
-    } catch (err) {
-      console.error(err);
-    }
+  function confirmDeleteUser() {
+    if (!deleteUserTarget) return;
+    setDeleteUserLoading(true);
+    apiFetch(`/users/${deleteUserTarget.id}`, { method: "DELETE" }, token)
+      .then(() => {
+        setUsers((prev) => prev.filter((u) => u.id !== deleteUserTarget.id));
+        setDeleteUserTarget(null);
+        notify(t("userDeleted"));
+      })
+      .catch((err) => {
+        if (err instanceof ApiError) {
+          notify(err.message, "error");
+        } else {
+          notify(t("genericError"), "error");
+        }
+      })
+      .finally(() => setDeleteUserLoading(false));
   }
 
   function openAddPosition() {
     setEditingPosition(null);
-    setPositionForm({ name: "" });
+    setPositionForm({ name: "", roleId: null, permissions: [...permissionsForRole("customer")] });
     setPositionDialogOpen(true);
   }
 
-  function openEditPosition(position: Position) {
+  async function openEditPosition(position: Position) {
     setEditingPosition(position);
-    setPositionForm({ name: position.name });
+    const isAdmin = position.roleName === "admin";
+    setPositionForm({
+      name: position.name,
+      roleId: position.roleId,
+      permissions: isAdmin ? [...permissionsForRole("admin")] : [...permissionsForRole("customer")],
+    });
     setPositionDialogOpen(true);
+    try {
+      const data = await apiFetch<{ permissions: string[] }>(
+        `/positions/${position.id}/permissions`,
+        {},
+        token,
+      );
+      setPositionForm((prev) => ({ ...prev, permissions: data.permissions }));
+    } catch {
+      // keep defaults if fetch fails
+    }
   }
 
   async function handleSavePosition() {
@@ -211,21 +277,37 @@ export default function UsersPage() {
       if (editingPosition) {
         await apiFetch(
           `/positions/${editingPosition.id}`,
-          { method: "PATCH", body: JSON.stringify({ name: positionForm.name }) },
+          { method: "PATCH", body: JSON.stringify({ name: positionForm.name, roleId: positionForm.roleId }) },
           token,
         );
-      } else {
         await apiFetch(
-          "/positions",
-          { method: "POST", body: JSON.stringify({ name: positionForm.name }) },
+          `/positions/${editingPosition.id}/permissions`,
+          { method: "PUT", body: JSON.stringify({ permissions: positionForm.permissions }) },
           token,
         );
+        notify(t("positionUpdated"));
+      } else {
+        const created = await apiFetch<{ id: number }>(
+          "/positions",
+          { method: "POST", body: JSON.stringify({ name: positionForm.name, roleId: positionForm.roleId }) },
+          token,
+        );
+        await apiFetch(
+          `/positions/${created.id}/permissions`,
+          { method: "PUT", body: JSON.stringify({ permissions: positionForm.permissions }) },
+          token,
+        );
+        notify(t("positionCreated"));
       }
       const updated = await apiFetch<Position[]>("/positions", {}, token);
       setPositions(updated);
       setPositionDialogOpen(false);
     } catch (err) {
-      console.error(err);
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
     }
   }
 
@@ -255,6 +337,7 @@ export default function UsersPage() {
       if (deleteTarget.type === "position") {
         await apiFetch(`/positions/${deleteTarget.id}`, { method: "DELETE" }, token);
         setPositions((prev) => prev.filter((p) => p.id !== deleteTarget.id));
+        notify(t("positionDeleted"));
       } else {
         await handleDeleteRoleConfirm();
         return;
@@ -262,7 +345,11 @@ export default function UsersPage() {
       setDeleteTarget(null);
       setDeleteCheck(null);
     } catch (err) {
-      console.error(err);
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
     }
   }
 
@@ -275,8 +362,13 @@ export default function UsersPage() {
       setUsers((prev) =>
         prev.map((u) => (u.id === user.id ? { ...u, isActive: !u.isActive } : u)),
       );
+      notify(t("userToggled"));
     } catch (err) {
-      console.error(err);
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
     }
   }
 
@@ -290,7 +382,12 @@ export default function UsersPage() {
           return;
         }
       } catch (err) {
-        console.error(err);
+        if (err instanceof ApiError) {
+          notify(err.message, "error");
+        } else {
+          notify(t("genericError"), "error");
+        }
+        return;
       }
     }
     try {
@@ -301,8 +398,13 @@ export default function UsersPage() {
       setPositions((prev) =>
         prev.map((p) => (p.id === position.id ? { ...p, isActive: !p.isActive } : p)),
       );
+      notify(t("positionToggled"));
     } catch (err) {
-      console.error(err);
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
     }
   }
 
@@ -325,21 +427,23 @@ export default function UsersPage() {
           method: "PATCH",
           body: JSON.stringify({ name: roleForm.name }),
         }, token);
+        notify(t("roleUpdated"));
       } else {
         await apiFetch("/roles", {
           method: "POST",
           body: JSON.stringify({ name: roleForm.name }),
         }, token);
+        notify(t("roleCreated"));
       }
       const updated = await apiFetch<Role[]>("/roles", {}, token);
       setRoles(updated);
-      if (canViewPermissions) {
-        const updatedMatrix = await apiFetch<PermissionMatrix>("/permissions", {}, token);
-        setMatrix(updatedMatrix);
-      }
       setRoleDialogOpen(false);
     } catch (err) {
-      console.error(err);
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
     }
   }
 
@@ -369,14 +473,15 @@ export default function UsersPage() {
       await apiFetch(`/roles/${deleteTarget.id}`, { method: "DELETE" }, token);
       const updated = await apiFetch<Role[]>("/roles", {}, token);
       setRoles(updated);
-      if (canViewPermissions) {
-        const updatedMatrix = await apiFetch<PermissionMatrix>("/permissions", {}, token);
-        setMatrix(updatedMatrix);
-      }
       setDeleteTarget(null);
       setDeleteCheck(null);
+      notify(t("roleDeleted"));
     } catch (err) {
-      console.error(err);
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
     }
   }
 
@@ -388,36 +493,17 @@ export default function UsersPage() {
       }, token);
       const updated = await apiFetch<Role[]>("/roles", {}, token);
       setRoles(updated);
-      if (canViewPermissions) {
-        const updatedMatrix = await apiFetch<PermissionMatrix>("/permissions", {}, token);
-        setMatrix(updatedMatrix);
+      notify(t("roleToggled"));
+    } catch (err) {
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
       }
-    } catch (err) {
-      console.error(err);
     }
   }
 
-  async function handleSavePermissions() {
-    if (!matrix) return;
-    try {
-      await apiFetch(
-        "/permissions",
-        { method: "PUT", body: JSON.stringify({ grants: matrix.grants }) },
-        token,
-      );
-    } catch (err) {
-      console.error(err);
-    }
-  }
 
-  function togglePermission(role: string, permission: string) {
-    if (!matrix) return;
-    const current = matrix.grants[role] ?? [];
-    const next = current.includes(permission)
-      ? current.filter((p) => p !== permission)
-      : [...current, permission];
-    setMatrix({ ...matrix, grants: { ...matrix.grants, [role]: next } });
-  }
 
   if (!mounted) return null;
 
@@ -435,7 +521,6 @@ export default function UsersPage() {
     ...(canViewUsers ? [{ label: t("tabUsers"), content: "users" }] : []),
     ...(canViewRoles ? [{ label: t("tabRoles"), content: "roles" }] : []),
     ...(canViewPositions ? [{ label: t("tabPositions"), content: "positions" }] : []),
-    ...(canViewPermissions ? [{ label: t("tabPermissions"), content: "permissions" }] : []),
   ];
 
   return (
@@ -511,7 +596,7 @@ export default function UsersPage() {
                         </IconButton>
                       )}
                       {can("user.delete") && (
-                        <IconButton size="small" onClick={() => handleDelete(user.id)}>
+                        <IconButton size="small" onClick={() => setDeleteUserTarget(user)}>
                           <DeleteIcon fontSize="small" />
                         </IconButton>
                       )}
@@ -655,52 +740,7 @@ export default function UsersPage() {
           </Box>
         )}
 
-        {tabs[tab]?.content === "permissions" && matrix && (
-          <Box>
-            <DataTable>
-              <DataTableHead>
-                <DataTableRow>
-                  <DataTableCell>{t("columnPermission")}</DataTableCell>
-                  {matrix.roles.map((role) => (
-                    <DataTableCell key={role} align="center" sx={{ textTransform: "capitalize", fontWeight: 600 }}>
-                      {role}
-                    </DataTableCell>
-                  ))}
-                </DataTableRow>
-              </DataTableHead>
-              <DataTableBody>
-                {matrix.permissions.map((permission) => (
-                  <DataTableRow key={permission}>
-                    <DataTableCell>
-                      <Typography sx={{ fontWeight: 500 }}>
-                        {PERMISSION_LABELS[permission as keyof typeof PERMISSION_LABELS] ?? permission}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
-                        {permission}
-                      </Typography>
-                    </DataTableCell>
-                    {matrix.roles.map((role) => (
-                      <DataTableCell key={role} align="center">
-                        <Checkbox
-                          checked={(matrix.grants[role] ?? []).includes(permission)}
-                          onChange={() => togglePermission(role, permission)}
-                          disabled={!can("permission.update")}
-                        />
-                      </DataTableCell>
-                    ))}
-                  </DataTableRow>
-                ))}
-              </DataTableBody>
-            </DataTable>
-            {can("permission.update") && (
-              <Box sx={{ mt: 3, display: "flex", justifyContent: "flex-end" }}>
-                <Button variant="contained" onClick={handleSavePermissions}>
-                  {t("save")}
-                </Button>
-              </Box>
-            )}
-          </Box>
-        )}
+
 
         <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
           <DialogTitle>{editingUser ? t("editUser") : t("addUser")}</DialogTitle>
@@ -776,6 +816,118 @@ export default function UsersPage() {
                 onChange={(e) => setPositionForm({ ...positionForm, name: e.target.value })}
                 fullWidth
               />
+              <FormControl fullWidth>
+                <InputLabel>{t("columnRole")}</InputLabel>
+                <Select
+                  value={positionForm.roleId ?? ""}
+                  label={t("columnRole")}
+                  onChange={(e) => {
+                    const newRoleId = e.target.value ? Number(e.target.value) : null;
+                    const selectedRole = roles.find((r) => r.id === newRoleId);
+                    const isAdmin = selectedRole?.name === "admin";
+                    setPositionForm({
+                      ...positionForm,
+                      roleId: newRoleId,
+                      permissions: isAdmin ? [...permissionsForRole("admin")] : [...permissionsForRole("customer")],
+                    });
+                  }}
+                >
+                  {roles.filter(r => r.isActive).map((role) => (
+                    <MenuItem key={role.id} value={role.id}>
+                      {role.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="subtitle2" gutterBottom>
+                  {t("positionPermissions")}
+                </Typography>
+                <DataTable>
+                  <DataTableHead>
+                    <DataTableRow>
+                      <DataTableCell>{t("columnPermission")}</DataTableCell>
+                      <DataTableCell align="center" sx={{ fontWeight: 600 }}>
+                        <Checkbox
+                          checked={positionForm.permissions.length === ALL_PERMISSIONS.length}
+                          indeterminate={positionForm.permissions.length > 0 && positionForm.permissions.length < ALL_PERMISSIONS.length}
+                          onChange={(e) => {
+                            setPositionForm({
+                              ...positionForm,
+                              permissions: e.target.checked ? [...ALL_PERMISSIONS] : [],
+                            });
+                          }}
+                          disabled={positionForm.roleId === null || roles.find((r) => r.id === positionForm.roleId)?.name === "admin"}
+                          size="small"
+                        />
+                      </DataTableCell>
+                    </DataTableRow>
+                  </DataTableHead>
+                  <DataTableBody>
+                    {CATEGORY_GROUPS.map((group) => {
+                      const groupPerms = ALL_PERMISSIONS.filter((p) => permissionBelongsToGroup(p, group));
+                      if (groupPerms.length === 0) return null;
+                      const Icon = group.icon;
+                      const allChecked = groupPerms.every((p) => positionForm.permissions.includes(p));
+                      const someChecked = groupPerms.some((p) => positionForm.permissions.includes(p));
+                      const isDisabled = positionForm.roleId === null || roles.find((r) => r.id === positionForm.roleId)?.name === "admin";
+                      return (
+                        <Fragment key={group.key}>
+                          <DataTableRow>
+                            <DataTableCell colSpan={2}>
+                              <Box sx={{ display: "flex", alignItems: "center", gap: 1, py: 0.5 }}>
+                                <Icon fontSize="small" color="primary" />
+                                <Typography variant="caption" fontWeight={600}>
+                                  {t(`categories.${group.key}`)}
+                                </Typography>
+                              </Box>
+                            </DataTableCell>
+                            <DataTableCell align="center">
+                              <Checkbox
+                                checked={allChecked}
+                                indeterminate={!allChecked && someChecked}
+                                onChange={(e) => {
+                                  const next = e.target.checked
+                                    ? [...new Set([...positionForm.permissions, ...groupPerms])]
+                                    : positionForm.permissions.filter((p) => !(groupPerms as string[]).includes(p));
+                                  setPositionForm({ ...positionForm, permissions: next });
+                                }}
+                                disabled={isDisabled}
+                                size="small"
+                              />
+                            </DataTableCell>
+                          </DataTableRow>
+                          {groupPerms.map((permission) => (
+                            <DataTableRow key={permission}>
+                              <DataTableCell>
+                                <Typography variant="body2">
+                                  {PERMISSION_LABELS[permission as keyof typeof PERMISSION_LABELS] ?? permission}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
+                                  {permission}
+                                </Typography>
+                              </DataTableCell>
+                              <DataTableCell align="center">
+                                <Checkbox
+                                  checked={positionForm.permissions.includes(permission)}
+                                  onChange={(e) => {
+                                    const next = e.target.checked
+                                      ? [...positionForm.permissions, permission]
+                                      : positionForm.permissions.filter((p) => p !== permission);
+                                    setPositionForm({ ...positionForm, permissions: next });
+                                  }}
+                                  disabled={isDisabled}
+                                  size="small"
+                                />
+                              </DataTableCell>
+                            </DataTableRow>
+                          ))}
+                        </Fragment>
+                      );
+                    })}
+                  </DataTableBody>
+                </DataTable>
+              </Box>
             </Box>
           </DialogContent>
           <DialogActions>
@@ -855,6 +1007,40 @@ export default function UsersPage() {
                 {t("delete")}
               </Button>
             )}
+          </DialogActions>
+        </Dialog>
+
+        <Dialog open={!!deleteUserTarget} onClose={() => !deleteUserLoading && setDeleteUserTarget(null)} maxWidth="xs">
+          <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
+          <DialogContent>
+            {deleteUserLoading ? (
+              <CircularProgress size={24} />
+            ) : (
+              <Typography variant="body2">
+                {t("deleteUserConfirmMessage", {
+                  name: deleteUserTarget?.name ?? "",
+                  email: deleteUserTarget?.email ?? "",
+                })}
+              </Typography>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setDeleteUserTarget(null)} disabled={deleteUserLoading}>
+              {t("cancel")}
+            </Button>
+            <Button variant="contained" color="error" onClick={confirmDeleteUser} disabled={deleteUserLoading}>
+              {t("delete")}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog open={!!errorAlert} onClose={() => setErrorAlert(null)} maxWidth="xs">
+          <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2">{errorAlert}</Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setErrorAlert(null)}>{t("cancel")}</Button>
           </DialogActions>
         </Dialog>
         </Box>

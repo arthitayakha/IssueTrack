@@ -7,6 +7,7 @@ import {
   PrimaryGeneratedColumn,
 } from "typeorm";
 import { Issue } from "../../issues/entities/issue.entity";
+import { User } from "../../auth/entities/user.entity";
 
 @Entity("attachments")
 export class Attachment {
@@ -23,14 +24,14 @@ export class Attachment {
   @Column({ name: "uploaded_by", type: "int", nullable: true })
   uploadedBy!: number | null;
 
-  @ManyToOne("User", { nullable: true })
+  @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: "uploaded_by" })
-  uploadedByUser?: any;
+  uploadedByUser?: User;
 
-  @Column({ name: "file_name", length: 255 })
+  @Column({ name: "file_name", type: "varchar", length: 255 })
   fileName!: string;
 
-  @Column({ name: "file_path", length: 500 })
+  @Column({ name: "file_path", type: "varchar", length: 500 })
   filePath!: string;
 
   @Column({ name: "file_type", type: "varchar", length: 10, nullable: true })

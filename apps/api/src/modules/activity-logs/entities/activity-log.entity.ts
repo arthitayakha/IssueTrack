@@ -13,13 +13,13 @@ export class ActivityLog {
   @Column({ name: "actor_id", type: "int", nullable: true })
   actorId!: number | null;
 
-  @Column({ name: "actor_name", length: 100, nullable: true })
+  @Column({ name: "actor_name", type: "varchar", length: 100, nullable: true })
   actorName!: string | null;
 
-  @Column({ name: "actor_role", length: 50, nullable: true })
+  @Column({ name: "actor_role", type: "varchar", length: 50, nullable: true })
   actorRole!: string | null;
 
-  @Column({ length: 100 })
+  @Column({ type: "varchar", length: 100 })
   action!: string;
 
   @Column({ name: "board_id", type: "int", nullable: true })

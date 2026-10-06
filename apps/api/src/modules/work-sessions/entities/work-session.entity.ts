@@ -7,6 +7,7 @@ import {
   PrimaryGeneratedColumn,
 } from "typeorm";
 import { Issue } from "../../issues/entities/issue.entity";
+import { User } from "../../auth/entities/user.entity";
 
 @Entity("work_sessions")
 export class WorkSession {
@@ -23,15 +24,15 @@ export class WorkSession {
   @Column({ name: "programmer_id", type: "int" })
   programmerId!: number;
 
-  @ManyToOne("User", { onDelete: "CASCADE" })
+  @ManyToOne(() => User, { onDelete: "CASCADE" })
   @JoinColumn({ name: "programmer_id" })
-  programmer?: any;
+  programmer?: User;
 
-  @Column({ name: "started_at", type: "time" })
-  startedAt!: string;
+  @Column({ name: "started_at", type: "timestamptz" })
+  startedAt!: Date;
 
-  @Column({ name: "ended_at", type: "time" })
-  endedAt!: string;
+  @Column({ name: "ended_at", type: "timestamptz" })
+  endedAt!: Date;
 
   @Column({ type: "int" })
   duration!: number;

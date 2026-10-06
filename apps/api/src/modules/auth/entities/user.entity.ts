@@ -15,13 +15,13 @@ export class User {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  @Column({ unique: true, length: 150 })
+  @Column({ unique: true, type: "varchar", length: 150 })
   email!: string;
 
-  @Column({ name: "password", length: 255 })
+  @Column({ name: "password", type: "varchar", length: 255 })
   passwordHash!: string;
 
-  @Column({ length: 100 })
+  @Column({ type: "varchar", length: 100 })
   name!: string;
 
   @Column({ name: "role_id", type: "int", nullable: true })

@@ -7,6 +7,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   UseGuards,
 } from "@nestjs/common";
 import { PositionsService } from "./positions.service";
@@ -27,17 +28,17 @@ export class PositionsController {
 
   @Post()
   @Permissions("position.create")
-  create(@Body() body: { name: string }) {
-    return this.positions.create(body.name);
+  create(@Body() body: { name: string; roleId?: number | null }) {
+    return this.positions.create(body.name, body.roleId);
   }
 
   @Patch(":id")
   @Permissions("position.update")
-  rename(
+  update(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { name: string },
+    @Body() body: { name: string; roleId?: number | null },
   ) {
-    return this.positions.rename(id, body.name);
+    return this.positions.update(id, body.name, body.roleId);
   }
 
   @Patch(":id/active")
@@ -53,6 +54,21 @@ export class PositionsController {
   @Permissions("position.view")
   findUsers(@Param("id", ParseIntPipe) id: number) {
     return this.positions.findUsersByPosition(id);
+  }
+
+  @Get(":id/permissions")
+  @Permissions("position.view")
+  getPermissions(@Param("id", ParseIntPipe) id: number) {
+    return this.positions.getPermissions(id);
+  }
+
+  @Put(":id/permissions")
+  @Permissions("position.update")
+  updatePermissions(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { permissions: string[] },
+  ) {
+    return this.positions.updatePermissions(id, body.permissions);
   }
 
   @Get(":id/check")

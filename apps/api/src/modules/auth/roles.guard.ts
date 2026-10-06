@@ -31,6 +31,7 @@ export class RolesGuard implements CanActivate {
       const allowed = await this.permissions.hasPermission(
         user.roleId,
         permission,
+        user.positionId,
       );
       if (!allowed) {
         throw new ForbiddenException("Insufficient permissions");

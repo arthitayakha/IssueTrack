@@ -30,7 +30,7 @@ export class RolesService {
     return this.roles.find({ where: { isActive: true }, order: { id: "ASC" } });
   }
 
-  async create(name: string, template: string = "user") {
+  async create(name: string, template: string = "customer") {
     const existing = await this.roles.findOne({ where: { name } });
     if (existing) {
       throw new ConflictException(`Role "${name}" already exists`);

@@ -7,6 +7,7 @@ import {
   PrimaryGeneratedColumn,
 } from "typeorm";
 import { Issue } from "../../issues/entities/issue.entity";
+import { User } from "../../auth/entities/user.entity";
 
 @Entity("notifications")
 export class Notification {
@@ -16,9 +17,9 @@ export class Notification {
   @Column({ name: "user_id", type: "int" })
   userId!: number;
 
-  @ManyToOne("User", { onDelete: "CASCADE" })
+  @ManyToOne(() => User, { onDelete: "CASCADE" })
   @JoinColumn({ name: "user_id" })
-  user?: any;
+  user?: User;
 
   @Column({ name: "issue_id", type: "int" })
   issueId!: number;
@@ -27,13 +28,13 @@ export class Notification {
   @JoinColumn({ name: "issue_id" })
   issue?: Issue;
 
-  @Column({ length: 200 })
+  @Column({ type: "varchar", length: 200 })
   title!: string;
 
   @Column({ type: "text" })
   message!: string;
 
-  @Column({ length: 50 })
+  @Column({ type: "varchar", length: 50 })
   type!: string;
 
   @Column({ name: "is_read", default: false })

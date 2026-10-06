@@ -24,20 +24,10 @@ export interface Position {
   isActive: boolean;
 }
 
-export interface Board {
-  id: string;
-  title: string;
-  description: string;
-  ownerId: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
 export interface Column {
   id: string;
   title: string;
   order: number;
-  boardId: string;
   createdAt: Date;
   updatedAt: Date;
 }

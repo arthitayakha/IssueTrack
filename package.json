@@ -13,7 +13,8 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "migration:run": "npm run migration:run --workspace=@kanban/api",
-    "migration:generate": "npm run migration:generate --workspace=@kanban/api"
+    "migration:generate": "npm run migration:generate --workspace=@kanban/api",
+    "seed": "npm run seed --workspace=@kanban/api"
   },
   "devDependencies": {
     "@babel/eslint-parser": "^7.29.9",

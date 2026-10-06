@@ -36,6 +36,7 @@ export class AuthService {
       email: user.email,
       name: user.name,
       roleId: user.roleId,
+      positionId: user.positionId,
     });
     return { accessToken, user: this.toPublicUser(user, role?.name ?? null) };
   }
@@ -53,6 +54,7 @@ export class AuthService {
       email: user.email,
       name: user.name,
       roleId: user.roleId,
+      positionId: user.positionId,
       roleName,
       isActive: user.isActive,
     };

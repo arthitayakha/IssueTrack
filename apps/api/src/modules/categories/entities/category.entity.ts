@@ -13,14 +13,14 @@ export class Category {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  @Column({ length: 100 })
+  @Column({ type: "varchar", length: 100 })
   name!: string;
 
   @Column({ name: "is_visible", default: true })
   isVisible!: boolean;
 
-  @Column({ type: "text", nullable: true })
-  keywords!: string | null;
+  @Column({ type: "varchar", length: 50, nullable: true })
+  position!: string | null;
 
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;

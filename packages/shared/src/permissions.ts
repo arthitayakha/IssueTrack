@@ -1,4 +1,4 @@
-export type RoleName = "admin" | "programmer" | "user";
+export type RoleName = "admin" | "programmer" | "customer";
 
 export type Permission =
   | "auth.login"
@@ -32,7 +32,16 @@ export type Permission =
   | "category.view"
   | "category.create"
   | "category.update"
+  | "category.delete"
   | "category.visibility.update"
+  | "status.view"
+  | "status.create"
+  | "status.update"
+  | "status.delete"
+  | "priority.view"
+  | "priority.create"
+  | "priority.update"
+  | "priority.delete"
   | "skill.view"
   | "skill.create"
   | "skill.update"
@@ -87,7 +96,16 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   "category.view",
   "category.create",
   "category.update",
+  "category.delete",
   "category.visibility.update",
+  "status.view",
+  "status.create",
+  "status.update",
+  "status.delete",
+  "priority.view",
+  "priority.create",
+  "priority.update",
+  "priority.delete",
   "skill.view",
   "skill.create",
   "skill.update",
@@ -141,7 +159,16 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "category.view",
     "category.create",
     "category.update",
+    "category.delete",
     "category.visibility.update",
+    "status.view",
+    "status.create",
+    "status.update",
+    "status.delete",
+    "priority.view",
+    "priority.create",
+    "priority.update",
+    "priority.delete",
     "skill.view",
     "skill.create",
     "skill.update",
@@ -154,7 +181,7 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "board.column.delete",
     "position.view",
   ],
-  user: [
+  customer: [
     "auth.login",
     "auth.logout",
     "dashboard.own.view",
@@ -169,6 +196,9 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "comment.own.delete",
     "category.view",
     "board.view",
+    "board.column.create",
+    "board.column.update",
+    "board.column.delete",
   ],
 };
 
@@ -215,6 +245,9 @@ export const ROLE_TEMPLATES: Record<string, readonly Permission[]> = {
     "comment.all.delete",
     "category.view",
     "board.view",
+    "board.column.create",
+    "board.column.update",
+    "board.column.delete",
     "report.view",
     "report.export",
   ],
@@ -224,7 +257,7 @@ export const ROLE_TEMPLATES: Record<string, readonly Permission[]> = {
 export const ROLE_LABELS: Record<string, string> = {
   admin: "แอดมิน",
   programmer: "โปรแกรมเมอร์",
-  user: "ลูกค้า",
+  customer: "ลูกค้า",
 };
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
@@ -260,6 +293,15 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "category.create": "สร้างหมวดหมู่",
   "category.update": "แก้ไขหมวดหมู่",
   "category.visibility.update": "อัปเดตการมองเห็นหมวดหมู่",
+  "category.delete": "ลบหมวดหมู่",
+  "status.view": "ดูสถานะ",
+  "status.create": "สร้างสถานะ",
+  "status.update": "แก้ไขสถานะ",
+  "status.delete": "ลบสถานะ",
+  "priority.view": "ดูความสำคัญ",
+  "priority.create": "สร้างความสำคัญ",
+  "priority.update": "แก้ไขความสำคัญ",
+  "priority.delete": "ลบความสำคัญ",
   "skill.view": "ดูทักษะ",
   "skill.create": "สร้างทักษะ",
   "skill.update": "แก้ไขทักษะ",
@@ -283,8 +325,14 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "role.permission.update": "แก้ไขสิทธิ์บทบาท",
 };
 
+export const POSITION_TEMPLATES: Record<string, readonly Permission[]> = {
+  customer: ROLE_PERMISSIONS.customer,
+  staff: ROLE_TEMPLATES.staff,
+  manager: ROLE_TEMPLATES.manager,
+};
+
 export function permissionsForRole(role: string): readonly Permission[] {
-  return ROLE_PERMISSIONS[role as RoleName] ?? ROLE_TEMPLATES.staff;
+  return ROLE_PERMISSIONS[role as RoleName] ?? ROLE_PERMISSIONS.customer;
 }
 
 export function roleHasPermission(role: string, permission: Permission): boolean {

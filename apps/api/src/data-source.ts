@@ -10,5 +10,5 @@ export const AppDataSource = new DataSource({
   database: process.env.DB_NAME ?? "trackdb",
   synchronize: false,
   logging: false,
-  migrations: [__dirname + "/migrations/*{.ts,.js}"],
+  migrations: ["src/migrations/*.ts"],
 });

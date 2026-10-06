@@ -14,7 +14,7 @@ export function roleLabel(name: string | null | undefined): string {
 }
 
 export function usePermissions() {
-  const roleName = useAuthStore((s) => s.user?.roleName ?? "user");
+  const roleName = useAuthStore((s) => s.user?.roleName ?? "customer");
 
   return {
     roleName,

@@ -15,11 +15,11 @@ import {
 } from "@mui/material";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import ViewKanbanOutlinedIcon from "@mui/icons-material/ViewKanban";
-import BugReportOutlinedIcon from "@mui/icons-material/BugReportOutlined";
 import LabelOutlinedIcon from "@mui/icons-material/LabelOutlined";
 import ChatBubbleOutlineOutlinedIcon from "@mui/icons-material/ChatBubbleOutlineOutlined";
 import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
 import PeopleOutlineIcon from "@mui/icons-material/PeopleOutline";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { DRAWER_WIDTH } from "./navbar";
 import { usePermissions } from "@/lib/permissions";
 import { Link, usePathname } from "@/i18n/navigation";
@@ -32,11 +32,13 @@ export default function Sidebar() {
   const navItems = [
     { label: t("dashboard"), icon: DashboardIcon, href: "/" },
     { label: t("boards"), icon: ViewKanbanOutlinedIcon, href: "/boards" },
-    { label: t("issues"), icon: BugReportOutlinedIcon, href: "/issues" },
     { label: t("labels"), icon: LabelOutlinedIcon, href: "/labels" },
     { label: t("comments"), icon: ChatBubbleOutlineOutlinedIcon, href: "/comments" },
     ...(can("user.view")
       ? [{ label: t("users"), icon: PeopleOutlineIcon, href: "/users" }]
+      : []),
+    ...(can("permission.update")
+      ? [{ label: t("settings"), icon: SettingsOutlinedIcon, href: "/settings" }]
       : []),
   ];
 
