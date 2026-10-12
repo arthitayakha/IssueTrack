@@ -32,8 +32,8 @@ export class Issue {
   @JoinColumn({ name: "programmer_id" })
   programmer?: User;
 
-  @Column({ name: "category_id", type: "int" })
-  categoryId!: number;
+  @Column({ name: "category_id", type: "int", nullable: true })
+  categoryId!: number | null;
 
   @ManyToOne(() => Category, { onDelete: "CASCADE" })
   @JoinColumn({ name: "category_id" })
@@ -69,8 +69,8 @@ export class Issue {
   @UpdateDateColumn({ name: "updated_at" })
   updatedAt!: Date;
 
-  @Column({ name: "customer_id", type: "int" })
-  customerId!: number;
+  @Column({ name: "customer_id", type: "int", nullable: true })
+  customerId!: number | null;
 
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: "customer_id" })
@@ -110,6 +110,16 @@ export class Issue {
 
   @Column({ name: "is_locked", default: false })
   isLocked!: boolean;
+
+  @Column({ name: "deleted_at", type: "timestamptz", nullable: true })
+  deletedAt!: Date | null;
+
+  @Column({ name: "deleted_by", type: "int", nullable: true })
+  deletedBy!: number | null;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: "deleted_by" })
+  deletedByUser?: User;
 
   @Column({ name: "column_id", type: "int", nullable: true })
   columnId!: number | null;

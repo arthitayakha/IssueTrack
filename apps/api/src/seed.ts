@@ -149,19 +149,24 @@ async function seed() {
   }
 
   const defaultColumns = [
-    { status: "Backlog", position: 1 },
-    { status: "Todo", position: 2 },
-    { status: "Doing", position: 3 },
-    { status: "Review", position: 4 },
-    { status: "Done", position: 5 },
+    { name: "Backlog", position: 1 },
+    { name: "Todo", position: 2 },
+    { name: "Doing", position: 3 },
+    { name: "Review", position: 4 },
+    { name: "Done", position: 5 },
   ];
 
   for (const col of defaultColumns) {
     await manager.query(
-      `INSERT INTO board_columns (status, custom_name, is_hidden, position)
-       VALUES ($1, NULL, false, $2)
-       ON CONFLICT (LOWER(status)) DO NOTHING`,
-      [col.status, col.position],
+      `INSERT INTO board_columns (status_id, custom_name, is_hidden, position)
+       SELECT s.id, NULL, false, $2
+       FROM issue_statuses s
+       WHERE LOWER(s.name) = LOWER($1)
+       AND NOT EXISTS (
+         SELECT 1 FROM board_columns bc
+         WHERE bc.status_id = s.id
+       )`,
+      [col.name, col.position],
     );
   }
 

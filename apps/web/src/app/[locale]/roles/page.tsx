@@ -22,6 +22,8 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
+import { Pagination } from "@/components/pagination";
+import { PaginatedResponse } from "@kanban/shared";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
@@ -54,13 +56,16 @@ export default function RolesPage() {
   const [warningRole, setWarningRole] = useState<Role | null>(null);
   const [warningUsers, setWarningUsers] = useState<RoleUser[]>([]);
   const [errorAlert, setErrorAlert] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const pageRoles = roles.slice((page - 1) * 10, page * 10);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
   useEffect(() => {
-    apiFetch<Role[]>("/roles", {}, token)
+    apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token)
+      .then(r => r.data)
       .then(setRoles)
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -91,8 +96,8 @@ export default function RolesPage() {
           body: JSON.stringify({ name: form.name }),
         }, token);
       }
-      const updated = await apiFetch<Role[]>("/roles", {}, token);
-      setRoles(updated);
+      const updated = await apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token);
+      setRoles(updated.data);
       setDialogOpen(false);
     } catch (err) {
       console.error(err);
@@ -174,7 +179,7 @@ export default function RolesPage() {
               </DataTableRow>
             </DataTableHead>
             <DataTableBody>
-              {roles.map((role) => (
+              {pageRoles.map((role) => (
                 <DataTableRow key={role.id}>
                   <DataTableCell>
                     <Typography sx={{ textTransform: "capitalize", fontWeight: 500 }}>
@@ -219,6 +224,13 @@ export default function RolesPage() {
               ))}
             </DataTableBody>
           </DataTable>
+          <Pagination
+            page={page}
+            totalPages={Math.max(1, Math.ceil(roles.length / 10))}
+            total={roles.length}
+            limit={10}
+            onPageChange={setPage}
+          />
 
           <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
             <DialogTitle>{editingRole ? t("editRole") : t("addRole")}</DialogTitle>

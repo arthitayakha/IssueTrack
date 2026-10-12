@@ -7,6 +7,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { IssueStatus } from "./entities/issue-status.entity";
 import { Issue } from "../issues/entities/issue.entity";
+import { BoardColumn } from "../columns/entities/board-column.entity";
 import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
@@ -16,19 +17,18 @@ export class IssueStatusesService {
     private readonly issueStatuses: Repository<IssueStatus>,
     @InjectRepository(Issue)
     private readonly issues: Repository<Issue>,
+    @InjectRepository(BoardColumn)
+    private readonly boardColumns: Repository<BoardColumn>,
   ) {}
 
   async findAll(params: PaginationParams) {
-    const statuses = await this.issueStatuses.find({ order: { sortOrder: "ASC", id: "ASC" } });
+    const statuses = await this.issueStatuses.find({ order: { id: "ASC" } });
     const result = await Promise.all(
       statuses.map(async (s) => ({
         id: s.id,
         name: s.name,
         description: s.description,
         isActive: s.isActive,
-        sortOrder: s.sortOrder,
-        isTimerRunning: s.isTimerRunning,
-        isEndStatus: s.isEndStatus,
         issueCount: await this.issues.count({ where: { statusId: s.id } }),
       })),
     );
@@ -38,27 +38,16 @@ export class IssueStatusesService {
   async create(data: {
     name: string;
     description?: string;
-    sortOrder?: number;
-    isTimerRunning?: boolean;
-    isEndStatus?: boolean;
   }) {
     const existing = await this.issueStatuses.findOne({ where: { name: data.name } });
     if (existing) {
       throw new ConflictException(`Status "${data.name}" already exists`);
     }
-    const maxOrder = await this.issueStatuses
-      .createQueryBuilder("s")
-      .select("MAX(s.sort_order)", "max")
-      .getRawOne();
-    const nextOrder = (maxOrder?.max ?? -1) + 1;
     const status = await this.issueStatuses.save(
       this.issueStatuses.create({
         name: data.name,
         description: data.description ?? null,
         isActive: true,
-        sortOrder: data.sortOrder ?? nextOrder,
-        isTimerRunning: data.isTimerRunning ?? false,
-        isEndStatus: data.isEndStatus ?? false,
       }),
     );
     return {
@@ -66,9 +55,6 @@ export class IssueStatusesService {
       name: status.name,
       description: status.description,
       isActive: status.isActive,
-      sortOrder: status.sortOrder,
-      isTimerRunning: status.isTimerRunning,
-      isEndStatus: status.isEndStatus,
     };
   }
 
@@ -77,9 +63,6 @@ export class IssueStatusesService {
     data: {
       name?: string;
       description?: string;
-      sortOrder?: number;
-      isTimerRunning?: boolean;
-      isEndStatus?: boolean;
     },
   ) {
     const status = await this.issueStatuses.findOne({ where: { id } });
@@ -94,28 +77,13 @@ export class IssueStatusesService {
       status.name = data.name;
     }
     if (data.description !== undefined) status.description = data.description;
-    if (data.sortOrder !== undefined) status.sortOrder = data.sortOrder;
-    if (data.isTimerRunning !== undefined) status.isTimerRunning = data.isTimerRunning;
-    if (data.isEndStatus !== undefined) status.isEndStatus = data.isEndStatus;
     await this.issueStatuses.save(status);
     return {
       id: status.id,
       name: status.name,
       description: status.description,
       isActive: status.isActive,
-      sortOrder: status.sortOrder,
-      isTimerRunning: status.isTimerRunning,
-      isEndStatus: status.isEndStatus,
     };
-  }
-
-  async reorder(items: Array<{ id: number; sortOrder: number }>) {
-    await this.issueStatuses.manager.transaction(async (em) => {
-      for (const item of items) {
-        await em.update(IssueStatus, item.id, { sortOrder: item.sortOrder });
-      }
-    });
-    return { reordered: items.length };
   }
 
   async updateActive(id: number, isActive: boolean) {
@@ -134,7 +102,8 @@ export class IssueStatusesService {
       throw new NotFoundException(`Status with id ${id} not found`);
     }
     const issueCount = await this.issues.count({ where: { statusId: id } });
-    return { canDelete: issueCount === 0, issueCount };
+    const columnCount = await this.boardColumns.count({ where: { statusId: id } });
+    return { canDelete: issueCount === 0 && columnCount === 0, issueCount, columnCount };
   }
 
   async remove(id: number) {
@@ -148,13 +117,13 @@ export class IssueStatusesService {
         `Cannot delete status "${status.name}" because it has ${issueCount} issue(s) assigned`,
       );
     }
+    const columnCount = await this.boardColumns.count({ where: { statusId: id } });
+    if (columnCount > 0) {
+      throw new ConflictException(
+        `Cannot delete status "${status.name}" because it has ${columnCount} column(s) on the board. Please remove the column(s) first.`,
+      );
+    }
     await this.issueStatuses.delete(id);
-    const remaining = await this.issueStatuses.find({ order: { sortOrder: "ASC", id: "ASC" } });
-    await this.issueStatuses.manager.transaction(async (em) => {
-      for (let i = 0; i < remaining.length; i++) {
-        await em.update(IssueStatus, remaining[i].id, { sortOrder: i + 1 });
-      }
-    });
     return { deleted: true };
   }
 }

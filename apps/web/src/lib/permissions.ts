@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useCallback } from "react";
 import { useAuthStore } from "@/lib/auth-store";
 import { apiFetch } from "@/lib/api";
 import {
@@ -28,12 +28,17 @@ export function usePermissions() {
       .catch(() => {});
   }, [token, permissions, setPermissions]);
 
-  return {
-    roleName,
-    permissions: permissions ?? permissionsForRole(roleName),
-    can: (permission: Permission) => {
+  const can = useCallback(
+    (permission: Permission) => {
       if (permissions) return permissions.includes(permission);
       return roleHasPermission(roleName, permission);
     },
+    [permissions, roleName],
+  );
+
+  return {
+    roleName,
+    permissions: permissions ?? permissionsForRole(roleName),
+    can,
   };
 }

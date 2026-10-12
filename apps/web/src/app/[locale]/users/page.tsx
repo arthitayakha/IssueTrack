@@ -28,6 +28,8 @@ import {
   FormControlLabel,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import { Pagination } from "@/components/pagination";
+import { PaginatedResponse } from "@kanban/shared";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import ViewColumnIcon from "@mui/icons-material/ViewColumn";
@@ -243,6 +245,8 @@ export default function UsersPage() {
   const [errorAlert, setErrorAlert] = useState<string | null>(null);
   const [deleteUserTarget, setDeleteUserTarget] = useState<User | null>(null);
   const [deleteUserLoading, setDeleteUserLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const pageUsers = users.slice((page - 1) * 10, page * 10);
 
   const canViewUsers = can("user.view");
   const canViewRoles = can("role.view");
@@ -256,12 +260,12 @@ export default function UsersPage() {
   useEffect(() => {
     const requests: Promise<any>[] = [];
     if (canViewUsers) {
-      requests.push(apiFetch<User[]>("/users", {}, token));
+      requests.push(apiFetch<PaginatedResponse<User>>("/users?page=1&limit=100", {}, token).then(r => r.data));
     }
     if (canViewRoles) {
-      requests.push(apiFetch<Role[]>("/roles", {}, token));
+      requests.push(apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token).then(r => r.data));
     }
-    if (canViewPositions) requests.push(apiFetch<Position[]>("/positions", {}, token));
+    if (canViewPositions) requests.push(apiFetch<PaginatedResponse<Position>>("/positions?page=1&limit=100", {}, token).then(r => r.data));
 
     Promise.all(requests)
       .then((results) => {
@@ -309,8 +313,8 @@ export default function UsersPage() {
         await apiFetch("/users", { method: "POST", body: JSON.stringify(payload) }, token);
         notify(t("userCreated"));
       }
-      const updated = await apiFetch<User[]>("/users", {}, token);
-      setUsers(updated);
+      const updated = await apiFetch<PaginatedResponse<User>>("/users?page=1&limit=100", {}, token);
+      setUsers(updated.data);
       setDialogOpen(false);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -394,8 +398,8 @@ export default function UsersPage() {
         );
         notify(t("positionCreated"));
       }
-      const updated = await apiFetch<Position[]>("/positions", {}, token);
-      setPositions(updated);
+      const updated = await apiFetch<PaginatedResponse<Position>>("/positions?page=1&limit=100", {}, token);
+      setPositions(updated.data);
       setPositionDialogOpen(false);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -530,8 +534,8 @@ export default function UsersPage() {
         }, token);
         notify(t("roleCreated"));
       }
-      const updated = await apiFetch<Role[]>("/roles", {}, token);
-      setRoles(updated);
+      const updated = await apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token);
+      setRoles(updated.data);
       setRoleDialogOpen(false);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -566,8 +570,8 @@ export default function UsersPage() {
     if (!deleteTarget || deleteTarget.type !== "role") return;
     try {
       await apiFetch(`/roles/${deleteTarget.id}`, { method: "DELETE" }, token);
-      const updated = await apiFetch<Role[]>("/roles", {}, token);
-      setRoles(updated);
+      const updated = await apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token);
+      setRoles(updated.data);
       setDeleteTarget(null);
       setDeleteCheck(null);
       notify(t("roleDeleted"));
@@ -586,8 +590,8 @@ export default function UsersPage() {
         method: "PATCH",
         body: JSON.stringify({ isActive: !role.isActive }),
       }, token);
-      const updated = await apiFetch<Role[]>("/roles", {}, token);
-      setRoles(updated);
+      const updated = await apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token);
+      setRoles(updated.data);
       notify(t("roleToggled"));
     } catch (err) {
       if (err instanceof ApiError) {
@@ -653,7 +657,7 @@ export default function UsersPage() {
                 </DataTableRow>
               </DataTableHead>
               <DataTableBody>
-                {users.map((user) => (
+                {pageUsers.map((user) => (
                   <DataTableRow key={user.id}>
                     <DataTableCell>{user.name}</DataTableCell>
                     <DataTableCell>{user.email}</DataTableCell>
@@ -700,6 +704,13 @@ export default function UsersPage() {
                 ))}
               </DataTableBody>
             </DataTable>
+            <Pagination
+              page={page}
+              totalPages={Math.max(1, Math.ceil(users.length / 10))}
+              total={users.length}
+              limit={10}
+              onPageChange={setPage}
+            />
           </Box>
         )}
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Box,
   Typography,
@@ -28,9 +28,16 @@ import {
   Tabs,
   Tab,
   useTheme,
-  Autocomplete,
+  type Theme,
   Checkbox,
   FormControlLabel,
+  Popover,
+  ToggleButton,
+  ToggleButtonGroup,
+  ClickAwayListener,
+  ListItemButton,
+  List,
+  ListItem,
 } from "@mui/material";
 import {
   DndContext,
@@ -40,6 +47,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  useDroppable,
   defaultDropAnimationSideEffects,
   type DragStartEvent,
   type DragOverEvent,
@@ -62,12 +70,17 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import HistoryIcon from "@mui/icons-material/History";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
+import SearchIcon from "@mui/icons-material/Search";
+import CategoryIcon from "@mui/icons-material/Category";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import DriveFileMoveIcon from "@mui/icons-material/DriveFileMove";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CloseIcon from "@mui/icons-material/Close";
 import CheckIcon from "@mui/icons-material/Check";
 import ReportProblemOutlinedIcon from "@mui/icons-material/ReportProblemOutlined";
+import CancelIcon from "@mui/icons-material/Cancel";
 import SendIcon from "@mui/icons-material/Send";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import LockIcon from "@mui/icons-material/Lock";
@@ -75,10 +88,13 @@ import LockOpenIcon from "@mui/icons-material/LockOpen";
 import CalendarTodayIcon from "@mui/icons-material/CalendarToday";
 import PersonIcon from "@mui/icons-material/Person";
 import FilterListIcon from "@mui/icons-material/FilterList";
+import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import { useTranslations } from "next-intl";
 import { usePermissions } from "@/lib/permissions";
 import { useAuthStore } from "@/lib/auth-store";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, isApiError } from "@/lib/api";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import {
@@ -95,9 +111,12 @@ import {
   assignIssue,
   deleteIssue,
   unlockIssue,
+  updateIssue,
   fetchIssueActivity,
   fetchIssueComments,
   fetchStatuses,
+  fetchPriorities,
+  fetchUsers,
   createComment,
   uploadAttachment,
   type BoardColumn,
@@ -105,9 +124,19 @@ import {
   type ActivityLog,
   type Comment,
   type IssueStatus,
+  type IssuePriority,
+  type UserSummary,
+  type TrashedIssue,
+  fetchTrashedIssues,
+  restoreIssue,
 } from "@/lib/board-api";
-import { fetchLabels, type Label } from "@/lib/labels-api";
+import { fetchLabels, createLabel, updateLabel, type Label } from "@/lib/labels-api";
 import { Pagination } from "@/components/pagination";
+
+function getErrorMessage(e: unknown, fallback: string): string | null {
+  if (isApiError(e, 403)) return null;
+  return e instanceof Error ? e.message : fallback;
+}
 
 const PRIORITY_COLORS: Record<string, "error" | "warning" | "success" | "default"> = {
   critical: "error",
@@ -144,6 +173,16 @@ function formatDateTime(dateStr: string): string {
   return `${date.toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })} ${date.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
+const FIELD_LABELS: Record<string, string> = {
+  title: "หัวข้อ",
+  description: "คำอธิบาย",
+  priority: "ความสำคัญ",
+  priorityId: "ความสำคัญ",
+  category: "หมวดหมู่",
+  label: "ป้าย",
+  labels: "ป้าย",
+};
+
 function formatActivityAction(log: ActivityLog): string {
   try {
     const detail = log.detail ? JSON.parse(log.detail) : {};
@@ -155,7 +194,7 @@ function formatActivityAction(log: ActivityLog): string {
       case "card.assigned":
         return `${log.actorName ?? "ระบบ"} มอบหมายให้ ${detail.to ?? "—"}`;
       case "card.edited":
-        return `${log.actorName ?? "ระบบ"} แก้ไข: ${(detail.fields ?? []).join(", ")}`;
+        return `${log.actorName ?? "ระบบ"} แก้ไข: ${(detail.fields ?? []).map((f: string) => FIELD_LABELS[f] ?? f).join(", ")}`;
       case "card.deleted":
         return `${log.actorName ?? "ระบบ"} ลบงานนี้`;
       case "comment.created":
@@ -183,6 +222,12 @@ const COLOR_MAP: Record<string, string> = {
   gray: "#9e9e9e",
   default: "#9e9e9e",
 };
+
+const LABEL_COLORS = Object.keys(COLOR_MAP).filter((c) => c !== "default");
+
+function labelContrast(color: string, theme: Theme): string {
+  return theme.palette.getContrastText(COLOR_MAP[color] ?? theme.palette.grey[400]);
+}
 
 const dropAnimation: DropAnimation = {
   duration: 250,
@@ -247,6 +292,8 @@ function TrelloCard({
     ? issue.programmerName.charAt(0).toUpperCase()
     : null;
 
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+
   return (
     <Paper
       ref={setNodeRef}
@@ -295,6 +342,15 @@ function TrelloCard({
                 opacity: 0.2,
               }}
             />
+          )}
+          {(canEdit || canDelete || canUnlockIssue) && (
+            <IconButton
+              size="small"
+              onClick={(e) => { e.stopPropagation(); setMenuAnchor(e.currentTarget); }}
+              sx={{ p: 0.3 }}
+            >
+              <MoreVertIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+            </IconButton>
           )}
         </Box>
       </Box>
@@ -365,38 +421,36 @@ function TrelloCard({
           )}
         </Box>
       </Box>
-      {(canEdit || canDelete || canUnlockIssue) && (
-        <Box sx={{ display: "flex", gap: 0.5, mt: 0.5, justifyContent: "flex-end" }}>
-          {issue.isLocked && canUnlockIssue && (
-            <Tooltip title="ปลดล็อก">
-              <IconButton size="small" onClick={(e) => { e.stopPropagation(); onUnlock?.(issue); }} sx={{ p: 0.3 }}>
-                <LockOpenIcon sx={{ fontSize: 16, color: "warning.main" }} />
-              </IconButton>
-            </Tooltip>
-          )}
-          {canEdit && (
-            <Tooltip title="แก้ไข">
-              <IconButton size="small" onClick={(e) => { e.stopPropagation(); onEdit?.(issue); }} sx={{ p: 0.3 }}>
-                <EditIcon sx={{ fontSize: 16 }} />
-              </IconButton>
-            </Tooltip>
-          )}
-          {canEdit && (
-            <Tooltip title="ประวัติ">
-              <IconButton size="small" onClick={(e) => { e.stopPropagation(); onViewActivity?.(issue); }} sx={{ p: 0.3 }}>
-                <HistoryIcon sx={{ fontSize: 16 }} />
-              </IconButton>
-            </Tooltip>
-          )}
-          {canDelete && (
-            <Tooltip title="ลบ">
-              <IconButton size="small" onClick={(e) => { e.stopPropagation(); onDelete?.(issue); }} color="error" sx={{ p: 0.3 }}>
-                <DeleteIcon sx={{ fontSize: 16 }} />
-              </IconButton>
-            </Tooltip>
-          )}
-        </Box>
-      )}
+      <Menu
+        anchorEl={menuAnchor}
+        open={Boolean(menuAnchor)}
+        onClose={() => setMenuAnchor(null)}
+      >
+        {canEdit && (
+          <MenuItem onClick={() => { setMenuAnchor(null); onEdit?.(issue); }}>
+            <ListItemIcon><EditIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>แก้ไข</ListItemText>
+          </MenuItem>
+        )}
+        {canEdit && (
+          <MenuItem onClick={() => { setMenuAnchor(null); onViewActivity?.(issue); }}>
+            <ListItemIcon><HistoryIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>ประวัติ</ListItemText>
+          </MenuItem>
+        )}
+        {issue.isLocked && canUnlockIssue && (
+          <MenuItem onClick={() => { setMenuAnchor(null); onUnlock?.(issue); }}>
+            <ListItemIcon><LockOpenIcon fontSize="small" color="warning" /></ListItemIcon>
+            <ListItemText sx={{ color: "warning.main" }}>ปลดล็อก</ListItemText>
+          </MenuItem>
+        )}
+        {canDelete && (
+          <MenuItem onClick={() => { setMenuAnchor(null); onDelete?.(issue); }}>
+            <ListItemIcon><DeleteIcon fontSize="small" color="error" /></ListItemIcon>
+            <ListItemText sx={{ color: "error.main" }}>ลบ</ListItemText>
+          </MenuItem>
+        )}
+      </Menu>
     </Paper>
   );
 }
@@ -404,11 +458,14 @@ function TrelloCard({
 function KanbanColumn({
   column,
   issues,
+  showAll,
   canManage,
   canEdit,
   canDelete,
   canUnlockIssue,
   canUnlockColumn,
+  isDropTarget,
+  roleName,
   onOpenIssue,
   onEditIssue,
   onDeleteIssue,
@@ -419,11 +476,14 @@ function KanbanColumn({
 }: {
   column: BoardColumn;
   issues: BoardIssue[];
+  showAll: boolean;
   canManage: boolean;
   canEdit: boolean;
   canDelete: boolean;
   canUnlockIssue: boolean;
   canUnlockColumn: boolean;
+  isDropTarget: boolean;
+  roleName: string;
   onOpenIssue: (issue: BoardIssue) => void;
   onEditIssue: (issue: BoardIssue) => void;
   onDeleteIssue: (issue: BoardIssue) => void;
@@ -435,11 +495,15 @@ function KanbanColumn({
   const {
     attributes,
     listeners,
-    setNodeRef,
+    setNodeRef: setColumnNodeRef,
     transform,
     transition,
     isDragging,
   } = useSortable({ id: column.id, data: { type: "column" }, disabled: column.isLocked });
+  const { setNodeRef: setDroppableNodeRef, isOver: isColumnOver } = useDroppable({
+    id: `column-drop-${column.id}`,
+    data: { type: "column-drop", columnId: column.id },
+  });
 
   const theme = useTheme();
 
@@ -451,25 +515,27 @@ function KanbanColumn({
 
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const color = getColumnColor(column.statusName, theme);
-  const visibleIssues = [...issues].sort((a, b) => b.id - a.id).slice(0, 10);
+  const sorted = [...issues].sort((a, b) => b.id - a.id);
+  const visibleIssues = showAll ? sorted : sorted.slice(0, 10);
 
   return (
     <Box
-      ref={setNodeRef}
+      ref={setColumnNodeRef}
       style={style}
       {...attributes}
       {...(canManage && !column.isLocked ? listeners : {})}
       sx={{
         width: 240,
         minWidth: 240,
-        bgcolor: "grey.50",
+        bgcolor: isDropTarget ? "primary.50" : "grey.50",
         borderRadius: 2,
         p: 1.5,
         display: "flex",
         flexDirection: "column",
         maxHeight: "calc(100vh - 200px)",
-        border: "1px solid",
-        borderColor: theme.palette.divider,
+        border: isDropTarget ? "2px solid" : "1px solid",
+        borderColor: isDropTarget ? "primary.main" : theme.palette.divider,
+        transition: "background-color 0.15s ease, border-color 0.15s ease",
       }}
     >
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
@@ -483,7 +549,7 @@ function KanbanColumn({
           <Typography variant="caption" color="text.secondary" fontWeight={600}>
             {issues.length}
           </Typography>
-          {issues.length > 10 && (
+          {!showAll && issues.length > 10 && (
             <Typography variant="caption" color="text.disabled">
               · แสดง 10 ล่าสุด
             </Typography>
@@ -512,14 +578,23 @@ function KanbanColumn({
         </MenuItem>
       </Menu>
       <SortableContext items={visibleIssues.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-        <Box sx={{ flexGrow: 1, overflowY: "auto", minHeight: 60 }}>
+        <Box
+          ref={setDroppableNodeRef}
+          data-column-drop-id={column.id}
+          sx={{
+            flexGrow: 1,
+            overflowY: "auto",
+            minHeight: isDropTarget ? 120 : 80,
+            transition: "min-height 0.2s ease",
+          }}
+        >
           {visibleIssues.map((issue) => (
             <TrelloCard
               key={issue.id}
               issue={issue}
               canManage={canManage}
               canEdit={canEdit}
-              canDelete={canDelete}
+              canDelete={canDelete && (roleName !== "customer" || column.statusName.toLowerCase() === "backlog")}
               canUnlockIssue={canUnlockIssue}
               onOpen={onOpenIssue}
               onEdit={onEditIssue}
@@ -529,8 +604,23 @@ function KanbanColumn({
             />
           ))}
           {issues.length === 0 && (
-            <Box sx={{ py: 2, textAlign: "center" }}>
-              <Typography variant="caption" color="text.secondary">ไม่มีการ์ด</Typography>
+            <Box
+              sx={{
+                py: 3,
+                textAlign: "center",
+                border: isDropTarget ? "2px dashed" : "1px dashed",
+                borderColor: isDropTarget ? "primary.main" : "divider",
+                borderRadius: 1.5,
+                transition: "border-color 0.15s ease",
+              }}
+            >
+              <Typography
+                variant="caption"
+                color={isDropTarget ? "primary.main" : "text.disabled"}
+                fontWeight={isDropTarget ? 600 : 400}
+              >
+                {isDropTarget ? "วางที่นี่" : "ไม่มีการ์ด"}
+              </Typography>
             </Box>
           )}
         </Box>
@@ -595,6 +685,114 @@ function AddColumnInline({
         </Button>
       </Box>
     </Box>
+  );
+}
+
+function RecycleBinDialog({
+  open,
+  onClose,
+  onRestored,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onRestored: () => void;
+}) {
+  const t = useTranslations("Boards");
+  const [items, setItems] = useState<TrashedIssue[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [restoringId, setRestoringId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    setError(null);
+    fetchTrashedIssues()
+      .then(setItems)
+      .catch((e) => setError(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ")))
+      .finally(() => setLoading(false));
+  }, [open]);
+
+  const handleRestore = async (id: number) => {
+    setRestoringId(id);
+    setError(null);
+    try {
+      await restoreIssue(id);
+      setItems((prev) => prev.filter((i) => i.id !== id));
+      onRestored();
+    } catch (e) {
+      setError(getErrorMessage(e, "กู้คืนไม่สำเร็จ"));
+    } finally {
+      setRestoringId(null);
+    }
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <DeleteOutlineIcon color="error" />
+        {t("recycleBin")}
+      </DialogTitle>
+      <DialogContent>
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+            {error}
+          </Alert>
+        )}
+        {loading ? (
+          <Box sx={{ display: "flex", justifyContent: "center", p: 3 }}>
+            <CircularProgress />
+          </Box>
+        ) : items.length === 0 ? (
+          <Box sx={{ textAlign: "center", py: 4 }}>
+            <DeleteOutlineIcon sx={{ fontSize: 48, color: "text.disabled", mb: 1 }} />
+            <Typography color="text.secondary">{t("noTrashItems")}</Typography>
+          </Box>
+        ) : (
+          <List>
+            {items.map((item, idx) => (
+              <Box key={item.id}>
+                <ListItem
+                  secondaryAction={
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<RestoreFromTrashIcon />}
+                      onClick={() => handleRestore(item.id)}
+                      disabled={restoringId === item.id}
+                    >
+                      {t("restore")}
+                    </Button>
+                  }
+                >
+                  <ListItemText
+                    primary={
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                        <Typography variant="caption" color="primary.main" fontWeight={700}>
+                          ISS-{String(item.id).padStart(3, "0")}
+                        </Typography>
+                        <Typography variant="subtitle2" fontWeight={700} noWrap>
+                          {item.title}
+                        </Typography>
+                      </Box>
+                    }
+                    secondary={
+                      <Typography variant="caption" color="text.secondary">
+                        {item.deletedByName ?? "—"} · {formatDateTime(item.deletedAt)}
+                      </Typography>
+                    }
+                  />
+                </ListItem>
+                {idx < items.length - 1 && <Divider />}
+              </Box>
+            ))}
+          </List>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>{t("close")}</Button>
+      </DialogActions>
+    </Dialog>
   );
 }
 
@@ -736,6 +934,8 @@ function IssueDetailDialog({
   open,
   onClose,
   columns,
+  labels,
+  onRefresh,
   onEdit,
   onDelete,
 }: {
@@ -743,6 +943,8 @@ function IssueDetailDialog({
   open: boolean;
   onClose: () => void;
   columns: BoardColumn[];
+  labels: Label[];
+  onRefresh: () => void;
   onEdit: (issue: BoardIssue) => void;
   onDelete: (issue: BoardIssue) => void;
 }) {
@@ -754,12 +956,34 @@ function IssueDetailDialog({
   const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [localIssue, setLocalIssue] = useState<BoardIssue | null>(null);
+  const [priorities, setPriorities] = useState<IssuePriority[]>([]);
+  const [users, setUsers] = useState<UserSummary[]>([]);
+  const [priorityAnchor, setPriorityAnchor] = useState<HTMLElement | null>(null);
+  const [labelAnchor, setLabelAnchor] = useState<HTMLElement | null>(null);
+  const [memberAnchor, setMemberAnchor] = useState<HTMLElement | null>(null);
+  const [memberSearch, setMemberSearch] = useState("");
+  const [labelSearch, setLabelSearch] = useState("");
+  const [creatingLabel, setCreatingLabel] = useState(false);
+  const [newLabelName, setNewLabelName] = useState("");
+  const [newLabelColor, setNewLabelColor] = useState("default");
+  const [editingLabel, setEditingLabel] = useState<Label | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const canViewComments = can("comment.view");
   const canPostComment = can("comment.create");
   const canViewHistory = can("issue.detail.view");
   const canEditIssue = can("issue.all.update");
   const canDeleteIssue = can("issue.delete");
+  const canSetPriority = can("priority.view") && canEditIssue;
+  const canSetLabels = can("label.view") && canEditIssue;
+  const canCreateLabel = can("label.create");
+  const canEditLabel = can("label.update");
+  const canAssign = can("user.view") && can("issue.assign");
+
+  useEffect(() => {
+    setLocalIssue(issue);
+  }, [issue]);
 
   useEffect(() => {
     if (!issue || !open) return;
@@ -768,35 +992,129 @@ function IssueDetailDialog({
     Promise.all([
       canViewComments ? fetchIssueComments(issue.id).then((r) => r.data) : Promise.resolve([] as Comment[]),
       canViewHistory ? fetchIssueActivity(issue.id) : Promise.resolve([] as ActivityLog[]),
+      canSetPriority
+        ? fetchPriorities().then((r) => r.data)
+        : Promise.resolve([] as IssuePriority[]),
+      canAssign
+        ? fetchUsers().then((r) => r.data)
+        : Promise.resolve([] as UserSummary[]),
     ])
-      .then(([c, l]) => {
+      .then(([c, l, p, u]) => {
         setComments(c);
         setLogs(l);
+        setPriorities(p);
+        setUsers(u);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : "โหลดข้อมูลไม่สำเร็จ"))
+      .catch((e) => setError(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ")))
       .finally(() => setLoading(false));
-  }, [issue, open, canViewComments, canViewHistory]);
+  }, [issue, open, canViewComments, canViewHistory, canSetPriority, canAssign]);
 
   const handlePost = async () => {
     const content = draft.trim();
-    if (!content || !issue) return;
+    if (!content || !localIssue) return;
     setPosting(true);
     try {
-      const comment = await createComment(issue.id, content);
+      const comment = await createComment(localIssue.id, content);
       setComments((prev) => [...prev, comment]);
       setDraft("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "ส่งความคิดเห็นไม่สำเร็จ");
+      setError(getErrorMessage(e, "ส่งความคิดเห็นไม่สำเร็จ"));
     } finally {
       setPosting(false);
     }
   };
 
+  const applyUpdate = async (data: { priorityId?: number; labelIds?: number[] }) => {
+    if (!localIssue) return;
+    setSaving(true);
+    try {
+      const updated = await updateIssue(localIssue.id, data);
+      setLocalIssue(updated);
+      onRefresh();
+    } catch (e) {
+      setError(getErrorMessage(e, "บันทึกไม่สำเร็จ"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSetPriority = async (priorityId: number | null) => {
+    setPriorityAnchor(null);
+    await applyUpdate({ priorityId: priorityId ?? undefined });
+  };
+
+  const handleAssign = async (programmerId: number | null) => {
+    setMemberAnchor(null);
+    setMemberSearch("");
+    if (!localIssue) return;
+    setSaving(true);
+    try {
+      const updated = await assignIssue(localIssue.id, programmerId);
+      setLocalIssue(updated);
+      onRefresh();
+    } catch (e) {
+      setError(getErrorMessage(e, "มอบหมายไม่สำเร็จ"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const selectedLabelIds = localIssue?.labelIds ?? [];
+
+  const selectedLabels = labels.filter((l) => selectedLabelIds.includes(l.id));
+
+  const handleToggleLabel = async (labelId: number) => {
+    const next = selectedLabelIds.includes(labelId)
+      ? selectedLabelIds.filter((id) => id !== labelId)
+      : [...selectedLabelIds, labelId];
+    await applyUpdate({ labelIds: next });
+  };
+
+  const handleCreateLabel = async () => {
+    const name = newLabelName.trim();
+    if (!name) return;
+    setSaving(true);
+    try {
+      const label = await createLabel({ name, color: newLabelColor });
+      setNewLabelName("");
+      setNewLabelColor("default");
+      setCreatingLabel(false);
+      await applyUpdate({ labelIds: [...selectedLabelIds, label.id] });
+    } catch (e) {
+      setError(getErrorMessage(e, "สร้ายป้ายไม่สำเร็จ"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSaveLabel = async (id: number, data: { name: string; color: string }) => {
+    setEditingLabel(null);
+    try {
+      await updateLabel(id, data);
+      onRefresh();
+    } catch (e) {
+      setError(getErrorMessage(e, "แก้ไขป้ายไม่สำเร็จ"));
+    }
+  };
+
   const theme = useTheme();
-  const column = issue?.columnId ? columns.find((c) => c.id === issue.columnId) : null;
+  const current = localIssue;
+  const column = current?.columnId ? columns.find((c) => c.id === current.columnId) : null;
   const columnName = column ? (column.customName ?? column.statusName) : null;
   const columnColor = getColumnColor(columnName ?? "", theme);
-  const categoryName = issue?.categoryName ?? issue?.customCategory ?? "—";
+  const categoryName = current?.categoryName ?? current?.customCategory ?? "—";
+  const programmers = users.filter((u) => u.isActive && u.roleName === "programmer");
+  const member = current?.programmerId
+    ? programmers.find((u) => Number(u.id) === current.programmerId) ?? null
+    : null;
+  const visibleProgrammers = programmers.filter(
+    (u) =>
+      u.id !== member?.id &&
+      u.name.toLowerCase().includes(memberSearch.trim().toLowerCase()),
+  );
+  const visibleLabels = labels.filter((l) =>
+    l.name.toLowerCase().includes(labelSearch.trim().toLowerCase()),
+  );
 
   return (
     <Dialog
@@ -820,7 +1138,7 @@ function IssueDetailDialog({
           />
         )}
         <Typography variant="h6" fontWeight={700} sx={{ flex: 1, lineHeight: 1.3 }}>
-          {issue?.title}
+          {current?.title}
         </Typography>
         <IconButton size="small" onClick={onClose}>
           <CloseIcon />
@@ -843,78 +1161,163 @@ function IssueDetailDialog({
           <Box>
             <Typography
               variant="body2"
-              sx={{ whiteSpace: "pre-wrap", color: issue?.description ? "text.primary" : "text.secondary" }}
+              sx={{ whiteSpace: "pre-wrap", color: current?.description ? "text.primary" : "text.secondary" }}
             >
-              {issue?.description || "เพิ่มคำอธิบายโดยละเอียด..."}
+              {current?.description || "เพิ่มคำอธิบายโดยละเอียด..."}
             </Typography>
           </Box>
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
-            <Box sx={{ display: "flex", gap: 1.5 }}>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
               <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>หมวดหมู่</Typography>
               <Typography variant="body2">{categoryName}</Typography>
             </Box>
-            <Box sx={{ display: "flex", gap: 1.5 }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
               <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>ความสำคัญ</Typography>
-              {issue?.priorityName ? (
-                <Chip
-                  label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
+              {canSetPriority ? (
+                <Button
                   size="small"
-                  color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
+                  variant={current?.priorityName ? "contained" : "outlined"}
+                  disabled={saving}
+                  endIcon={<ArrowDropDownIcon />}
+                  onClick={(e) => setPriorityAnchor(e.currentTarget)}
+                  sx={{ textTransform: "none", justifyContent: "flex-start", fontWeight: 600 }}
+                >
+                  {current?.priorityName
+                    ? PRIORITY_LABELS[current.priorityName.toLowerCase()] ?? current.priorityName
+                    : "เลือกความสำคัญ"}
+                </Button>
+              ) : current?.priorityName ? (
+                <Chip
+                  label={PRIORITY_LABELS[current.priorityName.toLowerCase()] ?? current.priorityName}
+                  size="small"
+                  color={PRIORITY_COLORS[current.priorityName.toLowerCase()] ?? "default"}
                   sx={{ fontSize: "0.7rem", fontWeight: 600 }}
                 />
               ) : (
                 <Typography variant="body2">—</Typography>
               )}
             </Box>
-            {issue?.labelName && (
-              <Box sx={{ display: "flex", gap: 1.5 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>ป้ายกำกับ</Typography>
+            <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.5 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90, pt: 0.75 }}>ป้าย</Typography>
+              {canSetLabels ? (
+                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center" }}>
+                  {selectedLabels.map((l) => (
+                    <Chip
+                      key={l.id}
+                      label={l.name}
+                      size="small"
+                      disabled={saving}
+                      onClick={() => handleToggleLabel(l.id)}
+                      onDelete={() => handleToggleLabel(l.id)}
+                      deleteIcon={<CancelIcon sx={{ fontSize: 14 }} />}
+                      sx={{
+                        fontSize: "0.7rem",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        bgcolor: COLOR_MAP[l.color] ?? l.color,
+                        color: labelContrast(l.color, theme),
+                      }}
+                    />
+                  ))}
+                  {selectedLabels.length === 0 && !current?.labelName && (
+                    <Typography variant="caption" color="text.secondary">เพิ่มป้าย</Typography>
+                  )}
+                  <IconButton
+                    size="small"
+                    disabled={saving}
+                    onClick={(e) => setLabelAnchor(e.currentTarget)}
+                    sx={{ border: "1px dashed", borderColor: "divider", borderRadius: "50%", width: 28, height: 28 }}
+                  >
+                    <AddIcon sx={{ fontSize: 15 }} />
+                  </IconButton>
+                </Box>
+              ) : current?.labelName ? (
                 <Chip
-                  label={issue.labelName}
+                  label={current.labelName}
                   size="small"
                   sx={{
                     fontSize: "0.7rem",
                     fontWeight: 600,
-                    bgcolor: COLOR_MAP[issue.labelColor ?? "default"] ?? issue.labelColor ?? undefined,
-                    color: theme.palette.getContrastText(COLOR_MAP[issue.labelColor ?? "default"] ?? issue.labelColor ?? theme.palette.grey[400]),
+                    bgcolor: COLOR_MAP[current.labelColor ?? "default"] ?? current.labelColor ?? undefined,
+                    color: labelContrast(current.labelColor ?? "default", theme),
                   }}
                 />
-              </Box>
-            )}
-            <Box sx={{ display: "flex", gap: 1.5 }}>
+              ) : (
+                <Typography variant="body2">—</Typography>
+              )}
+            </Box>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
               <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>สมาชิก</Typography>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-                <Avatar
-                  sx={{
-                    width: 24,
-                    height: 24,
-                    fontSize: "0.7rem",
-                    fontWeight: 700,
-                    bgcolor: issue?.programmerName ? "primary.main" : theme.palette.grey[300],
-                    color: issue?.programmerName ? "primary.contrastText" : theme.palette.grey[600],
-                  }}
-                >
-                  {issue?.programmerName ? issue.programmerName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 15 }} />}
-                </Avatar>
-                <Typography variant="body2">{issue?.programmerName ?? "รอมอบหมาย"}</Typography>
-              </Box>
+              {canAssign ? (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                  {member ? (
+                    <Chip
+                      size="small"
+                      disabled={saving}
+                      avatar={
+                        <Avatar
+                          sx={{
+                            width: 20,
+                            height: 20,
+                            fontSize: "0.65rem",
+                            fontWeight: 700,
+                            bgcolor: "primary.main",
+                            color: "primary.contrastText",
+                          }}
+                        >
+                          {member.name.charAt(0).toUpperCase()}
+                        </Avatar>
+                      }
+                      label={member.name}
+                      onDelete={() => handleAssign(null)}
+                      sx={{ fontWeight: 600 }}
+                    />
+                  ) : (
+                    <Chip label="รอมอบหมาย" size="small" variant="outlined" />
+                  )}
+                  <IconButton
+                    size="small"
+                    disabled={saving}
+                    onClick={(e) => setMemberAnchor(e.currentTarget)}
+                    sx={{ border: "1px dashed", borderColor: "divider", borderRadius: "50%", width: 28, height: 28 }}
+                  >
+                    <AddIcon sx={{ fontSize: 15 }} />
+                  </IconButton>
+                </Box>
+              ) : (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+                  <Avatar
+                    sx={{
+                      width: 24,
+                      height: 24,
+                      fontSize: "0.7rem",
+                      fontWeight: 700,
+                      bgcolor: current?.programmerName ? "primary.main" : theme.palette.grey[300],
+                      color: current?.programmerName ? "primary.contrastText" : theme.palette.grey[600],
+                    }}
+                  >
+                    {current?.programmerName ? current.programmerName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 15 }} />}
+                  </Avatar>
+                  <Typography variant="body2">{current?.programmerName ?? "รอมอบหมาย"}</Typography>
+                </Box>
+              )}
             </Box>
             <Box sx={{ display: "flex", gap: 1.5 }}>
               <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>ผู้แจ้ง</Typography>
-              <Typography variant="body2">{issue?.customerName ?? "—"}</Typography>
+              <Typography variant="body2">{current?.customerName ?? "—"}</Typography>
             </Box>
             <Box sx={{ display: "flex", gap: 1.5 }}>
               <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>สร้างเมื่อ</Typography>
-              <Typography variant="body2">{issue ? formatDateTime(issue.createdAt) : "—"}</Typography>
+              <Typography variant="body2">{current ? formatDateTime(current.createdAt) : "—"}</Typography>
             </Box>
             <Box sx={{ display: "flex", gap: 1.5 }}>
               <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>อัปเดตล่าสุด</Typography>
-              <Typography variant="body2">{issue ? formatDateTime(issue.updatedAt) : "—"}</Typography>
+              <Typography variant="body2">{current ? formatDateTime(current.updatedAt) : "—"}</Typography>
             </Box>
           </Box>
           <Box sx={{ display: "flex", gap: 1, mt: "auto", pt: 1 }}>
             {canEditIssue && (
-              <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => issue && onEdit(issue)}>
+              <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => current && onEdit(current)}>
                 แก้ไข
               </Button>
             )}
@@ -922,11 +1325,240 @@ function IssueDetailDialog({
               ประวัติ
             </Button>
             {canDeleteIssue && (
-              <Button size="small" variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={() => issue && onDelete(issue)}>
+              <Button size="small" variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={() => current && onDelete(current)}>
                 ลบ
               </Button>
             )}
           </Box>
+          <Popover
+            open={Boolean(priorityAnchor)}
+            anchorEl={priorityAnchor}
+            onClose={() => setPriorityAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+            transformOrigin={{ vertical: "top", horizontal: "left" }}
+            PaperProps={{ sx: { p: 1.5, display: "flex", flexWrap: "wrap", gap: 0.5, maxWidth: 280 } }}
+          >
+            {priorities
+              .filter((p) => p.isActive)
+              .sort((a, b) => a.sortOrder - b.sortOrder)
+              .map((p) => (
+                <Chip
+                  key={p.id}
+                  label={PRIORITY_LABELS[p.name.toLowerCase()] ?? p.name}
+                  size="small"
+                  color={PRIORITY_COLORS[p.name.toLowerCase()] ?? "default"}
+                  variant={current?.priorityId === p.id ? "filled" : "outlined"}
+                  disabled={saving}
+                  onClick={() => handleSetPriority(p.id)}
+                  sx={{ fontWeight: 600 }}
+                />
+              ))}
+            {current?.priorityId && (
+              <Button size="small" disabled={saving} onClick={() => handleSetPriority(null)}>
+                ล้าง
+              </Button>
+            )}
+          </Popover>
+          <Popover
+            open={Boolean(labelAnchor)}
+            anchorEl={labelAnchor}
+            onClose={() => setLabelAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+            transformOrigin={{ vertical: "top", horizontal: "left" }}
+            PaperProps={{ sx: { width: 300, p: 1.5, display: "flex", flexDirection: "column", gap: 1 } }}
+          >
+            <TextField
+              size="small"
+              placeholder="ค้นหาป้าย..."
+              value={labelSearch}
+              onChange={(e) => setLabelSearch(e.target.value)}
+              autoFocus
+            />
+            <Box sx={{ maxHeight: 220, overflowY: "auto", display: "flex", flexDirection: "column", gap: 0.25 }}>
+              {visibleLabels.length === 0 ? (
+                <Typography variant="caption" color="text.secondary">ไม่พบป้าย</Typography>
+              ) : (
+                visibleLabels.map((l) => (
+                  <Box
+                    key={l.id}
+                    onClick={() => handleToggleLabel(l.id)}
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 0.75,
+                      p: 0.5,
+                      borderRadius: 1,
+                      cursor: saving ? "default" : "pointer",
+                      "&:hover": { bgcolor: "grey.100" },
+                    }}
+                  >
+                    <Checkbox
+                      size="small"
+                      checked={selectedLabelIds.includes(l.id)}
+                      disabled={saving}
+                      onChange={() => handleToggleLabel(l.id)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <Chip
+                      label={l.name}
+                      size="small"
+                      sx={{
+                        flex: 1,
+                        fontSize: "0.7rem",
+                        fontWeight: 600,
+                        bgcolor: COLOR_MAP[l.color] ?? l.color,
+                        color: labelContrast(l.color, theme),
+                      }}
+                    />
+                    {canEditLabel && (
+                      <IconButton
+                        size="small"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingLabel(l);
+                        }}
+                      >
+                        <EditIcon sx={{ fontSize: 14 }} />
+                      </IconButton>
+                    )}
+                  </Box>
+                ))
+              )}
+            </Box>
+            {canCreateLabel &&
+              (creatingLabel ? (
+                <Box sx={{ borderTop: "1px solid", borderColor: "divider", pt: 1, display: "flex", flexDirection: "column", gap: 1 }}>
+                  <TextField
+                    size="small"
+                    placeholder="ชื่อป้ายใหม่"
+                    value={newLabelName}
+                    onChange={(e) => setNewLabelName(e.target.value)}
+                    fullWidth
+                  />
+                  <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+                    {LABEL_COLORS.map((c) => (
+                      <Box
+                        key={c}
+                        onClick={() => setNewLabelColor(c)}
+                        title={c}
+                        sx={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: "50%",
+                          bgcolor: COLOR_MAP[c],
+                          cursor: "pointer",
+                          border: newLabelColor === c ? "2px solid" : "1px solid",
+                          borderColor: newLabelColor === c ? "primary.main" : "divider",
+                        }}
+                      />
+                    ))}
+                  </Box>
+                  <Box sx={{ display: "flex", gap: 1 }}>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      disabled={!newLabelName.trim() || saving}
+                      onClick={handleCreateLabel}
+                    >
+                      สร้างและใส่ป้าย
+                    </Button>
+                    <Button size="small" disabled={saving} onClick={() => setCreatingLabel(false)}>
+                      ยกเลิก
+                    </Button>
+                  </Box>
+                </Box>
+              ) : (
+                <Button
+                  size="small"
+                  startIcon={<AddIcon />}
+                  onClick={() => setCreatingLabel(true)}
+                  sx={{ borderTop: "1px solid", borderColor: "divider", borderRadius: 0, justifyContent: "flex-start" }}
+                >
+                  สร้ายป้ายใหม่
+                </Button>
+              ))}
+          </Popover>
+          <Popover
+            open={Boolean(memberAnchor)}
+            anchorEl={memberAnchor}
+            onClose={() => setMemberAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+            transformOrigin={{ vertical: "top", horizontal: "left" }}
+            PaperProps={{ sx: { width: 280, p: 1.5, display: "flex", flexDirection: "column", gap: 1 } }}
+          >
+            <TextField
+              size="small"
+              placeholder="ค้นหาสมาชิก"
+              value={memberSearch}
+              onChange={(e) => setMemberSearch(e.target.value)}
+              autoFocus
+            />
+            {member && (
+              <Box>
+                <Typography variant="caption" color="text.secondary">สมาชิกในการ์ด</Typography>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+                  <Avatar
+                    sx={{
+                      width: 28,
+                      height: 28,
+                      fontSize: "0.7rem",
+                      fontWeight: 700,
+                      bgcolor: "primary.main",
+                      color: "primary.contrastText",
+                    }}
+                  >
+                    {member.name.charAt(0).toUpperCase()}
+                  </Avatar>
+                  <Typography variant="body2" sx={{ flex: 1 }}>{member.name}</Typography>
+                  <IconButton size="small" disabled={saving} onClick={() => handleAssign(null)}>
+                    <CloseIcon sx={{ fontSize: 16 }} />
+                  </IconButton>
+                </Box>
+              </Box>
+            )}
+            <Typography variant="caption" color="text.secondary">เพิ่มสมาชิก</Typography>
+            <Box sx={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+              {visibleProgrammers.length === 0 ? (
+                <Typography variant="caption" color="text.secondary">ไม่พบสมาชิก</Typography>
+              ) : (
+                visibleProgrammers.map((u) => (
+                  <Box
+                    key={u.id}
+                    onClick={() => handleAssign(Number(u.id))}
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 0.75,
+                      p: 0.75,
+                      borderRadius: 1,
+                      cursor: saving ? "default" : "pointer",
+                      "&:hover": { bgcolor: "grey.100" },
+                    }}
+                  >
+                    <Avatar
+                      sx={{
+                        width: 28,
+                        height: 28,
+                        fontSize: "0.7rem",
+                        fontWeight: 700,
+                        bgcolor: "primary.main",
+                        color: "primary.contrastText",
+                      }}
+                    >
+                      {u.name.charAt(0).toUpperCase()}
+                    </Avatar>
+                    <Typography variant="body2">{u.name}</Typography>
+                  </Box>
+                ))
+              )}
+            </Box>
+          </Popover>
+          <LabelEditDialog
+            label={editingLabel}
+            open={Boolean(editingLabel)}
+            onClose={() => setEditingLabel(null)}
+            onSave={handleSaveLabel}
+          />
         </Box>
         <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="fullWidth" sx={{ px: 2, minHeight: 40 }}>
@@ -1034,11 +1666,80 @@ function IssueDetailDialog({
   );
 }
 
-function ReportIssueDialog({
+function LabelEditDialog({
+  label,
+  open,
+  onClose,
+  onSave,
+}: {
+  label: Label | null;
+  open: boolean;
+  onClose: () => void;
+  onSave: (id: number, data: { name: string; color: string }) => void;
+}) {
+  const [name, setName] = useState("");
+  const [color, setColor] = useState("default");
+  const theme = useTheme();
+
+  useEffect(() => {
+    if (label) {
+      setName(label.name);
+      setColor(label.color);
+    }
+  }, [label]);
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle>แก้ไขป้าย</DialogTitle>
+      <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 1.5, pt: 1 }}>
+        <TextField fullWidth label="ชื่อป้าย" value={name} onChange={(e) => setName(e.target.value)} />
+        <Box>
+          <Typography variant="caption" color="text.secondary">สี</Typography>
+          <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap", mt: 0.5 }}>
+            {LABEL_COLORS.map((c) => (
+              <Tooltip key={c} title={c}>
+                <Box
+                  onClick={() => setColor(c)}
+                  sx={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: "50%",
+                    bgcolor: COLOR_MAP[c],
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border: color === c ? "2px solid" : "1px solid",
+                    borderColor: color === c ? "primary.main" : "divider",
+                  }}
+                >
+                  {color === c && <CheckIcon sx={{ fontSize: 14, color: labelContrast(c, theme) }} />}
+                </Box>
+              </Tooltip>
+            ))}
+          </Box>
+        </Box>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>ยกเลิก</Button>
+        <Button
+          variant="contained"
+          disabled={!name.trim()}
+          onClick={() => label && onSave(label.id, { name: name.trim(), color })}
+        >
+          บันทึก
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+function ReportIssuePopover({
   open,
   onClose,
   onSubmit,
   columns,
+  anchorEl,
 }: {
   open: boolean;
   onClose: () => void;
@@ -1051,27 +1752,28 @@ function ReportIssueDialog({
     files: File[];
   }) => void;
   columns: BoardColumn[];
+  anchorEl: HTMLElement | null;
 }) {
   const theme = useTheme();
   const [title, setTitle] = useState("");
   const [categoryId, setCategoryId] = useState<number | null>(null);
-  const [categoryText, setCategoryText] = useState("");
+  const [customCategory, setCustomCategory] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [columnId, setColumnId] = useState<number | "">("");
   const [description, setDescription] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [categories, setCategories] = useState<{ id: number; name: string }[]>([]);
-  const [statuses, setStatuses] = useState<{ id: number; name: string }[]>([]);
+  const [catDropOpen, setCatDropOpen] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const catDropRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const token = useAuthStore.getState().token;
-    apiFetch<{ id: number; name: string }[]>("/categories", {}, token)
-      .then(setCategories)
+    apiFetch<{ data: { id: number; name: string }[] }>("/categories", {}, token)
+      .then((res) => setCategories(res?.data ?? []))
       .catch(() => setCategories([]));
-    apiFetch<{ id: number; name: string }[]>("/issue-statuses", {}, token)
-      .then(setStatuses)
-      .catch(() => setStatuses([]));
     setColumnId(columns[0]?.id ?? "");
   }, [open, columns]);
 
@@ -1079,18 +1781,60 @@ function ReportIssueDialog({
     if (open) {
       setTitle("");
       setCategoryId(null);
-      setCategoryText("");
+      setCustomCategory("");
+      setSearchQuery("");
       setDescription("");
       setFiles([]);
+      setIsDragOver(false);
     }
   }, [open]);
 
-  const selectedCategory = categories.find((c) => c.id === categoryId) ?? null;
-  const canSubmit = columns.length > 0 && title.trim().length > 0 && categoryText.trim().length > 0 && columnId !== "";
+  const allCategories = useMemo(() => {
+    const hasOther = categories.some((c) => c.name === "อื่น ๆ");
+    if (hasOther) return categories;
+    return [...categories, { id: -1, name: "อื่น ๆ" }];
+  }, [categories]);
+
+  const filteredCategories = allCategories.filter((c) =>
+    c.name.toLowerCase().includes(searchQuery.toLowerCase()),
+  );
+
+  const selectedCategory = allCategories.find((c) => c.id === categoryId) ?? null;
+  const isOtherSelected = selectedCategory?.name === "อื่น ๆ";
+  const canSubmit =
+    columns.length > 0 &&
+    title.trim().length > 0 &&
+    (selectedCategory !== null || customCategory.trim().length > 0);
+
+  const addFiles = (fileList: FileList | File[]) => {
+    const incoming = Array.from(fileList);
+    if (incoming.length > 0) {
+      setFiles((prev) => [...prev, ...incoming]);
+    }
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      setFiles((prev) => [...prev, ...Array.from(e.target.files!)]);
+      addFiles(e.target.files);
+      e.target.value = "";
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    if (e.dataTransfer.files) {
+      addFiles(e.dataTransfer.files);
     }
   };
 
@@ -1102,8 +1846,8 @@ function ReportIssueDialog({
     if (!canSubmit) return;
     onSubmit({
       title: title.trim(),
-      categoryId: selectedCategory?.id ?? null,
-      customCategory: selectedCategory ? undefined : categoryText.trim(),
+      categoryId: selectedCategory && !isOtherSelected ? selectedCategory.id : null,
+      customCategory: isOtherSelected ? customCategory.trim() : undefined,
       columnId: columnId as number,
       description: description.trim(),
       files,
@@ -1111,116 +1855,182 @@ function ReportIssueDialog({
   };
 
   return (
-    <Dialog
+    <Popover
       open={open}
       onClose={onClose}
-      maxWidth="sm"
-      fullWidth
-      PaperProps={{ sx: { borderRadius: 3, boxShadow: theme.custom.cardShadow } }}
+      anchorEl={anchorEl}
+      anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      transformOrigin={{ vertical: "top", horizontal: "right" }}
+      PaperProps={{
+        sx: {
+          width: 420,
+          maxWidth: "95vw",
+          borderRadius: 3,
+          boxShadow: theme.custom.cardShadow,
+          overflow: "hidden",
+        },
+      }}
     >
-      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1.5, px: 3, pt: 2.5, pb: 1 }}>
-        <Box
-          sx={{
-            width: 42,
-            height: 42,
-            borderRadius: 2,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            bgcolor: "sky.dark",
-            color: "navy.main",
-          }}
-        >
-          <ReportProblemOutlinedIcon />
-        </Box>
-        <Box>
+      <Box
+        sx={{ p: 2.5 }}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2 }}>
+          <WarningAmberIcon sx={{ fontSize: 28, color: "warning.main" }} />
           <Typography variant="h6" fontWeight={700} sx={{ lineHeight: 1.3 }}>
             แจ้งปัญหาใหม่
           </Typography>
-          <Typography variant="caption" color="text.secondary">
-            ระบุรายละเอียดปัญหา ทีมงานจะตรวจสอบโดยเร็วที่สุด
-          </Typography>
         </Box>
-      </DialogTitle>
-      <DialogContent sx={{ px: 3, pt: 1.5 }}>
+
         <TextField
           autoFocus
-          margin="dense"
+          size="small"
           label="หัวข้อ"
           fullWidth
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder="เช่น ระบบเข้าสู่ระบบไม่ได้"
+          sx={{ mb: 1.5 }}
         />
-        <Autocomplete
-          fullWidth
-          freeSolo
-          options={categories}
-          getOptionLabel={(option) => (typeof option === "string" ? option : option.name)}
-          value={selectedCategory}
-          inputValue={categoryText}
-          onInputChange={(_, value) => setCategoryText(value)}
-          onChange={(_, value) => {
-            if (typeof value === "object" && value !== null) {
-              setCategoryId(value.id);
-              setCategoryText(value.name);
-            } else {
-              setCategoryId(null);
-            }
-          }}
-          filterOptions={(options, params) => {
-            const filtered = options.filter((o) =>
-              o.name.toLowerCase().includes(params.inputValue.toLowerCase()),
-            );
-            if (
-              params.inputValue &&
-              !filtered.some((o) => o.name.toLowerCase() === params.inputValue.toLowerCase())
-            ) {
-              filtered.push({ id: -1, name: params.inputValue });
-            }
-            return filtered;
-          }}
-          renderInput={(params) => (
+
+        <ClickAwayListener onClickAway={() => setCatDropOpen(false)}>
+          <Box ref={catDropRef} sx={{ position: "relative", mb: 1.5 }}>
             <TextField
-              {...params}
-              margin="dense"
-              label="หมวดหมู่"
-              placeholder="เลือกหรือพิมพ์หมวดหมู่"
+              size="small"
               fullWidth
+              label="หมวดหมู่"
+              value={selectedCategory?.name ?? ""}
+              placeholder="เลือกหมวดหมู่"
+              onClick={() => setCatDropOpen(!catDropOpen)}
+              InputProps={{
+                readOnly: true,
+                endAdornment: (
+                  <ArrowDropDownIcon
+                    sx={{
+                      fontSize: 20,
+                      color: "text.secondary",
+                      transform: catDropOpen ? "rotate(180deg)" : "none",
+                      transition: "transform 0.2s",
+                    }}
+                  />
+                ),
+              }}
+              sx={{
+                cursor: "pointer",
+                "& .MuiOutlinedInput-root": {
+                  cursor: "pointer",
+                },
+                "& input": {
+                  cursor: "pointer",
+                },
+              }}
             />
-          )}
-        />
-        {columns.length === 0 ? (
-          <Alert severity="warning" sx={{ mt: 1 }}>
+
+            {catDropOpen && (
+              <Paper
+                sx={{
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  right: 0,
+                  zIndex: 10,
+                  mt: 0.5,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  borderRadius: 1.5,
+                  boxShadow: theme.custom.cardShadow,
+                  overflow: "hidden",
+                }}
+              >
+                <TextField
+                  size="small"
+                  fullWidth
+                  autoFocus
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="ค้นหา..."
+                  InputProps={{
+                    startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
+                  }}
+                  sx={{
+                    p: 1,
+                    "& .MuiOutlinedInput-root": {
+                      "& fieldset": { border: "none" },
+                    },
+                  }}
+                />
+
+                <Box sx={{ maxHeight: 200, overflowY: "auto" }}>
+                  {filteredCategories.length > 0 ? (
+                    filteredCategories.map((cat) => (
+                      <ListItemButton
+                        key={cat.id}
+                        onClick={() => {
+                          setCategoryId(cat.id);
+                          setCatDropOpen(false);
+                          setSearchQuery("");
+                        }}
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 1.5,
+                          px: 2,
+                          py: 1.25,
+                          bgcolor: categoryId === cat.id ? "sky.dark" : "transparent",
+                          "&:hover": { bgcolor: categoryId === cat.id ? "sky.dark" : "action.hover" },
+                        }}
+                      >
+                        <CategoryIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+                        <Typography variant="body2" sx={{ flex: 1 }}>
+                          {cat.name}
+                        </Typography>
+                        {categoryId === cat.id && <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />}
+                      </ListItemButton>
+                    ))
+                  ) : (
+                    <Box sx={{ px: 2, py: 3, textAlign: "center" }}>
+                      <Typography variant="body2" color="text.disabled">
+                        ไม่มีข้อมูลนี้
+                      </Typography>
+                    </Box>
+                  )}
+                </Box>
+              </Paper>
+            )}
+          </Box>
+        </ClickAwayListener>
+
+        {isOtherSelected && (
+          <TextField
+            size="small"
+            label="ระบุหมวดหมู่เพิ่มเติม"
+            fullWidth
+            value={customCategory}
+            onChange={(e) => setCustomCategory(e.target.value)}
+            placeholder="ระบุหมวดหมู่เพิ่มเติม"
+            sx={{ mb: 1.5 }}
+          />
+        )}
+
+        {columns.length === 0 && (
+          <Alert severity="warning" sx={{ mb: 1.5 }}>
             ยังไม่มีคอลัมน์บนบอร์ด กรุณาเพิ่มคอลัมน์ก่อนแจ้งปัญหา
           </Alert>
-        ) : (
-          <FormControl fullWidth margin="dense">
-            <InputLabel>สถานะ</InputLabel>
-            <Select
-              value={columnId}
-              label="สถานะ"
-              onChange={(e) => setColumnId(Number(e.target.value) || "")}
-            >
-              {columns.map((col) => (
-                <MenuItem key={col.id} value={col.id}>
-                  {col.customName ?? col.statusName}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
         )}
+
         <TextField
-          margin="dense"
+          size="small"
           label="รายละเอียด"
           fullWidth
           multiline
           rows={3}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="อธิบายปัญหาที่พบ เช่น ขั้นตอนที่ทำ หรือ ข้อความแสดงข้อผิดพลาด"
+          sx={{ mb: 1.5 }}
         />
-        <Box sx={{ mt: 1 }}>
+
+        <Box sx={{ mb: 2 }}>
           <input
             ref={fileInputRef}
             type="file"
@@ -1231,12 +2041,20 @@ function ReportIssueDialog({
           />
           <Button
             size="small"
-            variant="outlined"
+            variant={isDragOver ? "contained" : "outlined"}
             startIcon={<AttachFileIcon />}
             onClick={() => fileInputRef.current?.click()}
+            sx={
+              isDragOver
+                ? { border: "2px dashed", borderColor: "primary.main", bgcolor: "sky.dark" }
+                : undefined
+            }
           >
             แนบไฟล์ (รูปภาพ, PDF)
           </Button>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+            ลากไฟล์มาวางที่นี่ หรือคลิกเพื่อเลือกไฟล์
+          </Typography>
           {files.length > 0 && (
             <Box sx={{ mt: 1, display: "flex", flexDirection: "column", gap: 0.5 }}>
               {files.map((file, index) => (
@@ -1269,56 +2087,95 @@ function ReportIssueDialog({
             </Box>
           )}
         </Box>
-      </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2.5, gap: 1 }}>
-        <Button onClick={onClose} color="inherit">
-          ยกเลิก
-        </Button>
-        <Button
-          onClick={handleSubmit}
-          variant="contained"
-          disabled={!canSubmit}
-          startIcon={<SendIcon />}
-        >
-          ส่งปัญหา
-        </Button>
-      </DialogActions>
-    </Dialog>
+
+        <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1 }}>
+          <Button onClick={onClose} color="inherit" size="small">
+            ยกเลิก
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            variant="contained"
+            disabled={!canSubmit}
+            startIcon={<SendIcon />}
+            size="small"
+          >
+            ส่งปัญหา
+          </Button>
+        </Box>
+      </Box>
+    </Popover>
   );
 }
 
 function StatusFilterDialog({
   open,
   statuses,
-  selectedIds,
-  onToggle,
-  onSelectAll,
+  priorities,
+  categories,
+  users,
+  labels,
+  selectedStatusIds,
+  selectedPriorityIds,
+  selectedCategoryIds,
+  selectedLabelIds,
+  selectedAssigneeIds,
+  searchQuery,
+  onToggleStatus,
+  onTogglePriority,
+  onToggleCategory,
+  onToggleLabel,
+  onToggleAssignee,
+  onSearchChange,
+  onSelectAllStatuses,
   onClearAll,
   onClose,
 }: {
   open: boolean;
   statuses: IssueStatus[];
-  selectedIds: number[];
-  onToggle: (statusId: number) => void;
-  onSelectAll: () => void;
+  priorities: IssuePriority[];
+  categories: { id: number; name: string }[];
+  users: UserSummary[];
+  labels: Label[];
+  selectedStatusIds: number[];
+  selectedPriorityIds: number[];
+  selectedCategoryIds: number[];
+  selectedLabelIds: number[];
+  selectedAssigneeIds: string[];
+  searchQuery: string;
+  onToggleStatus: (statusId: number) => void;
+  onTogglePriority: (priorityId: number) => void;
+  onToggleCategory: (categoryId: number) => void;
+  onToggleLabel: (labelId: number) => void;
+  onToggleAssignee: (userId: string) => void;
+  onSearchChange: (query: string) => void;
+  onSelectAllStatuses: () => void;
   onClearAll: () => void;
   onClose: () => void;
 }) {
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ pb: 1 }}>ตัวกรอง</DialogTitle>
-      <DialogContent dividers>
+      <DialogContent dividers sx={{ pt: 2 }}>
+        <TextField
+          fullWidth
+          size="small"
+          placeholder="ค้นหาชื่องาน..."
+          value={searchQuery}
+          onChange={(e) => onSearchChange(e.target.value)}
+          sx={{ mb: 2 }}
+        />
+
         <Typography variant="subtitle2" fontWeight={700} gutterBottom>
           สถานะ
         </Typography>
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
           {statuses.map((status) => (
             <FormControlLabel
               key={status.id}
               control={
                 <Checkbox
-                  checked={selectedIds.includes(status.id)}
-                  onChange={() => onToggle(status.id)}
+                  checked={selectedStatusIds.includes(status.id)}
+                  onChange={() => onToggleStatus(status.id)}
                   size="small"
                 />
               }
@@ -1331,13 +2188,109 @@ function StatusFilterDialog({
             </Typography>
           )}
         </Box>
+
+        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+          ความสำคัญ
+        </Typography>
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
+          {priorities.map((priority) => (
+            <FormControlLabel
+              key={priority.id}
+              control={
+                <Checkbox
+                  checked={selectedPriorityIds.includes(priority.id)}
+                  onChange={() => onTogglePriority(priority.id)}
+                  size="small"
+                />
+              }
+              label={priority.name}
+            />
+          ))}
+          {priorities.length === 0 && (
+            <Typography variant="body2" color="text.secondary">
+              ไม่พบความสำคัญ
+            </Typography>
+          )}
+        </Box>
+
+        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+          หมวดหมู่
+        </Typography>
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
+          {categories.map((cat) => (
+            <FormControlLabel
+              key={cat.id}
+              control={
+                <Checkbox
+                  checked={selectedCategoryIds.includes(cat.id)}
+                  onChange={() => onToggleCategory(cat.id)}
+                  size="small"
+                />
+              }
+              label={cat.name}
+            />
+          ))}
+          {categories.length === 0 && (
+            <Typography variant="body2" color="text.secondary">
+              ไม่พบหมวดหมู่
+            </Typography>
+          )}
+        </Box>
+
+        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+          ป้ายกำกับ
+        </Typography>
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
+          {labels.map((label) => (
+            <FormControlLabel
+              key={label.id}
+              control={
+                <Checkbox
+                  checked={selectedLabelIds.includes(label.id)}
+                  onChange={() => onToggleLabel(label.id)}
+                  size="small"
+                />
+              }
+              label={label.name}
+            />
+          ))}
+          {labels.length === 0 && (
+            <Typography variant="body2" color="text.secondary">
+              ไม่พบป้ายกำกับ
+            </Typography>
+          )}
+        </Box>
+
+        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+          ผู้รับผิดชอบ
+        </Typography>
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+          {users.map((user) => (
+            <FormControlLabel
+              key={user.id}
+              control={
+                <Checkbox
+                  checked={selectedAssigneeIds.includes(user.id)}
+                  onChange={() => onToggleAssignee(user.id)}
+                  size="small"
+                />
+              }
+              label={user.name}
+            />
+          ))}
+          {users.length === 0 && (
+            <Typography variant="body2" color="text.secondary">
+              ไม่พบผู้ใช้
+            </Typography>
+          )}
+        </Box>
       </DialogContent>
       <DialogActions sx={{ justifyContent: "space-between", px: 3, py: 1.5 }}>
         <Box>
-          <Button size="small" onClick={onSelectAll} disabled={statuses.length === 0}>
+          <Button size="small" onClick={onSelectAllStatuses} disabled={statuses.length === 0}>
             เลือกทั้งหมด
           </Button>
-          <Button size="small" onClick={onClearAll} disabled={statuses.length === 0}>
+          <Button size="small" onClick={onClearAll} disabled={statuses.length === 0 && priorities.length === 0 && labels.length === 0 && users.length === 0}>
             ล้างทั้งหมด
           </Button>
         </Box>
@@ -1354,8 +2307,14 @@ function KanbanView({
   issues,
   labels,
   statuses,
+  priorities,
+  users,
   selectedStatusIds,
-  onOpenFilter,
+  selectedPriorityIds,
+  selectedCategoryIds,
+  selectedLabelIds,
+  selectedAssigneeIds,
+  searchQuery,
   canManage,
   canEdit,
   canDelete,
@@ -1363,13 +2322,20 @@ function KanbanView({
   canUnlockColumn,
   onRefresh,
   toolbar,
+  roleName,
 }: {
   columns: BoardColumn[];
   issues: BoardIssue[];
   labels: Label[];
   statuses: IssueStatus[];
+  priorities: IssuePriority[];
+  users: UserSummary[];
   selectedStatusIds: number[];
-  onOpenFilter: () => void;
+  selectedPriorityIds: number[];
+  selectedCategoryIds: number[];
+  selectedLabelIds: number[];
+  selectedAssigneeIds: string[];
+  searchQuery: string;
   canManage: boolean;
   canEdit: boolean;
   canDelete: boolean;
@@ -1377,7 +2343,9 @@ function KanbanView({
   canUnlockColumn: boolean;
   onRefresh: () => void;
   toolbar: React.ReactNode;
+  roleName: string;
 }) {
+  const t = useTranslations("Boards");
   const [activeIssue, setActiveIssue] = useState<BoardIssue | null>(null);
   const [activeColumn, setActiveColumn] = useState<BoardColumn | null>(null);
   const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null);
@@ -1390,6 +2358,40 @@ function KanbanView({
   const [localIssues, setLocalIssues] = useState<BoardIssue[]>(issues);
   const [localColumns, setLocalColumns] = useState<BoardColumn[]>(columns);
   const [dragStartColumnId, setDragStartColumnId] = useState<number | null>(null);
+  const [hoverColumnId, setHoverColumnId] = useState<number | null>(null);
+  const dragTargetColumnId = useRef<number | null>(null);
+
+  const hasActiveFilters =
+    selectedStatusIds.length > 0 ||
+    selectedPriorityIds.length > 0 ||
+    selectedCategoryIds.length > 0 ||
+    selectedLabelIds.length > 0 ||
+    selectedAssigneeIds.length > 0 ||
+    searchQuery.trim() !== "";
+
+  const filteredIssues = useMemo(() => {
+    if (!hasActiveFilters) return localIssues;
+    const query = searchQuery.trim().toLowerCase();
+    return localIssues.filter((issue) => {
+      if (selectedStatusIds.length > 0) {
+        const col = localColumns.find((c) => c.id === issue.columnId);
+        if (!col || !selectedStatusIds.includes(col.statusId)) return false;
+      }
+      if (selectedPriorityIds.length > 0 && !selectedPriorityIds.includes(issue.priorityId ?? -1)) return false;
+      if (selectedCategoryIds.length > 0 && !selectedCategoryIds.includes(issue.categoryId ?? -1)) return false;
+      if (selectedLabelIds.length > 0) {
+        const issueLabelIds = issue.labelIds?.length ? issue.labelIds : (issue.labelId ? [issue.labelId] : []);
+        if (!selectedLabelIds.some((id) => issueLabelIds.includes(id))) return false;
+      }
+      if (selectedAssigneeIds.length > 0) {
+        const assigneeId = issue.programmerId ?? issue.customerId;
+        if (!assigneeId || !selectedAssigneeIds.includes(String(assigneeId))) return false;
+      }
+      if (query && !issue.title.toLowerCase().includes(query)) return false;
+      return true;
+    });
+  }, [localIssues, localColumns, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedLabelIds, selectedAssigneeIds, searchQuery, hasActiveFilters]);
+
   const visibleColumns =
     selectedStatusIds.length === 0
       ? localColumns
@@ -1414,6 +2416,7 @@ function KanbanView({
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
+    dragTargetColumnId.current = null;
     const issue = localIssues.find((i) => i.id === active.id);
     if (issue) {
       setActiveIssue(issue);
@@ -1427,22 +2430,38 @@ function KanbanView({
 
   const handleDragOver = (event: DragOverEvent) => {
     const { active, over } = event;
-    if (!over) return;
 
-    const activeType = active.data.current?.type;
-    if (activeType === "column") return;
+    if (!over || active.data.current?.type === "column") {
+      setHoverColumnId(null);
+      return;
+    }
 
     const activeId = active.id as number;
     const overId = over.id as number;
 
     const activeIssue = localIssues.find((i) => i.id === activeId);
-    if (!activeIssue) return;
+    if (!activeIssue) {
+      setHoverColumnId(null);
+      return;
+    }
 
     const overIssue = localIssues.find((i) => i.id === overId);
-    const targetColumnId = overIssue ? overIssue.columnId : overId;
+    const overDataType = over.data.current?.type;
+    let targetColumnId: number | null = null;
+    if (overIssue) {
+      targetColumnId = overIssue.columnId;
+    } else if (overDataType === "column-drop") {
+      targetColumnId = (over.data.current as { columnId?: number })?.columnId ?? null;
+    } else if (localColumns.some((c) => c.id === overId)) {
+      targetColumnId = overId;
+    }
 
-    if (!targetColumnId || activeIssue.columnId === targetColumnId) return;
+    if (!targetColumnId || activeIssue.columnId === targetColumnId) {
+      return;
+    }
 
+    dragTargetColumnId.current = targetColumnId;
+    setHoverColumnId(targetColumnId);
     setLocalIssues((prev) =>
       prev.map((i) =>
         i.id === activeId ? { ...i, columnId: targetColumnId } : i
@@ -1454,6 +2473,7 @@ function KanbanView({
     const { active, over } = event;
     setActiveIssue(null);
     setActiveColumn(null);
+    setHoverColumnId(null);
 
     if (!over || !canManage) return;
 
@@ -1478,7 +2498,7 @@ function KanbanView({
           reordered.map((col, idx) => ({ id: col.id, position: idx + 1 }))
         );
       } catch (e) {
-        setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+        setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
         onRefresh();
       }
       return;
@@ -1487,17 +2507,21 @@ function KanbanView({
     const issueId = active.id as number;
 
     const issue = localIssues.find((i) => i.id === issueId);
-    if (!issue || issue.isLocked || !issue.columnId) return;
+    if (!issue || issue.isLocked) return;
 
-    if (dragStartColumnId !== null && issue.columnId === dragStartColumnId) {
+    const targetColumnId = dragTargetColumnId.current;
+    dragTargetColumnId.current = null;
+
+    if (targetColumnId === null) return;
+    if (dragStartColumnId !== null && targetColumnId === dragStartColumnId) {
       setDragStartColumnId(null);
       return;
     }
 
     try {
-      await moveIssue(issueId, issue.columnId);
+      await moveIssue(issueId, targetColumnId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
       onRefresh();
     } finally {
       setDragStartColumnId(null);
@@ -1508,6 +2532,8 @@ function KanbanView({
     setActiveIssue(null);
     setActiveColumn(null);
     setDragStartColumnId(null);
+    setHoverColumnId(null);
+    dragTargetColumnId.current = null;
     onRefresh();
   };
 
@@ -1521,7 +2547,7 @@ function KanbanView({
       setEditIssue(null);
       onRefresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -1532,7 +2558,7 @@ function KanbanView({
       setIssueToDelete(null);
       onRefresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -1542,7 +2568,7 @@ function KanbanView({
       setAddColumnOpen(false);
       onRefresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -1553,7 +2579,7 @@ function KanbanView({
       setDeleteColumnId(null);
       onRefresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -1562,7 +2588,7 @@ function KanbanView({
       await unlockColumn(columnId);
       onRefresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -1571,7 +2597,7 @@ function KanbanView({
       await unlockIssue(issueId);
       onRefresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -1592,27 +2618,7 @@ function KanbanView({
           mb: 1,
         }}
       >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<FilterListIcon />}
-            onClick={onOpenFilter}
-            sx={{
-              textTransform: "none",
-              borderRadius: 2,
-              borderColor: selectedStatusIds.length > 0 ? "primary.main" : "divider",
-              color: selectedStatusIds.length > 0 ? "primary.main" : "text.secondary",
-              bgcolor: selectedStatusIds.length > 0 ? "primary.50" : "transparent",
-            }}
-          >
-            ตัวกรอง
-            {selectedStatusIds.length > 0 && ` (${selectedStatusIds.length})`}
-          </Button>
-          <Box sx={{ flexGrow: 1, display: "flex", alignItems: "center", gap: 2 }}>
-            {toolbar}
-          </Box>
-        </Box>
+        {toolbar}
       </Box>
       <Box sx={{ display: "flex", gap: 2, overflowX: "auto", pb: 2, width: "100%" }}>
         <DndContext
@@ -1628,12 +2634,15 @@ function KanbanView({
               <KanbanColumn
                 key={column.id}
                 column={column}
-                issues={localIssues.filter((i) => i.columnId === column.id)}
+                issues={filteredIssues.filter((i) => i.columnId === column.id)}
+                showAll={hasActiveFilters}
                 canManage={canManage}
                 canEdit={canEdit}
                 canDelete={canDelete}
                 canUnlockIssue={canUnlockIssue}
                 canUnlockColumn={canUnlockColumn}
+                isDropTarget={hoverColumnId === column.id && !!activeIssue}
+                roleName={roleName}
                 onOpenIssue={(issue) => setDetailIssue(issue)}
                 onEditIssue={(issue) => setEditIssue(issue)}
                 onDeleteIssue={(issue) => setIssueToDelete(issue)}
@@ -1652,7 +2661,7 @@ function KanbanView({
                   p: 1.5,
                   bgcolor: "background.paper",
                   borderRadius: 1.5,
-                  boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                  boxShadow: (theme) => theme.custom.cardShadow,
                   border: "2px solid",
                   borderColor: "primary.main",
                 }}
@@ -1715,6 +2724,8 @@ function KanbanView({
         open={!!detailIssue}
         onClose={() => setDetailIssue(null)}
         columns={localColumns}
+        labels={labels}
+        onRefresh={onRefresh}
         onEdit={(issue) => {
           setDetailIssue(null);
           setEditIssue(issue);
@@ -1738,20 +2749,29 @@ function KanbanView({
         <DialogTitle>ยืนยันการลบ</DialogTitle>
         <DialogContent>
           <Typography>
-            ต้องการลบงาน &quot;{issueToDelete?.title}&quot; ใช่หรือไม่?
+            {t("deleteIssueConfirmTrash", { title: issueToDelete?.title ?? "" })}
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setIssueToDelete(null)}>ยกเลิก</Button>
+          <Button onClick={() => setIssueToDelete(null)}>{t("cancel")}</Button>
           <Button onClick={handleDeleteIssue} color="error">
-            ลบ
+            {t("delete")}
           </Button>
         </DialogActions>
       </Dialog>
       <Dialog open={!!deleteColumnId} onClose={() => setDeleteColumnId(null)}>
         <DialogTitle>ยืนยันการลบคอลัมน์</DialogTitle>
         <DialogContent>
-          <Typography>ต้องการลบคอลัมน์นี้ใช่หรือไม่?</Typography>
+          <Typography>
+            {(() => {
+              const col = columns.find((c) => c.id === deleteColumnId);
+              const statusWillDelete =
+                col && columns.filter((c) => c.id !== deleteColumnId && c.statusId === col.statusId).length === 0;
+              return statusWillDelete
+                ? `ต้องการลบคอลัมน์นี้ใช่หรือไม่? สถานะ "${col?.statusName}" จะถูกลบไปด้วย`
+                : "ต้องการลบคอลัมน์นี้ใช่หรือไม่?";
+            })()}
+          </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteColumnId(null)}>ยกเลิก</Button>
@@ -1787,6 +2807,7 @@ function TableView({
   onRefresh: () => void;
   toolbar?: React.ReactNode;
 }) {
+  const t = useTranslations("Boards");
   const theme = useTheme();
   const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null);
   const [editIssue, setEditIssue] = useState<BoardIssue | null>(null);
@@ -1813,7 +2834,7 @@ function TableView({
       setEditIssue(null);
       onRefresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -1824,7 +2845,7 @@ function TableView({
       setIssueToDelete(null);
       onRefresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "เกิดข้อผิดพลาด");
+      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -1972,6 +2993,8 @@ function TableView({
         open={!!detailIssue}
         onClose={() => setDetailIssue(null)}
         columns={columns}
+        labels={labels}
+        onRefresh={onRefresh}
         onEdit={(issue) => {
           setDetailIssue(null);
           setEditIssue(issue);
@@ -1995,13 +3018,13 @@ function TableView({
         <DialogTitle>ยืนยันการลบ</DialogTitle>
         <DialogContent>
           <Typography>
-            ต้องการลบงาน &quot;{issueToDelete?.title}&quot; ใช่หรือไม่?
+            {t("deleteIssueConfirmTrash", { title: issueToDelete?.title ?? "" })}
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setIssueToDelete(null)}>ยกเลิก</Button>
+          <Button onClick={() => setIssueToDelete(null)}>{t("cancel")}</Button>
           <Button onClick={handleDeleteIssue} color="error">
-            ลบ
+            {t("delete")}
           </Button>
         </DialogActions>
       </Dialog>
@@ -2015,18 +3038,25 @@ export default function BoardsPage() {
   const theme = useTheme();
   const currentUserId = useAuthStore((s) => s.user?.id) ?? null;
   const isCustomer = roleName === "customer";
-  const [view, setView] = useState<"board" | "table">(
-    isCustomer ? "table" : roleName === "programmer" ? "table" : "board"
-  );
+  const [view, setView] = useState<"board" | "table">("table");
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [issues, setIssues] = useState<BoardIssue[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
+  const [priorities, setPriorities] = useState<IssuePriority[]>([]);
+  const [users, setUsers] = useState<UserSummary[]>([]);
   const [selectedStatusIds, setSelectedStatusIds] = useState<number[]>([]);
+  const [selectedPriorityIds, setSelectedPriorityIds] = useState<number[]>([]);
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<number[]>([]);
+  const [selectedLabelIds, setSelectedLabelIds] = useState<number[]>([]);
+  const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [recycleBinOpen, setRecycleBinOpen] = useState(false);
+  const [trashedIssues, setTrashedIssues] = useState<TrashedIssue[]>([]);
   const [filterOpen, setFilterOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reportOpen, setReportOpen] = useState(false);
+  const [reportAnchorEl, setReportAnchorEl] = useState<HTMLElement | null>(null);
 
   const canEdit = can("issue.all.update");
   const canDelete = can("issue.delete");
@@ -2054,21 +3084,73 @@ export default function BoardsPage() {
     setSelectedStatusIds([]);
   };
 
+  const handleTogglePriorityFilter = (priorityId: number) => {
+    setSelectedPriorityIds((prev) =>
+      prev.includes(priorityId)
+        ? prev.filter((id) => id !== priorityId)
+        : [...prev, priorityId],
+    );
+  };
+
+  const handleToggleLabelFilter = (labelId: number) => {
+    setSelectedLabelIds((prev) =>
+      prev.includes(labelId)
+        ? prev.filter((id) => id !== labelId)
+        : [...prev, labelId],
+    );
+  };
+
+  const handleToggleAssigneeFilter = (userId: string) => {
+    setSelectedAssigneeIds((prev) =>
+      prev.includes(userId)
+        ? prev.filter((id) => id !== userId)
+        : [...prev, userId],
+    );
+  };
+
+  const handleToggleCategoryFilter = (categoryId: number) => {
+    setSelectedCategoryIds((prev) =>
+      prev.includes(categoryId)
+        ? prev.filter((id) => id !== categoryId)
+        : [...prev, categoryId],
+    );
+  };
+
+  const handleClearAllFilters = () => {
+    setSelectedStatusIds([]);
+    setSelectedPriorityIds([]);
+    setSelectedCategoryIds([]);
+    setSelectedLabelIds([]);
+    setSelectedAssigneeIds([]);
+    setSearchQuery("");
+  };
+
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [cols, iss, lbls, sts] = await Promise.all([
+      const results = await Promise.allSettled([
         fetchColumns(),
         fetchIssues(),
         fetchLabels(),
         fetchStatuses(),
+        fetchPriorities(),
+        fetchUsers(),
       ]);
-      setColumns(cols.data);
-      setIssues(iss.data);
-      setLabels(lbls);
-      setStatuses(sts.data);
+      const [cols, iss, lbls, sts, pri, usr] = results;
+      if (cols.status === "fulfilled") setColumns(cols.value.data);
+      if (iss.status === "fulfilled") setIssues(iss.value.data);
+      if (lbls.status === "fulfilled") setLabels(lbls.value.data);
+      if (sts.status === "fulfilled") setStatuses(sts.value.data);
+      if (pri.status === "fulfilled") setPriorities(pri.value.data);
+      if (usr.status === "fulfilled") setUsers(usr.value.data);
+      const firstError = results.find((r) => r.status === "rejected");
+      if (firstError && firstError.status === "rejected") {
+        setError(getErrorMessage(firstError.reason, "โหลดข้อมูลไม่สำเร็จ"));
+      } else {
+        setError(null);
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "โหลดข้อมูลไม่สำเร็จ");
+      setError(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ"));
     } finally {
       setLoading(false);
     }
@@ -2077,6 +3159,26 @@ export default function BoardsPage() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    if (!searchQuery.trim()) return;
+    const timer = setTimeout(() => {
+      fetchIssues(1, 100, [], searchQuery.trim())
+        .then((res) => setIssues(res.data))
+        .catch(() => {});
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const categories = useMemo(() => {
+    const map = new Map<number, string>();
+    issues.forEach((issue) => {
+      if (issue.categoryId && issue.categoryName) {
+        map.set(issue.categoryId, issue.categoryName);
+      }
+    });
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [issues]);
 
   const handleReportIssue = async (data: {
     title: string;
@@ -2097,10 +3199,10 @@ export default function BoardsPage() {
       if (data.files.length > 0) {
         await Promise.all(data.files.map((file) => uploadAttachment(issue.id, file)));
       }
-      setReportOpen(false);
+      setReportAnchorEl(null);
       loadData();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "แจ้งปัญหาไม่สำเร็จ");
+      setError(getErrorMessage(e, "แจ้งปัญหาไม่สำเร็จ"));
     }
   };
 
@@ -2108,6 +3210,11 @@ export default function BoardsPage() {
     <RequirePermission permission="board.view">
       <DashboardLayout>
         <Box sx={{ py: 2 }}>
+          {error && (
+            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+              {error}
+            </Alert>
+          )}
           {loading ? (
             <Box sx={{ display: "flex", justifyContent: "center", p: 4 }}>
               <CircularProgress />
@@ -2119,71 +3226,72 @@ export default function BoardsPage() {
                 issues={issues}
                 labels={labels}
                 statuses={statuses}
+                priorities={priorities}
+                users={users}
                 selectedStatusIds={selectedStatusIds}
-                onOpenFilter={() => setFilterOpen(true)}
+                selectedPriorityIds={selectedPriorityIds}
+                selectedCategoryIds={selectedCategoryIds}
+                selectedLabelIds={selectedLabelIds}
+            selectedAssigneeIds={selectedAssigneeIds}
+                searchQuery={searchQuery}
+
                 canManage={canManage}
                 canEdit={canEdit}
                 canDelete={canDelete}
                 canUnlockIssue={canUnlockIssue}
                 canUnlockColumn={canUnlockColumn}
                 onRefresh={loadData}
+                roleName={roleName}
                 toolbar={
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-                    <Box
-                      sx={{
-                        display: "inline-flex",
-                        border: "1px solid",
-                        borderColor: "divider",
-                        borderRadius: 2,
-                        bgcolor: "grey.50",
-                        p: 0.25,
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                    <TextField
+                      size="small"
+                      placeholder={t("searchPlaceholder")}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      sx={{ flexGrow: 1, minWidth: 200 }}
+                      InputProps={{
+                        startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
                       }}
+                    />
+                    {!isCustomer && (
+                      <ToggleButtonGroup
+                        size="small"
+                        exclusive
+                        value={view}
+                        onChange={(_, v) => v && setView(v)}
+                      >
+                        <ToggleButton value="board">
+                          <ViewKanbanIcon fontSize="small" />
+                        </ToggleButton>
+                        <ToggleButton value="table">
+                          <TableChartIcon fontSize="small" />
+                        </ToggleButton>
+                      </ToggleButtonGroup>
+                    )}
+                    {can("issue.trash.view") && (
+                      <Tooltip title={t("recycleBin")}>
+                        <IconButton size="small" onClick={() => setRecycleBinOpen(true)}>
+                          <DeleteOutlineIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<FilterListIcon />}
+                      onClick={() => setFilterOpen(true)}
                     >
-                      <Button
-                        size="small"
-                        variant="text"
-                        onClick={() => setView("board")}
-                        startIcon={<ViewKanbanIcon />}
-                        sx={{
-                          textTransform: "none",
-                          borderRadius: 1.5,
-                          px: 1.5,
-                          py: 0.5,
-                          minHeight: 32,
-                          ...(((view as "board" | "table") === "board")
-                            ? { bgcolor: "background.paper", boxShadow: 1, color: "text.primary" }
-                            : { color: "text.secondary" }),
-                        }}
-                      >
-                        บอร์ด
-                      </Button>
-                      <Button
-                        size="small"
-                        variant="text"
-                        onClick={() => setView("table")}
-                        startIcon={<TableChartIcon />}
-                        sx={{
-                          textTransform: "none",
-                          borderRadius: 1.5,
-                          px: 1.5,
-                          py: 0.5,
-                          minHeight: 32,
-                          ...((view as "board" | "table") === "table"
-                            ? { bgcolor: "background.paper", boxShadow: 1, color: "text.primary" }
-                            : { color: "text.secondary" }),
-                        }}
-                      >
-                        ตาราง
-                      </Button>
-                    </Box>
+                      {t("filter")}
+                    </Button>
                     {canReport && (
                       <Button
                         variant="contained"
                         startIcon={<AddIcon />}
-                        onClick={() => setReportOpen(true)}
+                        onClick={(e) => setReportAnchorEl(e.currentTarget)}
                         sx={{ ml: "auto" }}
                       >
-                        แจ้งปัญหา
+                        {t("reportIssue")}
                       </Button>
                     )}
                   </Box>
@@ -2201,84 +3309,96 @@ export default function BoardsPage() {
                 currentUserId={currentUserId}
                 onRefresh={loadData}
                 toolbar={
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-                    <Box
-                      sx={{
-                        display: "inline-flex",
-                        border: "1px solid",
-                        borderColor: "divider",
-                        borderRadius: 2,
-                        bgcolor: "grey.50",
-                        p: 0.25,
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                    <TextField
+                      size="small"
+                      placeholder={t("searchPlaceholder")}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      sx={{ flexGrow: 1, minWidth: 200 }}
+                      InputProps={{
+                        startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
                       }}
+                    />
+                    {!isCustomer && (
+                      <ToggleButtonGroup
+                        size="small"
+                        exclusive
+                        value={view}
+                        onChange={(_, v) => v && setView(v)}
+                      >
+                        <ToggleButton value="board">
+                          <ViewKanbanIcon fontSize="small" />
+                        </ToggleButton>
+                        <ToggleButton value="table">
+                          <TableChartIcon fontSize="small" />
+                        </ToggleButton>
+                      </ToggleButtonGroup>
+                    )}
+                    {can("issue.trash.view") && (
+                      <Tooltip title={t("recycleBin")}>
+                        <IconButton size="small" onClick={() => setRecycleBinOpen(true)}>
+                          <DeleteOutlineIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<FilterListIcon />}
+                      onClick={() => setFilterOpen(true)}
                     >
-                      <Button
-                        size="small"
-                        variant="text"
-                        onClick={() => setView("board")}
-                        startIcon={<ViewKanbanIcon />}
-                        sx={{
-                          textTransform: "none",
-                          borderRadius: 1.5,
-                          px: 1.5,
-                          py: 0.5,
-                          minHeight: 32,
-                          ...((view as "board" | "table") === "board"
-                            ? { bgcolor: "background.paper", boxShadow: 1, color: "text.primary" }
-                            : { color: "text.secondary" }),
-                        }}
-                      >
-                        บอร์ด
-                      </Button>
-                      <Button
-                        size="small"
-                        variant="text"
-                        onClick={() => setView("table")}
-                        startIcon={<TableChartIcon />}
-                        sx={{
-                          textTransform: "none",
-                          borderRadius: 1.5,
-                          px: 1.5,
-                          py: 0.5,
-                          minHeight: 32,
-                          ...((view as "board" | "table") === "table"
-                            ? { bgcolor: "background.paper", boxShadow: 1, color: "text.primary" }
-                            : { color: "text.secondary" }),
-                        }}
-                      >
-                        ตาราง
-                      </Button>
-                    </Box>
+                      {t("filter")}
+                    </Button>
                     {canReport && (
                       <Button
                         variant="contained"
                         startIcon={<AddIcon />}
-                        onClick={() => setReportOpen(true)}
+                        onClick={(e) => setReportAnchorEl(e.currentTarget)}
                         sx={{ ml: "auto" }}
                       >
-                        แจ้งปัญหา
+                        {t("reportIssue")}
                       </Button>
                     )}
                   </Box>
                 }
               />
-            )
-          )}
+            ))}
 
           <StatusFilterDialog
             open={filterOpen}
             statuses={statuses}
-            selectedIds={selectedStatusIds}
-            onToggle={handleToggleStatusFilter}
-            onSelectAll={handleSelectAllStatuses}
-            onClearAll={handleClearAllStatuses}
+            priorities={priorities}
+            categories={categories}
+            users={users}
+            labels={labels}
+            selectedStatusIds={selectedStatusIds}
+            selectedPriorityIds={selectedPriorityIds}
+            selectedCategoryIds={selectedCategoryIds}
+            selectedLabelIds={selectedLabelIds}
+            selectedAssigneeIds={selectedAssigneeIds}
+            searchQuery={searchQuery}
+            onToggleStatus={handleToggleStatusFilter}
+            onTogglePriority={handleTogglePriorityFilter}
+            onToggleCategory={handleToggleCategoryFilter}
+            onToggleLabel={handleToggleLabelFilter}
+            onToggleAssignee={handleToggleAssigneeFilter}
+            onSearchChange={setSearchQuery}
+            onSelectAllStatuses={handleSelectAllStatuses}
+            onClearAll={handleClearAllFilters}
             onClose={() => setFilterOpen(false)}
           />
-          <ReportIssueDialog
-            open={reportOpen}
-            onClose={() => setReportOpen(false)}
+          <ReportIssuePopover
+            open={Boolean(reportAnchorEl)}
+            onClose={() => setReportAnchorEl(null)}
             onSubmit={handleReportIssue}
             columns={columns}
+            anchorEl={reportAnchorEl}
+          />
+          <RecycleBinDialog
+            open={recycleBinOpen}
+            onClose={() => setRecycleBinOpen(false)}
+            onRestored={loadData}
           />
         </Box>
         <Box

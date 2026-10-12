@@ -15,7 +15,6 @@ import { IssuesService } from "./issues.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
-import { Public } from "../auth/public.decorator";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { AuthUser, actorInfo } from "../auth/auth-user";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
@@ -29,18 +28,24 @@ export class IssuesController {
     return actorInfo(user);
   }
 
-  @Public()
   @Get("issues")
   @Permissions("board.view")
   findAll(
     @Query()
-    query: { page?: string; limit?: string; statuses?: string },
+    query: { page?: string; limit?: string; statuses?: string; search?: string },
+    @CurrentUser() user: AuthUser,
   ) {
     const statuses = (query.statuses ?? "")
       .split(",")
       .map((s) => parseInt(s.trim(), 10))
       .filter((n) => Number.isInteger(n) && n > 0);
-    return this.issues.findAll(normalizePagination(query), statuses);
+    return this.issues.findAll(normalizePagination(query), statuses, user, query.search);
+  }
+
+  @Get("issues/trash")
+  @Permissions("issue.trash.view")
+  findTrashed() {
+    return this.issues.findAllDeleted();
   }
 
   @Get("issues/:id")
@@ -125,5 +130,11 @@ export class IssuesController {
   @Permissions("issue.delete")
   remove(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
     return this.issues.remove(id, this.actor(user));
+  }
+
+  @Put("issues/:id/restore")
+  @Permissions("issue.restore")
+  restore(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
+    return this.issues.restore(id, this.actor(user));
   }
 }

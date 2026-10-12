@@ -1,9 +1,10 @@
 import {
   Injectable,
   NotFoundException,
+  ForbiddenException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DeepPartial, In, Repository } from "typeorm";
+import { DeepPartial, Not, IsNull, Repository } from "typeorm";
 import { Issue } from "./entities/issue.entity";
 import { BoardColumn } from "../columns/entities/board-column.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
@@ -35,13 +36,41 @@ export class IssuesService {
     private readonly workSessions: WorkSessionsService,
   ) {}
 
-  async findAll(params: PaginationParams, statuses: number[] = []) {
-    const where = statuses.length > 0 ? { statusId: In(statuses) } : {};
-    const issues = await this.issues.find({
-      where,
-      order: { id: "ASC" },
-      relations: ["priority", "category", "label", "labels", "programmer", "customer"],
-    });
+  async findAll(
+    params: PaginationParams,
+    statuses: number[] = [],
+    user?: { id: string; roleName: string | null } | null,
+    search?: string,
+  ) {
+    const qb = this.issues.createQueryBuilder("issue").where("issue.deleted_at IS NULL");
+
+    if (statuses.length > 0) {
+      qb.andWhere("issue.status_id IN (:...statuses)", { statuses });
+    }
+
+    if (user && user.roleName === "programmer") {
+      qb.andWhere("issue.programmer_id = :uid", { uid: Number(user.id) });
+    } else if (user && user.roleName === "customer") {
+      qb.andWhere("issue.customer_id = :uid", { uid: Number(user.id) });
+    }
+
+    if (search && search.trim()) {
+      qb.andWhere("(issue.title ILIKE :q OR issue.description ILIKE :q)", {
+        q: `%${search.trim()}%`,
+      });
+    }
+
+    qb.orderBy("issue.id", "ASC");
+
+    const issues = await qb
+      .leftJoinAndSelect("issue.priority", "priority")
+      .leftJoinAndSelect("issue.category", "category")
+      .leftJoinAndSelect("issue.label", "label")
+      .leftJoinAndSelect("issue.labels", "labels")
+      .leftJoinAndSelect("issue.programmer", "programmer")
+      .leftJoinAndSelect("issue.customer", "customer")
+      .getMany();
+
     const mapped = issues.map((i) => this.toResponse(i));
     return paginate(mapped, params);
   }
@@ -51,7 +80,7 @@ export class IssuesService {
       where: { id },
       relations: ["label", "labels"],
     });
-    if (!issue) {
+    if (!issue || issue.deletedAt) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
     return this.toResponse(issue);
@@ -77,10 +106,14 @@ export class IssuesService {
     if (!column) {
       throw new NotFoundException(`Column ${data.columnId} not found`);
     }
+    const status = await this.issueStatuses.findOne({
+      where: { id: column.statusId },
+    });
     const issue = this.issues.create({
       title: data.title,
       description: data.description,
       columnId: data.columnId,
+      statusId: status?.id ?? null,
       priorityId: data.priorityId ?? null,
       categoryId: data.categoryId ?? null,
       customCategory: data.customCategory?.trim() || null,
@@ -166,18 +199,9 @@ export class IssuesService {
       : null;
     if (issue.columnId === columnId) return this.toResponse(issue);
 
-    const targetStatus = await this.issueStatuses.findOne({
-      where: { id: targetColumn.statusId },
-    });
-
     issue.columnId = columnId;
-    if (targetStatus?.isEndStatus) {
-      issue.completedAt = new Date();
-      issue.isLocked = true;
-    } else {
-      issue.completedAt = null;
-      issue.isLocked = false;
-    }
+    issue.completedAt = null;
+    issue.isLocked = false;
     await this.issues.save(issue);
     await this.logActivity({
       action: "card.moved",
@@ -244,18 +268,61 @@ export class IssuesService {
   }
 
   async remove(id: number, actor?: ActorInfo | null) {
-    const issue = await this.issues.findOne({ where: { id } });
+    const issue = await this.issues.findOne({
+      where: { id },
+      relations: ["status"],
+    });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
+    if (actor?.actorRole === "customer" && issue.status?.name !== "BACKLOG") {
+      throw new ForbiddenException("Customer can only delete issues in BACKLOG");
+    }
+    issue.deletedAt = new Date();
+    issue.deletedBy = actor?.actorId ?? null;
+    await this.issues.save(issue);
     await this.logActivity({
       action: "card.deleted",
       entityId: issue.id,
       detail: JSON.stringify({ title: issue.title }),
       actor,
     });
-    await this.issues.delete(id);
     return { deleted: true };
+  }
+
+  async restore(id: number, actor?: ActorInfo | null) {
+    const issue = await this.issues.findOne({
+      where: { id },
+      withDeleted: true,
+    });
+    if (!issue || !issue.deletedAt) {
+      throw new NotFoundException(`Issue ${id} not found in trash`);
+    }
+    issue.deletedAt = null;
+    issue.deletedBy = null;
+    await this.issues.save(issue);
+    await this.logActivity({
+      action: "card.restored",
+      entityId: issue.id,
+      detail: JSON.stringify({ title: issue.title }),
+      actor,
+    });
+    return this.toResponse(issue);
+  }
+
+  async findAllDeleted() {
+    const issues = await this.issues.find({
+      where: { deletedAt: Not(IsNull()) },
+      order: { deletedAt: "DESC" },
+      relations: ["priority", "category", "label", "labels", "programmer", "customer", "deletedByUser"],
+      withDeleted: true,
+    });
+    return issues.map((i) => ({
+      ...this.toResponse(i),
+      deletedAt: i.deletedAt,
+      deletedBy: i.deletedBy,
+      deletedByName: i.deletedByUser?.name ?? null,
+    }));
   }
 
   private async logActivity(data: {

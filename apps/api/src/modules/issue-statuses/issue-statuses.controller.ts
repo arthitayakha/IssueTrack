@@ -34,21 +34,9 @@ export class IssueStatusesController {
     body: {
       name: string;
       description?: string;
-      sortOrder?: number;
-      isTimerRunning?: boolean;
-      isEndStatus?: boolean;
     },
   ) {
     return this.issueStatuses.create(body);
-  }
-
-  @Patch("reorder")
-  @Permissions("status.update")
-  reorder(
-    @Body()
-    body: { items: Array<{ id: number; sortOrder: number }> },
-  ) {
-    return this.issueStatuses.reorder(body.items);
   }
 
   @Patch(":id")
@@ -59,9 +47,6 @@ export class IssueStatusesController {
     body: {
       name?: string;
       description?: string;
-      sortOrder?: number;
-      isTimerRunning?: boolean;
-      isEndStatus?: boolean;
     },
   ) {
     return this.issueStatuses.update(id, body);

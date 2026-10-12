@@ -19,7 +19,7 @@ export class BoardColumn {
   @Column({ name: "status_id", type: "int" })
   statusId!: number;
 
-  @ManyToOne(() => IssueStatus, { onDelete: "CASCADE" })
+  @ManyToOne(() => IssueStatus, { nullable: true })
   @JoinColumn({ name: "status_id" })
   status?: IssueStatus;
 

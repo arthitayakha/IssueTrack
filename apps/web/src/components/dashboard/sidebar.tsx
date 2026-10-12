@@ -38,9 +38,6 @@ export default function Sidebar() {
     ...(can("permission.update") || can("category.view") || can("status.view") || can("priority.view")
       ? [{ label: t("settings"), icon: SettingsOutlinedIcon, href: "/settings" }]
       : []),
-    ...(can("report.view")
-      ? [{ label: t("reports"), icon: AssessmentIcon, href: "/reports" }]
-      : []),
   ];
 
   return (

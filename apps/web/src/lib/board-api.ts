@@ -58,6 +58,7 @@ export interface BoardIssue {
   categoryName: string | null;
   customCategory: string | null;
   labelId: number | null;
+  labelIds: number[];
   labelName: string | null;
   labelColor: string | null;
   programmerId: number | null;
@@ -91,6 +92,12 @@ export interface Comment {
   authorId: number;
   authorName: string;
   createdAt: string;
+}
+
+export interface TrashedIssue extends BoardIssue {
+  deletedAt: string;
+  deletedBy: number | null;
+  deletedByName: string | null;
 }
 
 function getToken(): string | null {
@@ -162,10 +169,14 @@ export async function fetchIssues(
   page = 1,
   limit = 100,
   statuses?: number[],
+  search?: string,
 ): Promise<PaginatedResponse<BoardIssue>> {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (statuses && statuses.length > 0) {
     params.set("statuses", statuses.join(","));
+  }
+  if (search) {
+    params.set("search", search);
   }
   return apiFetch<PaginatedResponse<BoardIssue>>(
     `/issues?${params.toString()}`,
@@ -188,6 +199,23 @@ export async function createIssue(
 ): Promise<BoardIssue> {
   return apiFetch<BoardIssue>("/issues", {
     method: "POST",
+    body: JSON.stringify(data),
+  }, getToken());
+}
+
+export async function updateIssue(
+  id: number,
+  data: {
+    title?: string;
+    description?: string;
+    priorityId?: number;
+    categoryId?: number;
+    labelId?: number;
+    labelIds?: number[];
+  },
+): Promise<BoardIssue> {
+  return apiFetch<BoardIssue>(`/issues/${id}`, {
+    method: "PUT",
     body: JSON.stringify(data),
   }, getToken());
 }
@@ -272,4 +300,22 @@ export async function fetchStatuses(
     {},
     getToken(),
   );
+}
+
+export async function fetchPriorities(): Promise<PaginatedResponse<IssuePriority>> {
+  return apiFetch<PaginatedResponse<IssuePriority>>("/issue-priorities", {}, getToken());
+}
+
+export async function fetchUsers(): Promise<PaginatedResponse<UserSummary>> {
+  return apiFetch<PaginatedResponse<UserSummary>>("/users", {}, getToken());
+}
+
+export async function fetchTrashedIssues(): Promise<TrashedIssue[]> {
+  return apiFetch<TrashedIssue[]>("/issues/trash", {}, getToken());
+}
+
+export async function restoreIssue(id: number): Promise<BoardIssue> {
+  return apiFetch<BoardIssue>(`/issues/${id}/restore`, {
+    method: "PUT",
+  }, getToken());
 }

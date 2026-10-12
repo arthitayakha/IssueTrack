@@ -12,6 +12,10 @@ export class ApiError extends Error {
   }
 }
 
+export function isApiError(e: unknown, status?: number): e is ApiError {
+  return e instanceof ApiError && (status === undefined || e.status === status);
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},

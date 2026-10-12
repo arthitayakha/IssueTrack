@@ -60,6 +60,17 @@
     "deleteColumnConfirm": "Are you sure you want to delete this column?",
     "deleteIssue": "Delete Issue",
     "deleteIssueConfirm": "Are you sure you want to delete \"{title}\"?",
+    "deleteIssueConfirmTrash": "Are you sure you want to delete \"{title}\"? (You can restore it from the recycle bin)",
+    "filter": "Filter",
+    "delete": "Delete",
+    "searchPlaceholder": "Search...",
+    "recycleBin": "Recycle Bin",
+    "restore": "Restore",
+    "restored": "Restored",
+    "deletedBy": "Deleted by",
+    "deletedAt": "Deleted at",
+    "noTrashItems": "No deleted items",
+    "deleteBacklogOnly": "Customer can only delete issues in Backlog",
     "edit": "Edit",
     "history": "History",
     "activityHistory": "History: {title}",
@@ -315,6 +326,8 @@
     "priority": "Priorities",
     "report": "Reports",
     "selectAll": "Select All"
+  },
+  "pagination": {
+    "showing": "Showing {start}-{end} of {total}"
   }
-,`n  "pagination": {`n    "showing": "Showing {start}-{end} of {total}"`n  }
 }

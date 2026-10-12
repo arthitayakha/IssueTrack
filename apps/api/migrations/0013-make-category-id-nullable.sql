@@ -1,0 +1,1 @@
+ALTER TABLE issues ALTER COLUMN category_id DROP NOT NULL;

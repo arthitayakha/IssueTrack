@@ -30,6 +30,8 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
+import { Pagination } from "@/components/pagination";
+import { PaginatedResponse } from "@kanban/shared";
 import DragHandleIcon from "@mui/icons-material/DragHandle";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
@@ -309,6 +311,7 @@ export default function SettingsPage() {
   const [labels, setLabels] = useState<Label[]>([]);
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
+  const [page, setPage] = useState(1);
 
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
@@ -381,8 +384,8 @@ export default function SettingsPage() {
       } else {
         notify(t("genericError"), "error");
       }
-      const updated = await apiFetch<IssueStatus[]>("/issue-statuses", {}, token);
-      setStatuses(updated);
+      const updated = await apiFetch<PaginatedResponse<IssueStatus>>("/issue-statuses", {}, token);
+      setStatuses(updated.data);
     }
   }
 
@@ -393,14 +396,14 @@ export default function SettingsPage() {
   useEffect(() => {
     const requests: Promise<any>[] = [];
     if (canViewCategories) {
-      requests.push(apiFetch<Category[]>("/categories", {}, token));
+      requests.push(apiFetch<PaginatedResponse<Category>>("/categories?page=1&limit=100", {}, token).then(r => r.data));
     }
     if (canViewPositions) {
-      requests.push(apiFetch<Position[]>("/positions", {}, token));
+      requests.push(apiFetch<PaginatedResponse<Position>>("/positions?page=1&limit=100", {}, token).then(r => r.data));
     }
-    if (canViewStatuses) requests.push(apiFetch<IssueStatus[]>("/issue-statuses", {}, token));
-    if (canViewPriorities) requests.push(apiFetch<IssuePriority[]>("/issue-priorities", {}, token));
-    if (canViewLabels) requests.push(fetchLabels());
+    if (canViewStatuses) requests.push(apiFetch<PaginatedResponse<IssueStatus>>("/issue-statuses?page=1&limit=100", {}, token).then(r => r.data));
+    if (canViewPriorities) requests.push(apiFetch<PaginatedResponse<IssuePriority>>("/issue-priorities?page=1&limit=100", {}, token).then(r => r.data));
+    if (canViewLabels) requests.push(fetchLabels().then(r => r.data));
 
     Promise.all(requests)
       .then((results) => {
@@ -450,8 +453,8 @@ export default function SettingsPage() {
         }, token);
         notify(t("categoryCreated"));
       }
-      const updated = await apiFetch<Category[]>("/categories", {}, token);
-      setCategories(updated);
+      const updated = await apiFetch<PaginatedResponse<Category>>("/categories?page=1&limit=100", {}, token);
+      setCategories(updated.data);
       setCategoryDialogOpen(false);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -534,8 +537,8 @@ export default function SettingsPage() {
         }, token);
         notify(t("statusCreated"));
       }
-      const updated = await apiFetch<IssueStatus[]>("/issue-statuses", {}, token);
-      setStatuses(updated);
+      const updated = await apiFetch<PaginatedResponse<IssueStatus>>("/issue-statuses", {}, token);
+      setStatuses(updated.data);
       setStatusDialogOpen(false);
       router.refresh();
     } catch (err) {
@@ -619,8 +622,8 @@ export default function SettingsPage() {
         }, token);
         notify(t("priorityCreated"));
       }
-      const updated = await apiFetch<IssuePriority[]>("/issue-priorities", {}, token);
-      setPriorities(updated);
+      const updated = await apiFetch<PaginatedResponse<IssuePriority>>("/issue-priorities?page=1&limit=100", {}, token);
+      setPriorities(updated.data);
       setPriorityDialogOpen(false);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -695,7 +698,7 @@ export default function SettingsPage() {
         notify(t("labelCreated"));
       }
       const updated = await fetchLabels();
-      setLabels(updated);
+      setLabels(updated.data);
       setLabelDialogOpen(false);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -859,6 +862,13 @@ export default function SettingsPage() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination
+                page={page}
+                totalPages={Math.max(1, Math.ceil(categories.length / 10))}
+                total={categories.length}
+                limit={10}
+                onPageChange={setPage}
+              />
             </Box>
           )}
 
@@ -969,6 +979,13 @@ export default function SettingsPage() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination
+                page={page}
+                totalPages={Math.max(1, Math.ceil(priorities.length / 10))}
+                total={priorities.length}
+                limit={10}
+                onPageChange={setPage}
+              />
             </Box>
           )}
 
@@ -1048,6 +1065,13 @@ export default function SettingsPage() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination
+                page={page}
+                totalPages={Math.max(1, Math.ceil(labels.length / 10))}
+                total={labels.length}
+                limit={10}
+                onPageChange={setPage}
+              />
             </Box>
           )}
 

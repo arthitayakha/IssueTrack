@@ -1,5 +1,6 @@
 "use client";
 
+import { PaginatedResponse } from "@kanban/shared";
 import { apiFetch } from "./api";
 import { useAuthStore } from "./auth-store";
 
@@ -15,8 +16,8 @@ function getToken(): string | null {
   return useAuthStore.getState().token;
 }
 
-export async function fetchLabels(): Promise<Label[]> {
-  return apiFetch<Label[]>("/labels", {}, getToken());
+export async function fetchLabels(page = 1, limit = 100): Promise<PaginatedResponse<Label>> {
+  return apiFetch<PaginatedResponse<Label>>(`/labels?page=${page}&limit=${limit}`, {}, getToken());
 }
 
 export async function createLabel(data: { name: string; color: string }): Promise<Label> {

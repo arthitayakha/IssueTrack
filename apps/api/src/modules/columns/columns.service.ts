@@ -28,8 +28,7 @@ export class ColumnsService {
     const columns = await this.columns
       .createQueryBuilder("col")
       .leftJoinAndSelect("col.status", "status")
-      .orderBy("status.sort_order", "ASC")
-      .addOrderBy("col.position", "ASC")
+      .orderBy("col.position", "ASC")
       .getMany();
     const result = await Promise.all(
       columns.map(async (c) => ({
@@ -49,16 +48,16 @@ export class ColumnsService {
   async create(statusId: number) {
     const status = await this.issueStatuses.findOne({ where: { id: statusId } });
     if (!status) {
-      throw new NotFoundException(`Issue status ${statusId} not found`);
+      throw new NotFoundException(`Status ${statusId} not found`);
     }
     const maxPosition = await this.columns
       .createQueryBuilder("col")
       .select("MAX(col.position)", "max")
       .getRawOne();
-    const nextPosition = Math.max(status.sortOrder, (maxPosition?.max ?? 0) + 1);
+    const nextPosition = (maxPosition?.max ?? 0) + 1;
     const column = await this.columns.save(
       this.columns.create({
-        statusId: status.id,
+        statusId,
         position: nextPosition,
       }),
     );
@@ -70,6 +69,7 @@ export class ColumnsService {
       isHidden: column.isHidden,
       isLocked: column.isLocked,
       position: column.position,
+      issueCount: 0,
     };
   }
 
@@ -86,9 +86,7 @@ export class ColumnsService {
     if (data.isLocked !== undefined) column.isLocked = data.isLocked;
     if (data.position !== undefined) column.position = data.position;
     await this.columns.save(column);
-    const status = column.statusId
-      ? await this.issueStatuses.findOne({ where: { id: column.statusId } })
-      : null;
+    const status = await this.issueStatuses.findOne({ where: { id: column.statusId } });
     return {
       id: column.id,
       statusId: column.statusId,
@@ -121,7 +119,9 @@ export class ColumnsService {
         `Cannot delete column "${status?.name ?? column.statusId}" because it has ${issueCount} issue(s)`,
       );
     }
+    const status = await this.issueStatuses.findOne({ where: { id: column.statusId } });
+    const statusName = status?.name ?? "";
     await this.columns.delete(id);
-    return { deleted: true };
+    return { deleted: true, statusDeleted: false, statusName };
   }
 }

@@ -4,10 +4,11 @@ import { IssueStatusesController } from "./issue-statuses.controller";
 import { IssueStatusesService } from "./issue-statuses.service";
 import { IssueStatus } from "./entities/issue-status.entity";
 import { Issue } from "../issues/entities/issue.entity";
+import { BoardColumn } from "../columns/entities/board-column.entity";
 import { PermissionsModule } from "../permissions/permissions.module";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([IssueStatus, Issue]), PermissionsModule],
+  imports: [TypeOrmModule.forFeature([IssueStatus, Issue, BoardColumn]), PermissionsModule],
   controllers: [IssueStatusesController],
   providers: [IssueStatusesService],
   exports: [IssueStatusesService],
