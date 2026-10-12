@@ -9,28 +9,28 @@ import {
   UpdateDateColumn,
 } from "typeorm";
 import { Issue } from "../../issues/entities/issue.entity";
-import { Board } from "../../boards/entities/board.entity";
+import { IssueStatus } from "../../issue-statuses/entities/issue-status.entity";
 
 @Entity("board_columns")
 export class BoardColumn {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  @Column({ name: "board_id", type: "int", nullable: true })
-  boardId!: number | null;
+  @Column({ name: "status_id", type: "int" })
+  statusId!: number;
 
-  @ManyToOne(() => Board, (board) => board.columns, { nullable: true, onDelete: "CASCADE" })
-  @JoinColumn({ name: "board_id" })
-  board?: Board;
-
-  @Column({ type: "varchar", length: 100 })
-  status!: string;
+  @ManyToOne(() => IssueStatus, { onDelete: "CASCADE" })
+  @JoinColumn({ name: "status_id" })
+  status?: IssueStatus;
 
   @Column({ name: "custom_name", type: "varchar", length: 100, nullable: true })
   customName!: string | null;
 
   @Column({ name: "is_hidden", default: false })
   isHidden!: boolean;
+
+  @Column({ name: "is_locked", default: false })
+  isLocked!: boolean;
 
   @Column({ type: "int", default: 0 })
   position!: number;

@@ -7,6 +7,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Category } from "./entities/category.entity";
 import { Issue } from "../issues/entities/issue.entity";
+import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class CategoriesService {
@@ -17,7 +18,7 @@ export class CategoriesService {
     private readonly issues: Repository<Issue>,
   ) {}
 
-  async findAll() {
+  async findAll(params: PaginationParams) {
     const categories = await this.categories.find({ order: { id: "ASC" } });
     const result = await Promise.all(
       categories.map(async (c) => ({
@@ -28,7 +29,7 @@ export class CategoriesService {
         issueCount: await this.issues.count({ where: { categoryId: c.id } }),
       })),
     );
-    return result;
+    return paginate(result, params);
   }
 
   async create(name: string, position?: string) {

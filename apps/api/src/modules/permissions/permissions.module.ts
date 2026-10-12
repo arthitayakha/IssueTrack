@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common";
+import { Global, Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { PermissionsService } from "./permissions.service";
 import { PermissionsController } from "./permissions.controller";
@@ -7,6 +7,7 @@ import { PositionPermission } from "../positions/entities/position-permission.en
 import { Role } from "../roles/entities/role.entity";
 import { RolesGuard } from "../auth/roles.guard";
 
+@Global()
 @Module({
   imports: [TypeOrmModule.forFeature([RolePermission, PositionPermission, Role])],
   controllers: [PermissionsController],

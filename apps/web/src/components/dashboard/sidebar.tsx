@@ -14,12 +14,12 @@ import {
   Typography,
 } from "@mui/material";
 import DashboardIcon from "@mui/icons-material/Dashboard";
-import ViewKanbanOutlinedIcon from "@mui/icons-material/ViewKanban";
-import LabelOutlinedIcon from "@mui/icons-material/LabelOutlined";
-import ChatBubbleOutlineOutlinedIcon from "@mui/icons-material/ChatBubbleOutlineOutlined";
+import ViewKanbanOutlinedIcon from "@mui/icons-material/ViewKanbanOutlined";
+
 import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
 import PeopleOutlineIcon from "@mui/icons-material/PeopleOutline";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import AssessmentIcon from "@mui/icons-material/Assessment";
 import { DRAWER_WIDTH } from "./navbar";
 import { usePermissions } from "@/lib/permissions";
 import { Link, usePathname } from "@/i18n/navigation";
@@ -32,13 +32,14 @@ export default function Sidebar() {
   const navItems = [
     { label: t("dashboard"), icon: DashboardIcon, href: "/" },
     { label: t("boards"), icon: ViewKanbanOutlinedIcon, href: "/boards" },
-    { label: t("labels"), icon: LabelOutlinedIcon, href: "/labels" },
-    { label: t("comments"), icon: ChatBubbleOutlineOutlinedIcon, href: "/comments" },
-    ...(can("user.view")
+    ...(can("user.view") || can("role.view") || can("position.view")
       ? [{ label: t("users"), icon: PeopleOutlineIcon, href: "/users" }]
       : []),
-    ...(can("permission.update")
+    ...(can("permission.update") || can("category.view") || can("status.view") || can("priority.view")
       ? [{ label: t("settings"), icon: SettingsOutlinedIcon, href: "/settings" }]
+      : []),
+    ...(can("report.view")
+      ? [{ label: t("reports"), icon: AssessmentIcon, href: "/reports" }]
       : []),
   ];
 

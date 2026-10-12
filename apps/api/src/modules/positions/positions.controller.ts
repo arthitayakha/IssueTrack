@@ -8,8 +8,10 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   UseGuards,
 } from "@nestjs/common";
+import { normalizePagination } from "../../common/pagination";
 import { PositionsService } from "./positions.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -22,8 +24,8 @@ export class PositionsController {
 
   @Get()
   @Permissions("position.view")
-  findAll() {
-    return this.positions.findAll();
+  findAll(@Query() query: { page?: string; limit?: string }) {
+    return this.positions.findAll(normalizePagination(query));
   }
 
   @Post()

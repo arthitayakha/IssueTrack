@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
 import { useAuthStore } from "@/lib/auth-store";
+import { apiFetch } from "@/lib/api";
 import {
   permissionsForRole,
   roleHasPermission,
@@ -15,10 +17,23 @@ export function roleLabel(name: string | null | undefined): string {
 
 export function usePermissions() {
   const roleName = useAuthStore((s) => s.user?.roleName ?? "customer");
+  const permissions = useAuthStore((s) => s.permissions);
+  const token = useAuthStore((s) => s.token);
+  const setPermissions = useAuthStore((s) => s.setPermissions);
+
+  useEffect(() => {
+    if (!token || permissions) return;
+    apiFetch<string[]>("/permissions/my", {}, token)
+      .then(setPermissions)
+      .catch(() => {});
+  }, [token, permissions, setPermissions]);
 
   return {
     roleName,
-    permissions: permissionsForRole(roleName),
-    can: (permission: Permission) => roleHasPermission(roleName, permission),
+    permissions: permissions ?? permissionsForRole(roleName),
+    can: (permission: Permission) => {
+      if (permissions) return permissions.includes(permission);
+      return roleHasPermission(roleName, permission);
+    },
   };
 }

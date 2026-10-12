@@ -1,4 +1,4 @@
-{
+﻿{
   "Metadata": {
     "title": "Issue Tracker",
     "description": "A Kanban-style issue tracking application"
@@ -11,7 +11,7 @@
     "hidePassword": "Hide password",
     "rememberMe": "Remember me",
     "submit": "Get Started",
-    "submitting": "Signing in…",
+    "submitting": "Signing inโ€ฆ",
     "genericError": "Something went wrong. Please try again.",
     "footerHelp": "Contact your administrator to get access"
   },
@@ -19,13 +19,12 @@
     "title": "Permissions",
     "subtitle": "Tick to grant a role access to a resource. Changes apply after saving.",
     "save": "Save changes",
-    "saving": "Saving…",
+    "saving": "Savingโ€ฆ",
     "loadError": "Failed to load permissions",
     "saveError": "Failed to save",
     "resources": {
       "columns": "Columns",
       "issues": "Issues",
-      "comments": "Comments",
       "labels": "Labels",
       "users": "Users"
     }
@@ -41,6 +40,8 @@
     "reportIssueTitle": "Report New Issue",
     "title": "Title",
     "category": "Category",
+    "other": "Other",
+    "otherPlaceholder": "Specify category, e.g. other issues not in the list",
     "description": "Description",
     "attachFiles": "Attach files (images, PDF)",
     "submit": "Submit",
@@ -94,7 +95,30 @@
   },
   "Comments": {
     "title": "Comments",
-    "comingSoon": "This page is under development"
+    "comingSoon": "This page is under development",
+    "selectIssue": "Select Issue",
+    "addComment": "Add Comment",
+    "addCommentPlaceholder": "Type your comment...",
+    "submit": "Submit",
+    "cancel": "Cancel",
+    "save": "Save",
+    "print": "Print",
+    "noComments": "No comments yet",
+    "loadError": "Failed to load comments",
+    "genericError": "Something went wrong. Please try again.",
+    "commentCreated": "Comment added successfully",
+    "commentUpdated": "Comment updated successfully",
+    "commentDeleted": "Comment deleted successfully",
+    "printedAt": "Printed at",
+    "columnContent": "Content",
+    "columnAuthor": "Author",
+    "columnCreatedAt": "Created At",
+    "columnActions": "Actions",
+    "addComment": "Add Comment",
+    "editComment": "Edit Comment",
+    "commentContent": "Comment content",
+    "deleteCommentConfirmMessage": "Are you sure you want to delete this comment?",
+    "allIssues": "All Issues"
   },
   "Settings": {
     "title": "Settings",
@@ -165,6 +189,21 @@
     "permissionsReset": "Permissions reset to defaults successfully",
     "resetToDefaults": "Reset to Defaults",
     "positionPermissions": "Permissions (default)",
+    "selectAll": "Select All",
+    "Nav": {
+      "auth": "Authentication",
+      "dashboard": "Dashboard",
+      "board": "Board",
+      "comment": "Comments",
+      "user": "User Management",
+      "settings": "Master Data",
+      "role": "Role Management",
+      "position": "Position Management",
+      "category": "Category Management",
+      "status": "Status Management",
+      "priority": "Priority Management",
+      "report": "Report Management"
+    },
     "columnPermission": "Permission",
     "categories": {
       "board": "Board",
@@ -175,6 +214,7 @@
       "category": "Categories",
       "status": "Statuses",
       "priority": "Priorities",
+      "label": "Labels",
       "comment": "Comments",
       "dashboard": "Dashboard",
       "report": "Reports",
@@ -186,15 +226,19 @@
     "tabCategories": "Categories",
     "tabStatuses": "Statuses",
     "tabPriorities": "Priorities",
+    "tabLabels": "Labels",
     "addCategory": "Add Category",
     "editCategory": "Edit Category",
     "addStatus": "Add Status",
     "editStatus": "Edit Status",
     "addPriority": "Add Priority",
     "editPriority": "Edit Priority",
+    "addLabel": "Add Label",
+    "editLabel": "Edit Label",
     "columnName": "Name",
     "columnPosition": "Position",
     "columnDescription": "Description",
+    "columnColor": "Color",
     "columnIssueCount": "Issue Count",
     "columnStatus": "Status",
     "columnActions": "Actions",
@@ -206,6 +250,7 @@
     "category": "category",
     "status": "status",
     "priority": "priority",
+    "label": "label",
     "noPermission": "You don't have permission to access this page",
     "genericError": "Something went wrong. Please try again.",
     "deleteConfirmTitle": "Confirm Delete",
@@ -222,7 +267,11 @@
     "priorityCreated": "Priority created successfully",
     "priorityUpdated": "Priority updated successfully",
     "priorityDeleted": "Priority deleted successfully",
-    "priorityToggled": "Priority status updated successfully"
+    "priorityToggled": "Priority status updated successfully",
+    "labelCreated": "Label created successfully",
+    "labelUpdated": "Label updated successfully",
+    "labelDeleted": "Label deleted successfully",
+    "labelToggled": "Label status updated successfully"
   },
   "Roles": {
     "title": "Role Management",
@@ -248,12 +297,24 @@
     "dashboard": "Dashboard",
     "boards": "Boards",
     "labels": "Labels",
-    "comments": "Comments",
     "users": "Users",
     "roles": "Roles",
     "permissions": "Permissions",
     "settings": "Master Data",
+    "reports": "Reports",
     "signOut": "Sign out",
-    "switchLanguage": "Switch language"
+    "switchLanguage": "Switch language",
+    "auth": "Authentication",
+    "board": "Board",
+    "comment": "Comments",
+    "user": "Users",
+    "role": "Roles",
+    "position": "Positions",
+    "category": "Categories",
+    "status": "Statuses",
+    "priority": "Priorities",
+    "report": "Reports",
+    "selectAll": "Select All"
   }
+,`n  "pagination": {`n    "showing": "Showing {start}-{end} of {total}"`n  }
 }

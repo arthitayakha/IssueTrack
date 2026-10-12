@@ -3,6 +3,12 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ActivityLog } from "./entities/activity-log.entity";
 
+export interface ActorInfo {
+  actorId: number | null;
+  actorName: string | null;
+  actorRole: string | null;
+}
+
 @Injectable()
 export class ActivityLogsService {
   constructor(
@@ -21,7 +27,6 @@ export class ActivityLogsService {
       actorId: log.actorId,
       actorName: log.actorName,
       actorRole: log.actorRole,
-      boardId: log.boardId,
       entityId: log.entityId,
       detail: log.detail,
       createdAt: log.createdAt,

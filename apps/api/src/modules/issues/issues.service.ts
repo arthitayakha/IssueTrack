@@ -9,7 +9,11 @@ import { BoardColumn } from "../columns/entities/board-column.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
 import { User } from "../auth/entities/user.entity";
 import { IssueStatus } from "../issue-statuses/entities/issue-status.entity";
+import { Category } from "../categories/entities/category.entity";
+import { Label } from "../labels/entities/label.entity";
 import { WorkSessionsService } from "../work-sessions/work-sessions.service";
+import { ActorInfo } from "../activity-logs/activity-logs.service";
+import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class IssuesService {
@@ -24,25 +28,29 @@ export class IssuesService {
     private readonly users: Repository<User>,
     @InjectRepository(IssueStatus)
     private readonly issueStatuses: Repository<IssueStatus>,
+    @InjectRepository(Category)
+    private readonly categories: Repository<Category>,
+    @InjectRepository(Label)
+    private readonly labels: Repository<Label>,
     private readonly workSessions: WorkSessionsService,
   ) {}
 
-  async findByBoard(boardId: number) {
-    const columns = await this.columns.find({
-      where: { boardId },
-      order: { position: "ASC" },
-    });
-    const columnIds = columns.map((c) => c.id);
-    if (!columnIds.length) return [];
+  async findAll(params: PaginationParams, statuses: number[] = []) {
+    const where = statuses.length > 0 ? { statusId: In(statuses) } : {};
     const issues = await this.issues.find({
-      where: { columnId: In(columnIds) },
+      where,
       order: { id: "ASC" },
+      relations: ["priority", "category", "label", "labels", "programmer", "customer"],
     });
-    return issues.map((i) => this.toResponse(i));
+    const mapped = issues.map((i) => this.toResponse(i));
+    return paginate(mapped, params);
   }
 
   async findOne(id: number) {
-    const issue = await this.issues.findOne({ where: { id } });
+    const issue = await this.issues.findOne({
+      where: { id },
+      relations: ["label", "labels"],
+    });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
@@ -50,22 +58,24 @@ export class IssuesService {
   }
 
   async create(
-    boardId: number,
     data: {
       title: string;
       description: string;
       columnId: number;
       priorityId?: number;
       categoryId?: number;
+      customCategory?: string;
       programmerId?: number;
       customerId?: number;
+      labelId?: number;
     },
+    actor?: ActorInfo | null,
   ) {
     const column = await this.columns.findOne({
-      where: { id: data.columnId, boardId },
+      where: { id: data.columnId },
     });
     if (!column) {
-      throw new NotFoundException(`Column ${data.columnId} not found in board ${boardId}`);
+      throw new NotFoundException(`Column ${data.columnId} not found`);
     }
     const issue = this.issues.create({
       title: data.title,
@@ -73,15 +83,17 @@ export class IssuesService {
       columnId: data.columnId,
       priorityId: data.priorityId ?? null,
       categoryId: data.categoryId ?? null,
+      customCategory: data.customCategory?.trim() || null,
       programmerId: data.programmerId ?? null,
       customerId: data.customerId ?? null,
+      labelId: data.labelId ?? null,
     } as DeepPartial<Issue>);
     await this.issues.save(issue);
     await this.logActivity({
       action: "card.created",
-      boardId,
       entityId: issue.id,
       detail: JSON.stringify({ title: issue.title }),
+      actor,
     });
     return this.toResponse(issue);
   }
@@ -93,7 +105,10 @@ export class IssuesService {
       description?: string;
       priorityId?: number;
       categoryId?: number;
+      labelId?: number;
+      labelIds?: number[];
     },
+    actor?: ActorInfo | null,
   ) {
     const issue = await this.issues.findOne({ where: { id } });
     if (!issue) {
@@ -116,20 +131,28 @@ export class IssuesService {
       issue.categoryId = data.categoryId;
       changes.push("category");
     }
+    if (data.labelId !== undefined && data.labelId !== issue.labelId) {
+      issue.labelId = data.labelId;
+      changes.push("label");
+    }
+    if (data.labelIds !== undefined) {
+      issue.labels = data.labelIds.length
+        ? await this.labels.find({ where: data.labelIds.map((labelId) => ({ id: labelId })) })
+        : [];
+      changes.push("labels");
+    }
     if (changes.length === 0) return this.toResponse(issue);
     await this.issues.save(issue);
     await this.logActivity({
       action: "card.edited",
-      boardId: issue.columnId
-        ? (await this.columns.findOne({ where: { id: issue.columnId } }))?.boardId ?? null
-        : null,
       entityId: issue.id,
       detail: JSON.stringify({ fields: changes }),
+      actor,
     });
     return this.toResponse(issue);
   }
 
-  async move(id: number, columnId: number) {
+  async move(id: number, columnId: number, actor?: ActorInfo | null) {
     const issue = await this.issues.findOne({ where: { id } });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
@@ -143,37 +166,27 @@ export class IssuesService {
       : null;
     if (issue.columnId === columnId) return this.toResponse(issue);
 
-    const sourceStatus = sourceColumn
-      ? await this.issueStatuses.findOne({ where: { name: sourceColumn.status } })
-      : null;
     const targetStatus = await this.issueStatuses.findOne({
-      where: { name: targetColumn.status },
+      where: { id: targetColumn.statusId },
     });
-
-    if (sourceStatus?.isTimerRunning && !targetStatus?.isTimerRunning) {
-      await this.workSessions.stop(id);
-    }
-    if (!sourceStatus?.isTimerRunning && targetStatus?.isTimerRunning) {
-      await this.workSessions.start(id, issue.programmerId ?? 0);
-    }
 
     issue.columnId = columnId;
     if (targetStatus?.isEndStatus) {
       issue.completedAt = new Date();
-      await this.workSessions.stop(id);
+      issue.isLocked = true;
     } else {
       issue.completedAt = null;
+      issue.isLocked = false;
     }
     await this.issues.save(issue);
-    await this.recalculateTrackedDuration(id);
     await this.logActivity({
       action: "card.moved",
-      boardId: targetColumn.boardId,
       entityId: issue.id,
       detail: JSON.stringify({
         from: sourceColumn?.status ?? null,
         to: targetColumn.status,
       }),
+      actor,
     });
     return this.toResponse(issue);
   }
@@ -194,7 +207,7 @@ export class IssuesService {
     await this.issues.update(id, { trackedDuration: total });
   }
 
-  async assign(id: number, programmerId: number | null) {
+  async assign(id: number, programmerId: number | null, actor?: ActorInfo | null) {
     const issue = await this.issues.findOne({ where: { id } });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
@@ -208,34 +221,38 @@ export class IssuesService {
     const oldAssignee = issue.programmerId;
     issue.programmerId = programmerId;
     await this.issues.save(issue);
-    const column = issue.columnId
-      ? await this.columns.findOne({ where: { id: issue.columnId } })
-      : null;
     await this.logActivity({
       action: "card.assigned",
-      boardId: column?.boardId ?? null,
       entityId: issue.id,
       detail: JSON.stringify({
         from: oldAssignee,
         to: programmerId,
       }),
+      actor,
     });
     return this.toResponse(issue);
   }
 
-  async remove(id: number) {
+  async unlock(id: number) {
     const issue = await this.issues.findOne({ where: { id } });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
-    const column = issue.columnId
-      ? await this.columns.findOne({ where: { id: issue.columnId } })
-      : null;
+    issue.isLocked = false;
+    await this.issues.save(issue);
+    return this.toResponse(issue);
+  }
+
+  async remove(id: number, actor?: ActorInfo | null) {
+    const issue = await this.issues.findOne({ where: { id } });
+    if (!issue) {
+      throw new NotFoundException(`Issue ${id} not found`);
+    }
     await this.logActivity({
       action: "card.deleted",
-      boardId: column?.boardId ?? null,
       entityId: issue.id,
       detail: JSON.stringify({ title: issue.title }),
+      actor,
     });
     await this.issues.delete(id);
     return { deleted: true };
@@ -243,16 +260,18 @@ export class IssuesService {
 
   private async logActivity(data: {
     action: string;
-    boardId: number | null;
     entityId: number;
     detail: string;
+    actor?: ActorInfo | null;
   }) {
     await this.activityLogs.save(
       this.activityLogs.create({
         action: data.action,
-        boardId: data.boardId,
         entityId: data.entityId,
         detail: data.detail,
+        actorId: data.actor?.actorId ?? null,
+        actorName: data.actor?.actorName ?? null,
+        actorRole: data.actor?.actorRole ?? null,
       }),
     );
   }
@@ -265,13 +284,25 @@ export class IssuesService {
       columnId: issue.columnId,
       statusId: issue.statusId,
       priorityId: issue.priorityId,
+      priorityName: issue.priority?.name ?? null,
       categoryId: issue.categoryId,
+      categoryName: issue.category?.name ?? null,
+      customCategory: issue.customCategory,
+      labelId: issue.labelId,
+      labelIds: (issue.labels ?? []).map((l) => l.id).sort((a, b) => a - b),
+      labelName: issue.labels?.[0]?.name ?? issue.label?.name ?? null,
+      labelColor: issue.labels?.[0]?.color ?? issue.label?.color ?? null,
       programmerId: issue.programmerId,
+      programmerName: issue.programmer?.name ?? null,
       customerId: issue.customerId,
+      customerName: issue.customer?.name ?? null,
+      commentCount: issue.comments?.length ?? 0,
+      attachmentCount: issue.attachments?.length ?? 0,
       trackedDuration: issue.trackedDuration,
       actualFixDuration: issue.actualFixDuration,
       assignedAt: issue.assignedAt,
       completedAt: issue.completedAt,
+      isLocked: issue.isLocked,
       createdAt: issue.createdAt,
       updatedAt: issue.updatedAt,
     };

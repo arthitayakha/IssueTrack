@@ -5,6 +5,9 @@ import { useTranslations } from "next-intl";
 import {
   Box,
   Button,
+  Card,
+  CardContent,
+  CardHeader,
   Checkbox,
   Chip,
   Dialog,
@@ -39,40 +42,140 @@ import ChatIcon from "@mui/icons-material/Chat";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import AssessmentIcon from "@mui/icons-material/Assessment";
 import LockIcon from "@mui/icons-material/Lock";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
-import RequireAuth from "@/components/require-auth";
+import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermissions, roleLabel } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
-import { PERMISSION_LABELS, ALL_PERMISSIONS, permissionsForRole } from "@kanban/shared";
+import { PERMISSION_LABELS, ALL_PERMISSIONS, permissionsForRole, PERMISSION_DEPENDENCIES } from "@kanban/shared";
 import { useNotification } from "@/components/notification";
 
-const CATEGORY_GROUPS = [
-  { key: "board", icon: ViewColumnIcon, dbCategories: ["board", "issue", "time"] },
-  { key: "user", icon: PersonIcon, dbCategories: ["user", "ผู้ใช้งาน"] },
-  { key: "position", icon: WorkIcon, dbCategories: ["position"] },
-  { key: "role", icon: GroupIcon, dbCategories: ["role"] },
-  { key: "permission", icon: SecurityIcon, dbCategories: ["permission"] },
-  { key: "category", icon: CategoryIcon, dbCategories: ["category"] },
-  { key: "status", icon: FlagIcon, dbCategories: ["status"] },
-  { key: "priority", icon: PriorityHighIcon, dbCategories: ["priority"] },
-  { key: "comment", icon: ChatIcon, dbCategories: ["comment"] },
-  { key: "dashboard", icon: DashboardIcon, dbCategories: ["dashboard"] },
-  { key: "report", icon: AssessmentIcon, dbCategories: ["report"] },
-  { key: "auth", icon: LockIcon, dbCategories: ["auth"] },
+
+const PERMISSION_GROUPS = [
+  {
+    key: "auth",
+    icon: LockIcon,
+    children: [
+      { key: "auth", permissions: ["auth.login", "auth.logout"] },
+    ],
+  },
+  {
+    key: "dashboard",
+    icon: DashboardIcon,
+    children: [
+      { key: "dashboard", permissions: ["dashboard.own.view", "dashboard.overview.view"] },
+    ],
+  },
+  {
+    key: "board",
+    icon: ViewColumnIcon,
+    children: [
+      {
+        key: "board",
+        permissions: [
+          "board.view", "board.column.create", "board.column.update", "board.column.delete",
+          "issue.create", "issue.own.view", "issue.all.view", "issue.assigned.view", "issue.detail.view",
+          "issue.own.update", "issue.all.update", "issue.assign", "issue.reassign",
+          "issue.status.update", "issue.delete", "issue.category.change", "issue.priority.change",
+          "time.system.view", "time.actual.view",
+        ],
+      },
+    ],
+  },
+  {
+    key: "comment",
+    icon: ChatIcon,
+    children: [
+      {
+        key: "comment",
+        permissions: [
+          "comment.view", "comment.create", "comment.own.update", "comment.own.delete", "comment.all.delete",
+        ],
+      },
+    ],
+  },
+  {
+    key: "user",
+    icon: PersonIcon,
+    children: [
+      { key: "user", permissions: ["user.view", "user.create", "user.update", "user.delete"] },
+      { key: "role", permissions: ["role.view", "role.create", "role.update", "role.delete", "role.permission.update"] },
+      { key: "position", permissions: ["position.view", "position.create", "position.update", "position.delete"] },
+    ],
+  },
+  {
+    key: "settings",
+    icon: SettingsOutlinedIcon,
+    children: [
+      {
+        key: "category",
+        permissions: [
+          "category.view", "category.create", "category.update", "category.delete", "category.visibility.update",
+        ],
+      },
+      {
+        key: "status",
+        permissions: ["status.view", "status.create", "status.update", "status.delete"],
+      },
+      {
+        key: "priority",
+        permissions: ["priority.view", "priority.create", "priority.update", "priority.delete"],
+      },
+    ],
+  },
+  {
+    key: "report",
+    icon: AssessmentIcon,
+    children: [
+      { key: "report", permissions: ["report.view", "report.export"] },
+    ],
+  },
 ] as const;
 
-function permissionBelongsToGroup(
-  permission: string,
-  group: (typeof CATEGORY_GROUPS)[number],
-): boolean {
-  return group.dbCategories.some((cat) =>
-    cat === "ผู้ใช้งาน" ? permission === "user.status.update" : permission.startsWith(cat + "."),
-  );
+type PermissionGroup = (typeof PERMISSION_GROUPS)[number];
+type PermissionChild = PermissionGroup["children"][number];
+
+function getDependentPermissions(permission: string): string[] {
+  return PERMISSION_DEPENDENCIES[permission] ?? [];
 }
 
-type CategoryGroup = (typeof CATEGORY_GROUPS)[number];
+function getRequiredPermissions(permission: string): string[] {
+  return Object.entries(PERMISSION_DEPENDENCIES)
+    .filter(([, deps]) => deps.includes(permission))
+    .map(([perm]) => perm);
+}
+
+function togglePermission(
+  current: readonly string[],
+  permission: string,
+  checked: boolean,
+): string[] {
+  if (checked) {
+    const deps = getDependentPermissions(permission);
+    const next = new Set([...current, permission, ...deps]);
+    return [...next];
+  } else {
+    const required = getRequiredPermissions(permission);
+    const next = current.filter((p) => p !== permission && !required.includes(p));
+    return next;
+  }
+}
+
+function toggleGroup(current: readonly string[], permissions: readonly string[], checked: boolean): string[] {
+  if (checked) {
+    const next = new Set([...current]);
+    permissions.forEach((p) => {
+      next.add(p);
+      getDependentPermissions(p).forEach((d) => next.add(d));
+    });
+    return [...next];
+  } else {
+    const toRemove = new Set(permissions);
+    return current.filter((p) => !toRemove.has(p));
+  }
+}
 
 interface User {
   id: string;
@@ -86,6 +189,7 @@ interface User {
 }
 
 interface Role {
+  userCount: number;
   id: number;
   name: string;
   isActive: boolean;
@@ -150,10 +254,11 @@ export default function UsersPage() {
   }, []);
 
   useEffect(() => {
-    if (!canViewUsers && !canViewPositions) return;
     const requests: Promise<any>[] = [];
     if (canViewUsers) {
       requests.push(apiFetch<User[]>("/users", {}, token));
+    }
+    if (canViewRoles) {
       requests.push(apiFetch<Role[]>("/roles", {}, token));
     }
     if (canViewPositions) requests.push(apiFetch<Position[]>("/positions", {}, token));
@@ -163,25 +268,15 @@ export default function UsersPage() {
         let idx = 0;
         if (canViewUsers) {
           setUsers(results[idx++]);
+        }
+        if (canViewRoles) {
           setRoles(results[idx++]);
         }
         if (canViewPositions) setPositions(results[idx++]);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [canViewUsers, canViewPositions, token]);
-
-  if (!canViewUsers && !canViewPositions) {
-    return (
-      <DashboardLayout>
-        <Box sx={{ py: 4 }}>
-          <Typography variant="body1" color="text.secondary">
-            {t("noPermission")}
-          </Typography>
-        </Box>
-      </DashboardLayout>
-    );
-  }
+  }, [canViewUsers, canViewRoles, canViewPositions, token]);
 
   function openAdd() {
     setEditingUser(null);
@@ -524,7 +619,7 @@ export default function UsersPage() {
   ];
 
   return (
-    <RequireAuth>
+    <RequirePermission permissions={["user.view", "role.view", "position.view"]}>
       <DashboardLayout>
         <Box>
         <Tabs
@@ -635,7 +730,7 @@ export default function UsersPage() {
                       </Typography>
                     </DataTableCell>
                     <DataTableCell align="center">
-                      {users.filter((u) => u.roleName === role.name).length}
+                      {role.userCount}
                     </DataTableCell>
                     <DataTableCell align="center">
                       <Chip
@@ -843,90 +938,120 @@ export default function UsersPage() {
                 <Typography variant="subtitle2" gutterBottom>
                   {t("positionPermissions")}
                 </Typography>
-                <DataTable>
-                  <DataTableHead>
-                    <DataTableRow>
-                      <DataTableCell>{t("columnPermission")}</DataTableCell>
-                      <DataTableCell align="center" sx={{ fontWeight: 600 }}>
-                        <Checkbox
-                          checked={positionForm.permissions.length === ALL_PERMISSIONS.length}
-                          indeterminate={positionForm.permissions.length > 0 && positionForm.permissions.length < ALL_PERMISSIONS.length}
-                          onChange={(e) => {
-                            setPositionForm({
-                              ...positionForm,
-                              permissions: e.target.checked ? [...ALL_PERMISSIONS] : [],
-                            });
-                          }}
-                          disabled={positionForm.roleId === null || roles.find((r) => r.id === positionForm.roleId)?.name === "admin"}
-                          size="small"
-                        />
-                      </DataTableCell>
-                    </DataTableRow>
-                  </DataTableHead>
-                  <DataTableBody>
-                    {CATEGORY_GROUPS.map((group) => {
-                      const groupPerms = ALL_PERMISSIONS.filter((p) => permissionBelongsToGroup(p, group));
-                      if (groupPerms.length === 0) return null;
-                      const Icon = group.icon;
-                      const allChecked = groupPerms.every((p) => positionForm.permissions.includes(p));
-                      const someChecked = groupPerms.some((p) => positionForm.permissions.includes(p));
-                      const isDisabled = positionForm.roleId === null || roles.find((r) => r.id === positionForm.roleId)?.name === "admin";
-                      return (
-                        <Fragment key={group.key}>
-                          <DataTableRow>
-                            <DataTableCell colSpan={2}>
-                              <Box sx={{ display: "flex", alignItems: "center", gap: 1, py: 0.5 }}>
-                                <Icon fontSize="small" color="primary" />
-                                <Typography variant="caption" fontWeight={600}>
-                                  {t(`categories.${group.key}`)}
-                                </Typography>
+
+                <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={positionForm.permissions.length === ALL_PERMISSIONS.length}
+                        indeterminate={positionForm.permissions.length > 0 && positionForm.permissions.length < ALL_PERMISSIONS.length}
+                        onChange={(e) => {
+                          setPositionForm({
+                            ...positionForm,
+                            permissions: e.target.checked ? [...ALL_PERMISSIONS] : [],
+                          });
+                        }}
+                        disabled={positionForm.roleId === null || roles.find((r) => r.id === positionForm.roleId)?.name === "admin"}
+                        size="small"
+                      />
+                    }
+                    label={<Typography variant="body2">{t("selectAll")}</Typography>}
+                  />
+                </Box>
+
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {PERMISSION_GROUPS.map((group) => {
+                    const groupPerms = group.children.flatMap((c) => c.permissions);
+                    if (groupPerms.length === 0) return null;
+                    const Icon = group.icon;
+                    const allChecked = groupPerms.every((p) => positionForm.permissions.includes(p));
+                    const someChecked = groupPerms.some((p) => positionForm.permissions.includes(p));
+                    const isDisabled = positionForm.roleId === null || roles.find((r) => r.id === positionForm.roleId)?.name === "admin";
+                    const hasMultipleChildren = group.children.length > 1;
+                    return (
+                      <Card key={group.key} variant="outlined" sx={{ overflow: "visible" }}>
+                        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", bgcolor: "grey.100", py: 1, px: 2, borderRadius: 1 }}>
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                            <Icon fontSize="small" color="primary" />
+                            <Typography variant="subtitle1" fontWeight={700} color="text.primary">
+                              {t(`Nav.${group.key}`)}
+                            </Typography>
+                          </Box>
+                          <Checkbox
+                            checked={allChecked}
+                            indeterminate={!allChecked && someChecked}
+                            onChange={(e) => {
+                              const next = toggleGroup(positionForm.permissions, groupPerms, e.target.checked);
+                              setPositionForm({ ...positionForm, permissions: next });
+                            }}
+                            disabled={isDisabled}
+                            size="small"
+                          />
+                        </Box>
+                        <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
+                          {group.children.map((child) => {
+                            const childPerms = child.permissions;
+                            const childAllChecked = childPerms.every((p) => positionForm.permissions.includes(p));
+                            const childSomeChecked = childPerms.some((p) => positionForm.permissions.includes(p));
+                            return (
+                              <Box key={child.key} sx={{ mb: hasMultipleChildren ? 2 : 0 }}>
+                                {hasMultipleChildren && (
+                                  <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 0.5, bgcolor: "grey.50", px: 1.5, py: 0.5, borderRadius: 1 }}>
+                                    <Typography variant="body2" fontWeight={600} color="text.primary">
+                                      {t(`Nav.${child.key}`)}
+                                    </Typography>
+                                    <Checkbox
+                                      checked={childAllChecked}
+                                      indeterminate={!childAllChecked && childSomeChecked}
+                                      onChange={(e) => {
+                                        const next = toggleGroup(positionForm.permissions, childPerms, e.target.checked);
+                                        setPositionForm({ ...positionForm, permissions: next });
+                                      }}
+                                      disabled={isDisabled}
+                                      size="small"
+                                    />
+                                  </Box>
+                                )}
+                                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, pl: hasMultipleChildren ? 2 : 0 }}>
+                                  {childPerms.map((permission) => {
+                                    const deps = getDependentPermissions(permission);
+                                    const depsMet = deps.every((d) => positionForm.permissions.includes(d));
+                                    return (
+                                      <Box
+                                        key={permission}
+                                        sx={{
+                                          display: "flex",
+                                          alignItems: "center",
+                                          justifyContent: "space-between",
+                                          py: 0.5,
+                                          borderRadius: 1,
+                                          "&:hover": { bgcolor: "grey.50" },
+                                        }}
+                                      >
+                                        <Typography variant="body2">
+                                          {PERMISSION_LABELS[permission as keyof typeof PERMISSION_LABELS] ?? permission}
+                                        </Typography>
+                                        <Checkbox
+                                          checked={positionForm.permissions.includes(permission)}
+                                          onChange={(e) => {
+                                            const next = togglePermission(positionForm.permissions, permission, e.target.checked);
+                                            setPositionForm({ ...positionForm, permissions: next });
+                                          }}
+                                          disabled={isDisabled || (!positionForm.permissions.includes(permission) && !depsMet)}
+                                          size="small"
+                                        />
+                                      </Box>
+                                    );
+                                  })}
+                                </Box>
                               </Box>
-                            </DataTableCell>
-                            <DataTableCell align="center">
-                              <Checkbox
-                                checked={allChecked}
-                                indeterminate={!allChecked && someChecked}
-                                onChange={(e) => {
-                                  const next = e.target.checked
-                                    ? [...new Set([...positionForm.permissions, ...groupPerms])]
-                                    : positionForm.permissions.filter((p) => !(groupPerms as string[]).includes(p));
-                                  setPositionForm({ ...positionForm, permissions: next });
-                                }}
-                                disabled={isDisabled}
-                                size="small"
-                              />
-                            </DataTableCell>
-                          </DataTableRow>
-                          {groupPerms.map((permission) => (
-                            <DataTableRow key={permission}>
-                              <DataTableCell>
-                                <Typography variant="body2">
-                                  {PERMISSION_LABELS[permission as keyof typeof PERMISSION_LABELS] ?? permission}
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
-                                  {permission}
-                                </Typography>
-                              </DataTableCell>
-                              <DataTableCell align="center">
-                                <Checkbox
-                                  checked={positionForm.permissions.includes(permission)}
-                                  onChange={(e) => {
-                                    const next = e.target.checked
-                                      ? [...positionForm.permissions, permission]
-                                      : positionForm.permissions.filter((p) => p !== permission);
-                                    setPositionForm({ ...positionForm, permissions: next });
-                                  }}
-                                  disabled={isDisabled}
-                                  size="small"
-                                />
-                              </DataTableCell>
-                            </DataTableRow>
-                          ))}
-                        </Fragment>
-                      );
-                    })}
-                  </DataTableBody>
-                </DataTable>
+                            );
+                          })}
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </Box>
               </Box>
             </Box>
           </DialogContent>
@@ -1045,6 +1170,6 @@ export default function UsersPage() {
         </Dialog>
         </Box>
       </DashboardLayout>
-    </RequireAuth>
+    </RequirePermission>
   );
 }

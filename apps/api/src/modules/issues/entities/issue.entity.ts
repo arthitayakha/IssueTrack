@@ -3,6 +3,8 @@ import {
   CreateDateColumn,
   Entity,
   JoinColumn,
+  JoinTable,
+  ManyToMany,
   ManyToOne,
   OneToMany,
   PrimaryGeneratedColumn,
@@ -15,6 +17,7 @@ import { Attachment } from "../../attachments/entities/attachment.entity";
 import { WorkSession } from "../../work-sessions/entities/work-session.entity";
 import { IssueStatus } from "../../issue-statuses/entities/issue-status.entity";
 import { IssuePriority } from "../../issue-priorities/entities/issue-priority.entity";
+import { Label } from "../../labels/entities/label.entity";
 import { User } from "../../auth/entities/user.entity";
 
 @Entity("issues")
@@ -35,6 +38,9 @@ export class Issue {
   @ManyToOne(() => Category, { onDelete: "CASCADE" })
   @JoinColumn({ name: "category_id" })
   category?: Category;
+
+  @Column({ name: "custom_category", type: "varchar", length: 500, nullable: true })
+  customCategory!: string | null;
 
   @Column({ type: "varchar", length: 300 })
   title!: string;
@@ -84,8 +90,26 @@ export class Issue {
   @JoinColumn({ name: "priority_id" })
   priority?: IssuePriority;
 
+  @Column({ name: "label_id", type: "int", nullable: true })
+  labelId!: number | null;
+
+  @ManyToOne(() => Label, { nullable: true })
+  @JoinColumn({ name: "label_id" })
+  label?: Label;
+
+  @ManyToMany(() => Label, { nullable: true })
+  @JoinTable({
+    name: "issue_labels",
+    joinColumn: { name: "issue_id", referencedColumnName: "id" },
+    inverseJoinColumn: { name: "label_id", referencedColumnName: "id" },
+  })
+  labels?: Label[];
+
   @Column({ name: "doing_started_at", type: "timestamptz", nullable: true })
   doingStartedAt!: Date | null;
+
+  @Column({ name: "is_locked", default: false })
+  isLocked!: boolean;
 
   @Column({ name: "column_id", type: "int", nullable: true })
   columnId!: number | null;

@@ -7,8 +7,10 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from "@nestjs/common";
+import { normalizePagination } from "../../common/pagination";
 import { CategoriesService } from "./categories.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -20,9 +22,8 @@ export class CategoriesController {
   constructor(private readonly categories: CategoriesService) {}
 
   @Get()
-  @Permissions("category.view")
-  findAll() {
-    return this.categories.findAll();
+  findAll(@Query() query: { page?: string; limit?: string }) {
+    return this.categories.findAll(normalizePagination(query));
   }
 
   @Post()

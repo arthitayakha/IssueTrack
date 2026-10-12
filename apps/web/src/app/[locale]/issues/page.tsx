@@ -15,31 +15,15 @@ import {
   Chip,
 } from "@mui/material";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
-import RequireAuth from "@/components/require-auth";
+import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useNotification } from "@/components/notification";
+import { Pagination } from "@/components/pagination";
+import { fetchIssues, type BoardIssue } from "@/lib/board-api";
 
-interface Issue {
-  id: number;
-  title: string;
-  description: string;
-  columnId: number;
-  statusId: number | null;
-  priorityId: number | null;
-  categoryId: number;
-  programmerId: number | null;
-  customerId: number;
-  trackedDuration: number;
-  actualFixDuration: number | null;
-  assignedAt: string | null;
-  completedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) return "—";
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return "—";
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
@@ -52,20 +36,27 @@ export default function IssuesPage() {
   const t = useTranslations("Issues");
   const token = useAuthStore((s) => s.token);
   const { notify } = useNotification();
-  const [issues, setIssues] = useState<Issue[]>([]);
+  const [issues, setIssues] = useState<BoardIssue[]>([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
   const [timeDialogOpen, setTimeDialogOpen] = useState(false);
-  const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
+  const [selectedIssue, setSelectedIssue] = useState<BoardIssue | null>(null);
   const [actualDuration, setActualDuration] = useState("");
 
   useEffect(() => {
-    apiFetch<Issue[]>("/issues/boards/1/issues", {}, token)
-      .then(setIssues)
+    fetchIssues(1, 10)
+      .then((res) => {
+        setIssues(res.data);
+        setTotalPages(res.totalPages);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [token]);
 
-  function openTimeDialog(issue: Issue) {
+  const pageIssues = issues.slice((page - 1) * 10, page * 10);
+
+  function openTimeDialog(issue: BoardIssue) {
     setSelectedIssue(issue);
     setActualDuration(issue.actualFixDuration?.toString() ?? "");
     setTimeDialogOpen(true);
@@ -101,7 +92,7 @@ export default function IssuesPage() {
   }
 
   return (
-    <RequireAuth>
+    <RequirePermission permission="issue.all.view">
       <DashboardLayout>
         <Box sx={{ py: 4 }}>
           <Typography variant="h4" fontWeight={700} gutterBottom>
@@ -117,7 +108,7 @@ export default function IssuesPage() {
             </Typography>
           ) : (
             <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {issues.map((issue) => (
+              {pageIssues.map((issue) => (
                 <Box
                   key={issue.id}
                   sx={{
@@ -157,6 +148,13 @@ export default function IssuesPage() {
                   </Button>
                 </Box>
               ))}
+              <Pagination
+                page={page}
+                totalPages={totalPages}
+                total={issues.length}
+                limit={10}
+                onPageChange={setPage}
+              />
             </Box>
           )}
         </Box>
@@ -182,6 +180,6 @@ export default function IssuesPage() {
           </DialogActions>
         </Dialog>
       </DashboardLayout>
-    </RequireAuth>
+    </RequirePermission>
   );
 }

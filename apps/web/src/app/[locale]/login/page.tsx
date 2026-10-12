@@ -30,7 +30,8 @@ function LoginPageInner() {
   const router = useRouter();
   const setSession = useAuthStore((s) => s.setSession);
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") || "/";
+  const rawNext = searchParams.get("next") || "/";
+  const next = rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : "/";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(false);

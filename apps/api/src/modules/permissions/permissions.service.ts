@@ -103,9 +103,27 @@ export class PermissionsService implements OnModuleInit {
     if (adminRole && roleId === adminRole.id) return true;
     const role = await this.rolesRepo.findOne({ where: { id: roleId } });
     if (!role || !role.isActive) return false;
-    if (positionId && this.positionCache.get(positionId)?.has(permission)) return true;
-    if (this.cache.get(roleId)?.has(permission)) return true;
+    if (positionId) {
+      const posPerm = await this.positionPermissions.findOne({ where: { positionId, permission } });
+      if (posPerm) return true;
+    }
+    const rolePerm = await this.repo.findOne({ where: { roleId, permission } });
+    if (rolePerm) return true;
     return false;
+  }
+
+  async getUserPermissions(roleId: number | null, positionId: number | null): Promise<string[]> {
+    if (!roleId) return [];
+    const adminRole = await this.rolesRepo.findOne({ where: { name: "admin" } });
+    if (adminRole && roleId === adminRole.id) return [...ALL_PERMISSIONS];
+    const permissions = new Set<string>();
+    const rolePerms = await this.repo.find({ where: { roleId } });
+    rolePerms.forEach((p) => permissions.add(p.permission));
+    if (positionId) {
+      const posPerms = await this.positionPermissions.find({ where: { positionId } });
+      posPerms.forEach((p) => permissions.add(p.permission));
+    }
+    return [...permissions];
   }
 
   async updateMatrix(grants: Record<string, string[]>) {

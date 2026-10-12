@@ -37,17 +37,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!user.isActive) {
       throw new UnauthorizedException("Account is deactivated");
     }
+    let roleName: string | null = null;
     if (user.roleId) {
       const role = await this.roles.findOne({ where: { id: user.roleId } });
       if (role && !role.isActive) {
         throw new UnauthorizedException("Role is deactivated");
       }
+      roleName = role?.name ?? null;
     }
     return {
       id: payload.sub,
       email: payload.email,
       name: payload.name,
       roleId: payload.roleId,
+      roleName,
       positionId: payload.positionId,
     };
   }

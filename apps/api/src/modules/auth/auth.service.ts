@@ -6,6 +6,7 @@ import * as bcrypt from "bcryptjs";
 import { User } from "./entities/user.entity";
 import { Role } from "../roles/entities/role.entity";
 import { LoginDto } from "./dto/login.dto";
+import { PositionPermission } from "../positions/entities/position-permission.entity";
 
 @Injectable()
 export class AuthService {
@@ -14,6 +15,8 @@ export class AuthService {
     private readonly users: Repository<User>,
     @InjectRepository(Role)
     private readonly roles: Repository<Role>,
+    @InjectRepository(PositionPermission)
+    private readonly positionPermissions: Repository<PositionPermission>,
     private readonly jwt: JwtService,
   ) {}
 
@@ -31,6 +34,9 @@ export class AuthService {
     if (role && !role.isActive) {
       throw new UnauthorizedException("Role is deactivated");
     }
+    const positionPerms = user.positionId
+      ? (await this.positionPermissions.find({ where: { positionId: user.positionId } })).map((p) => p.permission)
+      : [];
     const accessToken = await this.jwt.signAsync({
       sub: String(user.id),
       email: user.email,
@@ -38,17 +44,20 @@ export class AuthService {
       roleId: user.roleId,
       positionId: user.positionId,
     });
-    return { accessToken, user: this.toPublicUser(user, role?.name ?? null) };
+    return { accessToken, user: this.toPublicUser(user, role?.name ?? null, positionPerms) };
   }
 
   async me(user: User) {
     const role = user.roleId
       ? await this.roles.findOne({ where: { id: user.roleId } })
       : null;
-    return this.toPublicUser(user, role?.name ?? null);
+    const positionPerms = user.positionId
+      ? (await this.positionPermissions.find({ where: { positionId: user.positionId } })).map((p) => p.permission)
+      : [];
+    return this.toPublicUser(user, role?.name ?? null, positionPerms);
   }
 
-  private toPublicUser(user: User, roleName: string | null) {
+  private toPublicUser(user: User, roleName: string | null, positionPermissions: string[] = []) {
     return {
       id: String(user.id),
       email: user.email,
@@ -57,6 +66,7 @@ export class AuthService {
       positionId: user.positionId,
       roleName,
       isActive: user.isActive,
+      positionPermissions,
     };
   }
 }

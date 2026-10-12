@@ -7,6 +7,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { IssuePriority } from "./entities/issue-priority.entity";
 import { Issue } from "../issues/entities/issue.entity";
+import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class IssuePrioritiesService {
@@ -17,7 +18,7 @@ export class IssuePrioritiesService {
     private readonly issues: Repository<Issue>,
   ) {}
 
-  async findAll() {
+  async findAll(params: PaginationParams) {
     const priorities = await this.issuePriorities.find({ order: { sortOrder: "ASC", id: "ASC" } });
     const result = await Promise.all(
       priorities.map(async (p) => ({
@@ -29,7 +30,7 @@ export class IssuePrioritiesService {
         issueCount: await this.issues.count({ where: { priorityId: p.id } }),
       })),
     );
-    return result;
+    return paginate(result, params);
   }
 
   async create(data: {

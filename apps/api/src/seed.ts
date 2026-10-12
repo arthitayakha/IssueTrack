@@ -15,8 +15,8 @@ import { Attachment } from "./modules/attachments/entities/attachment.entity";
 import { WorkSession } from "./modules/work-sessions/entities/work-session.entity";
 import { IssuePriority } from "./modules/issue-priorities/entities/issue-priority.entity";
 import { BoardColumn } from "./modules/columns/entities/board-column.entity";
-import { Board } from "./modules/boards/entities/board.entity";
 import { ActivityLog } from "./modules/activity-logs/entities/activity-log.entity";
+import { Label } from "./modules/labels/entities/label.entity";
 
 const dataSource = new DataSource({
   type: "postgres",
@@ -39,8 +39,8 @@ const dataSource = new DataSource({
     WorkSession,
     IssuePriority,
     BoardColumn,
-    Board,
     ActivityLog,
+    Label,
   ],
   synchronize: false,
 });
@@ -129,6 +129,40 @@ async function seed() {
         [positionId, permission],
       );
     }
+  }
+
+  const defaultStatuses = [
+    { name: "Backlog", sortOrder: 1, isTimerRunning: false, isEndStatus: false },
+    { name: "Todo", sortOrder: 2, isTimerRunning: false, isEndStatus: false },
+    { name: "Doing", sortOrder: 3, isTimerRunning: true, isEndStatus: false },
+    { name: "Review", sortOrder: 4, isTimerRunning: false, isEndStatus: false },
+    { name: "Done", sortOrder: 5, isTimerRunning: false, isEndStatus: true },
+  ];
+
+  for (const s of defaultStatuses) {
+    await manager.query(
+      `INSERT INTO issue_statuses (name, description, is_active, sort_order, is_timer_running, is_end_status)
+       VALUES ($1, NULL, true, $2, $3, $4)
+       ON CONFLICT (name) DO UPDATE SET sort_order = $2, is_timer_running = $3, is_end_status = $4`,
+      [s.name, s.sortOrder, s.isTimerRunning, s.isEndStatus],
+    );
+  }
+
+  const defaultColumns = [
+    { status: "Backlog", position: 1 },
+    { status: "Todo", position: 2 },
+    { status: "Doing", position: 3 },
+    { status: "Review", position: 4 },
+    { status: "Done", position: 5 },
+  ];
+
+  for (const col of defaultColumns) {
+    await manager.query(
+      `INSERT INTO board_columns (status, custom_name, is_hidden, position)
+       VALUES ($1, NULL, false, $2)
+       ON CONFLICT (LOWER(status)) DO NOTHING`,
+      [col.status, col.position],
+    );
   }
 
   console.log("Seed completed successfully");

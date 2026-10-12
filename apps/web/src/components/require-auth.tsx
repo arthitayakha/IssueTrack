@@ -21,6 +21,12 @@ export default function RequireAuth({ children }: { children: ReactNode }) {
     }
   }, [mounted, token, router, pathname]);
 
+  useEffect(() => {
+    if (mounted && token && pathname === "/login") {
+      router.replace("/");
+    }
+  }, [mounted, token, router, pathname]);
+
   if (!mounted || !token) {
     return (
       <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh" }}>

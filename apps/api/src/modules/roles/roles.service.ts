@@ -10,6 +10,7 @@ import { Role } from "./entities/role.entity";
 import { RolePermission } from "../permissions/entities/role-permission.entity";
 import { User } from "../auth/entities/user.entity";
 import { permissionsForRole } from "@kanban/shared";
+import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class RolesService {
@@ -22,8 +23,15 @@ export class RolesService {
     private readonly users: Repository<User>,
   ) {}
 
-  async findAll() {
-    return this.roles.find({ order: { id: "ASC" } });
+  async findAll(params: PaginationParams) {
+    const roles = await this.roles.find({ order: { id: "ASC" } });
+    const mapped = await Promise.all(
+      roles.map(async (role) => ({
+        ...role,
+        userCount: await this.users.count({ where: { roleId: role.id } }),
+      })),
+    );
+    return paginate(mapped, params);
   }
 
   async findAllActive() {

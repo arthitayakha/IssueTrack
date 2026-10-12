@@ -1,0 +1,1 @@
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS custom_category VARCHAR(500) NULL;

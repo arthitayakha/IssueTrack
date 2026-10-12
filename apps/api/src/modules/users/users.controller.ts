@@ -7,8 +7,10 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from "@nestjs/common";
+import { normalizePagination } from "../../common/pagination";
 import { UsersService } from "./users.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -21,8 +23,8 @@ export class UsersController {
 
   @Get()
   @Permissions("user.view")
-  findAll() {
-    return this.users.findAll();
+  findAll(@Query() query: { page?: string; limit?: string }) {
+    return this.users.findAll(normalizePagination(query));
   }
 
   @Post()

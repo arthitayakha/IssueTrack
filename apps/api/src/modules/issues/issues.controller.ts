@@ -7,22 +7,40 @@ import {
   ParseIntPipe,
   Post,
   Put,
+  Query,
   UseGuards,
 } from "@nestjs/common";
+import { normalizePagination } from "../../common/pagination";
 import { IssuesService } from "./issues.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
+import { Public } from "../auth/public.decorator";
+import { CurrentUser } from "../auth/current-user.decorator";
+import { AuthUser, actorInfo } from "../auth/auth-user";
+import { ActorInfo } from "../activity-logs/activity-logs.service";
 
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class IssuesController {
   constructor(private readonly issues: IssuesService) {}
 
-  @Get("boards/:boardId/issues")
+  private actor(user: AuthUser): ActorInfo {
+    return actorInfo(user);
+  }
+
+  @Public()
+  @Get("issues")
   @Permissions("board.view")
-  findByBoard(@Param("boardId", ParseIntPipe) boardId: number) {
-    return this.issues.findByBoard(boardId);
+  findAll(
+    @Query()
+    query: { page?: string; limit?: string; statuses?: string },
+  ) {
+    const statuses = (query.statuses ?? "")
+      .split(",")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    return this.issues.findAll(normalizePagination(query), statuses);
   }
 
   @Get("issues/:id")
@@ -31,10 +49,9 @@ export class IssuesController {
     return this.issues.findOne(id);
   }
 
-  @Post("boards/:boardId/issues")
+  @Post("issues")
   @Permissions("issue.create")
   create(
-    @Param("boardId", ParseIntPipe) boardId: number,
     @Body()
     body: {
       title: string;
@@ -42,11 +59,13 @@ export class IssuesController {
       columnId: number;
       priorityId?: number;
       categoryId?: number;
+      customCategory?: string;
       programmerId?: number;
       customerId?: number;
     },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.issues.create(boardId, body);
+    return this.issues.create(body, this.actor(user));
   }
 
   @Put("issues/:id")
@@ -59,9 +78,12 @@ export class IssuesController {
       description?: string;
       priorityId?: number;
       categoryId?: number;
+      labelId?: number;
+      labelIds?: number[];
     },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.issues.update(id, body);
+    return this.issues.update(id, body, this.actor(user));
   }
 
   @Put("issues/:id/move")
@@ -69,8 +91,9 @@ export class IssuesController {
   move(
     @Param("id", ParseIntPipe) id: number,
     @Body() body: { columnId: number },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.issues.move(id, body.columnId);
+    return this.issues.move(id, body.columnId, this.actor(user));
   }
 
   @Put("issues/:id/assign")
@@ -78,8 +101,9 @@ export class IssuesController {
   assign(
     @Param("id", ParseIntPipe) id: number,
     @Body() body: { programmerId: number | null },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.issues.assign(id, body.programmerId);
+    return this.issues.assign(id, body.programmerId, this.actor(user));
   }
 
   @Put("issues/:id/time")
@@ -91,9 +115,15 @@ export class IssuesController {
     return this.issues.setActualFixDuration(id, body.actualFixDuration);
   }
 
+  @Put("issues/:id/unlock")
+  @Permissions("issue.unlock")
+  unlock(@Param("id", ParseIntPipe) id: number) {
+    return this.issues.unlock(id);
+  }
+
   @Delete("issues/:id")
   @Permissions("issue.delete")
-  remove(@Param("id", ParseIntPipe) id: number) {
-    return this.issues.remove(id);
+  remove(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
+    return this.issues.remove(id, this.actor(user));
   }
 }

@@ -1,6 +1,6 @@
 # Kanban Issue Tracker — เอกสารออกแบบ (Design Document)
 
-> **เวอร์ชันล่าสุด** — อัปเดต 2026-10-06
+> **เวอร์ชันล่าสุด** — อัปเดต 2026-10-07
 > เอกสารนี้เป็น **ตัวล่าสุด** ให้อ่านที่ไฟล์นี้ก่อนเสมอ ห้ามอ่าน `AGENT.md` (ล้าสมัย)
 > หากจะเพิ่ม/แก้อะไร ให้แก้ไฟล์นี้ด้วย แล้วอัปเดตวันที่ด้านบน
 > **สถานะปัจจุบัน:** เอกสารนี้เป็นแผน ยังไม่แก้โค้ด/ฐานข้อมูล (ยกเว้นที่ระบุว่าเสร็จแล้ว)
@@ -158,9 +158,65 @@ category.view, board.view
 ลาก Y → "เสร็จ"  → ปิด Y
 ```
 
+### 6.4 พฤติกรรมจับเวลาเมื่อลากการ์ดกลับมา (Resume / Reset)
+
+สถานะที่เกี่ยวข้อง: **Doing** (`is_timer_running=true`), **Review** (`is_timer_running=false`, `is_end_status=false`), **Done** (`is_end_status=true`)
+
+| ลากจาก → ไป | พฤติกรรม | เหตุผล |
+|---|---|---|
+| Review → Doing | **จับเวลาต่อ** — เปิด session เก่าต่อ (ไม่สร้างใหม่) | งานยังไม่เสร็จ แค่พักไว้ชั่วคราว |
+| Doing → Review | **อัปเดตเวลา** — ปิด session (บันทึก duration) | หยุดจับเวา แต่ยังไม่ปิดงาน |
+| Done → Doing | **รีเซ็ตเวลาใหม่** — ล้างทุก session + `tracked_duration=0` แล้วเริ่ม session ใหม่ | งานถูกเปิดกลับมาทำใหม่ เวลาเก่าไม่นับ |
+
+**หมายเหตุ:**
+- `work_sessions` เก็บทุก session (หลายแถวต่อ issue) — `tracked_duration` = SUM ของทุก session
+- ตอน **resume**: `work_sessions.start()` ต้องหา session ล่าสุดที่ปิดแล้ว เปิดต่อ (set `ended_at = null`) แทนการสร้างใหม่
+- ตอน **reset**: ลบทุก session ของ issue + set `tracked_duration = 0` + set `doing_started_at = now()`
+
 ---
 
-## 7. แผนการแก้ไข (Roadmap) — ลำดับการทำงาน
+## 7. ฟีเจอร์ยกเลิกงาน (Cancel Issue)
+
+### 7.1 แนวคิด
+- **ยกเลิกไม่ใช่คอลัมน์บนบอร์ด** — ไม่มี column "ยกเลิก" ในการลากการ์ด
+- การ์ดที่ยกเลิกแล้ว **ไม่แสดงบนบอร์ด** แต่ยังอยู่ในระบบ (soft-cancel)
+- มี **ปุ่ม "ดูงานที่ยกเลิก"** เพื่อดูรายการที่ถูกยกเลิก และ **กู้คืน** กลับไปบอร์ดได้
+
+### 7.2 สิทธิ์การยกเลิก
+
+| สถานะปัจจุบันของงาน | ใครยกเลิกได้ |
+|---|---|
+| **Backlog** | ทุกคน (admin, programmer, customer) |
+| **สถานะอื่น** (Todo, Doing, Review, Done) | เฉพาะ **programmer** และ **admin** เท่านั้น |
+
+### 7.3 การกู้คืน (Restore)
+- ผู้ใช้ที่มีสิทธิ์ยกเลิก สามารถกู้คืนงานกลับมาได้
+- ตอนกู้คืน งานจะกลับไปสถานะ **Backlog** (หรือสถานะก่อนหน้าที่ถูกยกเลิก — ต้องตัดสิน)
+- การกู้คืนต้อง log activity `"card.restored"`
+
+### 7.4 โครงสร้างข้อมูล
+
+เพิ่มคอลัมน์ในตาราง `issues`:
+- `cancelled_at` (timestamptz, nullable) — null = ไม่ได้ยกเลิก
+- `cancelled_by` (int, nullable, FK → users.id) — ใครยกเลิก
+
+### 7.5 Activity Log
+- `"card.cancelled"` — เมื่อยกเลิกงาน
+- `"card.restored"` — เมื่อกู้คืนงาน
+
+### 7.6 API Endpoints (วางแผน)
+- `PUT /issues/:id/cancel` — ยกเลิกงาน (ต้องมี permission)
+- `PUT /issues/:id/restore` — กู้คืนงาน
+- `GET /issues/cancelled` — ดูรายการที่ยกเลิก
+
+### 7.7 Permission (วางแผน)
+- เพิ่ม `"issue.cancel"` ใน `packages/shared/src/permissions`
+- ให้ `admin` + `programmer` ทั้งคู่
+- สำหรับ customer ที่ยกเลิกได้เฉพาะ Backlog → ต้องเช็กสถานะใน service logic (ไม่ใช่ permission แยก)
+
+---
+
+## 8. แผนการแก้ไข (Roadmap) — ลำดับการทำงาน
 
 > ทำตามลำดับนี้ เพราะขั้นหลัง ๆ อ้างอิงขั้นก่อนหน้า
 

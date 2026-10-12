@@ -7,8 +7,10 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from "@nestjs/common";
+import { normalizePagination } from "../../common/pagination";
 import { IssueStatusesService } from "./issue-statuses.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -21,8 +23,8 @@ export class IssueStatusesController {
 
   @Get()
   @Permissions("status.view")
-  findAll() {
-    return this.issueStatuses.findAll();
+  findAll(@Query() query: { page?: string; limit?: string }) {
+    return this.issueStatuses.findAll(normalizePagination(query));
   }
 
   @Post()
@@ -38,6 +40,15 @@ export class IssueStatusesController {
     },
   ) {
     return this.issueStatuses.create(body);
+  }
+
+  @Patch("reorder")
+  @Permissions("status.update")
+  reorder(
+    @Body()
+    body: { items: Array<{ id: number; sortOrder: number }> },
+  ) {
+    return this.issueStatuses.reorder(body.items);
   }
 
   @Patch(":id")

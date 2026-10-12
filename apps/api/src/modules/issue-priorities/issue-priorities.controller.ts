@@ -7,8 +7,10 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from "@nestjs/common";
+import { normalizePagination } from "../../common/pagination";
 import { IssuePrioritiesService } from "./issue-priorities.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -21,8 +23,8 @@ export class IssuePrioritiesController {
 
   @Get()
   @Permissions("priority.view")
-  findAll() {
-    return this.issuePriorities.findAll();
+  findAll(@Query() query: { page?: string; limit?: string }) {
+    return this.issuePriorities.findAll(normalizePagination(query));
   }
 
   @Post()

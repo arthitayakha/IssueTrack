@@ -1,6 +1,6 @@
 "use client";
 
-import { Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from "@mui/material";
+import { Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, useTheme } from "@mui/material";
 import type { SxProps } from "@mui/material/styles";
 import type { ReactNode } from "react";
 
@@ -10,6 +10,7 @@ interface DataTableProps {
 }
 
 export default function DataTable({ children, rounded = true }: DataTableProps) {
+  const theme = useTheme();
   return (
     <TableContainer
       component={Paper}
@@ -18,7 +19,7 @@ export default function DataTable({ children, rounded = true }: DataTableProps) 
         borderRadius: rounded ? 3 : 1,
         border: "1px solid",
         borderColor: "divider",
-        boxShadow: "0 2px 12px rgba(30, 64, 120, 0.06)",
+        boxShadow: theme.custom.tableShadow,
         overflow: "hidden",
         "& .MuiTableCell-head": {
           bgcolor: "grey.50",
@@ -57,8 +58,14 @@ export function DataTableBody({ children }: { children: ReactNode }) {
   return <TableBody>{children}</TableBody>;
 }
 
-export function DataTableRow({ children, hover = true }: { children: ReactNode; hover?: boolean }) {
-  return <TableRow hover={hover}>{children}</TableRow>;
+export function DataTableRow({ children, hover = true, ...props }: {
+  children: ReactNode;
+  hover?: boolean;
+  ref?: React.Ref<HTMLTableRowElement>;
+  style?: React.CSSProperties;
+  sx?: SxProps;
+}) {
+  return <TableRow hover={hover} ref={props.ref} style={props.style} sx={props.sx}>{children}</TableRow>;
 }
 
 export function DataTableCell({ children, align, colSpan, sx }: {

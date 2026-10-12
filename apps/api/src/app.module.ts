@@ -4,7 +4,6 @@ import { APP_GUARD } from "@nestjs/core";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { AuthModule } from "./modules/auth/auth.module";
 import { PermissionsModule } from "./modules/permissions/permissions.module";
-import { BoardsModule } from "./modules/boards/boards.module";
 import { ColumnsModule } from "./modules/columns/columns.module";
 import { IssuesModule } from "./modules/issues/issues.module";
 import { CommentsModule } from "./modules/comments/comments.module";
@@ -36,7 +35,6 @@ import { JwtAuthGuard } from "./modules/auth/jwt-auth.guard";
     }),
     AuthModule,
     PermissionsModule,
-    BoardsModule,
     ColumnsModule,
     IssuesModule,
     CommentsModule,

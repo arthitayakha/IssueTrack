@@ -5,6 +5,7 @@ import * as bcrypt from "bcryptjs";
 import { User } from "../auth/entities/user.entity";
 import { Position } from "../positions/position.entity";
 import { Role } from "../roles/entities/role.entity";
+import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class UsersService {
@@ -17,7 +18,7 @@ export class UsersService {
     private readonly roles: Repository<Role>,
   ) {}
 
-  async findAll() {
+  async findAll(params: PaginationParams) {
     const users = await this.users
       .createQueryBuilder("user")
       .leftJoinAndSelect("user.position", "position")
@@ -25,7 +26,7 @@ export class UsersService {
       .orderBy("user.id", "ASC")
       .getMany();
 
-    return users.map((user) => ({
+    const mapped = users.map((user) => ({
       id: String(user.id),
       email: user.email,
       name: user.name,
@@ -37,6 +38,7 @@ export class UsersService {
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     }));
+    return paginate(mapped, params);
   }
 
   async create(data: {

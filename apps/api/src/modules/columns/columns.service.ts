@@ -8,6 +8,8 @@ import { Repository } from "typeorm";
 import { BoardColumn } from "./entities/board-column.entity";
 import { Issue } from "../issues/entities/issue.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
+import { IssueStatus } from "../issue-statuses/entities/issue-status.entity";
+import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class ColumnsService {
@@ -18,63 +20,62 @@ export class ColumnsService {
     private readonly issues: Repository<Issue>,
     @InjectRepository(ActivityLog)
     private readonly activityLogs: Repository<ActivityLog>,
+    @InjectRepository(IssueStatus)
+    private readonly issueStatuses: Repository<IssueStatus>,
   ) {}
 
-  async findByBoard(boardId: number) {
-    const columns = await this.columns.find({
-      where: { boardId },
-      order: { position: "ASC" },
-    });
+  async findAll(params: PaginationParams) {
+    const columns = await this.columns
+      .createQueryBuilder("col")
+      .leftJoinAndSelect("col.status", "status")
+      .orderBy("status.sort_order", "ASC")
+      .addOrderBy("col.position", "ASC")
+      .getMany();
     const result = await Promise.all(
       columns.map(async (c) => ({
         id: c.id,
-        boardId: c.boardId,
-        status: c.status,
+        statusId: c.statusId,
+        statusName: c.status?.name ?? "",
         customName: c.customName,
         isHidden: c.isHidden,
+        isLocked: c.isLocked,
         position: c.position,
         issueCount: await this.issues.count({ where: { columnId: c.id } }),
       })),
     );
-    return result;
+    return paginate(result, params);
   }
 
-  async create(boardId: number, status: string, customName?: string) {
-    const existing = await this.columns.findOne({
-      where: { boardId, status },
-    });
-    if (existing) {
-      throw new ConflictException(
-        `Column with status "${status}" already exists in this board`,
-      );
+  async create(statusId: number) {
+    const status = await this.issueStatuses.findOne({ where: { id: statusId } });
+    if (!status) {
+      throw new NotFoundException(`Issue status ${statusId} not found`);
     }
     const maxPosition = await this.columns
       .createQueryBuilder("col")
       .select("MAX(col.position)", "max")
-      .where("col.boardId = :boardId", { boardId })
       .getRawOne();
-    const position = (maxPosition?.max ?? -1) + 1;
+    const nextPosition = Math.max(status.sortOrder, (maxPosition?.max ?? 0) + 1);
     const column = await this.columns.save(
       this.columns.create({
-        boardId,
-        status,
-        customName: customName ?? null,
-        position,
+        statusId: status.id,
+        position: nextPosition,
       }),
     );
     return {
       id: column.id,
-      boardId: column.boardId,
-      status: column.status,
+      statusId: column.statusId,
+      statusName: status.name,
       customName: column.customName,
       isHidden: column.isHidden,
+      isLocked: column.isLocked,
       position: column.position,
     };
   }
 
   async update(
     id: number,
-    data: { customName?: string; isHidden?: boolean; position?: number },
+    data: { customName?: string; isHidden?: boolean; isLocked?: boolean; position?: number },
   ) {
     const column = await this.columns.findOne({ where: { id } });
     if (!column) {
@@ -82,16 +83,30 @@ export class ColumnsService {
     }
     if (data.customName !== undefined) column.customName = data.customName;
     if (data.isHidden !== undefined) column.isHidden = data.isHidden;
+    if (data.isLocked !== undefined) column.isLocked = data.isLocked;
     if (data.position !== undefined) column.position = data.position;
     await this.columns.save(column);
+    const status = column.statusId
+      ? await this.issueStatuses.findOne({ where: { id: column.statusId } })
+      : null;
     return {
       id: column.id,
-      boardId: column.boardId,
-      status: column.status,
+      statusId: column.statusId,
+      statusName: status?.name ?? "",
       customName: column.customName,
       isHidden: column.isHidden,
+      isLocked: column.isLocked,
       position: column.position,
     };
+  }
+
+  async reorder(items: Array<{ id: number; position: number }>) {
+    await this.columns.manager.transaction(async (em) => {
+      for (const item of items) {
+        await em.update(BoardColumn, item.id, { position: item.position });
+      }
+    });
+    return { reordered: items.length };
   }
 
   async remove(id: number) {
@@ -101,8 +116,9 @@ export class ColumnsService {
     }
     const issueCount = await this.issues.count({ where: { columnId: id } });
     if (issueCount > 0) {
+      const status = await this.issueStatuses.findOne({ where: { id: column.statusId } });
       throw new ConflictException(
-        `Cannot delete column "${column.status}" because it has ${issueCount} issue(s)`,
+        `Cannot delete column "${status?.name ?? column.statusId}" because it has ${issueCount} issue(s)`,
       );
     }
     await this.columns.delete(id);

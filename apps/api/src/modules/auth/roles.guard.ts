@@ -7,6 +7,7 @@ import {
 import { Reflector } from "@nestjs/core";
 import type { Permission } from "@kanban/shared";
 import { PERMISSIONS_KEY } from "./permissions.decorator";
+import { IS_PUBLIC_KEY } from "./public.decorator";
 import { PermissionsService } from "../permissions/permissions.service";
 
 @Injectable()
@@ -17,6 +18,12 @@ export class RolesGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isPublic) return true;
+
     const required = this.reflector.getAllAndOverride<Permission[]>(
       PERMISSIONS_KEY,
       [context.getHandler(), context.getClass()],

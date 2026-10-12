@@ -40,11 +40,24 @@ npm run migration:generate
 ## Structure / โครงสร้าง
 
 - `apps/web` — Next.js frontend. Path alias `@/*` → `src/*`. Imports `@kanban/shared` as raw TS. Uses `next-intl` for i18n (locales: `th` default, `en`).
-- `apps/api` — NestJS. Implemented: `auth`, `permissions`, `users`, `roles`, `positions`, `boards`, `columns`, `issues`, `issue-statuses`, `issue-priorities`, `categories`, `activity-logs`. **Stub modules** (entity only, no controller/service): `work-sessions`, `comments`, `attachments`, `notifications`, `labels`.
+- `apps/api` — NestJS. Implemented (controller + service): `auth`, `permissions`, `users`, `roles`, `positions`, `columns`, `issues`, `issue-statuses`, `issue-priorities`, `categories`, `activity-logs`, `work-sessions`, `comments`, `attachments`, `labels`. **Only `notifications` is a stub** (entity only). **There is NO `boards` module/table** — the app is single-board; see Domain rules.
 - `packages/shared` — types/DTOs/permissions consumed as raw TS (`main` → `src/index.ts`); **no build step**. Resolved via workspace symlink and root tsconfig path `@kanban/shared` → `packages/shared/src`.
 - **ไทย:** `apps/web` ใช้ alias `@/*` → `src/*` และ import `@kanban/shared` เป็น TS ตรง ๆ; ใช้ `next-intl` (locale เริ่มต้น `th`)
-- **ไทย:** `apps/api` implement แล้ว `auth`, `permissions`, `users`, `roles`, `positions`, `boards`, `columns`, `issues`, `issue-statuses`, `issue-priorities`, `categories`, `activity-logs`; `work-sessions`, `comments`, `attachments`, `notifications`, `labels` ยังเป็น stub
+- **ไทย:** `apps/api` implement แล้ว (มี controller + service): `auth`, `permissions`, `users`, `roles`, `positions`, `columns`, `issues`, `issue-statuses`, `issue-priorities`, `categories`, `activity-logs`, `work-sessions`, `comments`, `attachments`, `labels`; เหลือแค่ `notifications` ที่ยังเป็น stub (มี entity อย่างเดียว). **ไม่มีโมดูล/ตาราง `boards`** — แอปเป็นแบบบอร์ดเดียว ดูหัวข้อข้อจำกัดระบบ
 - **ไทย:** `packages/shared` ถูกใช้เป็น TS ดิบ ไม่มี build step
+
+## Domain rules — single board / ข้อจำกัดระบบ — บอร์ดเดียว
+
+- **One board only.** Do NOT add a `boards` table/entity/controller/service, a board list, a board selector, or board CRUD. The app is single-board.
+- The sidebar "บอร์ด"/"Board" item links straight to `/boards` — that page **is** the board (no intermediate board list). `fetchColumns()`/`fetchIssues()` hit global `/columns` and `/issues`.
+- **"Add column" = "add status".** `AddColumnInline` (`[locale]/boards/page.tsx`) picks an existing status from `GET /issue-statuses`, and `ColumnsService.create` inserts a `board_columns` row whose `status` is that name. `customName` is only a display label. So a column is a status + optional display name.
+- Columns are **global** — `BoardColumn` has no `boardId`; `Issue.columnId` maps to `board_columns.id` (via the DB column `board_id`).
+- **Drift / legacy — do not reintroduce `board_id`:** migration `1791200000000-RemoveBoardsAndAddTimeTracking.ts` dropped `board_id`, but `Issue` still maps the `board_id` DB column → `columnId` (`issues/entities/issue.entity.ts:101`) and `[locale]/issues/page.tsx:62` still calls the dead `/issues/boards/1/issues` route (not in `IssuesController`). The real endpoint is `GET /issues`.
+- **ไทย:** มีบอร์ดเดียว — ห้ามเพิ่มตาราง `boards`, entity/controller/service ของบอร์ด, หน้ารวมบอร์ด, ตัวเลือกบอร์ด หรือ CRUD บอร์ด
+- **ไทย:** ปุ่ม "บอร์ด" เข้า `/boards` ตรง ๆ หน้านั้นคือตัวบอร์ด; `fetchColumns()`/`fetchIssues()` ยิง `/columns` และ `/issues` แบบ global
+- **ไทย:** "เพิ่มคอลัมน์" = "เพิ่มสถานะ" — เลือกสถานะจาก `GET /issue-statuses` แล้วสร้างแถว `board_columns` โดยใช้ชื่อสถานะเป็น `status`; `customName` เป็นแค่ชื่อที่แสดง
+- **ไทย:** คอลัมน์เป็น global (`BoardColumn` ไม่มี `boardId`); `Issue.columnId` map ไป `board_columns.id`
+- **ไทย:** อย่านำ `board_id` กลับมา — migration `1791200000000` ลบไปแล้ว แต่ entity `Issue` ยัง map คอลัมน์ `board_id` → `columnId` และหน้า `issues` ยังเรียก `/issues/boards/1/issues` ที่ตายแล้ว; endpoint จริงคือ `GET /issues`
 
 ## Backend facts / ข้อเท็จจริงฝั่ง backend
 
@@ -53,13 +66,13 @@ npm run migration:generate
 - `AuthService.onModuleInit` seeds `admin@example.com` / `admin123`, and resets passwords of `aom@`, `arthitaya@`, `programmer@` gmail accounts to `123456`.
 - `User.id` is an **integer** auto-increment PK (not UUID); password column is named `password` but maps to `passwordHash`. `RolePermission.id` **is** a uuid — PK types are mixed. `packages/shared` types say `id: string`; the API returns `String(user.id)`.
 - DB env vars are `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` (`apps/api/.env`); code defaults `localhost` / `5432` / `postgres` / `1234` / `trackdb`. `synchronize: false` always — tables must already exist (and migrations are broken, above).
-- **Roles are `"admin" | "programmer" | "customer"`** (3 roles, stored in the `roles` table — not an enum). Being renamed from `"user"` → `"customer"`; see `design.md` §8.
+- **Roles are `"admin" | "programmer" | "customer"`** (3 roles, stored in the `roles` table — not an enum). Renamed from `"user"` → `"customer"` (done); see `design.md` §8.
 - **`permissions` table** (queried via raw SQL, not a TypeORM entity): columns `id`, `code`, `action`, `category`. `role_permissions` table: TypeORM entity with uuid `id`, `role`, `permission`.
-- **`Position` entity**: `id` (int), `name` (unique). `User` has nullable `position` column. **Positions currently have NO role link and NO permission capability** — see `design.md` §3 for the planned change.
+- **`Position` entity**: `id` (int), `name` (unique), nullable `role_id` → `Role`, and a `position_permissions` relation. `User` has a nullable `position` column. Effective perms = role perms ∪ position perms; `PermissionsService.hasPermission(roleId, permission, positionId?)` checks both, and JWT carries `positionId`.
 - **ไทย:** `JwtAuthGuard` เป็น global guard ผ่าน `APP_GUARD`; ยกเว้นด้วย `@Public()`. JWT หมดอายุ 7 วัน ไม่มี refresh flow
 - **ไทย:** `User.id` เป็น integer คอลัมน์ `password` map ไป `passwordHash`; `RolePermission.id` เป็น uuid (PK ปนกัน). `synchronize: false` เสมอ ต้องสร้างตารางเอง
-- **ไทย:** Role คือ `"admin" | "programmer" | "customer"` (3 บทบาท เก็บในตาราง `roles`) กำลังเปลี่ยนจาก `"user"` เป็น `"customer"`
-- **ไทย:** ตาราง `permissions` query ด้วย SQL ตรง ไม่ใช่ entity; `positions` ตอนนี้ยังไม่ได้เชื่อม role และยังแก้ permission ไม่ได้
+- **ไทย:** Role คือ `"admin" | "programmer" | "customer"` (3 บทบาท เก็บในตาราง `roles`) เปลี่ยนแล้วจาก `"user"` เป็น `"customer"`
+- **ไทย:** ตาราง `permissions` query ด้วย SQL ตรง ไม่ใช่ entity; `positions` เชื่อม role แล้ว (`role_id`) และเพิ่ม permission ได้ผ่านตาราง `position_permissions`; `hasPermission` เช็คทั้ง role และ position
 
 ## Authorization (implemented — extend, don't reinvent) / สิทธิ์การเข้าถึง
 
@@ -81,7 +94,7 @@ npm run migration:generate
 - Theme: `apps/web/src/lib/theme.ts`; `ThemeProvider` + `CssBaseline` wired in `[locale]/layout.tsx`. It augments MUI with palette colors `navy` / `sky` and `theme.custom.loginGradient` / `theme.custom.cardShadow`. Use these tokens; do not hardcode hex.
 - Auth state: Zustand `useAuthStore`, persisted under key `kanban-auth` (localStorage when "remember me", else sessionStorage).
 - API base URL `NEXT_PUBLIC_API_URL` (default `http://localhost:3002`) via `apiFetch` in `src/lib/api.ts`. `apiFetch` throws `ApiError` (has `status`, `message`).
-- `usePermissions()` hook (`src/lib/permissions.ts`): returns `{ roleName, permissions, can }`. Defaults to `"user"` role when logged out (→ will become `"customer"`).
+- `usePermissions()` hook (`src/lib/permissions.ts`): returns `{ roleName, permissions, can }`. Defaults to the `"customer"` role when logged out.
 - **Two `DataTable` components exist**: `src/components/data-table.tsx` (styled, used) and `src/components/data-table/index.tsx` (older, unused). Import from `@/components/data-table`.
 - **ไทย:** ใช้ `useRouter`/`usePathname`/`Link`/`redirect` จาก `@/i18n/navigation` ไม่ใช่จาก `next/navigation`
 - **ไทย:** `middleware.ts` เป็น locale middleware ไม่ใช่ auth; การป้องกัน route ทำฝั่ง client เท่านั้น

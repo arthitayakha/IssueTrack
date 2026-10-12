@@ -42,10 +42,10 @@ export type Permission =
   | "priority.create"
   | "priority.update"
   | "priority.delete"
-  | "skill.view"
-  | "skill.create"
-  | "skill.update"
-  | "skill.delete"
+  | "label.view"
+  | "label.create"
+  | "label.update"
+  | "label.delete"
   | "report.view"
   | "report.export"
   | "permission.view"
@@ -54,6 +54,8 @@ export type Permission =
   | "board.column.create"
   | "board.column.update"
   | "board.column.delete"
+  | "board.column.unlock"
+  | "issue.unlock"
   | "position.view"
   | "position.create"
   | "position.update"
@@ -106,10 +108,10 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   "priority.create",
   "priority.update",
   "priority.delete",
-  "skill.view",
-  "skill.create",
-  "skill.update",
-  "skill.delete",
+  "label.view",
+  "label.create",
+  "label.update",
+  "label.delete",
   "report.view",
   "report.export",
   "permission.view",
@@ -118,6 +120,8 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   "board.column.create",
   "board.column.update",
   "board.column.delete",
+  "board.column.unlock",
+  "issue.unlock",
   "position.view",
   "position.create",
   "position.update",
@@ -169,17 +173,26 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "priority.create",
     "priority.update",
     "priority.delete",
-    "skill.view",
-    "skill.create",
-    "skill.update",
-    "skill.delete",
+    "label.view",
+    "label.create",
+    "label.update",
+    "label.delete",
     "report.view",
     "report.export",
     "board.view",
     "board.column.create",
     "board.column.update",
     "board.column.delete",
+    "board.column.unlock",
+    "issue.unlock",
     "position.view",
+    "position.create",
+    "position.update",
+    "position.delete",
+    "role.view",
+    "role.create",
+    "role.update",
+    "role.delete",
   ],
   customer: [
     "auth.login",
@@ -194,7 +207,6 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "comment.create",
     "comment.own.update",
     "comment.own.delete",
-    "category.view",
     "board.view",
     "board.column.create",
     "board.column.update",
@@ -302,10 +314,10 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "priority.create": "สร้างความสำคัญ",
   "priority.update": "แก้ไขความสำคัญ",
   "priority.delete": "ลบความสำคัญ",
-  "skill.view": "ดูทักษะ",
-  "skill.create": "สร้างทักษะ",
-  "skill.update": "แก้ไขทักษะ",
-  "skill.delete": "ลบทักษะ",
+  "label.view": "ดูป้ายกำกับ",
+  "label.create": "สร้างป้ายกำกับ",
+  "label.update": "แก้ไขป้ายกำกับ",
+  "label.delete": "ลบป้ายกำกับ",
   "report.view": "ดูรายงาน",
   "report.export": "ส่งออกรายงาน",
   "permission.view": "ดูสิทธิ์",
@@ -314,6 +326,8 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "board.column.create": "สร้างคอลัมน์ในบอร์ด",
   "board.column.update": "แก้ไขคอลัมน์ในบอร์ด",
   "board.column.delete": "ลบคอลัมน์ในบอร์ด",
+  "board.column.unlock": "ปลดล็อกคอลัมน์ในบอร์ด",
+  "issue.unlock": "ปลดล็อกการ์ด",
   "position.view": "ดูตำแหน่ง",
   "position.create": "สร้างตำแหน่ง",
   "position.update": "แก้ไขตำแหน่ง",
@@ -329,6 +343,59 @@ export const POSITION_TEMPLATES: Record<string, readonly Permission[]> = {
   customer: ROLE_PERMISSIONS.customer,
   staff: ROLE_TEMPLATES.staff,
   manager: ROLE_TEMPLATES.manager,
+};
+
+export const PERMISSION_DEPENDENCIES: Record<string, string[]> = {
+  "user.create": ["user.view"],
+  "user.update": ["user.view"],
+  "user.delete": ["user.view"],
+  "role.create": ["role.view"],
+  "role.update": ["role.view"],
+  "role.delete": ["role.view"],
+  "position.create": ["position.view"],
+  "position.update": ["position.view"],
+  "position.delete": ["position.view"],
+  "category.create": ["category.view"],
+  "category.update": ["category.view"],
+  "category.delete": ["category.view"],
+  "category.visibility.update": ["category.view"],
+  "status.create": ["status.view"],
+  "status.update": ["status.view"],
+  "status.delete": ["status.view"],
+  "priority.create": ["priority.view"],
+  "priority.update": ["priority.view"],
+  "priority.delete": ["priority.view"],
+  "label.create": ["label.view"],
+  "label.update": ["label.view"],
+  "label.delete": ["label.view"],
+  "board.column.create": ["board.view"],
+  "board.column.update": ["board.view"],
+  "board.column.delete": ["board.view"],
+  "comment.create": ["comment.view"],
+  "comment.own.update": ["comment.view"],
+  "comment.own.delete": ["comment.view"],
+  "comment.all.delete": ["comment.view"],
+  "issue.create": ["issue.all.view"],
+  "issue.own.update": ["issue.own.view"],
+  "issue.all.update": ["issue.all.view"],
+  "issue.delete": ["issue.all.view"],
+  "issue.assign": ["issue.all.view"],
+  "issue.reassign": ["issue.all.view"],
+  "issue.status.update": ["issue.all.view"],
+  "issue.category.change": ["issue.all.view"],
+  "issue.priority.change": ["issue.all.view"],
+  "report.export": ["report.view"],
+  "role.permission.update": ["role.view"],
+  "permission.update": ["permission.view"],
+};
+
+export const ROUTE_ACCESS: Record<string, string> = {
+  "dashboard.own.view": "/",
+  "board.view": "/boards",
+  "comment.view": "/comments",
+  "user.view": "/users",
+  "permission.update": "/settings",
+  "report.view": "/reports",
 };
 
 export function permissionsForRole(role: string): readonly Permission[] {

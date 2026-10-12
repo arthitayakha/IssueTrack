@@ -7,12 +7,13 @@ import { AuthController } from "./auth.controller";
 import { JwtStrategy } from "./jwt.strategy";
 import { User } from "./entities/user.entity";
 import { Role } from "../roles/entities/role.entity";
+import { PositionPermission } from "../positions/entities/position-permission.entity";
 import { PermissionsModule } from "../permissions/permissions.module";
 import { RolesModule } from "../roles/roles.module";
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, Role]),
+    TypeOrmModule.forFeature([User, Role, PositionPermission]),
     PassportModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET ?? "secret",

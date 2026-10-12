@@ -22,9 +22,6 @@ export class ActivityLog {
   @Column({ type: "varchar", length: 100 })
   action!: string;
 
-  @Column({ name: "board_id", type: "int", nullable: true })
-  boardId!: number | null;
-
   @Column({ name: "entity_id", type: "int", nullable: true })
   entityId!: number | null;
 

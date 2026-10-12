@@ -11,6 +11,7 @@ import { User } from "../auth/entities/user.entity";
 import { Role } from "../roles/entities/role.entity";
 import { PermissionsService } from "../permissions/permissions.service";
 import { permissionsForRole } from "@kanban/shared";
+import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class PositionsService {
@@ -27,7 +28,7 @@ export class PositionsService {
     private readonly permissionsService: PermissionsService,
   ) {}
 
-  async findAll() {
+  async findAll(params: PaginationParams) {
     const positions = await this.positions.find({ order: { id: "ASC" } });
     const result = await Promise.all(
       positions.map(async (p) => ({
@@ -41,7 +42,7 @@ export class PositionsService {
         userCount: await this.users.count({ where: { positionId: p.id } }),
       })),
     );
-    return result;
+    return paginate(result, params);
   }
 
   async create(name: string, roleId?: number | null) {

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
+import { useRouter } from "@/i18n/navigation";
 import {
   Box,
   Button,
@@ -22,17 +23,48 @@ import {
   Select,
   MenuItem,
   Switch,
+  Card,
+  CardContent,
+  useTheme,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
+import DragHandleIcon from "@mui/icons-material/DragHandle";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
-import RequireAuth from "@/components/require-auth";
+import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermissions } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useNotification } from "@/components/notification";
+import {
+  DndContext,
+  closestCorners,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  fetchLabels,
+  createLabel,
+  updateLabel,
+  toggleLabelActive,
+  checkLabel,
+  deleteLabel,
+  type Label,
+} from "@/lib/labels-api";
+import ColorPicker from "@/components/color-picker";
 
 interface Category {
   id: number;
@@ -53,6 +85,7 @@ interface IssueStatus {
   name: string;
   description: string | null;
   isActive: boolean;
+  sortOrder: number;
   issueCount: number;
 }
 
@@ -64,16 +97,216 @@ interface IssuePriority {
   issueCount: number;
 }
 
+function getStatusColor(statusName: string, theme: any): string {
+  const key = statusName.toLowerCase();
+  return theme.custom.columnColors[key] ?? theme.custom.columnColors.default;
+}
+
+function SortableStatusRow({
+  status,
+  index,
+  canUpdate,
+  canDelete,
+  onToggle,
+  onEdit,
+  onDelete,
+}: {
+  status: IssueStatus;
+  index: number;
+  canUpdate: boolean;
+  canDelete: boolean;
+  onToggle: (s: IssueStatus) => void;
+  onEdit: (s: IssueStatus) => void;
+  onDelete: (id: number) => void;
+}) {
+  const theme = useTheme();
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: status.id });
+
+  const statusColor = getStatusColor(status.name, theme);
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+    zIndex: isDragging ? 1000 : "auto",
+    position: "relative" as const,
+  };
+
+  return (
+    <Box
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 2,
+        p: 2,
+        mb: 1,
+        bgcolor: isDragging ? theme.palette.sky.dark : theme.palette.common.white,
+        border: "1px solid",
+        borderColor: isDragging ? statusColor : theme.custom.tableBorder,
+        borderRadius: 2,
+        boxShadow: isDragging ? theme.custom.cardShadow : "none",
+        cursor: "grab",
+        transition: "all 0.2s ease",
+        "&:hover": {
+          borderColor: statusColor,
+          boxShadow: `0 2px 8px ${statusColor}30`,
+        },
+      }}
+    >
+      <Box
+        {...listeners}
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 36,
+          height: 36,
+          borderRadius: 1.5,
+          cursor: "grab",
+          color: theme.palette.text.secondary,
+          flexShrink: 0,
+          transition: "all 0.2s ease",
+          "&:hover": {
+            bgcolor: statusColor,
+            color: theme.palette.common.white,
+          },
+          "&:active": {
+            cursor: "grabbing",
+          },
+        }}
+      >
+        <DragHandleIcon fontSize="small" />
+      </Box>
+
+      <Box
+        sx={{
+          minWidth: 36,
+          height: 36,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          bgcolor: statusColor,
+          color: theme.palette.common.white,
+          borderRadius: 2,
+          fontWeight: 700,
+          fontSize: 14,
+          flexShrink: 0,
+          boxShadow: `0 2px 8px ${statusColor}50`,
+        }}
+      >
+        {index + 1}
+      </Box>
+
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Box
+            sx={{
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              bgcolor: statusColor,
+              flexShrink: 0,
+            }}
+          />
+          <Typography variant="body2" fontWeight={600} noWrap sx={{ color: theme.palette.navy.main }}>
+            {status.name}
+          </Typography>
+        </Box>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          noWrap
+          sx={{ display: "block", lineHeight: 1.4, mt: 0.5, pl: 2 }}
+        >
+          {status.description ?? "—"}
+        </Typography>
+      </Box>
+
+      <Chip
+        label={status.isActive ? "เปิดใช้งาน" : "ปิดใช้งาน"}
+        color={status.isActive ? "success" : "error"}
+        size="small"
+        variant="outlined"
+        sx={{
+          height: 26,
+          fontSize: 12,
+          fontWeight: 600,
+          flexShrink: 0,
+        }}
+      />
+
+      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexShrink: 0 }}>
+        {canUpdate && (
+          <FormControlLabel
+            control={
+              <Switch
+                checked={status.isActive}
+                onChange={() => onToggle(status)}
+                size="small"
+              />
+            }
+            label=""
+            sx={{ mr: 0.5 }}
+          />
+        )}
+        {canUpdate && (
+          <IconButton
+            size="small"
+            onClick={() => onEdit(status)}
+            sx={{
+              color: theme.palette.text.secondary,
+              "&:hover": {
+                bgcolor: `${statusColor}20`,
+                color: statusColor,
+              },
+            }}
+          >
+            <EditIcon fontSize="small" />
+          </IconButton>
+        )}
+        {canDelete && (
+          <IconButton
+            size="small"
+            onClick={() => onDelete(status.id)}
+            sx={{
+              color: theme.palette.text.secondary,
+              "&:hover": {
+                bgcolor: "#ffebee",
+                color: "#d32f2f",
+              },
+            }}
+          >
+            <DeleteIcon fontSize="small" />
+          </IconButton>
+        )}
+      </Box>
+    </Box>
+  );
+}
+
 export default function SettingsPage() {
   const t = useTranslations("Settings");
+  const router = useRouter();
   const { can } = usePermissions();
   const token = useAuthStore((s) => s.token);
   const { notify } = useNotification();
+  const theme = useTheme();
   const [tab, setTab] = useState(0);
   const [categories, setCategories] = useState<Category[]>([]);
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
+  const [labels, setLabels] = useState<Label[]>([]);
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
 
@@ -95,53 +328,96 @@ export default function SettingsPage() {
     description: "",
   });
 
-  const [deleteTarget, setDeleteTarget] = useState<{ type: "category" | "status" | "priority"; id: number; name: string } | null>(null);
+  const [labelDialogOpen, setLabelDialogOpen] = useState(false);
+  const [editingLabel, setEditingLabel] = useState<Label | null>(null);
+  const [labelForm, setLabelForm] = useState({ name: "", color: "default" });
+
+  const [deleteTarget, setDeleteTarget] = useState<{ type: "category" | "status" | "priority" | "label"; id: number; name: string } | null>(null);
   const [deleteCheck, setDeleteCheck] = useState<{ canDelete: boolean; issueCount: number } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   const canViewCategories = can("category.view");
   const canViewStatuses = can("status.view");
   const canViewPriorities = can("priority.view");
+  const canViewPositions = can("position.view");
+  const canViewLabels = can("label.view");
+
+  const statusSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 5,
+      },
+    }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  async function handleStatusDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const activeId = Number(active.id);
+    const overId = Number(over.id);
+    const oldIndex = statuses.findIndex((s) => s.id === activeId);
+    const newIndex = statuses.findIndex((s) => s.id === overId);
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const reordered = arrayMove(statuses, oldIndex, newIndex);
+    setStatuses(reordered);
+
+    try {
+      await apiFetch(
+        "/issue-statuses/reorder",
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            items: reordered.map((s, idx) => ({ id: s.id, sortOrder: idx + 1 })),
+          }),
+        },
+        token,
+      );
+    } catch (err) {
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
+      const updated = await apiFetch<IssueStatus[]>("/issue-statuses", {}, token);
+      setStatuses(updated);
+    }
+  }
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
   useEffect(() => {
-    if (!canViewCategories && !canViewStatuses && !canViewPriorities) return;
     const requests: Promise<any>[] = [];
     if (canViewCategories) {
       requests.push(apiFetch<Category[]>("/categories", {}, token));
+    }
+    if (canViewPositions) {
       requests.push(apiFetch<Position[]>("/positions", {}, token));
     }
     if (canViewStatuses) requests.push(apiFetch<IssueStatus[]>("/issue-statuses", {}, token));
     if (canViewPriorities) requests.push(apiFetch<IssuePriority[]>("/issue-priorities", {}, token));
+    if (canViewLabels) requests.push(fetchLabels());
 
     Promise.all(requests)
       .then((results) => {
         let idx = 0;
         if (canViewCategories) {
           setCategories(results[idx++]);
+        }
+        if (canViewPositions) {
           setPositions(results[idx++]);
         }
         if (canViewStatuses) setStatuses(results[idx++]);
         if (canViewPriorities) setPriorities(results[idx++]);
+        if (canViewLabels) setLabels(results[idx++]);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [canViewCategories, canViewStatuses, canViewPriorities, token]);
-
-  if (!canViewCategories && !canViewStatuses && !canViewPriorities) {
-    return (
-      <DashboardLayout>
-        <Box sx={{ py: 4 }}>
-          <Typography variant="body1" color="text.secondary">
-            {t("noPermission")}
-          </Typography>
-        </Box>
-      </DashboardLayout>
-    );
-  }
+  }, [canViewCategories, canViewStatuses, canViewPriorities, canViewPositions, canViewLabels, token]);
 
   function openAddCategory() {
     setEditingCategory(null);
@@ -261,6 +537,7 @@ export default function SettingsPage() {
       const updated = await apiFetch<IssueStatus[]>("/issue-statuses", {}, token);
       setStatuses(updated);
       setStatusDialogOpen(false);
+      router.refresh();
     } catch (err) {
       if (err instanceof ApiError) {
         notify(err.message, "error");
@@ -392,6 +669,74 @@ export default function SettingsPage() {
     }
   }
 
+  function openAddLabel() {
+    setEditingLabel(null);
+    setLabelForm({ name: "", color: "default" });
+    setLabelDialogOpen(true);
+  }
+
+  function openEditLabel(label: Label) {
+    setEditingLabel(label);
+    setLabelForm({ name: label.name, color: label.color });
+    setLabelDialogOpen(true);
+  }
+
+  async function handleSaveLabel() {
+    try {
+      const payload = {
+        name: labelForm.name,
+        color: labelForm.color,
+      };
+      if (editingLabel) {
+        await updateLabel(editingLabel.id, payload);
+        notify(t("labelUpdated"));
+      } else {
+        await createLabel(payload);
+        notify(t("labelCreated"));
+      }
+      const updated = await fetchLabels();
+      setLabels(updated);
+      setLabelDialogOpen(false);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
+    }
+  }
+
+  async function handleToggleLabelActive(label: Label) {
+    try {
+      await toggleLabelActive(label.id, !label.isActive);
+      setLabels((prev) =>
+        prev.map((l) => (l.id === label.id ? { ...l, isActive: !l.isActive } : l)),
+      );
+      notify(t("labelToggled"));
+    } catch (err) {
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
+    }
+  }
+
+  async function handleDeleteLabel(id: number) {
+    const label = labels.find((l) => l.id === id);
+    if (!label) return;
+    setDeleteTarget({ type: "label", id, name: label.name });
+    setDeleteLoading(true);
+    try {
+      const result = await checkLabel(id);
+      setDeleteCheck(result);
+    } catch (err) {
+      setDeleteTarget(null);
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
   async function confirmDelete() {
     if (!deleteTarget) return;
     try {
@@ -403,7 +748,7 @@ export default function SettingsPage() {
         await apiFetch(`/issue-statuses/${deleteTarget.id}`, { method: "DELETE" }, token);
         setStatuses((prev) => prev.filter((s) => s.id !== deleteTarget.id));
         notify(t("statusDeleted"));
-      } else {
+      } else if (deleteTarget.type === "priority") {
         await apiFetch(`/issue-priorities/${deleteTarget.id}`, { method: "DELETE" }, token);
         setPriorities((prev) => prev.filter((p) => p.id !== deleteTarget.id));
         notify(t("priorityDeleted"));
@@ -435,10 +780,11 @@ export default function SettingsPage() {
     ...(canViewCategories ? [{ label: t("tabCategories"), content: "categories" }] : []),
     ...(canViewStatuses ? [{ label: t("tabStatuses"), content: "statuses" }] : []),
     ...(canViewPriorities ? [{ label: t("tabPriorities"), content: "priorities" }] : []),
+    ...(canViewLabels ? [{ label: t("tabLabels"), content: "labels" }] : []),
   ];
 
   return (
-    <RequireAuth>
+    <RequirePermission permissions={["category.view", "status.view", "priority.view"]}>
       <DashboardLayout>
         <Box>
           <Tabs
@@ -518,66 +864,46 @@ export default function SettingsPage() {
 
           {tabs[tab]?.content === "statuses" && (
             <Box>
-              <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
+              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3 }}>
+                <Box>
+                  <Typography variant="h6" fontWeight={700} sx={{ color: theme.palette.navy.main }}>
+                    {t("tabStatuses")}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    ลากเพื่อเรียงลำดับสถานะ
+                  </Typography>
+                </Box>
                 {can("status.create") && (
                   <Button variant="contained" startIcon={<AddIcon />} onClick={openAddStatus}>
                     {t("addStatus")}
                   </Button>
                 )}
               </Box>
-              <DataTable>
-                <DataTableHead>
-                  <DataTableRow>
-                    <DataTableCell>{t("columnName")}</DataTableCell>
-                    <DataTableCell>{t("columnDescription")}</DataTableCell>
-                    <DataTableCell align="center">{t("columnIssueCount")}</DataTableCell>
-                    <DataTableCell align="center">{t("columnStatus")}</DataTableCell>
-                    <DataTableCell align="right">{t("columnActions")}</DataTableCell>
-                  </DataTableRow>
-                </DataTableHead>
-                <DataTableBody>
-                  {statuses.map((status) => (
-                    <DataTableRow key={status.id}>
-                      <DataTableCell>{status.name}</DataTableCell>
-                      <DataTableCell>{status.description ?? "—"}</DataTableCell>
-                      <DataTableCell align="center">{status.issueCount}</DataTableCell>
-                      <DataTableCell align="center">
-                        <Chip
-                          label={status.isActive ? t("active") : t("inactive")}
-                          color={status.isActive ? "success" : "error"}
-                          size="small"
-                          variant="outlined"
-                        />
-                      </DataTableCell>
-                      <DataTableCell align="right">
-                        {can("status.update") && (
-                          <FormControlLabel
-                            control={
-                              <Switch
-                                checked={status.isActive}
-                                onChange={() => handleToggleStatusActive(status)}
-                                size="small"
-                              />
-                            }
-                            label=""
-                            sx={{ mr: 1 }}
-                          />
-                        )}
-                        {can("status.update") && (
-                          <IconButton size="small" onClick={() => openEditStatus(status)}>
-                            <EditIcon fontSize="small" />
-                          </IconButton>
-                        )}
-                        {can("status.delete") && (
-                          <IconButton size="small" onClick={() => handleDeleteStatus(status.id)}>
-                            <DeleteIcon fontSize="small" />
-                          </IconButton>
-                        )}
-                      </DataTableCell>
-                    </DataTableRow>
-                  ))}
-                </DataTableBody>
-              </DataTable>
+              <DndContext
+                sensors={statusSensors}
+                collisionDetection={closestCorners}
+                onDragEnd={handleStatusDragEnd}
+              >
+                <SortableContext
+                  items={statuses.map((s) => s.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <Box>
+                    {statuses.map((status, index) => (
+                      <SortableStatusRow
+                        key={status.id}
+                        status={status}
+                        index={index}
+                        canUpdate={can("status.update")}
+                        canDelete={can("status.delete")}
+                        onToggle={handleToggleStatusActive}
+                        onEdit={openEditStatus}
+                        onDelete={handleDeleteStatus}
+                      />
+                    ))}
+                  </Box>
+                </SortableContext>
+              </DndContext>
             </Box>
           )}
 
@@ -635,6 +961,85 @@ export default function SettingsPage() {
                         )}
                         {can("priority.delete") && (
                           <IconButton size="small" onClick={() => handleDeletePriority(priority.id)}>
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        )}
+                      </DataTableCell>
+                    </DataTableRow>
+                  ))}
+                </DataTableBody>
+              </DataTable>
+            </Box>
+          )}
+
+          {tabs[tab]?.content === "labels" && (
+            <Box>
+              <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
+                {can("label.create") && (
+                  <Button variant="contained" startIcon={<AddIcon />} onClick={openAddLabel}>
+                    {t("addLabel")}
+                  </Button>
+                )}
+              </Box>
+              <DataTable>
+                <DataTableHead>
+                  <DataTableRow>
+                    <DataTableCell>{t("columnName")}</DataTableCell>
+                    <DataTableCell>{t("columnColor")}</DataTableCell>
+                    <DataTableCell align="center">{t("columnStatus")}</DataTableCell>
+                    <DataTableCell align="right">{t("columnActions")}</DataTableCell>
+                  </DataTableRow>
+                </DataTableHead>
+                <DataTableBody>
+                  {labels.map((label) => (
+                    <DataTableRow key={label.id}>
+                      <DataTableCell>{label.name}</DataTableCell>
+                      <DataTableCell>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                          <Box
+                            sx={{
+                              width: 20,
+                              height: 20,
+                              borderRadius: 1,
+                              bgcolor: label.color,
+                              border: "1px solid",
+                              borderColor: "divider",
+                            }}
+                          />
+                          <Typography variant="body2" color="text.secondary">
+                            {label.color}
+                          </Typography>
+                        </Box>
+                      </DataTableCell>
+                      <DataTableCell align="center">
+                        <Chip
+                          label={label.isActive ? t("active") : t("inactive")}
+                          color={label.isActive ? "success" : "error"}
+                          size="small"
+                          variant="outlined"
+                        />
+                      </DataTableCell>
+                      <DataTableCell align="right">
+                        {can("label.update") && (
+                          <FormControlLabel
+                            control={
+                              <Switch
+                                checked={label.isActive}
+                                onChange={() => handleToggleLabelActive(label)}
+                                size="small"
+                              />
+                            }
+                            label=""
+                            sx={{ mr: 1 }}
+                          />
+                        )}
+                        {can("label.update") && (
+                          <IconButton size="small" onClick={() => openEditLabel(label)}>
+                            <EditIcon fontSize="small" />
+                          </IconButton>
+                        )}
+                        {can("label.delete") && (
+                          <IconButton size="small" onClick={() => handleDeleteLabel(label.id)}>
                             <DeleteIcon fontSize="small" />
                           </IconButton>
                         )}
@@ -739,6 +1144,30 @@ export default function SettingsPage() {
             </DialogActions>
           </Dialog>
 
+          <Dialog open={labelDialogOpen} onClose={() => setLabelDialogOpen(false)} maxWidth="sm" fullWidth>
+            <DialogTitle>{editingLabel ? t("editLabel") : t("addLabel")}</DialogTitle>
+            <DialogContent>
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 1 }}>
+                <TextField
+                  label={t("columnName")}
+                  value={labelForm.name}
+                  onChange={(e) => setLabelForm({ ...labelForm, name: e.target.value })}
+                  fullWidth
+                />
+                <ColorPicker
+                  value={labelForm.color}
+                  onChange={(color) => setLabelForm({ ...labelForm, color })}
+                />
+              </Box>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setLabelDialogOpen(false)}>{t("cancel")}</Button>
+              <Button variant="contained" onClick={handleSaveLabel}>
+                {t("save")}
+              </Button>
+            </DialogActions>
+          </Dialog>
+
           <Dialog open={!!deleteTarget} onClose={() => { setDeleteTarget(null); setDeleteCheck(null); }} maxWidth="xs">
             <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
             <DialogContent>
@@ -751,7 +1180,7 @@ export default function SettingsPage() {
               ) : deleteTarget ? (
                 <Typography variant="body2">
                   {t("deleteConfirmMessage", {
-                    type: deleteTarget.type === "category" ? t("category") : deleteTarget.type === "status" ? t("status") : t("priority"),
+                    type: deleteTarget.type === "category" ? t("category") : deleteTarget.type === "status" ? t("status") : deleteTarget.type === "priority" ? t("priority") : t("label"),
                     name: deleteTarget.name,
                   })}
                 </Typography>
@@ -768,6 +1197,6 @@ export default function SettingsPage() {
           </Dialog>
         </Box>
       </DashboardLayout>
-    </RequireAuth>
+    </RequirePermission>
   );
 }

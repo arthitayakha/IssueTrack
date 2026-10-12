@@ -24,7 +24,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
-import RequireAuth from "@/components/require-auth";
+import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermissions } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
@@ -60,24 +60,11 @@ export default function RolesPage() {
   }, []);
 
   useEffect(() => {
-    if (!can("role.view")) return;
     apiFetch<Role[]>("/roles", {}, token)
       .then(setRoles)
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [can, token]);
-
-  if (!can("role.view")) {
-    return (
-      <DashboardLayout>
-        <Box sx={{ py: 4 }}>
-          <Typography variant="body1" color="text.secondary">
-            {t("noPermission")}
-          </Typography>
-        </Box>
-      </DashboardLayout>
-    );
-  }
+  }, [token]);
 
   function openAdd() {
     setEditingRole(null);
@@ -164,7 +151,7 @@ export default function RolesPage() {
   }
 
   return (
-    <RequireAuth>
+    <RequirePermission permission="role.view">
       <DashboardLayout>
         <Box>
           <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3 }}>
@@ -286,6 +273,6 @@ export default function RolesPage() {
           </Dialog>
         </Box>
       </DashboardLayout>
-    </RequireAuth>
+    </RequirePermission>
   );
 }

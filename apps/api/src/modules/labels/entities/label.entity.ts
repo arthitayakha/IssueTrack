@@ -6,18 +6,21 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from "typeorm";
-import { BoardColumn } from "../../columns/entities/board-column.entity";
+import { Issue } from "../../issues/entities/issue.entity";
 
-@Entity("boards")
-export class Board {
+@Entity("labels")
+export class Label {
   @PrimaryGeneratedColumn()
   id!: number;
 
   @Column({ type: "varchar", length: 100 })
   name!: string;
 
-  @Column({ type: "text", nullable: true })
-  description!: string | null;
+  @Column({ type: "varchar", length: 50, default: "default" })
+  color!: string;
+
+  @Column({ name: "is_active", default: true })
+  isActive!: boolean;
 
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
@@ -25,6 +28,6 @@ export class Board {
   @UpdateDateColumn({ name: "updated_at" })
   updatedAt!: Date;
 
-  @OneToMany(() => BoardColumn, (column) => column.board)
-  columns?: BoardColumn[];
+  @OneToMany(() => Issue, (issue) => issue.label)
+  issues?: Issue[];
 }
