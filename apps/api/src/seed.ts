@@ -136,7 +136,7 @@ async function seed() {
     { name: "Todo", sortOrder: 2, isTimerRunning: false, isEndStatus: false },
     { name: "Doing", sortOrder: 3, isTimerRunning: true, isEndStatus: false },
     { name: "Review", sortOrder: 4, isTimerRunning: false, isEndStatus: false },
-    { name: "Done", sortOrder: 5, isTimerRunning: false, isEndStatus: true },
+    { name: "ชิแดิ", sortOrder: 5, isTimerRunning: false, isEndStatus: true },
   ];
 
   for (const s of defaultStatuses) {

@@ -39,6 +39,12 @@ export class IssueStatusesController {
     return this.issueStatuses.create(body);
   }
 
+  @Patch("reorder")
+  @Permissions("status.update")
+  reorder(@Body() body: { items: Array<{ id: number; sortOrder: number }> }) {
+    return this.issueStatuses.reorder(body.items);
+  }
+
   @Patch(":id")
   @Permissions("status.update")
   update(

@@ -22,7 +22,7 @@ export function usePermissions() {
   const setPermissions = useAuthStore((s) => s.setPermissions);
 
   useEffect(() => {
-    if (!token || permissions) return;
+    if (!token || permissions != null) return;
     apiFetch<string[]>("/permissions/my", {}, token)
       .then(setPermissions)
       .catch(() => {});
@@ -30,7 +30,7 @@ export function usePermissions() {
 
   const can = useCallback(
     (permission: Permission) => {
-      if (permissions) return permissions.includes(permission);
+      if (permissions != null && permissions.length > 0) return permissions.includes(permission);
       return roleHasPermission(roleName, permission);
     },
     [permissions, roleName],

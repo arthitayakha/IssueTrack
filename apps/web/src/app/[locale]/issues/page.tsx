@@ -5,20 +5,12 @@ import { useTranslations } from "next-intl";
 import {
   Box,
   Typography,
-  Button,
-  TextField,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
   CircularProgress,
   Chip,
 } from "@mui/material";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
-import { apiFetch, ApiError } from "@/lib/api";
-import { useNotification } from "@/components/notification";
 import { Pagination } from "@/components/pagination";
 import { fetchIssues, type BoardIssue } from "@/lib/board-api";
 
@@ -35,14 +27,10 @@ function formatDuration(seconds: number | null | undefined): string {
 export default function IssuesPage() {
   const t = useTranslations("Issues");
   const token = useAuthStore((s) => s.token);
-  const { notify } = useNotification();
   const [issues, setIssues] = useState<BoardIssue[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [timeDialogOpen, setTimeDialogOpen] = useState(false);
-  const [selectedIssue, setSelectedIssue] = useState<BoardIssue | null>(null);
-  const [actualDuration, setActualDuration] = useState("");
 
   useEffect(() => {
     fetchIssues(1, 10)
@@ -56,40 +44,6 @@ export default function IssuesPage() {
 
   const pageIssues = issues.slice((page - 1) * 10, page * 10);
 
-  function openTimeDialog(issue: BoardIssue) {
-    setSelectedIssue(issue);
-    setActualDuration(issue.actualFixDuration?.toString() ?? "");
-    setTimeDialogOpen(true);
-  }
-
-  async function handleSaveTime() {
-    if (!selectedIssue) return;
-    try {
-      const duration = parseInt(actualDuration, 10);
-      if (isNaN(duration) || duration < 0) {
-        notify("Invalid duration", "error");
-        return;
-      }
-      await apiFetch(
-        `/issues/${selectedIssue.id}/time`,
-        { method: "PUT", body: JSON.stringify({ actualFixDuration: duration }) },
-        token,
-      );
-      setIssues((prev) =>
-        prev.map((i) =>
-          i.id === selectedIssue.id ? { ...i, actualFixDuration: duration } : i,
-        ),
-      );
-      setTimeDialogOpen(false);
-      notify("Time updated");
-    } catch (err) {
-      if (err instanceof ApiError) {
-        notify(err.message, "error");
-      } else {
-        notify("Failed to update time", "error");
-      }
-    }
-  }
 
   return (
     <RequirePermission permission="issue.all.view">
@@ -125,27 +79,12 @@ export default function IssuesPage() {
                     <Typography variant="subtitle1" fontWeight={600}>
                       {issue.title}
                     </Typography>
-                    <Box sx={{ display: "flex", gap: 2, mt: 1 }}>
                       <Chip
-                        label={`${t("trackedTime")}: ${formatDuration(issue.trackedDuration)}`}
-                        size="small"
-                        variant="outlined"
-                      />
-                      <Chip
-                        label={`${t("actualTime")}: ${formatDuration(issue.actualFixDuration)}`}
-                        size="small"
-                        variant="outlined"
-                        color={issue.actualFixDuration ? "success" : "default"}
-                      />
-                    </Box>
+                      label={`${t("trackedTime")}: ${formatDuration(issue.trackedDuration)}`}
+                      size="small"
+                      variant="outlined"
+                    />
                   </Box>
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    onClick={() => openTimeDialog(issue)}
-                  >
-                    {t("setActualTime")}
-                  </Button>
                 </Box>
               ))}
               <Pagination
@@ -158,27 +97,6 @@ export default function IssuesPage() {
             </Box>
           )}
         </Box>
-
-        <Dialog open={timeDialogOpen} onClose={() => setTimeDialogOpen(false)} maxWidth="xs">
-          <DialogTitle>{t("setActualTime")}</DialogTitle>
-          <DialogContent>
-            <TextField
-              label={t("actualTime")}
-              type="number"
-              value={actualDuration}
-              onChange={(e) => setActualDuration(e.target.value)}
-              fullWidth
-              sx={{ mt: 1 }}
-              inputProps={{ min: 0 }}
-            />
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setTimeDialogOpen(false)}>Cancel</Button>
-            <Button variant="contained" onClick={handleSaveTime}>
-              Save
-            </Button>
-          </DialogActions>
-        </Dialog>
       </DashboardLayout>
     </RequirePermission>
   );

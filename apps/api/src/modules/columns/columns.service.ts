@@ -28,7 +28,8 @@ export class ColumnsService {
     const columns = await this.columns
       .createQueryBuilder("col")
       .leftJoinAndSelect("col.status", "status")
-      .orderBy("col.position", "ASC")
+      .orderBy("status.position", "ASC")
+      .addOrderBy("col.position", "ASC")
       .getMany();
     const result = await Promise.all(
       columns.map(async (c) => ({

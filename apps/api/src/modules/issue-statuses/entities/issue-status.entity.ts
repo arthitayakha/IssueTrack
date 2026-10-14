@@ -22,6 +22,9 @@ export class IssueStatus {
   @Column({ name: "is_active", default: true })
   isActive!: boolean;
 
+  @Column({ type: "int", default: 0 })
+  position!: number;
+
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
 

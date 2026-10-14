@@ -23,4 +23,7 @@ export class PositionPermission {
 
   @Column()
   permission!: string;
+
+  @Column({ name: "denied", type: "boolean", default: false })
+  denied!: boolean;
 }

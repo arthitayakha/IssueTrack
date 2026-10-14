@@ -48,10 +48,12 @@ export interface UserSummary {
 
 export interface BoardIssue {
   id: number;
+  issueNumber: string | null;
   title: string;
   description: string;
   columnId: number | null;
   statusId: number | null;
+  statusName: string | null;
   priorityId: number | null;
   priorityName: string | null;
   categoryId: number | null;
@@ -61,6 +63,7 @@ export interface BoardIssue {
   labelIds: number[];
   labelName: string | null;
   labelColor: string | null;
+  labels: { id: number; name: string; color: string }[];
   programmerId: number | null;
   programmerName: string | null;
   customerId: number | null;
@@ -170,6 +173,7 @@ export async function fetchIssues(
   limit = 100,
   statuses?: number[],
   search?: string,
+  mine?: boolean,
 ): Promise<PaginatedResponse<BoardIssue>> {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (statuses && statuses.length > 0) {
@@ -177,6 +181,9 @@ export async function fetchIssues(
   }
   if (search) {
     params.set("search", search);
+  }
+  if (mine) {
+    params.set("mine", "true");
   }
   return apiFetch<PaginatedResponse<BoardIssue>>(
     `/issues?${params.toString()}`,
@@ -208,7 +215,7 @@ export async function updateIssue(
   data: {
     title?: string;
     description?: string;
-    priorityId?: number;
+    priorityId?: number | null;
     categoryId?: number;
     labelId?: number;
     labelIds?: number[];
@@ -272,10 +279,21 @@ export async function createComment(issueId: number, content: string): Promise<C
   }, getToken());
 }
 
+export interface Attachment {
+  id: number;
+  issueId: number;
+  uploadedBy: number | null;
+  fileName: string;
+  filePath: string;
+  fileType: string | null;
+  fileSize: number | null;
+  createdAt: string;
+}
+
 export async function uploadAttachment(
   issueId: number,
   file: File,
-): Promise<{ id: number; fileName: string; fileType: string | null; fileSize: number | null }> {
+): Promise<Attachment> {
   const token = getToken();
   const formData = new FormData();
   formData.append("file", file);
@@ -290,6 +308,29 @@ export async function uploadAttachment(
     throw new Error(message);
   }
   return res.json();
+}
+
+export async function fetchAttachments(issueId: number): Promise<Attachment[]> {
+  return apiFetch<Attachment[]>(`/issues/${issueId}/attachments`, {}, getToken());
+}
+
+export async function deleteAttachment(id: number): Promise<void> {
+  await apiFetch<void>(`/attachments/${id}`, { method: "DELETE" }, getToken());
+}
+
+export async function openAttachment(id: number): Promise<void> {
+  const token = getToken();
+  const res = await fetch(
+    `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002"}/attachments/${id}/download`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to open attachment: ${res.statusText}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 export async function fetchStatuses(
   page = 1,
@@ -308,6 +349,21 @@ export async function fetchPriorities(): Promise<PaginatedResponse<IssuePriority
 
 export async function fetchUsers(): Promise<PaginatedResponse<UserSummary>> {
   return apiFetch<PaginatedResponse<UserSummary>>("/users", {}, getToken());
+}
+
+export interface Category {
+  id: number;
+  name: string;
+  isActive: boolean;
+  issueCount: number;
+}
+
+export async function fetchCategories(): Promise<PaginatedResponse<Category>> {
+  return apiFetch<PaginatedResponse<Category>>(
+    "/categories?page=1&limit=100",
+    {},
+    getToken(),
+  );
 }
 
 export async function fetchTrashedIssues(): Promise<TrashedIssue[]> {

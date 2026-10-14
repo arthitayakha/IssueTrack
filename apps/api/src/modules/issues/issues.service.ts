@@ -12,9 +12,12 @@ import { User } from "../auth/entities/user.entity";
 import { IssueStatus } from "../issue-statuses/entities/issue-status.entity";
 import { Category } from "../categories/entities/category.entity";
 import { Label } from "../labels/entities/label.entity";
+import { Position } from "../positions/position.entity";
 import { WorkSessionsService } from "../work-sessions/work-sessions.service";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
+import { PermissionsService } from "../permissions/permissions.service";
 import { paginate, PaginationParams } from "../../common/pagination";
+import { AuthUser } from "../auth/auth-user";
 
 @Injectable()
 export class IssuesService {
@@ -33,13 +36,16 @@ export class IssuesService {
     private readonly categories: Repository<Category>,
     @InjectRepository(Label)
     private readonly labels: Repository<Label>,
+    @InjectRepository(Position)
+    private readonly positions: Repository<Position>,
     private readonly workSessions: WorkSessionsService,
+    private readonly permissions: PermissionsService,
   ) {}
 
   async findAll(
     params: PaginationParams,
     statuses: number[] = [],
-    user?: { id: string; roleName: string | null } | null,
+    user?: AuthUser | null,
     search?: string,
   ) {
     const qb = this.issues.createQueryBuilder("issue").where("issue.deleted_at IS NULL");
@@ -48,10 +54,12 @@ export class IssuesService {
       qb.andWhere("issue.status_id IN (:...statuses)", { statuses });
     }
 
-    if (user && user.roleName === "programmer") {
-      qb.andWhere("issue.programmer_id = :uid", { uid: Number(user.id) });
-    } else if (user && user.roleName === "customer") {
-      qb.andWhere("issue.customer_id = :uid", { uid: Number(user.id) });
+    const canViewAll = await this.canViewAllIssues(user);
+    if (user && !canViewAll) {
+      qb.andWhere(
+        "(issue.programmer_id = :uid OR issue.customer_id = :uid)",
+        { uid: Number(user.id) },
+      );
     }
 
     if (search && search.trim()) {
@@ -73,6 +81,14 @@ export class IssuesService {
 
     const mapped = issues.map((i) => this.toResponse(i));
     return paginate(mapped, params);
+  }
+
+  private async canViewAllIssues(
+    user?: AuthUser | null,
+  ): Promise<boolean> {
+    if (!user) return true;
+    const permissions = await this.permissions.getUserPermissions(user.roleId, user.positionId);
+    return permissions.includes("issue.all.view");
   }
 
   async findOne(id: number) {
@@ -109,6 +125,15 @@ export class IssuesService {
     const status = await this.issueStatuses.findOne({
       where: { id: column.statusId },
     });
+    const issueNumber = await this.generateIssueNumber();
+    const resolvedCustomerId =
+      actor?.actorRole === "customer"
+        ? Number(actor.actorId)
+        : (data.customerId ?? null);
+    const resolvedProgrammerId =
+      data.programmerId ??
+      (data.categoryId ? await this.resolveAutoAssign(data.categoryId) : null);
+
     const issue = this.issues.create({
       title: data.title,
       description: data.description,
@@ -117,9 +142,10 @@ export class IssuesService {
       priorityId: data.priorityId ?? null,
       categoryId: data.categoryId ?? null,
       customCategory: data.customCategory?.trim() || null,
-      programmerId: data.programmerId ?? null,
-      customerId: data.customerId ?? null,
+      programmerId: resolvedProgrammerId,
+      customerId: resolvedCustomerId,
       labelId: data.labelId ?? null,
+      issueNumber,
     } as DeepPartial<Issue>);
     await this.issues.save(issue);
     await this.logActivity({
@@ -200,6 +226,7 @@ export class IssuesService {
     if (issue.columnId === columnId) return this.toResponse(issue);
 
     issue.columnId = columnId;
+    issue.statusId = targetColumn.statusId;
     issue.completedAt = null;
     issue.isLocked = false;
     await this.issues.save(issue);
@@ -325,6 +352,67 @@ export class IssuesService {
     }));
   }
 
+  private async resolveAutoAssign(categoryId: number): Promise<number | null> {
+    const category = await this.categories.findOne({ where: { id: categoryId } });
+    if (!category?.position) return null;
+
+    const position = await this.positions.findOne({
+      where: { name: category.position },
+    });
+    if (!position) return null;
+
+    const programmers = await this.users
+      .createQueryBuilder("user")
+      .innerJoin("user.role", "role")
+      .where("user.position_id = :positionId", { positionId: position.id })
+      .andWhere("role.name = :roleName", { roleName: "programmer" })
+      .andWhere("user.is_active = true")
+      .getMany();
+
+    if (programmers.length === 0) return null;
+
+    const openCounts = await Promise.all(
+      programmers.map(async (p) => {
+        const count = await this.issues
+          .createQueryBuilder("issue")
+          .innerJoin("issue.status", "status")
+          .where("issue.programmer_id = :pid", { pid: p.id })
+          .andWhere("issue.deleted_at IS NULL")
+          .andWhere("status.name != :done", { done: "DONE" })
+          .getCount();
+        return { userId: p.id, count };
+      }),
+    );
+
+    openCounts.sort((a, b) => a.count - b.count);
+    return openCounts[0].userId;
+  }
+
+  private async generateIssueNumber(): Promise<string> {
+    const now = new Date();
+    const dd = String(now.getDate()).padStart(2, "0");
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const yy = String(now.getFullYear()).slice(-2);
+    const datePrefix = `${dd}${mm}${yy}`;
+
+    const latest = await this.issues
+      .createQueryBuilder("issue")
+      .where("issue.issue_number LIKE :prefix", { prefix: `${datePrefix}-%` })
+      .orderBy("issue.id", "DESC")
+      .getOne();
+
+    let seq = 1;
+    if (latest?.issueNumber) {
+      const parts = latest.issueNumber.split("-");
+      const lastSeq = parseInt(parts[1], 10);
+      if (!isNaN(lastSeq)) {
+        seq = lastSeq + 1;
+      }
+    }
+
+    return `${datePrefix}-${String(seq).padStart(3, "0")}`;
+  }
+
   private async logActivity(data: {
     action: string;
     entityId: number;
@@ -346,10 +434,12 @@ export class IssuesService {
   private toResponse(issue: Issue) {
     return {
       id: issue.id,
+      issueNumber: issue.issueNumber,
       title: issue.title,
       description: issue.description,
       columnId: issue.columnId,
       statusId: issue.statusId,
+      statusName: issue.status?.name ?? null,
       priorityId: issue.priorityId,
       priorityName: issue.priority?.name ?? null,
       categoryId: issue.categoryId,
@@ -359,6 +449,7 @@ export class IssuesService {
       labelIds: (issue.labels ?? []).map((l) => l.id).sort((a, b) => a - b),
       labelName: issue.labels?.[0]?.name ?? issue.label?.name ?? null,
       labelColor: issue.labels?.[0]?.color ?? issue.label?.color ?? null,
+      labels: (issue.labels ?? []).map((l) => ({ id: l.id, name: l.name, color: l.color })),
       programmerId: issue.programmerId,
       programmerName: issue.programmer?.name ?? null,
       customerId: issue.customerId,

@@ -10,7 +10,7 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <Box sx={{ display: "flex", minHeight: "100vh" }}>
+    <Box sx={{ display: "flex", minHeight: "100vh", overflow: "hidden" }}>
       <Navbar />
       <Sidebar />
       <Box
@@ -20,6 +20,8 @@ export default function DashboardLayout({
           p: 3,
           bgcolor: "background.default",
           minHeight: "100vh",
+          minWidth: 0,
+          overflow: "hidden",
         }}
       >
         <Toolbar />

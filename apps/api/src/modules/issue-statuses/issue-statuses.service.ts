@@ -106,6 +106,15 @@ export class IssueStatusesService {
     return { canDelete: issueCount === 0 && columnCount === 0, issueCount, columnCount };
   }
 
+  async reorder(items: Array<{ id: number; sortOrder: number }>) {
+    await this.issueStatuses.manager.transaction(async (em) => {
+      for (const item of items) {
+        await em.update(IssueStatus, item.id, { position: item.sortOrder });
+      }
+    });
+    return { reordered: items.length };
+  }
+
   async remove(id: number) {
     const status = await this.issueStatuses.findOne({ where: { id } });
     if (!status) {

@@ -1,6 +1,9 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
+import type { Response } from "express";
+import { createReadStream, existsSync, unlinkSync } from "fs";
+import { join } from "path";
 import { Attachment } from "./entities/attachment.entity";
 import { Issue } from "../issues/entities/issue.entity";
 
@@ -15,7 +18,7 @@ export class AttachmentsService {
 
   async upload(
     issueId: number,
-    file: { originalname: string; path: string; mimetype: string; size: number },
+    file: { originalname: string; path: string; filename: string; mimetype: string; size: number },
     uploadedBy: number,
   ) {
     const issue = await this.issues.findOne({ where: { id: issueId } });
@@ -27,7 +30,7 @@ export class AttachmentsService {
         issueId,
         uploadedBy,
         fileName: file.originalname,
-        filePath: file.path,
+        filePath: join("IssueTrack", "backend", "uploads", file.filename),
         fileType: file.mimetype,
         fileSize: file.size,
       }),
@@ -55,8 +58,27 @@ export class AttachmentsService {
     return attachment;
   }
 
+  async download(id: number, res: Response) {
+    const attachment = await this.findOne(id);
+    const fullPath = join(process.cwd(), attachment.filePath);
+    if (!existsSync(fullPath)) {
+      throw new NotFoundException(`File not found on disk`);
+    }
+    res.setHeader("Content-Type", attachment.fileType ?? "application/octet-stream");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${encodeURIComponent(attachment.fileName)}"`,
+    );
+    const stream = createReadStream(fullPath);
+    stream.pipe(res);
+  }
+
   async remove(id: number) {
     const attachment = await this.findOne(id);
+    const fullPath = join(process.cwd(), attachment.filePath);
+    if (existsSync(fullPath)) {
+      unlinkSync(fullPath);
+    }
     await this.attachments.remove(attachment);
     return { deleted: true };
   }

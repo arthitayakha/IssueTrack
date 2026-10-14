@@ -68,13 +68,13 @@ import TableChartIcon from "@mui/icons-material/TableChart";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
+import SaveIcon from "@mui/icons-material/Save";
 import HistoryIcon from "@mui/icons-material/History";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import SearchIcon from "@mui/icons-material/Search";
 import CategoryIcon from "@mui/icons-material/Category";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
-import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import DriveFileMoveIcon from "@mui/icons-material/DriveFileMove";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CloseIcon from "@mui/icons-material/Close";
@@ -91,6 +91,15 @@ import FilterListIcon from "@mui/icons-material/FilterList";
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
+import PostAddIcon from "@mui/icons-material/PostAdd";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
+
+import CloudUploadIcon from "@mui/icons-material/CloudUpload";
+import LinkIcon from "@mui/icons-material/Link";
+import FlagIcon from "@mui/icons-material/Flag";
+import LabelIcon from "@mui/icons-material/Label";
+import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import { useTranslations } from "next-intl";
 import { usePermissions } from "@/lib/permissions";
 import { useAuthStore } from "@/lib/auth-store";
@@ -117,8 +126,12 @@ import {
   fetchStatuses,
   fetchPriorities,
   fetchUsers,
+  fetchCategories,
   createComment,
   uploadAttachment,
+  fetchAttachments,
+  deleteAttachment,
+  openAttachment,
   type BoardColumn,
   type BoardIssue,
   type ActivityLog,
@@ -127,6 +140,8 @@ import {
   type IssuePriority,
   type UserSummary,
   type TrashedIssue,
+  type Attachment,
+  type Category,
   fetchTrashedIssues,
   restoreIssue,
 } from "@/lib/board-api";
@@ -159,18 +174,22 @@ function getColumnColor(status: string, theme: any): string {
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  if (diffDays === 0) return "วันนี้";
-  if (diffDays === 1) return "เมื่อวาน";
-  if (diffDays < 7) return `${diffDays} วัน`;
-  return date.toLocaleDateString("th-TH", { day: "numeric", month: "short" });
+  return date.toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" });
 }
 
 function formatDateTime(dateStr: string): string {
   const date = new Date(dateStr);
   return `${date.toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })} ${date.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return "—";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -271,7 +290,7 @@ function TrelloCard({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: issue.id, disabled: issue.isLocked });
+  } = useSortable({ id: `issue-${issue.id}`, data: { type: "issue" }, disabled: issue.isLocked });
 
   const theme = useTheme();
 
@@ -284,9 +303,6 @@ function TrelloCard({
   const priorityColor = issue.priorityName
     ? PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"
     : "default";
-
-  const labelBgColor = COLOR_MAP[issue.labelColor ?? "default"] ?? issue.labelColor ?? theme.palette.grey[400];
-  const labelTextColor = theme.palette.getContrastText(labelBgColor);
 
   const avatarChar = issue.programmerName
     ? issue.programmerName.charAt(0).toUpperCase()
@@ -318,41 +334,17 @@ function TrelloCard({
     >
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.75 }}>
         <Typography variant="caption" color="primary.main" fontWeight={700} sx={{ letterSpacing: 0.3 }}>
-          ISS-{String(issue.id).padStart(3, "0")}
+          {issue.issueNumber}
         </Typography>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-          {issue.priorityName && (
-            <Chip
-              label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
-              size="small"
-              color={priorityColor}
-              sx={{ height: 18, fontSize: "0.65rem", fontWeight: 600 }}
-            />
-          )}
-          {issue.labelName && (
-            <Chip
-              label={issue.labelName}
-              size="small"
-              sx={{
-                height: 18,
-                fontSize: "0.65rem",
-                fontWeight: 600,
-                bgcolor: labelBgColor,
-                color: labelTextColor,
-                opacity: 0.2,
-              }}
-            />
-          )}
-          {(canEdit || canDelete || canUnlockIssue) && (
-            <IconButton
-              size="small"
-              onClick={(e) => { e.stopPropagation(); setMenuAnchor(e.currentTarget); }}
-              sx={{ p: 0.3 }}
-            >
-              <MoreVertIcon sx={{ fontSize: 16, color: "text.secondary" }} />
-            </IconButton>
-          )}
-        </Box>
+        {(canEdit || canDelete || canUnlockIssue) && (
+          <IconButton
+            size="small"
+            onClick={(e) => { e.stopPropagation(); setMenuAnchor(e.currentTarget); }}
+            sx={{ p: 0.3 }}
+          >
+            <MoreVertIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+          </IconButton>
+        )}
       </Box>
       <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.25, lineHeight: 1.4 }}>
         {issue.title}
@@ -373,6 +365,49 @@ function TrelloCard({
           {issue.description}
         </Typography>
       )}
+      {(issue.priorityName || (issue.labels && issue.labels.length > 0) || issue.statusName) && (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mt: 0.25, flexWrap: "wrap" }}>
+          {issue.statusName && (
+            <Chip
+              label={issue.statusName}
+              size="small"
+              sx={{
+                height: 18,
+                fontSize: "0.65rem",
+                fontWeight: 600,
+                bgcolor: `${getColumnColor(issue.statusName, theme)}20`,
+                color: getColumnColor(issue.statusName, theme),
+              }}
+            />
+          )}
+          {issue.priorityName && (
+            <Chip
+              label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
+              size="small"
+              color={priorityColor}
+              sx={{ height: 18, fontSize: "0.65rem", fontWeight: 600 }}
+            />
+          )}
+          {issue.labels?.slice(0, 2).map((lbl) => {
+            const bg = COLOR_MAP[lbl.color ?? "default"] ?? lbl.color ?? theme.palette.grey[400];
+            const txt = theme.palette.getContrastText(bg);
+            return (
+              <Chip
+                key={lbl.id}
+                label={lbl.name}
+                size="small"
+                sx={{
+                  height: 18,
+                  fontSize: "0.65rem",
+                  fontWeight: 600,
+                  bgcolor: bg,
+                  color: txt,
+                }}
+              />
+            );
+          })}
+        </Box>
+      )}
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mt: 0.75 }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.35 }}>
           <CalendarTodayIcon sx={{ fontSize: 14, color: "text.secondary" }} />
@@ -381,18 +416,14 @@ function TrelloCard({
           </Typography>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-          {issue.commentCount > 0 && (
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
-              <ChatBubbleOutlineIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-              <Typography variant="caption" color="text.secondary">{issue.commentCount}</Typography>
-            </Box>
-          )}
-          {issue.attachmentCount > 0 && (
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
-              <AttachFileIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-              <Typography variant="caption" color="text.secondary">{issue.attachmentCount}</Typography>
-            </Box>
-          )}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
+            <ChatBubbleOutlineIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+            <Typography variant="caption" color="text.secondary">{issue.commentCount}</Typography>
+          </Box>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
+            <AttachFileIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+            <Typography variant="caption" color="text.secondary">{issue.attachmentCount}</Typography>
+          </Box>
           {avatarChar ? (
             <Avatar
               sx={{
@@ -499,7 +530,7 @@ function KanbanColumn({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: column.id, data: { type: "column" }, disabled: column.isLocked });
+  } = useSortable({ id: `column-${column.id}`, data: { type: "column" }, disabled: column.isLocked });
   const { setNodeRef: setDroppableNodeRef, isOver: isColumnOver } = useDroppable({
     id: `column-drop-${column.id}`,
     data: { type: "column-drop", columnId: column.id },
@@ -522,8 +553,6 @@ function KanbanColumn({
     <Box
       ref={setColumnNodeRef}
       style={style}
-      {...attributes}
-      {...(canManage && !column.isLocked ? listeners : {})}
       sx={{
         width: 240,
         minWidth: 240,
@@ -540,6 +569,15 @@ function KanbanColumn({
     >
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+          {canManage && !column.isLocked && (
+            <Box
+              {...attributes}
+              {...listeners}
+              sx={{ cursor: "grab", display: "flex", alignItems: "center", color: "text.secondary" }}
+            >
+              <DragIndicatorIcon sx={{ fontSize: 18 }} />
+            </Box>
+          )}
           <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: color }} />
           <Typography variant="caption" fontWeight={700} sx={{ textTransform: "uppercase", letterSpacing: 0.5 }}>
             {column.customName ?? column.statusName}
@@ -577,15 +615,16 @@ function KanbanColumn({
           <ListItemText sx={{ color: "error.main" }}>ลบคอลัมน์</ListItemText>
         </MenuItem>
       </Menu>
-      <SortableContext items={visibleIssues.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+      <SortableContext items={visibleIssues.map((i) => `issue-${i.id}`)} strategy={verticalListSortingStrategy}>
         <Box
           ref={setDroppableNodeRef}
           data-column-drop-id={column.id}
           sx={{
             flexGrow: 1,
             overflowY: "auto",
-            minHeight: isDropTarget ? 120 : 80,
+            minHeight: 200,
             transition: "min-height 0.2s ease",
+            pointerEvents: "auto",
           }}
         >
           {visibleIssues.map((issue) => (
@@ -612,6 +651,7 @@ function KanbanColumn({
                 borderColor: isDropTarget ? "primary.main" : "divider",
                 borderRadius: 1.5,
                 transition: "border-color 0.15s ease",
+                pointerEvents: "none",
               }}
             >
               <Typography
@@ -753,6 +793,7 @@ function RecycleBinDialog({
             {items.map((item, idx) => (
               <Box key={item.id}>
                 <ListItem
+                  alignItems="flex-start"
                   secondaryAction={
                     <Button
                       size="small"
@@ -769,7 +810,7 @@ function RecycleBinDialog({
                     primary={
                       <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                         <Typography variant="caption" color="primary.main" fontWeight={700}>
-                          ISS-{String(item.id).padStart(3, "0")}
+                          {item.issueNumber}
                         </Typography>
                         <Typography variant="subtitle2" fontWeight={700} noWrap>
                           {item.title}
@@ -777,9 +818,60 @@ function RecycleBinDialog({
                       </Box>
                     }
                     secondary={
-                      <Typography variant="caption" color="text.secondary">
-                        {item.deletedByName ?? "—"} · {formatDateTime(item.deletedAt)}
-                      </Typography>
+                      <Box sx={{ mt: 0.5, display: "flex", flexDirection: "column", gap: 0.5 }}>
+                        <Typography variant="caption" color="text.secondary">
+                          {t("deletedBy")}: {item.deletedByName ?? "—"} · {t("deletedAt")}: {formatDateTime(item.deletedAt)}
+                        </Typography>
+                        {item.description && (
+                          <Typography variant="caption" color="text.secondary" noWrap>
+                            {t("trashDescription")}: {item.description}
+                          </Typography>
+                        )}
+                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mt: 0.5 }}>
+                          {item.priorityName && (
+                            <Chip
+                              size="small"
+                              label={PRIORITY_LABELS[item.priorityName.toLowerCase()] ?? item.priorityName}
+                              color={PRIORITY_COLORS[item.priorityName.toLowerCase()] ?? "default"}
+                              variant="outlined"
+                            />
+                          )}
+                          {(item.categoryName || item.customCategory) && (
+                            <Chip
+                              size="small"
+                              label={item.categoryName ?? item.customCategory}
+                              variant="outlined"
+                              color="info"
+                            />
+                          )}
+                          {item.labels?.map((lbl) => (
+                            <Chip
+                              key={lbl.id}
+                              size="small"
+                              label={lbl.name}
+                              sx={{ bgcolor: lbl.color, color: "common.white" }}
+                            />
+                          ))}
+                        </Box>
+                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2, mt: 0.5 }}>
+                          {item.programmerName && (
+                            <Typography variant="caption" color="text.secondary">
+                              {t("trashProgrammer")}: {item.programmerName}
+                            </Typography>
+                          )}
+                          {item.customerName && (
+                            <Typography variant="caption" color="text.secondary">
+                              {t("trashCustomer")}: {item.customerName}
+                            </Typography>
+                          )}
+                          <Typography variant="caption" color="text.secondary">
+                            {t("trashComments")}: {item.commentCount}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {t("trashAttachments")}: {item.attachmentCount}
+                          </Typography>
+                        </Box>
+                      </Box>
                     }
                   />
                 </ListItem>
@@ -936,7 +1028,6 @@ function IssueDetailDialog({
   columns,
   labels,
   onRefresh,
-  onEdit,
   onDelete,
 }: {
   issue: BoardIssue | null;
@@ -945,13 +1036,13 @@ function IssueDetailDialog({
   columns: BoardColumn[];
   labels: Label[];
   onRefresh: () => void;
-  onEdit: (issue: BoardIssue) => void;
   onDelete: (issue: BoardIssue) => void;
 }) {
   const { can } = usePermissions();
   const [tab, setTab] = useState<"comments" | "history">("comments");
   const [comments, setComments] = useState<Comment[]>([]);
   const [logs, setLogs] = useState<ActivityLog[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
@@ -959,6 +1050,8 @@ function IssueDetailDialog({
   const [localIssue, setLocalIssue] = useState<BoardIssue | null>(null);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [users, setUsers] = useState<UserSummary[]>([]);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [priorityAnchor, setPriorityAnchor] = useState<HTMLElement | null>(null);
   const [labelAnchor, setLabelAnchor] = useState<HTMLElement | null>(null);
   const [memberAnchor, setMemberAnchor] = useState<HTMLElement | null>(null);
@@ -969,6 +1062,12 @@ function IssueDetailDialog({
   const [newLabelColor, setNewLabelColor] = useState("default");
   const [editingLabel, setEditingLabel] = useState<Label | null>(null);
   const [saving, setSaving] = useState(false);
+  const [isEditingDesc, setIsEditingDesc] = useState(false);
+  const [descDraft, setDescDraft] = useState("");
+  const [savingDesc, setSavingDesc] = useState(false);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [savingTitle, setSavingTitle] = useState(false);
 
   const canViewComments = can("comment.view");
   const canPostComment = can("comment.create");
@@ -980,6 +1079,9 @@ function IssueDetailDialog({
   const canCreateLabel = can("label.create");
   const canEditLabel = can("label.update");
   const canAssign = can("user.view") && can("issue.assign");
+  const canViewAttachments = can("board.view");
+  const canUploadAttachment = can("issue.create");
+  const canDeleteAttachment = can("issue.all.update");
 
   useEffect(() => {
     setLocalIssue(issue);
@@ -992,6 +1094,7 @@ function IssueDetailDialog({
     Promise.all([
       canViewComments ? fetchIssueComments(issue.id).then((r) => r.data) : Promise.resolve([] as Comment[]),
       canViewHistory ? fetchIssueActivity(issue.id) : Promise.resolve([] as ActivityLog[]),
+      canViewAttachments ? fetchAttachments(issue.id) : Promise.resolve([] as Attachment[]),
       canSetPriority
         ? fetchPriorities().then((r) => r.data)
         : Promise.resolve([] as IssuePriority[]),
@@ -999,15 +1102,16 @@ function IssueDetailDialog({
         ? fetchUsers().then((r) => r.data)
         : Promise.resolve([] as UserSummary[]),
     ])
-      .then(([c, l, p, u]) => {
+      .then(([c, l, a, p, u]) => {
         setComments(c);
         setLogs(l);
+        setAttachments(a);
         setPriorities(p);
         setUsers(u);
       })
       .catch((e) => setError(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ")))
       .finally(() => setLoading(false));
-  }, [issue, open, canViewComments, canViewHistory, canSetPriority, canAssign]);
+  }, [issue, open, canViewComments, canViewHistory, canViewAttachments, canSetPriority, canAssign]);
 
   const handlePost = async () => {
     const content = draft.trim();
@@ -1024,7 +1128,7 @@ function IssueDetailDialog({
     }
   };
 
-  const applyUpdate = async (data: { priorityId?: number; labelIds?: number[] }) => {
+  const applyUpdate = async (data: { priorityId?: number | null; labelIds?: number[] }) => {
     if (!localIssue) return;
     setSaving(true);
     try {
@@ -1040,7 +1144,7 @@ function IssueDetailDialog({
 
   const handleSetPriority = async (priorityId: number | null) => {
     setPriorityAnchor(null);
-    await applyUpdate({ priorityId: priorityId ?? undefined });
+    await applyUpdate({ priorityId: priorityId ?? null });
   };
 
   const handleAssign = async (programmerId: number | null) => {
@@ -1097,12 +1201,41 @@ function IssueDetailDialog({
     }
   };
 
+  const handleUploadAttachment = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !localIssue) return;
+    setAttachmentUploading(true);
+    try {
+      const uploaded = await uploadAttachment(localIssue.id, file);
+      setAttachments((prev) => [...prev, uploaded]);
+      onRefresh();
+    } catch (err) {
+      setError(getErrorMessage(err, "อัปโหลดไฟล์ไม่สำเร็จ"));
+    } finally {
+      setAttachmentUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const handleDeleteAttachment = async (id: number) => {
+    if (!localIssue) return;
+    try {
+      await deleteAttachment(id);
+      setAttachments((prev) => prev.filter((a) => a.id !== id));
+      onRefresh();
+    } catch (err) {
+      setError(getErrorMessage(err, "ลบไฟล์ไม่สำเร็จ"));
+    }
+  };
+
   const theme = useTheme();
   const current = localIssue;
   const column = current?.columnId ? columns.find((c) => c.id === current.columnId) : null;
   const columnName = column ? (column.customName ?? column.statusName) : null;
   const columnColor = getColumnColor(columnName ?? "", theme);
-  const categoryName = current?.categoryName ?? current?.customCategory ?? "—";
+  const categoryName = current?.categoryName
+    ? (current?.customCategory ? `${current.categoryName}: ${current.customCategory}` : current.categoryName)
+    : (current?.customCategory ?? "—");
   const programmers = users.filter((u) => u.isActive && u.roleName === "programmer");
   const member = current?.programmerId
     ? programmers.find((u) => Number(u.id) === current.programmerId) ?? null
@@ -1116,29 +1249,26 @@ function IssueDetailDialog({
     l.name.toLowerCase().includes(labelSearch.trim().toLowerCase()),
   );
 
+  const issueKey = current ? (current.issueNumber ?? "") : "";
+
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      maxWidth="md"
-      fullWidth
-      PaperProps={{ sx: { borderRadius: 3, maxHeight: "88vh", display: "flex", flexDirection: "column" } }}
+      maxWidth={false}
+      PaperProps={{ sx: { borderRadius: 4, width: "1100px", maxWidth: "95vw", height: "90vh", display: "flex", flexDirection: "column", overflow: "hidden" } }}
     >
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, px: 2.5, pt: 2, pb: 1 }}>
-        {columnName && (
-          <Chip
-            label={columnName}
-            size="small"
-            sx={{
-              bgcolor: `${columnColor}20`,
-              color: columnColor,
-              fontWeight: 700,
-              fontSize: "0.75rem",
-            }}
-          />
-        )}
-        <Typography variant="h6" fontWeight={700} sx={{ flex: 1, lineHeight: 1.3 }}>
-          {current?.title}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, px: 2.5, pt: 2, pb: 1.5 }}>
+        <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1, letterSpacing: 0.5 }}>
+          {columnName}
+        </Typography>
+        <Typography
+          variant="subtitle2"
+          fontWeight={700}
+          color="primary.main"
+          sx={{ ml: "auto", mr: 1, letterSpacing: 0.5 }}
+        >
+          {issueKey}
         </Typography>
         <IconButton size="small" onClick={onClose}>
           <CloseIcon />
@@ -1148,57 +1278,195 @@ function IssueDetailDialog({
       <Box sx={{ display: "flex", flex: 1, minHeight: 0 }}>
         <Box
           sx={{
-            flex: 1.15,
-            p: 2.5,
+            flex: 1.2,
+            minWidth: 0,
+            p: 3,
             overflowY: "auto",
             borderRight: "1px solid",
             borderColor: "divider",
             display: "flex",
             flexDirection: "column",
-            gap: 2,
+            gap: 2.5,
           }}
         >
-          <Box>
-            <Typography
-              variant="body2"
-              sx={{ whiteSpace: "pre-wrap", color: current?.description ? "text.primary" : "text.secondary" }}
-            >
-              {current?.description || "เพิ่มคำอธิบายโดยละเอียด..."}
-            </Typography>
-          </Box>
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>หมวดหมู่</Typography>
-              <Typography variant="body2">{categoryName}</Typography>
-            </Box>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>ความสำคัญ</Typography>
-              {canSetPriority ? (
+          {isEditingTitle ? (
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+              <TextField
+                fullWidth
+                size="small"
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                disabled={savingTitle}
+                autoFocus
+              />
+              <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end" }}>
+                <Button size="small" onClick={() => setIsEditingTitle(false)} disabled={savingTitle}>
+                  ยกเลิก
+                </Button>
                 <Button
                   size="small"
-                  variant={current?.priorityName ? "contained" : "outlined"}
-                  disabled={saving}
-                  endIcon={<ArrowDropDownIcon />}
-                  onClick={(e) => setPriorityAnchor(e.currentTarget)}
-                  sx={{ textTransform: "none", justifyContent: "flex-start", fontWeight: 600 }}
+                  variant="contained"
+                  disabled={savingTitle}
+                  startIcon={<SaveIcon sx={{ fontSize: 16 }} />}
+                  onClick={async () => {
+                    if (!current) return;
+                    setSavingTitle(true);
+                    try {
+                      await updateIssue(current.id, { title: titleDraft });
+                      setIsEditingTitle(false);
+                    } finally {
+                      setSavingTitle(false);
+                    }
+                  }}
                 >
-                  {current?.priorityName
-                    ? PRIORITY_LABELS[current.priorityName.toLowerCase()] ?? current.priorityName
-                    : "เลือกความสำคัญ"}
+                  บันทึก
                 </Button>
-              ) : current?.priorityName ? (
-                <Chip
-                  label={PRIORITY_LABELS[current.priorityName.toLowerCase()] ?? current.priorityName}
-                  size="small"
-                  color={PRIORITY_COLORS[current.priorityName.toLowerCase()] ?? "default"}
-                  sx={{ fontSize: "0.7rem", fontWeight: 600 }}
-                />
-              ) : (
-                <Typography variant="body2">—</Typography>
-              )}
+              </Box>
             </Box>
-            <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90, pt: 0.75 }}>ป้าย</Typography>
+          ) : (
+            <Box
+              onClick={() => {
+                setTitleDraft(current?.title ?? "");
+                setIsEditingTitle(true);
+              }}
+              sx={{ display: "flex", alignItems: "center", gap: 1, cursor: "pointer" }}
+            >
+              <Typography
+                variant="h5"
+                fontWeight={700}
+                sx={{
+                  lineHeight: 1.3,
+                  "&:hover": { color: "primary.main" },
+                }}
+              >
+                {current?.title}
+              </Typography>
+              <EditIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+            </Box>
+          )}
+          <Box sx={{ display: "flex", gap: 3 }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+              <CategoryIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">หมวดหมู่</Typography>
+                <Chip
+                  label={categoryName}
+                  size="small"
+                  sx={{ mt: 0.5, fontSize: "0.7rem", fontWeight: 600 }}
+                />
+              </Box>
+            </Box>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>ผู้แจ้ง</Typography>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <Avatar
+                    sx={{
+                      width: 32,
+                      height: 32,
+                      fontSize: "0.8rem",
+                      fontWeight: 700,
+                      bgcolor: "primary.main",
+                      color: "primary.contrastText",
+                    }}
+                  >
+                    {current?.customerName ? current.customerName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 16 }} />}
+                  </Avatar>
+                  <Typography variant="body2" fontWeight={600}>{current?.customerName ?? "—"}</Typography>
+                </Box>
+              </Box>
+            </Box>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>ผู้รับผิดชอบ</Typography>
+                {canAssign ? (
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                    {member ? (
+                      <Chip
+                        size="small"
+                        disabled={saving}
+                        avatar={
+                          <Avatar
+                            sx={{
+                              width: 24,
+                              height: 24,
+                              fontSize: "0.7rem",
+                              fontWeight: 700,
+                              bgcolor: "primary.main",
+                              color: "primary.contrastText",
+                            }}
+                          >
+                            {member.name.charAt(0).toUpperCase()}
+                          </Avatar>
+                        }
+                        label={member.name}
+                        onDelete={() => handleAssign(null)}
+                        sx={{ fontWeight: 600 }}
+                      />
+                    ) : (
+                      <Chip label="รอมอบหมาย" size="small" variant="outlined" />
+                    )}
+                    <IconButton
+                      size="small"
+                      disabled={saving}
+                      onClick={(e) => setMemberAnchor(e.currentTarget)}
+                      sx={{ border: "1px dashed", borderColor: "divider", borderRadius: "50%", width: 28, height: 28 }}
+                    >
+                      <AddIcon sx={{ fontSize: 15 }} />
+                    </IconButton>
+                  </Box>
+                ) : (
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+                    <Avatar
+                      sx={{
+                        width: 28,
+                        height: 28,
+                        fontSize: "0.75rem",
+                        fontWeight: 700,
+                        bgcolor: current?.programmerName ? "primary.main" : theme.palette.grey[300],
+                        color: current?.programmerName ? "primary.contrastText" : theme.palette.grey[600],
+                      }}
+                    >
+                      {current?.programmerName ? current.programmerName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 15 }} />}
+                    </Avatar>
+                    <Typography variant="body2">{current?.programmerName ?? "รอมอบหมาย"}</Typography>
+                  </Box>
+                )}
+              </Box>
+            </Box>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+              <FlagIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">ความสำคัญ</Typography>
+                {canSetPriority ? (
+                  <Button
+                    size="small"
+                    variant={current?.priorityName ? "contained" : "outlined"}
+                    disabled={saving}
+                    endIcon={<ArrowDropDownIcon />}
+                    onClick={(e) => setPriorityAnchor(e.currentTarget)}
+                    sx={{ textTransform: "none", justifyContent: "flex-start", fontWeight: 600, mt: 0.5 }}
+                  >
+                    {current?.priorityName
+                      ? PRIORITY_LABELS[current.priorityName.toLowerCase()] ?? current.priorityName
+                      : "เลือกความสำคัญ"}
+                  </Button>
+                ) : current?.priorityName ? (
+                  <Chip
+                    label={PRIORITY_LABELS[current.priorityName.toLowerCase()] ?? current.priorityName}
+                    size="small"
+                    color={PRIORITY_COLORS[current.priorityName.toLowerCase()] ?? "default"}
+                    sx={{ fontSize: "0.7rem", fontWeight: 600, mt: 0.5 }}
+                  />
+                ) : (
+                  <Typography variant="body2" sx={{ mt: 0.5 }}>—</Typography>
+                )}
+              </Box>
+            </Box>
+          </Box>
+          <Box sx={{ display: "flex", gap: 3 }}>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>ป้ายกำกับ</Typography>
               {canSetLabels ? (
                 <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center" }}>
                   {selectedLabels.map((l) => (
@@ -1246,89 +1514,152 @@ function IssueDetailDialog({
                 <Typography variant="body2">—</Typography>
               )}
             </Box>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>สมาชิก</Typography>
-              {canAssign ? (
-                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                  {member ? (
-                    <Chip
-                      size="small"
-                      disabled={saving}
-                      avatar={
-                        <Avatar
-                          sx={{
-                            width: 20,
-                            height: 20,
-                            fontSize: "0.65rem",
-                            fontWeight: 700,
-                            bgcolor: "primary.main",
-                            color: "primary.contrastText",
-                          }}
-                        >
-                          {member.name.charAt(0).toUpperCase()}
-                        </Avatar>
-                      }
-                      label={member.name}
-                      onDelete={() => handleAssign(null)}
-                      sx={{ fontWeight: 600 }}
-                    />
-                  ) : (
-                    <Chip label="รอมอบหมาย" size="small" variant="outlined" />
-                  )}
-                  <IconButton
-                    size="small"
-                    disabled={saving}
-                    onClick={(e) => setMemberAnchor(e.currentTarget)}
-                    sx={{ border: "1px dashed", borderColor: "divider", borderRadius: "50%", width: 28, height: 28 }}
-                  >
-                    <AddIcon sx={{ fontSize: 15 }} />
-                  </IconButton>
-                </Box>
-              ) : (
-                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-                  <Avatar
-                    sx={{
-                      width: 24,
-                      height: 24,
-                      fontSize: "0.7rem",
-                      fontWeight: 700,
-                      bgcolor: current?.programmerName ? "primary.main" : theme.palette.grey[300],
-                      color: current?.programmerName ? "primary.contrastText" : theme.palette.grey[600],
-                    }}
-                  >
-                    {current?.programmerName ? current.programmerName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 15 }} />}
-                  </Avatar>
-                  <Typography variant="body2">{current?.programmerName ?? "รอมอบหมาย"}</Typography>
-                </Box>
+          </Box>
+          <Box>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
+              <Typography variant="caption" color="text.secondary">คำอธิบาย</Typography>
+              {!isEditingDesc && (
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    setDescDraft(current?.description ?? "");
+                    setIsEditingDesc(true);
+                  }}
+                  sx={{ p: 0.25 }}
+                >
+                  <EditIcon sx={{ fontSize: 14 }} />
+                </IconButton>
               )}
             </Box>
-            <Box sx={{ display: "flex", gap: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>ผู้แจ้ง</Typography>
-              <Typography variant="body2">{current?.customerName ?? "—"}</Typography>
-            </Box>
-            <Box sx={{ display: "flex", gap: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>สร้างเมื่อ</Typography>
-              <Typography variant="body2">{current ? formatDateTime(current.createdAt) : "—"}</Typography>
-            </Box>
-            <Box sx={{ display: "flex", gap: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 90 }}>อัปเดตล่าสุด</Typography>
-              <Typography variant="body2">{current ? formatDateTime(current.updatedAt) : "—"}</Typography>
-            </Box>
+            {isEditingDesc ? (
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                <TextField
+                  fullWidth
+                  multiline
+                  rows={5}
+                  size="small"
+                  placeholder="เพิ่มคำอธิบายโดยละเอียด..."
+                  value={descDraft}
+                  onChange={(e) => setDescDraft(e.target.value)}
+                  disabled={savingDesc}
+                  autoFocus
+                />
+                <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end" }}>
+                  <Button size="small" onClick={() => setIsEditingDesc(false)} disabled={savingDesc}>
+                    ยกเลิก
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    disabled={savingDesc}
+                    startIcon={<SaveIcon sx={{ fontSize: 16 }} />}
+                    onClick={async () => {
+                      if (!current) return;
+                      setSavingDesc(true);
+                      try {
+                        await updateIssue(current.id, { description: descDraft });
+                        setIsEditingDesc(false);
+                      } finally {
+                        setSavingDesc(false);
+                      }
+                    }}
+                  >
+                    บันทึก
+                  </Button>
+                </Box>
+              </Box>
+            ) : (
+              <Box
+                onClick={() => {
+                  setDescDraft(current?.description ?? "");
+                  setIsEditingDesc(true);
+                }}
+                sx={{
+                  p: 1.5,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  borderRadius: 2,
+                  minHeight: 60,
+                  cursor: "pointer",
+                  "&:hover": {
+                    borderColor: "primary.main",
+                    bgcolor: "action.hover",
+                  },
+                }}
+              >
+                <Typography
+                  variant="body2"
+                  sx={{ whiteSpace: "pre-wrap", color: current?.description ? "text.primary" : "text.secondary" }}
+                >
+                  {current?.description || "เพิ่มคำอธิบายโดยละเอียด..."}
+                </Typography>
+              </Box>
+            )}
           </Box>
-          <Box sx={{ display: "flex", gap: 1, mt: "auto", pt: 1 }}>
-            {canEditIssue && (
-              <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => current && onEdit(current)}>
-                แก้ไข
-              </Button>
-            )}
-            <Button size="small" variant="outlined" startIcon={<HistoryIcon />} onClick={() => setTab("history")}>
-              ประวัติ
-            </Button>
-            {canDeleteIssue && (
-              <Button size="small" variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={() => current && onDelete(current)}>
-                ลบ
-              </Button>
-            )}
+          {canViewAttachments && attachments.length > 0 && (
+            <Box>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+                <Typography variant="caption" color="text.secondary">ไฟล์แนบ</Typography>
+              </Box>
+              {attachments.map((file) => (
+                  <Box
+                    key={file.id}
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 1.5,
+                      p: 1.5,
+                      mb: 1,
+                      border: "1px solid",
+                      borderColor: "divider",
+                      borderRadius: 2,
+                    }}
+                  >
+                    <AttachFileIcon sx={{ fontSize: 20, color: "primary.main", flexShrink: 0 }} />
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="body2" fontWeight={600} noWrap>
+                        {file.fileName}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {file.fileSize ? `${(file.fileSize / 1024).toFixed(1)} KB` : ""}
+                        {file.createdAt ? ` • ${formatDateTime(file.createdAt)}` : ""}
+                      </Typography>
+                    </Box>
+                    <IconButton
+                      size="small"
+                      onClick={() => openAttachment(file.id)}
+                      sx={{ color: "text.secondary" }}
+                    >
+                      <OpenInNewIcon sx={{ fontSize: 18 }} />
+                    </IconButton>
+                    {canDeleteAttachment && (
+                      <IconButton
+                        size="small"
+                        onClick={() => handleDeleteAttachment(file.id)}
+                        sx={{ color: "text.secondary" }}
+                      >
+                        <DeleteIcon sx={{ fontSize: 18 }} />
+                      </IconButton>
+                    )}
+                  </Box>
+                ))}
+            </Box>
+          )}
+          <Box sx={{ display: "flex", gap: 3 }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+              <AccessTimeIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">สร้างเมื่อ</Typography>
+                <Typography variant="body2">{current ? formatDateTime(current.createdAt) : "—"}</Typography>
+              </Box>
+            </Box>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+              <AccessTimeIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">อัปเดตล่าสุด</Typography>
+                <Typography variant="body2">{current ? formatDateTime(current.updatedAt) : "—"}</Typography>
+              </Box>
+            </Box>
           </Box>
           <Popover
             open={Boolean(priorityAnchor)}
@@ -1561,11 +1892,48 @@ function IssueDetailDialog({
           />
         </Box>
         <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="fullWidth" sx={{ px: 2, minHeight: 40 }}>
-            <Tab value="comments" label="ความคิดเห็น" sx={{ minHeight: 40, fontSize: "0.8rem", textTransform: "none" }} />
-            <Tab value="history" label="ประวัติ" sx={{ minHeight: 40, fontSize: "0.8rem", textTransform: "none" }} />
+          <Tabs value={tab} onChange={(_, v) => { setTab(v); setIsEditingDesc(false); setIsEditingTitle(false); }} variant="fullWidth" sx={{ px: 2, minHeight: 44, borderBottom: "1px solid", borderColor: "divider" }}>
+            <Tab value="comments" label="ความคิดเห็น" sx={{ minHeight: 44, fontSize: "0.85rem", textTransform: "none", fontWeight: 600 }} />
+            <Tab value="history" label="ประวัติ" sx={{ minHeight: 44, fontSize: "0.85rem", textTransform: "none", fontWeight: 600 }} />
           </Tabs>
-          <Box sx={{ flex: 1, overflowY: "auto", px: 2, py: 1.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
+          {tab === "comments" && canPostComment && (
+            <Box sx={{ p: 2, display: "flex", gap: 1.5, alignItems: "flex-start", borderBottom: "1px solid", borderColor: "divider" }}>
+              <Avatar
+                sx={{
+                  width: 36,
+                  height: 36,
+                  fontSize: "0.9rem",
+                  fontWeight: 700,
+                  bgcolor: "primary.main",
+                  color: "primary.contrastText",
+                  flexShrink: 0,
+                  mt: 0.5,
+                }}
+              >
+                {users[0]?.name ? users[0].name.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 18 }} />}
+              </Avatar>
+              <Box sx={{ flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  placeholder="เขียนความคิดเห็น..."
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      handlePost();
+                    }
+                  }}
+                  multiline
+                  maxRows={3}
+                  sx={{ "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
+                />
+
+              </Box>
+            </Box>
+          )}
+          <Box sx={{ flex: 1, overflowY: "auto", px: 2, py: 2, display: "flex", flexDirection: "column", gap: 2 }}>
             {loading ? (
               <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
                 <CircularProgress size={24} />
@@ -1577,90 +1945,98 @@ function IssueDetailDialog({
                 <Typography variant="body2" color="text.secondary">ยังไม่มีความคิดเห็น</Typography>
               ) : (
                 comments.map((c) => (
-                  <Box key={c.id} sx={{ display: "flex", gap: 1 }}>
+                  <Box key={c.id} sx={{ display: "flex", gap: 1.5 }}>
                     <Avatar
                       sx={{
-                        width: 28,
-                        height: 28,
-                        fontSize: "0.75rem",
+                        width: 36,
+                        height: 36,
+                        fontSize: "0.9rem",
                         fontWeight: 700,
                         bgcolor: "primary.main",
                         color: "primary.contrastText",
                         flexShrink: 0,
                       }}
                     >
-                      {c.authorName ? c.authorName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 16 }} />}
+                      {c.authorName ? c.authorName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 18 }} />}
                     </Avatar>
-                    <Box sx={{ minWidth: 0 }}>
-                      <Box sx={{ display: "flex", alignItems: "baseline", gap: 1 }}>
-                        <Typography variant="caption" fontWeight={700}>{c.authorName ?? "ไม่ทราบชื่อ"}</Typography>
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                        <Typography variant="body2" fontWeight={700}>{c.authorName ?? "ไม่ทราบชื่อ"}</Typography>
                         <Typography variant="caption" color="text.secondary">
                           {formatDateTime(c.createdAt)}
                         </Typography>
+                        <Box sx={{ flex: 1 }} />
+                        <IconButton size="small" sx={{ color: "text.secondary" }}>
+                          <MoreVertIcon sx={{ fontSize: 18 }} />
+                        </IconButton>
                       </Box>
-                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>{c.content}</Typography>
+                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.5 }}>{c.content}</Typography>
                     </Box>
                   </Box>
                 ))
               )
-            ) : !canViewHistory ? (
-              <Typography variant="body2" color="text.secondary">ไม่มีสิทธิ์ดูประวัติ</Typography>
-            ) : logs.length === 0 ? (
-              <Typography variant="body2" color="text.secondary">ยังไม่มีประวัติ</Typography>
-            ) : (
-              logs.map((log) => (
-                <Box key={log.id} sx={{ display: "flex", gap: 1 }}>
-                  <Avatar
-                    sx={{
-                      width: 28,
-                      height: 28,
-                      fontSize: "0.75rem",
-                      fontWeight: 700,
-                      bgcolor: "primary.main",
-                      color: "primary.contrastText",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {log.actorName ? log.actorName.charAt(0).toUpperCase() : <HistoryIcon sx={{ fontSize: 16 }} />}
-                  </Avatar>
-                  <Box sx={{ minWidth: 0 }}>
-                    <Typography variant="body2">{formatActivityAction(log)}</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {formatDateTime(log.createdAt)}
-                    </Typography>
+            ) : tab === "history" ? (
+              !canViewHistory ? (
+                <Typography variant="body2" color="text.secondary">ไม่มีสิทธิ์ดูประวัติ</Typography>
+              ) : logs.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">ยังไม่มีประวัติ</Typography>
+              ) : (
+                logs.map((log) => (
+                  <Box key={log.id} sx={{ display: "flex", gap: 1.5 }}>
+                    <Avatar
+                      sx={{
+                        width: 36,
+                        height: 36,
+                        fontSize: "0.9rem",
+                        fontWeight: 700,
+                        bgcolor: "primary.main",
+                        color: "primary.contrastText",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {log.actorName ? log.actorName.charAt(0).toUpperCase() : <HistoryIcon sx={{ fontSize: 18 }} />}
+                    </Avatar>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="body2">{formatActivityAction(log)}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {formatDateTime(log.createdAt)}
+                      </Typography>
+                    </Box>
                   </Box>
-                </Box>
-              ))
-            )}
+                ))
+              )
+            ) : null}
           </Box>
-          {tab === "comments" && canPostComment && (
-            <Box sx={{ p: 2, pt: 1, display: "flex", gap: 1, alignItems: "flex-end" }}>
-              <TextField
-                fullWidth
-                size="small"
-                placeholder="เขียนความคิดเห็น..."
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    handlePost();
-                  }
-                }}
-                multiline
-                maxRows={4}
-              />
-                <IconButton color="primary" onClick={handlePost} disabled={!draft.trim() || posting}>
-                  <SendIcon />
-                </IconButton>
-            </Box>
-          )}
           {error && (
             <Alert severity="error" sx={{ m: 2, mt: 0 }} onClose={() => setError(null)}>
               {error}
             </Alert>
           )}
         </Box>
+      </Box>
+      <Divider />
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", px: 2.5, py: 1.5 }}>
+        {canDeleteIssue ? (
+          <Button
+            size="small"
+            variant="outlined"
+            color="error"
+            startIcon={<DeleteIcon />}
+            onClick={() => current && onDelete(current)}
+          >
+            ลบ
+          </Button>
+        ) : (
+          <Box />
+        )}
+        <Button
+          size="small"
+          variant="contained"
+          onClick={onClose}
+          sx={{ px: 3 }}
+        >
+          บันทึก
+        </Button>
       </Box>
     </Dialog>
   );
@@ -1734,12 +2110,11 @@ function LabelEditDialog({
   );
 }
 
-function ReportIssuePopover({
+function ReportIssueDialog({
   open,
   onClose,
   onSubmit,
   columns,
-  anchorEl,
 }: {
   open: boolean;
   onClose: () => void;
@@ -1752,7 +2127,6 @@ function ReportIssuePopover({
     files: File[];
   }) => void;
   columns: BoardColumn[];
-  anchorEl: HTMLElement | null;
 }) {
   const theme = useTheme();
   const [title, setTitle] = useState("");
@@ -1855,53 +2229,86 @@ function ReportIssuePopover({
   };
 
   return (
-    <Popover
+    <Dialog
       open={open}
       onClose={onClose}
-      anchorEl={anchorEl}
-      anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-      transformOrigin={{ vertical: "top", horizontal: "right" }}
+      fullWidth
+      maxWidth="sm"
       PaperProps={{
         sx: {
-          width: 420,
-          maxWidth: "95vw",
           borderRadius: 3,
-          boxShadow: theme.custom.cardShadow,
+          m: 1,
           overflow: "hidden",
         },
       }}
     >
-      <Box
-        sx={{ p: 2.5 }}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2 }}>
-          <WarningAmberIcon sx={{ fontSize: 28, color: "warning.main" }} />
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, p: 2.5, pb: 2 }}>
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 44,
+            height: 44,
+            borderRadius: 2,
+            bgcolor: "sky.light",
+            flexShrink: 0,
+          }}
+        >
+          <PostAddIcon sx={{ fontSize: 26, color: "primary.main" }} />
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography variant="h6" fontWeight={700} sx={{ lineHeight: 1.3 }}>
             แจ้งปัญหาใหม่
           </Typography>
+          <Typography variant="caption" color="text.secondary">
+            กรอกข้อมูลเพื่อแจ้งปัญหาใหม่ให้ทีมงานตรวจสอบ
+          </Typography>
+        </Box>
+        <IconButton size="small" onClick={onClose} sx={{ color: "text.secondary" }}>
+          <CloseIcon fontSize="small" />
+        </IconButton>
+      </Box>
+      <Divider />
+      <DialogContent sx={{ p: 2.5 }}>
+        <Box sx={{ mb: 2 }}>
+          <Typography
+            variant="body2"
+            fontWeight={600}
+            sx={{ mb: 0.75, display: "flex", alignItems: "center" }}
+          >
+            หัวข้อ
+            <Box component="span" sx={{ color: "error.main" }}>
+              {" *"}
+            </Box>
+          </Typography>
+          <TextField
+            autoFocus
+            size="small"
+            fullWidth
+            placeholder="รูปหัวข้อปัญหา"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
         </Box>
 
-        <TextField
-          autoFocus
-          size="small"
-          label="หัวข้อ"
-          fullWidth
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          sx={{ mb: 1.5 }}
-        />
-
         <ClickAwayListener onClickAway={() => setCatDropOpen(false)}>
-          <Box ref={catDropRef} sx={{ position: "relative", mb: 1.5 }}>
+          <Box ref={catDropRef} sx={{ position: "relative", mb: 2 }}>
+            <Typography
+              variant="body2"
+              fontWeight={600}
+              sx={{ mb: 0.75, display: "flex", alignItems: "center" }}
+            >
+              หมวดหมู่
+              <Box component="span" sx={{ color: "error.main" }}>
+                {" *"}
+              </Box>
+            </Typography>
             <TextField
               size="small"
               fullWidth
-              label="หมวดหมู่"
-              value={selectedCategory?.name ?? ""}
               placeholder="เลือกหมวดหมู่"
+              value={selectedCategory?.name ?? ""}
               onClick={() => setCatDropOpen(!catDropOpen)}
               InputProps={{
                 readOnly: true,
@@ -1980,12 +2387,11 @@ function ReportIssuePopover({
                           bgcolor: categoryId === cat.id ? "sky.dark" : "transparent",
                           "&:hover": { bgcolor: categoryId === cat.id ? "sky.dark" : "action.hover" },
                         }}
-                      >
-                        <CategoryIcon sx={{ fontSize: 18, color: "text.secondary" }} />
-                        <Typography variant="body2" sx={{ flex: 1 }}>
-                          {cat.name}
-                        </Typography>
-                        {categoryId === cat.id && <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />}
+                        >
+                          <Typography variant="body2" sx={{ flex: 1 }}>
+                            {cat.name}
+                          </Typography>
+                          {categoryId === cat.id && <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />}
                       </ListItemButton>
                     ))
                   ) : (
@@ -2009,7 +2415,7 @@ function ReportIssuePopover({
             value={customCategory}
             onChange={(e) => setCustomCategory(e.target.value)}
             placeholder="ระบุหมวดหมู่เพิ่มเติม"
-            sx={{ mb: 1.5 }}
+            sx={{ mb: 2 }}
           />
         )}
 
@@ -2019,16 +2425,33 @@ function ReportIssuePopover({
           </Alert>
         )}
 
-        <TextField
-          size="small"
-          label="รายละเอียด"
-          fullWidth
-          multiline
-          rows={3}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          sx={{ mb: 1.5 }}
-        />
+        <Box sx={{ mb: 2 }}>
+          <Typography
+            variant="body2"
+            fontWeight={600}
+            sx={{ mb: 0.75, display: "flex", alignItems: "center" }}
+          >
+            รายละเอียด
+            <Box component="span" sx={{ color: "error.main" }}>
+              {" *"}
+            </Box>
+          </Typography>
+          <TextField
+            size="small"
+            fullWidth
+            multiline
+            rows={5}
+            placeholder="อธิบายรายละเอียดของปัญหาให้ชัดเจน..."
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            inputProps={{ maxLength: 1000 }}
+          />
+          <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 0.5 }}>
+            <Typography variant="caption" color="text.secondary">
+              {description.length} / 1000
+            </Typography>
+          </Box>
+        </Box>
 
         <Box sx={{ mb: 2 }}>
           <input
@@ -2039,22 +2462,67 @@ function ReportIssuePopover({
             style={{ display: "none" }}
             onChange={handleFileChange}
           />
-          <Button
-            size="small"
-            variant={isDragOver ? "contained" : "outlined"}
-            startIcon={<AttachFileIcon />}
-            onClick={() => fileInputRef.current?.click()}
-            sx={
-              isDragOver
-                ? { border: "2px dashed", borderColor: "primary.main", bgcolor: "sky.dark" }
-                : undefined
-            }
+          <Typography
+            variant="body2"
+            fontWeight={600}
+            sx={{ mb: 0.75, display: "flex", alignItems: "center" }}
           >
             แนบไฟล์ (รูปภาพ, PDF)
-          </Button>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-            ลากไฟล์มาวางที่นี่ หรือคลิกเพื่อเลือกไฟล์
           </Typography>
+          <Box
+            role="button"
+            onClick={() => fileInputRef.current?.click()}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            sx={{
+              border: "2px dashed",
+              borderColor: isDragOver ? "primary.main" : "divider",
+              bgcolor: isDragOver ? "sky.dark" : "background.default",
+              borderRadius: 2,
+              p: 3,
+              textAlign: "center",
+              cursor: "pointer",
+              transition: "background-color 0.2s, border-color 0.2s",
+              "&:hover": {
+                bgcolor: "action.hover",
+              },
+            }}
+          >
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 44,
+                height: 44,
+                borderRadius: "50%",
+                bgcolor: "primary.light",
+                color: "primary.contrastText",
+                mx: "auto",
+                mb: 1.5,
+              }}
+            >
+              <CloudUploadIcon sx={{ fontSize: 24 }} />
+            </Box>
+            <Typography variant="body2">
+              ลากและวางไฟล์ที่นี่ หรือ{" "}
+              <Box
+                component="span"
+                sx={{
+                  color: "primary.main",
+                  fontWeight: 600,
+                  textDecoration: "underline",
+                  cursor: "pointer",
+                }}
+              >
+                เลือกไฟล์
+              </Box>
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+              รับไฟล์: .jpg, .png, pdf (ขนาดไม่เกิน 10 MB)
+            </Typography>
+          </Box>
           {files.length > 0 && (
             <Box sx={{ mt: 1, display: "flex", flexDirection: "column", gap: 0.5 }}>
               {files.map((file, index) => (
@@ -2088,22 +2556,23 @@ function ReportIssuePopover({
           )}
         </Box>
 
-        <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1 }}>
-          <Button onClick={onClose} color="inherit" size="small">
-            ยกเลิก
-          </Button>
-          <Button
-            onClick={handleSubmit}
-            variant="contained"
-            disabled={!canSubmit}
-            startIcon={<SendIcon />}
-            size="small"
-          >
-            ส่งปัญหา
-          </Button>
-        </Box>
-      </Box>
-    </Popover>
+      </DialogContent>
+      <Divider />
+      <DialogActions sx={{ px: 2.5, py: 2, justifyContent: "flex-end", gap: 1 }}>
+        <Button onClick={onClose} color="inherit" size="small">
+          ยกเลิก
+        </Button>
+        <Button
+          onClick={handleSubmit}
+          variant="contained"
+          disabled={!canSubmit}
+          startIcon={<SendIcon />}
+          size="small"
+        >
+          ส่งปัญหา
+        </Button>
+      </DialogActions>
+    </Dialog>
   );
 }
 
@@ -2113,18 +2582,17 @@ function StatusFilterDialog({
   priorities,
   categories,
   users,
-  labels,
   selectedStatusIds,
   selectedPriorityIds,
   selectedCategoryIds,
-  selectedLabelIds,
   selectedAssigneeIds,
+  selectedReporterIds,
   searchQuery,
   onToggleStatus,
   onTogglePriority,
   onToggleCategory,
-  onToggleLabel,
   onToggleAssignee,
+  onToggleReporter,
   onSearchChange,
   onSelectAllStatuses,
   onClearAll,
@@ -2133,20 +2601,19 @@ function StatusFilterDialog({
   open: boolean;
   statuses: IssueStatus[];
   priorities: IssuePriority[];
-  categories: { id: number; name: string }[];
+  categories: Category[];
   users: UserSummary[];
-  labels: Label[];
   selectedStatusIds: number[];
   selectedPriorityIds: number[];
   selectedCategoryIds: number[];
-  selectedLabelIds: number[];
   selectedAssigneeIds: string[];
+  selectedReporterIds: string[];
   searchQuery: string;
   onToggleStatus: (statusId: number) => void;
   onTogglePriority: (priorityId: number) => void;
   onToggleCategory: (categoryId: number) => void;
-  onToggleLabel: (labelId: number) => void;
   onToggleAssignee: (userId: string) => void;
+  onToggleReporter: (userId: string) => void;
   onSearchChange: (query: string) => void;
   onSelectAllStatuses: () => void;
   onClearAll: () => void;
@@ -2154,7 +2621,10 @@ function StatusFilterDialog({
 }) {
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle sx={{ pb: 1 }}>ตัวกรอง</DialogTitle>
+      <DialogTitle sx={{ pb: 1, display: "flex", alignItems: "center", gap: 1 }}>
+        <FilterListIcon />
+        ตัวกรอง
+      </DialogTitle>
       <DialogContent dividers sx={{ pt: 2 }}>
         <TextField
           fullWidth
@@ -2165,9 +2635,19 @@ function StatusFilterDialog({
           sx={{ mb: 2 }}
         />
 
-        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
-          สถานะ
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+          <Typography variant="subtitle2" fontWeight={700}>
+            สถานะ
+          </Typography>
+          {selectedStatusIds.length > 0 && (
+            <Chip
+              size="small"
+              label={selectedStatusIds.length}
+              color="primary"
+              sx={{ height: 20, fontSize: 11 }}
+            />
+          )}
+        </Box>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
           {statuses.map((status) => (
             <FormControlLabel
@@ -2180,6 +2660,7 @@ function StatusFilterDialog({
                 />
               }
               label={status.name}
+              sx={{ ml: 0.5, "& .MuiFormControlLabel-label": { fontSize: 14 } }}
             />
           ))}
           {statuses.length === 0 && (
@@ -2189,9 +2670,21 @@ function StatusFilterDialog({
           )}
         </Box>
 
-        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
-          ความสำคัญ
-        </Typography>
+        <Divider sx={{ my: 1.5 }} />
+
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+          <Typography variant="subtitle2" fontWeight={700}>
+            ความสำคัญ
+          </Typography>
+          {selectedPriorityIds.length > 0 && (
+            <Chip
+              size="small"
+              label={selectedPriorityIds.length}
+              color="primary"
+              sx={{ height: 20, fontSize: 11 }}
+            />
+          )}
+        </Box>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
           {priorities.map((priority) => (
             <FormControlLabel
@@ -2204,6 +2697,7 @@ function StatusFilterDialog({
                 />
               }
               label={priority.name}
+              sx={{ ml: 0.5, "& .MuiFormControlLabel-label": { fontSize: 14 } }}
             />
           ))}
           {priorities.length === 0 && (
@@ -2213,9 +2707,21 @@ function StatusFilterDialog({
           )}
         </Box>
 
-        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
-          หมวดหมู่
-        </Typography>
+        <Divider sx={{ my: 1.5 }} />
+
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+          <Typography variant="subtitle2" fontWeight={700}>
+            หมวดหมู่
+          </Typography>
+          {selectedCategoryIds.length > 0 && (
+            <Chip
+              size="small"
+              label={selectedCategoryIds.length}
+              color="primary"
+              sx={{ height: 20, fontSize: 11 }}
+            />
+          )}
+        </Box>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
           {categories.map((cat) => (
             <FormControlLabel
@@ -2228,6 +2734,7 @@ function StatusFilterDialog({
                 />
               }
               label={cat.name}
+              sx={{ ml: 0.5, "& .MuiFormControlLabel-label": { fontSize: 14 } }}
             />
           ))}
           {categories.length === 0 && (
@@ -2237,35 +2744,24 @@ function StatusFilterDialog({
           )}
         </Box>
 
-        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
-          ป้ายกำกับ
-        </Typography>
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
-          {labels.map((label) => (
-            <FormControlLabel
-              key={label.id}
-              control={
-                <Checkbox
-                  checked={selectedLabelIds.includes(label.id)}
-                  onChange={() => onToggleLabel(label.id)}
-                  size="small"
-                />
-              }
-              label={label.name}
+        <Divider sx={{ my: 1.5 }} />
+
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+          <PersonIcon sx={{ fontSize: 18 }} />
+          <Typography variant="subtitle2" fontWeight={700}>
+            ผู้รับผิดชอบ
+          </Typography>
+          {selectedAssigneeIds.length > 0 && (
+            <Chip
+              size="small"
+              label={selectedAssigneeIds.length}
+              color="primary"
+              sx={{ height: 20, fontSize: 11 }}
             />
-          ))}
-          {labels.length === 0 && (
-            <Typography variant="body2" color="text.secondary">
-              ไม่พบป้ายกำกับ
-            </Typography>
           )}
         </Box>
-
-        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
-          ผู้รับผิดชอบ
-        </Typography>
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
-          {users.map((user) => (
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mb: 2 }}>
+          {users.filter((u) => u.roleName === "programmer").map((user) => (
             <FormControlLabel
               key={user.id}
               control={
@@ -2276,11 +2772,50 @@ function StatusFilterDialog({
                 />
               }
               label={user.name}
+              sx={{ ml: 0.5, "& .MuiFormControlLabel-label": { fontSize: 14 } }}
             />
           ))}
-          {users.length === 0 && (
+          {users.filter((u) => u.roleName === "programmer").length === 0 && (
             <Typography variant="body2" color="text.secondary">
-              ไม่พบผู้ใช้
+              ไม่พบโปรแกรมเมอร์
+            </Typography>
+          )}
+        </Box>
+
+        <Divider sx={{ my: 1.5 }} />
+
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+          <ChatBubbleOutlineIcon sx={{ fontSize: 18 }} />
+          <Typography variant="subtitle2" fontWeight={700}>
+            ผู้แจ้ง
+          </Typography>
+          {selectedReporterIds.length > 0 && (
+            <Chip
+              size="small"
+              label={selectedReporterIds.length}
+              color="primary"
+              sx={{ height: 20, fontSize: 11 }}
+            />
+          )}
+        </Box>
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+          {users.filter((u) => u.roleName === "customer").map((user) => (
+            <FormControlLabel
+              key={user.id}
+              control={
+                <Checkbox
+                  checked={selectedReporterIds.includes(user.id)}
+                  onChange={() => onToggleReporter(user.id)}
+                  size="small"
+                />
+              }
+              label={user.name}
+              sx={{ ml: 0.5, "& .MuiFormControlLabel-label": { fontSize: 14 } }}
+            />
+          ))}
+          {users.filter((u) => u.roleName === "customer").length === 0 && (
+            <Typography variant="body2" color="text.secondary">
+              ไม่พบลูกค้า
             </Typography>
           )}
         </Box>
@@ -2290,7 +2825,7 @@ function StatusFilterDialog({
           <Button size="small" onClick={onSelectAllStatuses} disabled={statuses.length === 0}>
             เลือกทั้งหมด
           </Button>
-          <Button size="small" onClick={onClearAll} disabled={statuses.length === 0 && priorities.length === 0 && labels.length === 0 && users.length === 0}>
+          <Button size="small" onClick={onClearAll}>
             ล้างทั้งหมด
           </Button>
         </Box>
@@ -2308,12 +2843,13 @@ function KanbanView({
   labels,
   statuses,
   priorities,
+  categories,
   users,
   selectedStatusIds,
   selectedPriorityIds,
   selectedCategoryIds,
-  selectedLabelIds,
   selectedAssigneeIds,
+  selectedReporterIds,
   searchQuery,
   canManage,
   canEdit,
@@ -2329,12 +2865,13 @@ function KanbanView({
   labels: Label[];
   statuses: IssueStatus[];
   priorities: IssuePriority[];
+  categories: Category[];
   users: UserSummary[];
   selectedStatusIds: number[];
   selectedPriorityIds: number[];
   selectedCategoryIds: number[];
-  selectedLabelIds: number[];
   selectedAssigneeIds: string[];
+  selectedReporterIds: string[];
   searchQuery: string;
   canManage: boolean;
   canEdit: boolean;
@@ -2360,13 +2897,14 @@ function KanbanView({
   const [dragStartColumnId, setDragStartColumnId] = useState<number | null>(null);
   const [hoverColumnId, setHoverColumnId] = useState<number | null>(null);
   const dragTargetColumnId = useRef<number | null>(null);
+  const isDraggingRef = useRef(false);
 
   const hasActiveFilters =
     selectedStatusIds.length > 0 ||
     selectedPriorityIds.length > 0 ||
     selectedCategoryIds.length > 0 ||
-    selectedLabelIds.length > 0 ||
     selectedAssigneeIds.length > 0 ||
+    selectedReporterIds.length > 0 ||
     searchQuery.trim() !== "";
 
   const filteredIssues = useMemo(() => {
@@ -2378,19 +2916,22 @@ function KanbanView({
         if (!col || !selectedStatusIds.includes(col.statusId)) return false;
       }
       if (selectedPriorityIds.length > 0 && !selectedPriorityIds.includes(issue.priorityId ?? -1)) return false;
-      if (selectedCategoryIds.length > 0 && !selectedCategoryIds.includes(issue.categoryId ?? -1)) return false;
-      if (selectedLabelIds.length > 0) {
-        const issueLabelIds = issue.labelIds?.length ? issue.labelIds : (issue.labelId ? [issue.labelId] : []);
-        if (!selectedLabelIds.some((id) => issueLabelIds.includes(id))) return false;
+      if (selectedCategoryIds.length > 0) {
+        const selectedCatNames = categories.filter((c) => selectedCategoryIds.includes(c.id)).map((c) => c.name);
+        const matchCat = selectedCategoryIds.includes(issue.categoryId ?? -1);
+        const matchCustom = issue.customCategory != null && selectedCatNames.includes(issue.customCategory);
+        if (!matchCat && !matchCustom) return false;
       }
       if (selectedAssigneeIds.length > 0) {
-        const assigneeId = issue.programmerId ?? issue.customerId;
-        if (!assigneeId || !selectedAssigneeIds.includes(String(assigneeId))) return false;
+        if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
+      }
+      if (selectedReporterIds.length > 0) {
+        if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
       }
       if (query && !issue.title.toLowerCase().includes(query)) return false;
       return true;
     });
-  }, [localIssues, localColumns, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedLabelIds, selectedAssigneeIds, searchQuery, hasActiveFilters]);
+  }, [localIssues, localColumns, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
 
   const visibleColumns =
     selectedStatusIds.length === 0
@@ -2398,6 +2939,7 @@ function KanbanView({
       : localColumns.filter((c) => selectedStatusIds.includes(c.statusId));
 
   useEffect(() => {
+    if (isDraggingRef.current) return;
     setLocalIssues(issues);
   }, [issues]);
 
@@ -2416,16 +2958,23 @@ function KanbanView({
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
+    isDraggingRef.current = true;
     dragTargetColumnId.current = null;
-    const issue = localIssues.find((i) => i.id === active.id);
+    if (active.data.current?.type === "column") {
+      const columnId = Number(String(active.id).replace("column-", ""));
+      const column = localColumns.find((c) => c.id === columnId);
+      setActiveColumn(column ?? null);
+      setActiveIssue(null);
+      setDragStartColumnId(null);
+      return;
+    }
+    const issueId = Number(String(active.id).replace("issue-", ""));
+    const issue = localIssues.find((i) => i.id === issueId);
     if (issue) {
       setActiveIssue(issue);
       setDragStartColumnId(issue.columnId);
       return;
     }
-    const column = localColumns.find((c) => c.id === active.id);
-    setActiveColumn(column ?? null);
-    setDragStartColumnId(null);
   };
 
   const handleDragOver = (event: DragOverEvent) => {
@@ -2436,8 +2985,8 @@ function KanbanView({
       return;
     }
 
-    const activeId = active.id as number;
-    const overId = over.id as number;
+    const activeId = Number(String(active.id).replace("issue-", ""));
+    const overId = String(over.id);
 
     const activeIssue = localIssues.find((i) => i.id === activeId);
     if (!activeIssue) {
@@ -2445,26 +2994,37 @@ function KanbanView({
       return;
     }
 
-    const overIssue = localIssues.find((i) => i.id === overId);
+    const overIssue = localIssues.find((i) => `issue-${i.id}` === overId);
     const overDataType = over.data.current?.type;
     let targetColumnId: number | null = null;
     if (overIssue) {
       targetColumnId = overIssue.columnId;
     } else if (overDataType === "column-drop") {
       targetColumnId = (over.data.current as { columnId?: number })?.columnId ?? null;
-    } else if (localColumns.some((c) => c.id === overId)) {
-      targetColumnId = overId;
+    } else if (overId.startsWith("column-drop-")) {
+      const dropColumnId = Number(overId.replace("column-drop-", ""));
+      if (localColumns.some((c) => c.id === dropColumnId)) {
+        targetColumnId = dropColumnId;
+      }
+    } else if (overId.startsWith("column-")) {
+      const overColumnId = Number(overId.replace("column-", ""));
+      if (localColumns.some((c) => c.id === overColumnId)) {
+        targetColumnId = overColumnId;
+      }
     }
 
     if (!targetColumnId || activeIssue.columnId === targetColumnId) {
       return;
     }
 
+    const targetCol = localColumns.find((c) => c.id === targetColumnId) ?? null;
     dragTargetColumnId.current = targetColumnId;
     setHoverColumnId(targetColumnId);
     setLocalIssues((prev) =>
       prev.map((i) =>
-        i.id === activeId ? { ...i, columnId: targetColumnId } : i
+        i.id === activeId
+          ? { ...i, columnId: targetColumnId, statusId: targetCol?.statusId ?? i.statusId }
+          : i
       )
     );
   };
@@ -2474,14 +3034,15 @@ function KanbanView({
     setActiveIssue(null);
     setActiveColumn(null);
     setHoverColumnId(null);
+    isDraggingRef.current = false;
 
     if (!over || !canManage) return;
 
     const activeType = active.data.current?.type;
 
     if (activeType === "column") {
-      const activeColumnId = active.id as number;
-      const overColumnId = over.id as number;
+      const activeColumnId = Number(String(active.id).replace("column-", ""));
+      const overColumnId = Number(String(over.id).replace("column-", ""));
       if (activeColumnId === overColumnId) return;
 
       const activeColumn = localColumns.find((c) => c.id === activeColumnId);
@@ -2504,7 +3065,7 @@ function KanbanView({
       return;
     }
 
-    const issueId = active.id as number;
+    const issueId = Number(String(active.id).replace("issue-", ""));
 
     const issue = localIssues.find((i) => i.id === issueId);
     if (!issue || issue.isLocked) return;
@@ -2519,7 +3080,10 @@ function KanbanView({
     }
 
     try {
-      await moveIssue(issueId, targetColumnId);
+      const updated = await moveIssue(issueId, targetColumnId);
+      setLocalIssues((prev) =>
+        prev.map((i) => (i.id === issueId ? updated : i))
+      );
     } catch (e) {
       setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
       onRefresh();
@@ -2533,6 +3097,7 @@ function KanbanView({
     setActiveColumn(null);
     setDragStartColumnId(null);
     setHoverColumnId(null);
+    isDraggingRef.current = false;
     dragTargetColumnId.current = null;
     onRefresh();
   };
@@ -2540,7 +3105,7 @@ function KanbanView({
   const handleSaveIssue = async (data: { title: string; description: string; columnId: number; labelId?: number | null }) => {
     try {
       if (editIssue) {
-        await createIssue({ ...data, columnId: editIssue.columnId ?? data.columnId });
+        await updateIssue(editIssue.id, { title: data.title, description: data.description, labelId: data.labelId ?? undefined });
       } else {
         await createIssue(data);
       }
@@ -2602,7 +3167,7 @@ function KanbanView({
   };
 
   return (
-    <Box sx={{ width: "100%" }}>
+    <Box sx={{ width: "100%", minWidth: 0 }}>
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
@@ -2612,7 +3177,7 @@ function KanbanView({
         sx={{
           position: "sticky",
           top: 0,
-          zIndex: 10,
+          zIndex: 1200,
           bgcolor: "background.default",
           py: 1,
           mb: 1,
@@ -2620,7 +3185,7 @@ function KanbanView({
       >
         {toolbar}
       </Box>
-      <Box sx={{ display: "flex", gap: 2, overflowX: "auto", pb: 2, width: "100%" }}>
+      <Box sx={{ display: "flex", gap: 2, overflowX: "auto", pb: 2, width: "100%", minWidth: 0, minHeight: 0 }}>
         <DndContext
           sensors={sensors}
           collisionDetection={closestCorners}
@@ -2629,7 +3194,7 @@ function KanbanView({
           onDragEnd={handleDragEnd}
           onDragCancel={handleDragCancel}
         >
-          <SortableContext items={visibleColumns.map((c) => c.id)} strategy={horizontalListSortingStrategy}>
+          <SortableContext items={visibleColumns.map((c) => `column-${c.id}`)} strategy={horizontalListSortingStrategy}>
             {visibleColumns.map((column) => (
               <KanbanColumn
                 key={column.id}
@@ -2644,7 +3209,7 @@ function KanbanView({
                 isDropTarget={hoverColumnId === column.id && !!activeIssue}
                 roleName={roleName}
                 onOpenIssue={(issue) => setDetailIssue(issue)}
-                onEditIssue={(issue) => setEditIssue(issue)}
+                onEditIssue={(issue) => setDetailIssue(issue)}
                 onDeleteIssue={(issue) => setIssueToDelete(issue)}
                 onViewActivity={(issue) => setActivityIssue(issue)}
                 onDeleteColumn={(colId) => setDeleteColumnId(colId)}
@@ -2667,7 +3232,7 @@ function KanbanView({
                 }}
               >
                 <Typography variant="caption" color="primary.main" fontWeight={700} sx={{ display: "block", mb: 0.5 }}>
-                  ISS-{String(activeIssue.id).padStart(3, "0")}
+                  {activeIssue.issueNumber}
                 </Typography>
                 <Typography variant="subtitle2" fontWeight={700} sx={{ lineHeight: 1.4 }}>
                   {activeIssue.title}
@@ -2726,10 +3291,6 @@ function KanbanView({
         columns={localColumns}
         labels={labels}
         onRefresh={onRefresh}
-        onEdit={(issue) => {
-          setDetailIssue(null);
-          setEditIssue(issue);
-        }}
         onDelete={(issue) => {
           setDetailIssue(null);
           setIssueToDelete(issue);
@@ -2788,7 +3349,13 @@ function TableView({
   columns,
   issues,
   labels,
+  categories,
   selectedStatusIds,
+  selectedPriorityIds,
+  selectedCategoryIds,
+  selectedAssigneeIds,
+  selectedReporterIds,
+  searchQuery,
   canManage,
   canSeeReporter,
   canViewOwnHistory,
@@ -2799,7 +3366,13 @@ function TableView({
   columns: BoardColumn[];
   issues: BoardIssue[];
   labels: Label[];
+  categories: Category[];
   selectedStatusIds: number[];
+  selectedPriorityIds: number[];
+  selectedCategoryIds: number[];
+  selectedAssigneeIds: string[];
+  selectedReporterIds: string[];
+  searchQuery: string;
   canManage: boolean;
   canSeeReporter: boolean;
   canViewOwnHistory: boolean;
@@ -2815,13 +3388,38 @@ function TableView({
   const [issueToDelete, setIssueToDelete] = useState<BoardIssue | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const filteredIssues =
-    selectedStatusIds.length === 0
-      ? issues
-      : issues.filter((i) => {
-          const col = columns.find((c) => c.id === i.columnId);
-          return col !== undefined && selectedStatusIds.includes(col.statusId);
-        });
+  const hasActiveFilters =
+    selectedStatusIds.length > 0 ||
+    selectedPriorityIds.length > 0 ||
+    selectedCategoryIds.length > 0 ||
+    selectedAssigneeIds.length > 0 ||
+    selectedReporterIds.length > 0 ||
+    searchQuery.trim() !== "";
+  const filteredIssues = useMemo(() => {
+    if (!hasActiveFilters) return issues;
+    const query = searchQuery.trim().toLowerCase();
+    return issues.filter((issue) => {
+      if (selectedStatusIds.length > 0) {
+        const col = columns.find((c) => c.id === issue.columnId);
+        if (!col || !selectedStatusIds.includes(col.statusId)) return false;
+      }
+      if (selectedPriorityIds.length > 0 && !selectedPriorityIds.includes(issue.priorityId ?? -1)) return false;
+      if (selectedCategoryIds.length > 0) {
+        const selectedCatNames = categories.filter((c) => selectedCategoryIds.includes(c.id)).map((c) => c.name);
+        const matchCat = selectedCategoryIds.includes(issue.categoryId ?? -1);
+        const matchCustom = issue.customCategory != null && selectedCatNames.includes(issue.customCategory);
+        if (!matchCat && !matchCustom) return false;
+      }
+      if (selectedAssigneeIds.length > 0) {
+        if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
+      }
+      if (selectedReporterIds.length > 0) {
+        if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
+      }
+      if (query && !issue.title.toLowerCase().includes(query)) return false;
+      return true;
+    });
+  }, [issues, columns, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
   const pageIssues = filteredIssues.slice((page - 1) * 10, page * 10);
 
   const handleSaveIssue = async (data: { title: string; description: string; columnId: number; labelId?: number | null }) => {
@@ -2873,16 +3471,17 @@ function TableView({
           sx={{
             position: "sticky",
             top: 0,
-            zIndex: 10,
+            zIndex: 1200,
             bgcolor: "background.default",
             py: 1,
             mb: 1,
+            minWidth: 0,
           }}
         >
           {toolbar}
         </Box>
       )}
-      <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden", border: "1px solid", borderColor: "divider" }}>
+      <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden", border: "1px solid", borderColor: "divider", minWidth: 0 }}>
         <Box sx={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
@@ -2906,14 +3505,14 @@ function TableView({
               {pageIssues.map((issue) => (
                 <tr key={issue.id} style={{ borderBottom: `1px solid ${theme.custom.tableBorder}` }}>
                   <td style={{ padding: "12px", fontSize: "0.8rem" }}>
-                    <Typography variant="caption" fontWeight={500}>ISS-{String(issue.id).padStart(3, "0")}</Typography>
+                    <Typography variant="caption" color="primary.main" fontWeight={700}>{issue.issueNumber}</Typography>
                   </td>
                   <td style={{ padding: "12px", fontSize: "0.8rem" }}>
                     <Typography
                       variant="body2"
                       fontWeight={600}
                       onClick={() => setDetailIssue(issue)}
-                      sx={{ cursor: "pointer", color: "primary.main", "&:hover": { textDecoration: "underline" } }}
+                      sx={{ cursor: "pointer", color: "text.primary", "&:hover": { textDecoration: "underline" } }}
                     >
                       {issue.title}
                     </Typography>
@@ -2952,7 +3551,7 @@ function TableView({
                     <td style={{ padding: "12px", fontSize: "0.8rem" }}>
                       <Box sx={{ display: "flex", gap: 0.5 }}>
                         {canManage && (
-                          <IconButton size="small" onClick={() => setEditIssue(issue)}>
+                          <IconButton size="small" onClick={() => setDetailIssue(issue)}>
                             <EditIcon fontSize="small" />
                           </IconButton>
                         )}
@@ -2995,10 +3594,6 @@ function TableView({
         columns={columns}
         labels={labels}
         onRefresh={onRefresh}
-        onEdit={(issue) => {
-          setDetailIssue(null);
-          setEditIssue(issue);
-        }}
         onDelete={(issue) => {
           setDetailIssue(null);
           setIssueToDelete(issue);
@@ -3044,19 +3639,20 @@ export default function BoardsPage() {
   const [labels, setLabels] = useState<Label[]>([]);
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [selectedStatusIds, setSelectedStatusIds] = useState<number[]>([]);
   const [selectedPriorityIds, setSelectedPriorityIds] = useState<number[]>([]);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<number[]>([]);
-  const [selectedLabelIds, setSelectedLabelIds] = useState<number[]>([]);
   const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<string[]>([]);
+  const [selectedReporterIds, setSelectedReporterIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [recycleBinOpen, setRecycleBinOpen] = useState(false);
   const [trashedIssues, setTrashedIssues] = useState<TrashedIssue[]>([]);
   const [filterOpen, setFilterOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reportAnchorEl, setReportAnchorEl] = useState<HTMLElement | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
 
   const canEdit = can("issue.all.update");
   const canDelete = can("issue.delete");
@@ -3080,10 +3676,6 @@ export default function BoardsPage() {
     setSelectedStatusIds(statuses.map((s) => s.id));
   };
 
-  const handleClearAllStatuses = () => {
-    setSelectedStatusIds([]);
-  };
-
   const handleTogglePriorityFilter = (priorityId: number) => {
     setSelectedPriorityIds((prev) =>
       prev.includes(priorityId)
@@ -3092,16 +3684,16 @@ export default function BoardsPage() {
     );
   };
 
-  const handleToggleLabelFilter = (labelId: number) => {
-    setSelectedLabelIds((prev) =>
-      prev.includes(labelId)
-        ? prev.filter((id) => id !== labelId)
-        : [...prev, labelId],
+  const handleToggleAssigneeFilter = (userId: string) => {
+    setSelectedAssigneeIds((prev) =>
+      prev.includes(userId)
+        ? prev.filter((id) => id !== userId)
+        : [...prev, userId],
     );
   };
 
-  const handleToggleAssigneeFilter = (userId: string) => {
-    setSelectedAssigneeIds((prev) =>
+  const handleToggleReporterFilter = (userId: string) => {
+    setSelectedReporterIds((prev) =>
       prev.includes(userId)
         ? prev.filter((id) => id !== userId)
         : [...prev, userId],
@@ -3120,8 +3712,8 @@ export default function BoardsPage() {
     setSelectedStatusIds([]);
     setSelectedPriorityIds([]);
     setSelectedCategoryIds([]);
-    setSelectedLabelIds([]);
     setSelectedAssigneeIds([]);
+    setSelectedReporterIds([]);
     setSearchQuery("");
   };
 
@@ -3130,18 +3722,20 @@ export default function BoardsPage() {
     try {
       const results = await Promise.allSettled([
         fetchColumns(),
-        fetchIssues(),
+        fetchIssues(1, 100, [], "", roleName === "programmer"),
         fetchLabels(),
         fetchStatuses(),
         fetchPriorities(),
+        fetchCategories(),
         fetchUsers(),
       ]);
-      const [cols, iss, lbls, sts, pri, usr] = results;
+      const [cols, iss, lbls, sts, pri, cats, usr] = results;
       if (cols.status === "fulfilled") setColumns(cols.value.data);
       if (iss.status === "fulfilled") setIssues(iss.value.data);
       if (lbls.status === "fulfilled") setLabels(lbls.value.data);
       if (sts.status === "fulfilled") setStatuses(sts.value.data);
       if (pri.status === "fulfilled") setPriorities(pri.value.data);
+      if (cats.status === "fulfilled") setCategories(cats.value.data);
       if (usr.status === "fulfilled") setUsers(usr.value.data);
       const firstError = results.find((r) => r.status === "rejected");
       if (firstError && firstError.status === "rejected") {
@@ -3161,24 +3755,13 @@ export default function BoardsPage() {
   }, [loadData]);
 
   useEffect(() => {
-    if (!searchQuery.trim()) return;
     const timer = setTimeout(() => {
-      fetchIssues(1, 100, [], searchQuery.trim())
+        fetchIssues(1, 100, [], searchQuery.trim())
         .then((res) => setIssues(res.data))
         .catch(() => {});
     }, 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
-
-  const categories = useMemo(() => {
-    const map = new Map<number, string>();
-    issues.forEach((issue) => {
-      if (issue.categoryId && issue.categoryName) {
-        map.set(issue.categoryId, issue.categoryName);
-      }
-    });
-    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
-  }, [issues]);
 
   const handleReportIssue = async (data: {
     title: string;
@@ -3199,7 +3782,7 @@ export default function BoardsPage() {
       if (data.files.length > 0) {
         await Promise.all(data.files.map((file) => uploadAttachment(issue.id, file)));
       }
-      setReportAnchorEl(null);
+      setReportOpen(false);
       loadData();
     } catch (e) {
       setError(getErrorMessage(e, "แจ้งปัญหาไม่สำเร็จ"));
@@ -3227,14 +3810,14 @@ export default function BoardsPage() {
                 labels={labels}
                 statuses={statuses}
                 priorities={priorities}
+                categories={categories}
                 users={users}
                 selectedStatusIds={selectedStatusIds}
                 selectedPriorityIds={selectedPriorityIds}
                 selectedCategoryIds={selectedCategoryIds}
-                selectedLabelIds={selectedLabelIds}
-            selectedAssigneeIds={selectedAssigneeIds}
+                selectedAssigneeIds={selectedAssigneeIds}
+                selectedReporterIds={selectedReporterIds}
                 searchQuery={searchQuery}
-
                 canManage={canManage}
                 canEdit={canEdit}
                 canDelete={canDelete}
@@ -3249,51 +3832,52 @@ export default function BoardsPage() {
                       placeholder={t("searchPlaceholder")}
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      sx={{ flexGrow: 1, minWidth: 200 }}
+                      sx={{ width: 240, maxWidth: 240, minWidth: 160 }}
                       InputProps={{
                         startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
                       }}
                     />
-                    {!isCustomer && (
-                      <ToggleButtonGroup
-                        size="small"
-                        exclusive
-                        value={view}
-                        onChange={(_, v) => v && setView(v)}
-                      >
-                        <ToggleButton value="board">
-                          <ViewKanbanIcon fontSize="small" />
-                        </ToggleButton>
-                        <ToggleButton value="table">
-                          <TableChartIcon fontSize="small" />
-                        </ToggleButton>
-                      </ToggleButtonGroup>
-                    )}
-                    {can("issue.trash.view") && (
-                      <Tooltip title={t("recycleBin")}>
-                        <IconButton size="small" onClick={() => setRecycleBinOpen(true)}>
-                          <DeleteOutlineIcon sx={{ fontSize: 20, color: "text.secondary" }} />
-                        </IconButton>
-                      </Tooltip>
-                    )}
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<FilterListIcon />}
-                      onClick={() => setFilterOpen(true)}
-                    >
-                      {t("filter")}
-                    </Button>
-                    {canReport && (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
+                      {!isCustomer && (
+                        <ToggleButtonGroup
+                          size="small"
+                          exclusive
+                          value={view}
+                          onChange={(_, v) => v && setView(v)}
+                        >
+                          <ToggleButton value="board">
+                            <ViewKanbanIcon fontSize="small" />
+                          </ToggleButton>
+                          <ToggleButton value="table">
+                            <TableChartIcon fontSize="small" />
+                          </ToggleButton>
+                        </ToggleButtonGroup>
+                      )}
+                      {can("issue.trash.view") && (
+                        <Tooltip title={t("recycleBin")}>
+                          <IconButton size="small" onClick={() => setRecycleBinOpen(true)}>
+                            <DeleteOutlineIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                          </IconButton>
+                        </Tooltip>
+                      )}
                       <Button
-                        variant="contained"
-                        startIcon={<AddIcon />}
-                        onClick={(e) => setReportAnchorEl(e.currentTarget)}
-                        sx={{ ml: "auto" }}
+                        size="small"
+                        variant="outlined"
+                        startIcon={<FilterListIcon />}
+                        onClick={() => setFilterOpen(true)}
                       >
-                        {t("reportIssue")}
+                        {t("filter")}
                       </Button>
-                    )}
+                      {canReport && (
+                        <Button
+                          variant="contained"
+                          startIcon={<AddIcon />}
+                          onClick={() => setReportOpen(true)}
+                        >
+                          {t("reportIssue")}
+                        </Button>
+                      )}
+                    </Box>
                   </Box>
                 }
               />
@@ -3302,7 +3886,13 @@ export default function BoardsPage() {
                 columns={columns}
                 issues={issues}
                 labels={labels}
+                categories={categories}
                 selectedStatusIds={selectedStatusIds}
+                selectedPriorityIds={selectedPriorityIds}
+                selectedCategoryIds={selectedCategoryIds}
+                selectedAssigneeIds={selectedAssigneeIds}
+                selectedReporterIds={selectedReporterIds}
+                searchQuery={searchQuery}
                 canManage={canManage}
                 canSeeReporter={canSeeReporter}
                 canViewOwnHistory={canViewOwnHistory}
@@ -3315,51 +3905,52 @@ export default function BoardsPage() {
                       placeholder={t("searchPlaceholder")}
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      sx={{ flexGrow: 1, minWidth: 200 }}
+                      sx={{ width: 240, maxWidth: 240, minWidth: 160 }}
                       InputProps={{
                         startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
                       }}
                     />
-                    {!isCustomer && (
-                      <ToggleButtonGroup
-                        size="small"
-                        exclusive
-                        value={view}
-                        onChange={(_, v) => v && setView(v)}
-                      >
-                        <ToggleButton value="board">
-                          <ViewKanbanIcon fontSize="small" />
-                        </ToggleButton>
-                        <ToggleButton value="table">
-                          <TableChartIcon fontSize="small" />
-                        </ToggleButton>
-                      </ToggleButtonGroup>
-                    )}
-                    {can("issue.trash.view") && (
-                      <Tooltip title={t("recycleBin")}>
-                        <IconButton size="small" onClick={() => setRecycleBinOpen(true)}>
-                          <DeleteOutlineIcon sx={{ fontSize: 20, color: "text.secondary" }} />
-                        </IconButton>
-                      </Tooltip>
-                    )}
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<FilterListIcon />}
-                      onClick={() => setFilterOpen(true)}
-                    >
-                      {t("filter")}
-                    </Button>
-                    {canReport && (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
+                      {!isCustomer && (
+                        <ToggleButtonGroup
+                          size="small"
+                          exclusive
+                          value={view}
+                          onChange={(_, v) => v && setView(v)}
+                        >
+                          <ToggleButton value="board">
+                            <ViewKanbanIcon fontSize="small" />
+                          </ToggleButton>
+                          <ToggleButton value="table">
+                            <TableChartIcon fontSize="small" />
+                          </ToggleButton>
+                        </ToggleButtonGroup>
+                      )}
+                      {can("issue.trash.view") && (
+                        <Tooltip title={t("recycleBin")}>
+                          <IconButton size="small" onClick={() => setRecycleBinOpen(true)}>
+                            <DeleteOutlineIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                          </IconButton>
+                        </Tooltip>
+                      )}
                       <Button
-                        variant="contained"
-                        startIcon={<AddIcon />}
-                        onClick={(e) => setReportAnchorEl(e.currentTarget)}
-                        sx={{ ml: "auto" }}
+                        size="small"
+                        variant="outlined"
+                        startIcon={<FilterListIcon />}
+                        onClick={() => setFilterOpen(true)}
                       >
-                        {t("reportIssue")}
+                        {t("filter")}
                       </Button>
-                    )}
+                      {canReport && (
+                        <Button
+                          variant="contained"
+                          startIcon={<AddIcon />}
+                          onClick={() => setReportOpen(true)}
+                        >
+                          {t("reportIssue")}
+                        </Button>
+                      )}
+                    </Box>
                   </Box>
                 }
               />
@@ -3371,29 +3962,27 @@ export default function BoardsPage() {
             priorities={priorities}
             categories={categories}
             users={users}
-            labels={labels}
             selectedStatusIds={selectedStatusIds}
             selectedPriorityIds={selectedPriorityIds}
             selectedCategoryIds={selectedCategoryIds}
-            selectedLabelIds={selectedLabelIds}
             selectedAssigneeIds={selectedAssigneeIds}
+            selectedReporterIds={selectedReporterIds}
             searchQuery={searchQuery}
             onToggleStatus={handleToggleStatusFilter}
             onTogglePriority={handleTogglePriorityFilter}
             onToggleCategory={handleToggleCategoryFilter}
-            onToggleLabel={handleToggleLabelFilter}
             onToggleAssignee={handleToggleAssigneeFilter}
+            onToggleReporter={handleToggleReporterFilter}
             onSearchChange={setSearchQuery}
             onSelectAllStatuses={handleSelectAllStatuses}
             onClearAll={handleClearAllFilters}
             onClose={() => setFilterOpen(false)}
           />
-          <ReportIssuePopover
-            open={Boolean(reportAnchorEl)}
-            onClose={() => setReportAnchorEl(null)}
+          <ReportIssueDialog
+            open={reportOpen}
+            onClose={() => setReportOpen(false)}
             onSubmit={handleReportIssue}
             columns={columns}
-            anchorEl={reportAnchorEl}
           />
           <RecycleBinDialog
             open={recycleBinOpen}

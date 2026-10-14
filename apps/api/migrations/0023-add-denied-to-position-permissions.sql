@@ -1,0 +1,2 @@
+ALTER TABLE position_permissions
+  ADD COLUMN IF NOT EXISTS denied BOOLEAN NOT NULL DEFAULT false;

@@ -17,19 +17,22 @@ import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { AuthUser, actorInfo } from "../auth/auth-user";
-import { ActorInfo } from "../activity-logs/activity-logs.service";
+import { ActorInfo, ActivityLogsService } from "../activity-logs/activity-logs.service";
 
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class IssuesController {
-  constructor(private readonly issues: IssuesService) {}
+  constructor(
+    private readonly issues: IssuesService,
+    private readonly activityLogs: ActivityLogsService,
+  ) {}
 
   private actor(user: AuthUser): ActorInfo {
     return actorInfo(user);
   }
 
   @Get("issues")
-  @Permissions("board.view")
+  @Permissions("issue.all.view")
   findAll(
     @Query()
     query: { page?: string; limit?: string; statuses?: string; search?: string },
@@ -136,5 +139,11 @@ export class IssuesController {
   @Permissions("issue.restore")
   restore(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
     return this.issues.restore(id, this.actor(user));
+  }
+
+  @Get("issues/:id/activity")
+  @Permissions("issue.detail.view")
+  findActivity(@Param("id", ParseIntPipe) id: number) {
+    return this.activityLogs.findByIssue(id);
   }
 }

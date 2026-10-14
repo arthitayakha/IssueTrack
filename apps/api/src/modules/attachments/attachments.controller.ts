@@ -5,6 +5,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -13,6 +14,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
 import { extname, join } from "path";
 import { randomBytes } from "crypto";
+import type { Response } from "express";
 import { AttachmentsService } from "./attachments.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -62,6 +64,12 @@ export class AttachmentsController {
   @Permissions("board.view")
   findOne(@Param("id", ParseIntPipe) id: number) {
     return this.attachments.findOne(id);
+  }
+
+  @Get("attachments/:id/download")
+  @Permissions("board.view")
+  download(@Param("id", ParseIntPipe) id: number, @Res() res: Response) {
+    return this.attachments.download(id, res);
   }
 
   @Delete("attachments/:id")

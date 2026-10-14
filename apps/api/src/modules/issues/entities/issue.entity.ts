@@ -25,6 +25,9 @@ export class Issue {
   @PrimaryGeneratedColumn()
   id!: number;
 
+  @Column({ name: "issue_number", type: "varchar", length: 12, nullable: true })
+  issueNumber!: string | null;
+
   @Column({ name: "programmer_id", type: "int", nullable: true })
   programmerId!: number | null;
 

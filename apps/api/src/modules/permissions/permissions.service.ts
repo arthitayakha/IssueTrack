@@ -105,7 +105,10 @@ export class PermissionsService implements OnModuleInit {
     if (!role || !role.isActive) return false;
     if (positionId) {
       const posPerm = await this.positionPermissions.findOne({ where: { positionId, permission } });
-      if (posPerm) return true;
+      if (posPerm) {
+        if (posPerm.denied) return false;
+        return true;
+      }
     }
     const rolePerm = await this.repo.findOne({ where: { roleId, permission } });
     if (rolePerm) return true;
@@ -121,7 +124,13 @@ export class PermissionsService implements OnModuleInit {
     rolePerms.forEach((p) => permissions.add(p.permission));
     if (positionId) {
       const posPerms = await this.positionPermissions.find({ where: { positionId } });
-      posPerms.forEach((p) => permissions.add(p.permission));
+      posPerms.forEach((p) => {
+        if (p.denied) {
+          permissions.delete(p.permission);
+        } else {
+          permissions.add(p.permission);
+        }
+      });
     }
     return [...permissions];
   }

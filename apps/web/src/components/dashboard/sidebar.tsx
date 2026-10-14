@@ -8,18 +8,15 @@ import {
   List,
   ListItem,
   ListItemButton,
-  ListItemIcon,
   ListItemText,
   Toolbar,
   Typography,
 } from "@mui/material";
+import BarChartIcon from "@mui/icons-material/BarChart";
 import DashboardIcon from "@mui/icons-material/Dashboard";
-import ViewKanbanOutlinedIcon from "@mui/icons-material/ViewKanbanOutlined";
-
-import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
-import PeopleOutlineIcon from "@mui/icons-material/PeopleOutline";
-import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
-import AssessmentIcon from "@mui/icons-material/Assessment";
+import SettingsIcon from "@mui/icons-material/Settings";
+import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
+import PeopleIcon from "@mui/icons-material/People";
 import { DRAWER_WIDTH } from "./navbar";
 import { usePermissions } from "@/lib/permissions";
 import { Link, usePathname } from "@/i18n/navigation";
@@ -30,13 +27,16 @@ export default function Sidebar() {
   const pathname = usePathname();
 
   const navItems = [
-    { label: t("dashboard"), icon: DashboardIcon, href: "/" },
-    { label: t("boards"), icon: ViewKanbanOutlinedIcon, href: "/boards" },
+    { label: t("dashboard"), href: "/", icon: <DashboardIcon /> },
+    { label: t("boards"), href: "/boards", icon: <ViewKanbanIcon /> },
     ...(can("user.view") || can("role.view") || can("position.view")
-      ? [{ label: t("users"), icon: PeopleOutlineIcon, href: "/users" }]
+      ? [{ label: t("users"), href: "/users", icon: <PeopleIcon /> }]
       : []),
     ...(can("permission.update") || can("category.view") || can("status.view") || can("priority.view")
-      ? [{ label: t("settings"), icon: SettingsOutlinedIcon, href: "/settings" }]
+      ? [{ label: t("settings"), href: "/settings", icon: <SettingsIcon /> }]
+      : []),
+    ...(can("report.view")
+      ? [{ label: t("reports"), href: "/reports", icon: <BarChartIcon /> }]
       : []),
   ];
 
@@ -57,7 +57,6 @@ export default function Sidebar() {
     >
       <Toolbar>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <ViewKanbanOutlinedIcon color="primary" />
           <Typography variant="h6" fontWeight={700} color="text.primary">
             Issue Tracker
           </Typography>
@@ -73,11 +72,10 @@ export default function Sidebar() {
               selected={pathname === item.href}
               sx={{ borderRadius: 1.5 }}
             >
-              <ListItemIcon sx={{ minWidth: 36, color: "inherit" }}>
-                <item.icon fontSize="small" />
-              </ListItemIcon>
+              {item.icon}
               <ListItemText
                 primary={item.label}
+                sx={{ ml: 1.5 }}
                 primaryTypographyProps={{
                   fontSize: "0.9rem",
                   fontWeight: pathname === item.href ? 600 : 400,
