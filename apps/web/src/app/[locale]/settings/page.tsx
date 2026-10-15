@@ -89,6 +89,9 @@ interface IssueStatus {
   isActive: boolean;
   sortOrder: number;
   issueCount: number;
+  timerEnabled: boolean;
+  timeEntryEnabled: boolean;
+
 }
 
 interface IssuePriority {
@@ -110,6 +113,9 @@ function SortableStatusRow({
   canUpdate,
   canDelete,
   onToggle,
+  onToggleTimer,
+  onToggleTimeEntry,
+
   onEdit,
   onDelete,
 }: {
@@ -118,6 +124,9 @@ function SortableStatusRow({
   canUpdate: boolean;
   canDelete: boolean;
   onToggle: (s: IssueStatus) => void;
+  onToggleTimer: (s: IssueStatus) => void;
+  onToggleTimeEntry: (s: IssueStatus) => void;
+
   onEdit: (s: IssueStatus) => void;
   onDelete: (id: number) => void;
 }) {
@@ -252,6 +261,48 @@ function SortableStatusRow({
           <FormControlLabel
             control={
               <Switch
+                checked={status.timerEnabled}
+                onChange={() => onToggleTimer(status)}
+                size="small"
+              />
+            }
+            label=""
+            sx={{ mr: 0.5 }}
+          />
+        )}
+        {canUpdate && (
+          <FormControlLabel
+            control={
+              <Switch
+                checked={status.timeEntryEnabled}
+                onChange={() => onToggleTimeEntry(status)}
+                size="small"
+              />
+            }
+            label=""
+            sx={{ mr: 0.5 }}
+          />
+        )}
+
+
+
+
+
+
+
+
+
+
+
+
+
+      </Box>
+
+      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexShrink: 0 }}>
+        {canUpdate && (
+          <FormControlLabel
+            control={
+              <Switch
                 checked={status.isActive}
                 onChange={() => onToggle(status)}
                 size="small"
@@ -322,6 +373,9 @@ export default function SettingsPage() {
   const [statusForm, setStatusForm] = useState({
     name: "",
     description: "",
+    timerEnabled: false,
+    timeEntryEnabled: false,
+
   });
 
   const [priorityDialogOpen, setPriorityDialogOpen] = useState(false);
@@ -336,7 +390,7 @@ export default function SettingsPage() {
   const [labelForm, setLabelForm] = useState({ name: "", color: "default" });
 
   const [deleteTarget, setDeleteTarget] = useState<{ type: "category" | "status" | "priority" | "label"; id: number; name: string } | null>(null);
-  const [deleteCheck, setDeleteCheck] = useState<{ canDelete: boolean; issueCount: number } | null>(null);
+  const [deleteCheck, setDeleteCheck] = useState<{ canDelete: boolean; issueCount: number; columnCount: number } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   const canViewCategories = can("category.view");
@@ -495,7 +549,7 @@ export default function SettingsPage() {
         {},
         token,
       );
-      setDeleteCheck(result);
+      setDeleteCheck({ ...result, columnCount: 0 });
     } catch (err) {
       setDeleteTarget(null);
     } finally {
@@ -505,7 +559,7 @@ export default function SettingsPage() {
 
   function openAddStatus() {
     setEditingStatus(null);
-    setStatusForm({ name: "", description: "" });
+
     setStatusDialogOpen(true);
   }
 
@@ -514,6 +568,9 @@ export default function SettingsPage() {
     setStatusForm({
       name: status.name,
       description: status.description ?? "",
+      timerEnabled: status.timerEnabled,
+      timeEntryEnabled: status.timeEntryEnabled,
+
     });
     setStatusDialogOpen(true);
   }
@@ -523,6 +580,9 @@ export default function SettingsPage() {
       const payload = {
         name: statusForm.name,
         description: statusForm.description || undefined,
+        timerEnabled: statusForm.timerEnabled,
+        timeEntryEnabled: statusForm.timeEntryEnabled,
+
       };
       if (editingStatus) {
         await apiFetch(`/issue-statuses/${editingStatus.id}`, {
@@ -569,24 +629,78 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleToggleStatusTimer(status: IssueStatus) {
+    try {
+      await apiFetch(`/issue-statuses/${status.id}/timer`, {
+        method: "PATCH",
+        body: JSON.stringify({ timerEnabled: !status.timerEnabled }),
+      }, token);
+      setStatuses((prev) =>
+        prev.map((s) => (s.id === status.id ? { ...s, timerEnabled: !s.timerEnabled } : s)),
+      );
+    } catch (err) {
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
+    }
+  }
+
+  async function handleToggleStatusTimeEntry(status: IssueStatus) {
+    try {
+      await apiFetch(`/issue-statuses/${status.id}/time-entry`, {
+        method: "PATCH",
+        body: JSON.stringify({ timeEntryEnabled: !status.timeEntryEnabled }),
+      }, token);
+      setStatuses((prev) =>
+        prev.map((s) => (s.id === status.id ? { ...s, timeEntryEnabled: !s.timeEntryEnabled } : s)),
+      );
+    } catch (err) {
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
+    }
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   async function handleDeleteStatus(id: number) {
     const status = statuses.find((s) => s.id === id);
     if (!status) return;
     setDeleteTarget({ type: "status", id, name: status.name });
     setDeleteLoading(true);
     try {
-      const result = await apiFetch<{ canDelete: boolean; issueCount: number }>(
-        `/issue-statuses/${id}/check`,
-        {},
-        token,
-      );
-      setDeleteCheck(result);
-    } catch (err) {
-      setDeleteTarget(null);
-    } finally {
-      setDeleteLoading(false);
-    }
+const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCount: number }>(
+      `/issue-statuses/${id}/check`,
+      {},
+      token,
+    );
+    setDeleteCheck(result);
+  } catch (err) {
+    setDeleteTarget(null);
+  } finally {
+    setDeleteLoading(false);
   }
+}
 
   function openAddPriority() {
     setEditingPriority(null);
@@ -664,7 +778,7 @@ export default function SettingsPage() {
         {},
         token,
       );
-      setDeleteCheck(result);
+      setDeleteCheck({ ...result, columnCount: 0 });
     } catch (err) {
       setDeleteTarget(null);
     } finally {
@@ -732,7 +846,7 @@ export default function SettingsPage() {
     setDeleteLoading(true);
     try {
       const result = await checkLabel(id);
-      setDeleteCheck(result);
+      setDeleteCheck({ ...result, columnCount: 0 });
     } catch (err) {
       setDeleteTarget(null);
     } finally {
@@ -787,7 +901,7 @@ export default function SettingsPage() {
   ];
 
   return (
-    <RequirePermission permissions={["category.view", "status.view", "priority.view"]}>
+    <RequirePermission permission="permission.update">
       <DashboardLayout>
         <Box>
           <Tabs
@@ -907,6 +1021,9 @@ export default function SettingsPage() {
                         canUpdate={can("status.update")}
                         canDelete={can("status.delete")}
                         onToggle={handleToggleStatusActive}
+                        onToggleTimer={handleToggleStatusTimer}
+                        onToggleTimeEntry={handleToggleStatusTimeEntry}
+
                         onEdit={openEditStatus}
                         onDelete={handleDeleteStatus}
                       />
@@ -1128,6 +1245,20 @@ export default function SettingsPage() {
                   multiline
                   rows={2}
                 />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={statusForm.timerEnabled}
+                      onChange={(e) => setStatusForm({ ...statusForm, timerEnabled: e.target.checked })}
+                    />
+                  }
+                  label="เปิดระบบจับเวลา"
+                />
+
+
+
+
+
 
               </Box>
             </DialogContent>
@@ -1199,7 +1330,7 @@ export default function SettingsPage() {
                 <CircularProgress size={24} />
               ) : deleteCheck && !deleteCheck.canDelete && deleteTarget ? (
                 <Typography variant="body2">
-                  {t("deleteInUse", { name: deleteTarget.name, count: deleteCheck.issueCount })}
+                  {t("deleteInUse", { name: deleteTarget.name, issueCount: deleteCheck.issueCount, columnCount: deleteCheck.columnCount })}
                 </Typography>
               ) : deleteTarget ? (
                 <Typography variant="body2">

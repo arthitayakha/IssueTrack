@@ -10,7 +10,6 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from "typeorm";
-import { BoardColumn } from "../../columns/entities/board-column.entity";
 import { Category } from "../../categories/entities/category.entity";
 import { Comment } from "../../comments/entities/comment.entity";
 import { Attachment } from "../../attachments/entities/attachment.entity";
@@ -54,20 +53,11 @@ export class Issue {
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
 
-  @Column({ name: "assigned_at", type: "timestamptz", nullable: true })
-  assignedAt!: Date | null;
-
-  @Column({ name: "completed_at", type: "timestamptz", nullable: true })
-  completedAt!: Date | null;
-
   @Column({ name: "tracked_duration", default: 0 })
   trackedDuration!: number;
 
   @Column({ name: "actual_fix_duration", type: "int", nullable: true })
   actualFixDuration!: number | null;
-
-  @Column({ name: "estimate_duration", type: "int", nullable: true })
-  estimateDuration!: number | null;
 
   @UpdateDateColumn({ name: "updated_at" })
   updatedAt!: Date;
@@ -108,9 +98,6 @@ export class Issue {
   })
   labels?: Label[];
 
-  @Column({ name: "doing_started_at", type: "timestamptz", nullable: true })
-  doingStartedAt!: Date | null;
-
   @Column({ name: "is_locked", default: false })
   isLocked!: boolean;
 
@@ -123,13 +110,6 @@ export class Issue {
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: "deleted_by" })
   deletedByUser?: User;
-
-  @Column({ name: "column_id", type: "int", nullable: true })
-  columnId!: number | null;
-
-  @ManyToOne(() => BoardColumn, (column) => column.issues, { nullable: true })
-  @JoinColumn({ name: "column_id" })
-  column?: BoardColumn;
 
   @OneToMany(() => Comment, (comment) => comment.issue)
   comments?: Comment[];

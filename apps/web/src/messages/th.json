@@ -60,7 +60,15 @@
     "deleteIssue": "ลบงาน",
     "deleteIssueConfirm": "ต้องการลบงาน \"{title}\" ใช่หรือไม่?",
     "deleteIssueConfirmTrash": "ต้องการลบงาน \"{title}\" ใช่หรือไม่? (สามารถกู้คืนได้จากถังขยะ)",
-    "filter": "ตัวกรอง",
+    "filter": {
+      "label": "ตัวกรอง",
+      "keyword": "คีย์เวิร์ด",
+      "keywordHint": "ค้นหาการ์ด สมาชิก ป้าย และอื่นๆ",
+      "assignees": "ผู้รับผิดชอบ",
+      "reporters": "ผู้แจ้ง",
+      "noMembers": "ไม่มีสมาชิก",
+      "assignedToMe": "การ์ดที่มอบหมายให้ฉัน"
+    },
     "delete": "ลบ",
     "searchPlaceholder": "ค้นหา...",
     "recycleBin": "ถังขยะ",
@@ -69,6 +77,7 @@
     "deletedBy": "ลบโดย",
     "deletedAt": "ลบเมื่อ",
     "noTrashItems": "ไม่มีรายการที่ลบ",
+    "trashDetailBanner": "งานนี้อยู่ในถังขยะ กดปุ่มกู้คืนเพื่อนำกลับมาใช้งาน",
     "trashPriority": "ความสำคัญ",
     "trashCategory": "หมวดหมู่",
     "trashProgrammer": "ผู้รับผิดชอบ",
@@ -81,17 +90,6 @@
     "trashColumn": "คอลัมน์",
     "trashCreatedAt": "สร้างเมื่อ",
     "trashNotAssigned": "ไม่ได้มอบหมาย",
-    "trashDescription": "คำอธิบาย",
-    "trashPriority": "ความสำคัญ",
-    "trashCategory": "หมวดหมู่",
-    "trashProgrammer": "ผู้รับผิดชอบ",
-    "trashCustomer": "ลูกค้า",
-    "trashLabels": "ป้ายกำกับ",
-    "trashComments": "ความคิดเห็น",
-    "trashAttachments": "ไฟล์แนบ",
-    "trashDescription": "คำอธิบาย",
-    "trashCreatedAt": "สร้างเมื่อ",
-    "trashColumn": "คอลัมน์",
     "deleteBacklogOnly": "ลูกค้าสามารถลบได้เฉพาะงานใน Backlog เท่านั้น",
     "edit": "แก้ไข",
     "history": "ประวัติ",
@@ -234,7 +232,7 @@
     "genericError": "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง",
     "deleteConfirmTitle": "ยืนยันการลบ",
     "deleteConfirmMessage": "คุณต้องการลบ{type} \"{name}\" ใช่หรือไม่?",
-    "deleteInUse": "ไม่สามารถลบ \"{name}\" ได้ เนื่องจากมีปัญหา {count} รายการที่ใช้รายการนี้",
+    "deleteInUse": "ไม่สามารถลบ \"{name}\" ได้ เนื่องจากมี {issueCount} งานและ {columnCount} คอลัมน์ที่ใช้รายการนี้",
     "categoryCreated": "เพิ่มหมวดหมู่สำเร็จ",
     "categoryUpdated": "แก้ไขหมวดหมู่สำเร็จ",
     "categoryDeleted": "ลบหมวดหมู่สำเร็จ",
@@ -299,5 +297,9 @@
     "reports": "รายงาน",
     "signOut": "ออกจากระบบ",
     "switchLanguage": "เปลี่ยนภาษา"
+  },
+  "timer": {
+    "elapsed": "เวลาที่ผ่านไป",
+    "history": "ประวัติการจับเวลา"
   }
 }

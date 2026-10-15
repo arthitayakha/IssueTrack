@@ -24,19 +24,19 @@ export class PermissionsService implements OnModuleInit {
   async onModuleInit() {
     const dbRoles = await this.getRolesFromDb();
     const dbPermissions = await this.getPermissionsFromDb();
-    const count = await this.repo.count();
-    if (count > 0) {
-      await this.refreshCache();
-      return;
-    }
+    const existing = await this.repo.find();
+    const existingSet = new Set(existing.map((r) => `${r.roleId}:${r.permission}`));
     const rows: RolePermission[] = [];
     for (const role of dbRoles) {
       for (const permission of permissionsForRole(role.name)) {
         if (!dbPermissions.includes(permission)) continue;
+        if (existingSet.has(`${role.id}:${permission}`)) continue;
         rows.push(this.repo.create({ roleId: role.id, permission }));
       }
     }
-    await this.repo.save(rows);
+    if (rows.length > 0) {
+      await this.repo.save(rows);
+    }
     await this.refreshCache();
   }
 
@@ -103,30 +103,41 @@ export class PermissionsService implements OnModuleInit {
     if (adminRole && roleId === adminRole.id) return true;
     const role = await this.rolesRepo.findOne({ where: { id: roleId } });
     if (!role || !role.isActive) return false;
+
+    const rolePerm = await this.repo.findOne({ where: { roleId, permission } });
+    const roleGranted = !!rolePerm;
+
     if (positionId) {
       const posPerm = await this.positionPermissions.findOne({ where: { positionId, permission } });
       if (posPerm) {
         if (posPerm.denied) return false;
         return true;
       }
-      return false;
     }
-    const rolePerm = await this.repo.findOne({ where: { roleId, permission } });
-    if (rolePerm) return true;
-    return false;
+
+    return roleGranted;
   }
 
   async getUserPermissions(roleId: number | null, positionId: number | null): Promise<string[]> {
     if (!roleId) return [];
     const adminRole = await this.rolesRepo.findOne({ where: { name: "admin" } });
     if (adminRole && roleId === adminRole.id) return [...ALL_PERMISSIONS];
+
+    const rolePerms = await this.repo.find({ where: { roleId } });
+    const effective = new Set(rolePerms.map((p) => p.permission));
+
     if (positionId) {
       const posPerms = await this.positionPermissions.find({ where: { positionId } });
-      const denied = posPerms.filter((p) => p.denied).map((p) => p.permission);
-      return posPerms.filter((p) => !p.denied && !denied.includes(p.permission)).map((p) => p.permission);
+      for (const p of posPerms) {
+        if (p.denied) {
+          effective.delete(p.permission);
+        } else {
+          effective.add(p.permission);
+        }
+      }
     }
-    const rolePerms = await this.repo.find({ where: { roleId } });
-    return rolePerms.map((p) => p.permission);
+
+    return [...effective];
   }
 
   async updateMatrix(grants: Record<string, string[]>) {

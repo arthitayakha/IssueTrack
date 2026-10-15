@@ -14,7 +14,6 @@ import { Comment } from "./modules/comments/entities/comment.entity";
 import { Attachment } from "./modules/attachments/entities/attachment.entity";
 import { WorkSession } from "./modules/work-sessions/entities/work-session.entity";
 import { IssuePriority } from "./modules/issue-priorities/entities/issue-priority.entity";
-import { BoardColumn } from "./modules/columns/entities/board-column.entity";
 import { ActivityLog } from "./modules/activity-logs/entities/activity-log.entity";
 import { Label } from "./modules/labels/entities/label.entity";
 
@@ -38,7 +37,6 @@ const dataSource = new DataSource({
     Attachment,
     WorkSession,
     IssuePriority,
-    BoardColumn,
     ActivityLog,
     Label,
   ],
@@ -145,28 +143,6 @@ async function seed() {
        VALUES ($1, NULL, true, $2, $3, $4)
        ON CONFLICT (name) DO UPDATE SET sort_order = $2, is_timer_running = $3, is_end_status = $4`,
       [s.name, s.sortOrder, s.isTimerRunning, s.isEndStatus],
-    );
-  }
-
-  const defaultColumns = [
-    { name: "Backlog", position: 1 },
-    { name: "Todo", position: 2 },
-    { name: "Doing", position: 3 },
-    { name: "Review", position: 4 },
-    { name: "Done", position: 5 },
-  ];
-
-  for (const col of defaultColumns) {
-    await manager.query(
-      `INSERT INTO board_columns (status_id, custom_name, is_hidden, position)
-       SELECT s.id, NULL, false, $2
-       FROM issue_statuses s
-       WHERE LOWER(s.name) = LOWER($1)
-       AND NOT EXISTS (
-         SELECT 1 FROM board_columns bc
-         WHERE bc.status_id = s.id
-       )`,
-      [col.name, col.position],
     );
   }
 

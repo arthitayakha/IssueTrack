@@ -25,6 +25,12 @@ export class IssueStatus {
   @Column({ type: "int", default: 0 })
   position!: number;
 
+  @Column({ name: "timer_enabled", default: false })
+  timerEnabled!: boolean;
+
+  @Column({ name: "time_entry_enabled", default: false })
+  timeEntryEnabled!: boolean;
+
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
 

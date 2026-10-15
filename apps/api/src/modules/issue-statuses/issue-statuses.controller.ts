@@ -22,7 +22,6 @@ export class IssueStatusesController {
   constructor(private readonly issueStatuses: IssueStatusesService) {}
 
   @Get()
-  @Permissions("status.view")
   findAll(@Query() query: { page?: string; limit?: string }) {
     return this.issueStatuses.findAll(normalizePagination(query));
   }
@@ -65,6 +64,24 @@ export class IssueStatusesController {
     @Body() body: { isActive: boolean },
   ) {
     return this.issueStatuses.updateActive(id, body.isActive);
+  }
+
+  @Patch(":id/timer")
+  @Permissions("status.update")
+  updateTimer(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { timerEnabled: boolean },
+  ) {
+    return this.issueStatuses.updateTimer(id, body.timerEnabled);
+  }
+
+  @Patch(":id/time-entry")
+  @Permissions("status.update")
+  updateTimeEntry(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { timeEntryEnabled: boolean },
+  ) {
+    return this.issueStatuses.updateTimeEntry(id, body.timeEntryEnabled);
   }
 
   @Get(":id/check")

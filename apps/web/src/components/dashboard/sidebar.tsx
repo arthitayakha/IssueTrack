@@ -32,7 +32,7 @@ export default function Sidebar() {
     ...(can("user.view") || can("role.view") || can("position.view")
       ? [{ label: t("users"), href: "/users", icon: <PeopleIcon /> }]
       : []),
-    ...(can("permission.update") || can("category.view") || can("status.view") || can("priority.view")
+    ...(can("permission.update")
       ? [{ label: t("settings"), href: "/settings", icon: <SettingsIcon /> }]
       : []),
     ...(can("report.view")

@@ -19,9 +19,12 @@ export type Permission =
   | "issue.trash.view"
   | "issue.restore"
   | "issue.category.change"
+  | "issue.lock"
   | "issue.priority.change"
   | "time.system.view"
+  | "time.system.edit"
   | "time.actual.view"
+  | "time.actual.edit"
   | "comment.view"
   | "comment.create"
   | "comment.own.update"
@@ -56,8 +59,6 @@ export type Permission =
   | "board.column.create"
   | "board.column.update"
   | "board.column.delete"
-  | "board.column.unlock"
-  | "issue.unlock"
   | "position.view"
   | "position.create"
   | "position.update"
@@ -87,9 +88,12 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   "issue.trash.view",
   "issue.restore",
   "issue.category.change",
+  "issue.lock",
   "issue.priority.change",
   "time.system.view",
+  "time.system.edit",
   "time.actual.view",
+  "time.actual.edit",
   "comment.view",
   "comment.create",
   "comment.own.update",
@@ -124,8 +128,6 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   "board.column.create",
   "board.column.update",
   "board.column.delete",
-  "board.column.unlock",
-  "issue.unlock",
   "position.view",
   "position.create",
   "position.update",
@@ -146,7 +148,6 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "dashboard.overview.view",
     "issue.create",
     "issue.own.view",
-    "issue.all.view",
     "issue.assigned.view",
     "issue.detail.view",
     "issue.own.update",
@@ -160,7 +161,9 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "issue.category.change",
     "issue.priority.change",
     "time.system.view",
+    "time.system.edit",
     "time.actual.view",
+    "time.actual.edit",
     "comment.view",
     "comment.create",
     "comment.own.update",
@@ -170,8 +173,7 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "board.column.create",
     "board.column.update",
     "board.column.delete",
-    "board.column.unlock",
-    "issue.unlock",
+    "issue.lock",
     "label.view",
     "status.view",
     "priority.view",
@@ -197,6 +199,7 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "label.view",
     "status.view",
     "priority.view",
+    "time.actual.view",
     "user.view",
   ],
 };
@@ -278,9 +281,12 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "issue.trash.view": "ดูถังขยะ",
   "issue.restore": "กู้คืนปัญหา",
   "issue.category.change": "เปลี่ยนหมวดหมู่ปัญหา",
+  "issue.lock": "ล็อกปัญหา",
   "issue.priority.change": "เปลี่ยนความสำคัญปัญหา",
   "time.system.view": "ดูเวลาระบบ",
+  "time.system.edit": "จับเวลาระบบ",
   "time.actual.view": "ดูเวลาจริง",
+  "time.actual.edit": "แก้ไขเวลาจริง",
   "comment.view": "ดูความคิดเห็น",
   "comment.create": "สร้างความคิดเห็น",
   "comment.own.update": "แก้ไขความคิดเห็นของตัวเอง",
@@ -315,8 +321,6 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "board.column.create": "สร้างคอลัมน์ในบอร์ด",
   "board.column.update": "แก้ไขคอลัมน์ในบอร์ด",
   "board.column.delete": "ลบคอลัมน์ในบอร์ด",
-  "board.column.unlock": "ปลดล็อกคอลัมน์ในบอร์ด",
-  "issue.unlock": "ปลดล็อกการ์ด",
   "position.view": "ดูตำแหน่ง",
   "position.create": "สร้างตำแหน่ง",
   "position.update": "แก้ไขตำแหน่ง",

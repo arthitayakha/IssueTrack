@@ -19,7 +19,6 @@ export function usePermissions() {
   const roleName = useAuthStore((s) => s.user?.roleName ?? "customer");
   const permissions = useAuthStore((s) => s.permissions);
   const token = useAuthStore((s) => s.token);
-  const positionId = useAuthStore((s) => s.user?.positionId ?? null);
   const setPermissions = useAuthStore((s) => s.setPermissions);
 
   useEffect(() => {
@@ -29,13 +28,30 @@ export function usePermissions() {
       .catch(() => {});
   }, [token, permissions, setPermissions]);
 
+  useEffect(() => {
+    if (!token) return;
+    apiFetch<string[]>("/permissions/my", {}, token)
+      .then(setPermissions)
+      .catch(() => {});
+  }, [token, setPermissions]);
+
+  useEffect(() => {
+    if (!token) return;
+    const handleFocus = () => {
+      apiFetch<string[]>("/permissions/my", {}, token)
+        .then(setPermissions)
+        .catch(() => {});
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [token, setPermissions]);
+
   const can = useCallback(
     (permission: Permission) => {
-      if (permissions != null && permissions.length > 0) return permissions.includes(permission);
-      if (positionId) return false;
+      if (permissions != null) return permissions.includes(permission);
       return roleHasPermission(roleName, permission);
     },
-    [permissions, roleName, positionId],
+    [permissions, roleName],
   );
 
   return {

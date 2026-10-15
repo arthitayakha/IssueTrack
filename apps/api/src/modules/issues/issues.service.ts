@@ -6,7 +6,6 @@ import {
 import { InjectRepository } from "@nestjs/typeorm";
 import { DeepPartial, Not, IsNull, Repository } from "typeorm";
 import { Issue } from "./entities/issue.entity";
-import { BoardColumn } from "../columns/entities/board-column.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
 import { User } from "../auth/entities/user.entity";
 import { IssueStatus } from "../issue-statuses/entities/issue-status.entity";
@@ -19,13 +18,21 @@ import { PermissionsService } from "../permissions/permissions.service";
 import { paginate, PaginationParams } from "../../common/pagination";
 import { AuthUser } from "../auth/auth-user";
 
+const ISSUE_DETAIL_RELATIONS = [
+  "status",
+  "priority",
+  "category",
+  "label",
+  "labels",
+  "programmer",
+  "customer",
+];
+
 @Injectable()
 export class IssuesService {
   constructor(
     @InjectRepository(Issue)
     private readonly issues: Repository<Issue>,
-    @InjectRepository(BoardColumn)
-    private readonly columns: Repository<BoardColumn>,
     @InjectRepository(ActivityLog)
     private readonly activityLogs: Repository<ActivityLog>,
     @InjectRepository(User)
@@ -94,7 +101,7 @@ export class IssuesService {
   async findOne(id: number) {
     const issue = await this.issues.findOne({
       where: { id },
-      relations: ["label", "labels"],
+      relations: ISSUE_DETAIL_RELATIONS,
     });
     if (!issue || issue.deletedAt) {
       throw new NotFoundException(`Issue ${id} not found`);
@@ -106,7 +113,7 @@ export class IssuesService {
     data: {
       title: string;
       description: string;
-      columnId: number;
+      statusId: number;
       priorityId?: number;
       categoryId?: number;
       customCategory?: string;
@@ -116,15 +123,12 @@ export class IssuesService {
     },
     actor?: ActorInfo | null,
   ) {
-    const column = await this.columns.findOne({
-      where: { id: data.columnId },
-    });
-    if (!column) {
-      throw new NotFoundException(`Column ${data.columnId} not found`);
-    }
     const status = await this.issueStatuses.findOne({
-      where: { id: column.statusId },
+      where: { id: data.statusId },
     });
+    if (!status) {
+      throw new NotFoundException(`Status ${data.statusId} not found`);
+    }
     const issueNumber = await this.generateIssueNumber();
     const resolvedCustomerId =
       actor?.actorRole === "customer"
@@ -137,8 +141,7 @@ export class IssuesService {
     const issue = this.issues.create({
       title: data.title,
       description: data.description,
-      columnId: data.columnId,
-      statusId: status?.id ?? null,
+      statusId: status.id,
       priorityId: data.priorityId ?? null,
       categoryId: data.categoryId ?? null,
       customCategory: data.customCategory?.trim() || null,
@@ -154,7 +157,11 @@ export class IssuesService {
       detail: JSON.stringify({ title: issue.title }),
       actor,
     });
-    return this.toResponse(issue);
+    const created = await this.issues.findOne({
+      where: { id: issue.id },
+      relations: ISSUE_DETAIL_RELATIONS,
+    });
+    return this.toResponse(created!);
   }
 
   async update(
@@ -169,7 +176,7 @@ export class IssuesService {
     },
     actor?: ActorInfo | null,
   ) {
-    const issue = await this.issues.findOne({ where: { id } });
+    const issue = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
@@ -208,34 +215,36 @@ export class IssuesService {
       detail: JSON.stringify({ fields: changes }),
       actor,
     });
-    return this.toResponse(issue);
+    const fresh = await this.issues.findOne({
+      where: { id: issue.id },
+      relations: ISSUE_DETAIL_RELATIONS,
+    });
+    return this.toResponse(fresh!);
   }
 
-  async move(id: number, columnId: number, actor?: ActorInfo | null) {
-    const issue = await this.issues.findOne({ where: { id } });
+  async move(id: number, statusId: number, actor?: ActorInfo | null) {
+    const issue = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
-    const targetColumn = await this.columns.findOne({ where: { id: columnId } });
-    if (!targetColumn) {
-      throw new NotFoundException(`Column ${columnId} not found`);
+    const targetStatus = await this.issueStatuses.findOne({ where: { id: statusId } });
+    if (!targetStatus) {
+      throw new NotFoundException(`Status ${statusId} not found`);
     }
-    const sourceColumn = issue.columnId
-      ? await this.columns.findOne({ where: { id: issue.columnId } })
-      : null;
-    if (issue.columnId === columnId) return this.toResponse(issue);
+    if (issue.statusId === statusId) return this.toResponse(issue);
 
-    issue.columnId = columnId;
-    issue.statusId = targetColumn.statusId;
-    issue.completedAt = null;
-    issue.isLocked = false;
+    const sourceStatus = issue.statusId
+      ? await this.issueStatuses.findOne({ where: { id: issue.statusId } })
+      : null;
+    issue.statusId = statusId;
     await this.issues.save(issue);
+
     await this.logActivity({
       action: "card.moved",
       entityId: issue.id,
       detail: JSON.stringify({
-        from: sourceColumn?.status ?? null,
-        to: targetColumn.status,
+        from: sourceStatus?.name ?? null,
+        to: targetStatus.name,
       }),
       actor,
     });
@@ -243,7 +252,7 @@ export class IssuesService {
   }
 
   async setActualFixDuration(id: number, duration: number) {
-    const issue = await this.issues.findOne({ where: { id } });
+    const issue = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
@@ -270,29 +279,29 @@ export class IssuesService {
       }
     }
     const oldAssignee = issue.programmerId;
-    issue.programmerId = programmerId;
-    await this.issues.save(issue);
+    await this.issues.update(id, { programmerId });
     await this.logActivity({
       action: "card.assigned",
-      entityId: issue.id,
+      entityId: id,
       detail: JSON.stringify({
         from: oldAssignee,
         to: programmerId,
       }),
       actor,
     });
-    return this.toResponse(issue);
+    const updated = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
+    return this.toResponse(updated!);
   }
 
-  async unlock(id: number) {
-    const issue = await this.issues.findOne({ where: { id } });
-    if (!issue) {
-      throw new NotFoundException(`Issue ${id} not found`);
-    }
-    issue.isLocked = false;
-    await this.issues.save(issue);
-    return this.toResponse(issue);
-  }
+
+
+
+
+
+
+
+
+
 
   async remove(id: number, actor?: ActorInfo | null) {
     const issue = await this.issues.findOne({
@@ -321,6 +330,7 @@ export class IssuesService {
     const issue = await this.issues.findOne({
       where: { id },
       withDeleted: true,
+      relations: ISSUE_DETAIL_RELATIONS,
     });
     if (!issue || !issue.deletedAt) {
       throw new NotFoundException(`Issue ${id} not found in trash`);
@@ -437,7 +447,6 @@ export class IssuesService {
       issueNumber: issue.issueNumber,
       title: issue.title,
       description: issue.description,
-      columnId: issue.columnId,
       statusId: issue.statusId,
       statusName: issue.status?.name ?? null,
       priorityId: issue.priorityId,
@@ -458,9 +467,6 @@ export class IssuesService {
       attachmentCount: issue.attachments?.length ?? 0,
       trackedDuration: issue.trackedDuration,
       actualFixDuration: issue.actualFixDuration,
-      assignedAt: issue.assignedAt,
-      completedAt: issue.completedAt,
-      isLocked: issue.isLocked,
       createdAt: issue.createdAt,
       updatedAt: issue.updatedAt,
     };

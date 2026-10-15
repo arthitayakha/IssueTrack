@@ -32,7 +32,7 @@ export class IssuesController {
   }
 
   @Get("issues")
-  @Permissions("issue.all.view")
+  @Permissions("issue.own.view")
   findAll(
     @Query()
     query: { page?: string; limit?: string; statuses?: string; search?: string },
@@ -64,7 +64,7 @@ export class IssuesController {
     body: {
       title: string;
       description: string;
-      columnId: number;
+      statusId: number;
       priorityId?: number;
       categoryId?: number;
       customCategory?: string;
@@ -98,10 +98,10 @@ export class IssuesController {
   @Permissions("issue.status.update")
   move(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { columnId: number },
+    @Body() body: { statusId: number },
     @CurrentUser() user: AuthUser,
   ) {
-    return this.issues.move(id, body.columnId, this.actor(user));
+    return this.issues.move(id, body.statusId, this.actor(user));
   }
 
   @Put("issues/:id/assign")
@@ -115,7 +115,7 @@ export class IssuesController {
   }
 
   @Put("issues/:id/time")
-  @Permissions("time.actual.view")
+  @Permissions("time.actual.edit")
   setTime(
     @Param("id", ParseIntPipe) id: number,
     @Body() body: { actualFixDuration: number },
@@ -123,11 +123,11 @@ export class IssuesController {
     return this.issues.setActualFixDuration(id, body.actualFixDuration);
   }
 
-  @Put("issues/:id/unlock")
-  @Permissions("issue.unlock")
-  unlock(@Param("id", ParseIntPipe) id: number) {
-    return this.issues.unlock(id);
-  }
+
+
+
+
+
 
   @Delete("issues/:id")
   @Permissions("issue.delete")

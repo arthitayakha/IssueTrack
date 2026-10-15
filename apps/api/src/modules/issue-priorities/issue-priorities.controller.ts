@@ -22,7 +22,6 @@ export class IssuePrioritiesController {
   constructor(private readonly issuePriorities: IssuePrioritiesService) {}
 
   @Get()
-  @Permissions("priority.view")
   findAll(@Query() query: { page?: string; limit?: string }) {
     return this.issuePriorities.findAll(normalizePagination(query));
   }

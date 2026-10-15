@@ -248,12 +248,24 @@ export default function UsersPage() {
   const [deleteUserTarget, setDeleteUserTarget] = useState<User | null>(null);
   const [deleteUserLoading, setDeleteUserLoading] = useState(false);
   const [page, setPage] = useState(1);
+  const [usersError, setUsersError] = useState(false);
+  const [rolesError, setRolesError] = useState(false);
+  const [positionsError, setPositionsError] = useState(false);
   const pageUsers = users.slice((page - 1) * 10, page * 10);
 
   const canViewUsers = can("user.view");
   const canViewRoles = can("role.view");
   const canViewPositions = can("position.view");
-  const hasAnyViewPermission = canViewUsers || canViewRoles || canViewPositions;
+
+  useEffect(() => {
+    setUsersError(false);
+    setRolesError(false);
+    setPositionsError(false);
+  }, [canViewUsers, canViewRoles, canViewPositions]);
+  const effectiveCanViewUsers = canViewUsers && !usersError;
+  const effectiveCanViewRoles = canViewRoles && !rolesError;
+  const effectiveCanViewPositions = canViewPositions && !positionsError;
+  const hasAnyViewPermission = effectiveCanViewUsers || effectiveCanViewRoles || effectiveCanViewPositions;
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -267,28 +279,36 @@ export default function UsersPage() {
   }, []);
 
   useEffect(() => {
-    const requests: Promise<any>[] = [];
+    const requests: Promise<void>[] = [];
     if (canViewUsers) {
-      requests.push(apiFetch<PaginatedResponse<User>>("/users?page=1&limit=100", {}, token).then(r => r.data));
+      requests.push(
+        apiFetch<PaginatedResponse<User>>("/users?page=1&limit=100", {}, token)
+          .then(r => { setUsers(r.data); })
+          .catch((err) => {
+            if (err instanceof ApiError && err.status === 403) setUsersError(true);
+          })
+      );
     }
     if (canViewRoles) {
-      requests.push(apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token).then(r => r.data));
+      requests.push(
+        apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token)
+          .then(r => { setRoles(r.data); })
+          .catch((err) => {
+            if (err instanceof ApiError && err.status === 403) setRolesError(true);
+          })
+      );
     }
-    if (canViewPositions) requests.push(apiFetch<PaginatedResponse<Position>>("/positions?page=1&limit=100", {}, token).then(r => r.data));
+    if (canViewPositions) {
+      requests.push(
+        apiFetch<PaginatedResponse<Position>>("/positions?page=1&limit=100", {}, token)
+          .then(r => { setPositions(r.data); })
+          .catch((err) => {
+            if (err instanceof ApiError && err.status === 403) setPositionsError(true);
+          })
+      );
+    }
 
-    Promise.all(requests)
-      .then((results) => {
-        let idx = 0;
-        if (canViewUsers) {
-          setUsers(results[idx++]);
-        }
-        if (canViewRoles) {
-          setRoles(results[idx++]);
-        }
-        if (canViewPositions) setPositions(results[idx++]);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    Promise.all(requests).finally(() => setLoading(false));
   }, [canViewUsers, canViewRoles, canViewPositions, token]);
 
   function openAdd() {
@@ -627,9 +647,9 @@ export default function UsersPage() {
   }
 
   const tabs = [
-    ...(canViewUsers ? [{ label: t("tabUsers"), content: "users" }] : []),
-    ...(canViewRoles ? [{ label: t("tabRoles"), content: "roles" }] : []),
-    ...(canViewPositions ? [{ label: t("tabPositions"), content: "positions" }] : []),
+    ...(effectiveCanViewUsers ? [{ label: t("tabUsers"), content: "users" }] : []),
+    ...(effectiveCanViewRoles ? [{ label: t("tabRoles"), content: "roles" }] : []),
+    ...(effectiveCanViewPositions ? [{ label: t("tabPositions"), content: "positions" }] : []),
   ];
 
   return (

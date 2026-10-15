@@ -70,3 +70,13 @@ export interface Label {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface WorkSession {
+  id: number;
+  issueId: number;
+  programmerId: number;
+  startedAt: string;
+  endedAt: string | null;
+  duration: number;
+  createdAt: string;
+}

@@ -4,25 +4,16 @@ import { PaginatedResponse } from "@kanban/shared";
 import { apiFetch } from "./api";
 import { useAuthStore } from "./auth-store";
 
-export interface BoardColumn {
-  id: number;
-  statusId: number;
-  statusName: string;
-  customName: string | null;
-  isHidden: boolean;
-  isLocked: boolean;
-  position: number;
-  issueCount: number;
-}
-
 export interface IssueStatus {
   id: number;
   name: string;
   description: string | null;
   isActive: boolean;
   sortOrder: number;
-  isTimerRunning: boolean;
-  isEndStatus: boolean;
+  timerEnabled: boolean;
+  timeEntryEnabled: boolean;
+  customName?: string | null;
+  issueCount: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -51,7 +42,6 @@ export interface BoardIssue {
   issueNumber: string | null;
   title: string;
   description: string;
-  columnId: number | null;
   statusId: number | null;
   statusName: string | null;
   priorityId: number | null;
@@ -70,11 +60,23 @@ export interface BoardIssue {
   customerName: string | null;
   commentCount: number;
   attachmentCount: number;
-  isLocked: boolean;
   trackedDuration?: number;
   actualFixDuration?: number | null;
   createdAt: string;
   updatedAt: string;
+  statusTimerEnabled?: boolean;
+  statusTimeEntryEnabled?: boolean;
+  isLocked?: boolean;
+}
+
+export interface WorkSession {
+  id: number;
+  issueId: number;
+  programmerId: number;
+  startedAt: string;
+  endedAt: string | null;
+  duration: number;
+  createdAt: string;
 }
 
 export interface ActivityLog {
@@ -107,24 +109,6 @@ function getToken(): string | null {
   return useAuthStore.getState().token;
 }
 
-export async function fetchColumns(
-  page = 1,
-  limit = 100,
-): Promise<PaginatedResponse<BoardColumn>> {
-  return apiFetch<PaginatedResponse<BoardColumn>>(
-    `/columns?page=${page}&limit=${limit}`,
-    {},
-    getToken(),
-  );
-}
-
-export async function createColumn(statusId: number): Promise<BoardColumn> {
-  return apiFetch<BoardColumn>("/columns", {
-    method: "POST",
-    body: JSON.stringify({ statusId }),
-  }, getToken());
-}
-
 export async function createStatus(name: string, description?: string): Promise<IssueStatus> {
   return apiFetch<IssueStatus>("/issue-statuses", {
     method: "POST",
@@ -132,37 +116,26 @@ export async function createStatus(name: string, description?: string): Promise<
   }, getToken());
 }
 
-export async function createColumnWithStatus(name: string, description?: string): Promise<BoardColumn> {
-  const status = await createStatus(name, description);
-  return createColumn(status.id);
-}
-
-export async function updateColumn(
+export async function updateStatus(
   id: number,
-  data: { customName?: string; isHidden?: boolean; isLocked?: boolean; position?: number },
-): Promise<BoardColumn> {
-  return apiFetch<BoardColumn>(`/columns/${id}`, {
+  data: { name?: string; description?: string; customName?: string; timerEnabled?: boolean; timeEntryEnabled?: boolean },
+): Promise<IssueStatus> {
+  return apiFetch<IssueStatus>(`/issue-statuses/${id}`, {
     method: "PATCH",
     body: JSON.stringify(data),
   }, getToken());
 }
 
-export async function unlockColumn(id: number): Promise<BoardColumn> {
-  return apiFetch<BoardColumn>(`/columns/${id}/unlock`, {
-    method: "PATCH",
-  }, getToken());
-}
-
-export async function deleteColumn(id: number): Promise<{ deleted: boolean }> {
-  return apiFetch<{ deleted: boolean }>(`/columns/${id}`, {
+export async function deleteStatus(id: number): Promise<{ deleted: boolean }> {
+  return apiFetch<{ deleted: boolean }>(`/issue-statuses/${id}`, {
     method: "DELETE",
   }, getToken());
 }
 
-export async function reorderColumns(
-  items: Array<{ id: number; position: number }>,
+export async function reorderStatuses(
+  items: Array<{ id: number; sortOrder: number }>,
 ): Promise<{ reordered: number }> {
-  return apiFetch<{ reordered: number }>("/columns/reorder", {
+  return apiFetch<{ reordered: number }>("/issue-statuses/reorder", {
     method: "PATCH",
     body: JSON.stringify({ items }),
   }, getToken());
@@ -196,7 +169,7 @@ export async function createIssue(
   data: {
     title: string;
     description: string;
-    columnId: number;
+    statusId: number;
     priorityId?: number;
     categoryId?: number;
     customCategory?: string;
@@ -227,10 +200,10 @@ export async function updateIssue(
   }, getToken());
 }
 
-export async function moveIssue(id: number, columnId: number): Promise<BoardIssue> {
+export async function moveIssue(id: number, statusId: number): Promise<BoardIssue> {
   return apiFetch<BoardIssue>(`/issues/${id}/move`, {
     method: "PUT",
-    body: JSON.stringify({ columnId }),
+    body: JSON.stringify({ statusId }),
   }, getToken());
 }
 
@@ -241,6 +214,12 @@ export async function assignIssue(
   return apiFetch<BoardIssue>(`/issues/${id}/assign`, {
     method: "PUT",
     body: JSON.stringify({ programmerId }),
+  }, getToken());
+}
+
+export async function lockIssue(id: number): Promise<BoardIssue> {
+  return apiFetch<BoardIssue>(`/issues/${id}/lock`, {
+    method: "PUT",
   }, getToken());
 }
 
@@ -344,7 +323,7 @@ export async function fetchStatuses(
 }
 
 export async function fetchPriorities(): Promise<PaginatedResponse<IssuePriority>> {
-  return apiFetch<PaginatedResponse<IssuePriority>>("/issue-priorities", {}, getToken());
+  return apiFetch<PaginatedResponse<IssuePriority>>("/issue-priorities?page=1&limit=100", {}, getToken());
 }
 
 export async function fetchUsers(): Promise<PaginatedResponse<UserSummary>> {
@@ -373,5 +352,32 @@ export async function fetchTrashedIssues(): Promise<TrashedIssue[]> {
 export async function restoreIssue(id: number): Promise<BoardIssue> {
   return apiFetch<BoardIssue>(`/issues/${id}/restore`, {
     method: "PUT",
+  }, getToken());
+}
+
+export async function startTimer(issueId: number): Promise<WorkSession> {
+  return apiFetch<WorkSession>(`/work-sessions/issue/${issueId}/start`, {
+    method: "POST",
+  }, getToken());
+}
+
+export async function stopTimer(issueId: number): Promise<WorkSession> {
+  return apiFetch<WorkSession>(`/work-sessions/issue/${issueId}/stop`, {
+    method: "POST",
+  }, getToken());
+}
+
+export async function getOpenTimer(issueId: number): Promise<WorkSession | null> {
+  return apiFetch<WorkSession | null>(`/work-sessions/issue/${issueId}/open`, {}, getToken());
+}
+
+export async function getWorkSessions(issueId: number): Promise<WorkSession[]> {
+  return apiFetch<WorkSession[]>(`/work-sessions/issue/${issueId}`, {}, getToken());
+}
+
+export async function setActualFixDuration(issueId: number, duration: number): Promise<BoardIssue> {
+  return apiFetch<BoardIssue>(`/issues/${issueId}/time`, {
+    method: "PUT",
+    body: JSON.stringify({ actualFixDuration: duration }),
   }, getToken());
 }

@@ -46,7 +46,7 @@ export default function IssuesPage() {
 
 
   return (
-    <RequirePermission permission="issue.all.view">
+    <RequirePermission permission="issue.own.view">
       <DashboardLayout>
         <Box sx={{ py: 4 }}>
           <Typography variant="h4" fontWeight={700} gutterBottom>
