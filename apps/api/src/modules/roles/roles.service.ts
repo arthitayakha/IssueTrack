@@ -9,6 +9,7 @@ import { Repository } from "typeorm";
 import { Role } from "./entities/role.entity";
 import { RolePermission } from "../permissions/entities/role-permission.entity";
 import { User } from "../auth/entities/user.entity";
+import { PermissionsService } from "../permissions/permissions.service";
 import { permissionsForRole } from "@kanban/shared";
 import { paginate, PaginationParams } from "../../common/pagination";
 
@@ -21,6 +22,7 @@ export class RolesService {
     private readonly rolePermissions: Repository<RolePermission>,
     @InjectRepository(User)
     private readonly users: Repository<User>,
+    private readonly permissionsService: PermissionsService,
   ) {}
 
   async findAll(params: PaginationParams) {
@@ -137,6 +139,7 @@ export class RolesService {
       this.rolePermissions.create({ roleId: id, permission }),
     );
     await this.rolePermissions.save(rows);
+    await this.permissionsService.refreshCache();
 
     return { id: role.id, name: role.name, permissions };
   }

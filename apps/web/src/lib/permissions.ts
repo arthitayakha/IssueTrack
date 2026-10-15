@@ -19,6 +19,7 @@ export function usePermissions() {
   const roleName = useAuthStore((s) => s.user?.roleName ?? "customer");
   const permissions = useAuthStore((s) => s.permissions);
   const token = useAuthStore((s) => s.token);
+  const positionId = useAuthStore((s) => s.user?.positionId ?? null);
   const setPermissions = useAuthStore((s) => s.setPermissions);
 
   useEffect(() => {
@@ -31,9 +32,10 @@ export function usePermissions() {
   const can = useCallback(
     (permission: Permission) => {
       if (permissions != null && permissions.length > 0) return permissions.includes(permission);
+      if (positionId) return false;
       return roleHasPermission(roleName, permission);
     },
-    [permissions, roleName],
+    [permissions, roleName, positionId],
   );
 
   return {

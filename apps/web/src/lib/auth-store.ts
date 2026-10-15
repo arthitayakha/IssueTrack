@@ -2,6 +2,8 @@
 
 import { create } from "zustand";
 
+import { apiFetch } from "./api";
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -58,6 +60,7 @@ interface AuthState {
   permissions: string[] | null;
   setSession: (token: string, user: AuthUser, rememberMe: boolean) => void;
   setPermissions: (permissions: string[]) => void;
+  refreshPermissions: () => Promise<string[]>;
   logout: () => void;
 }
 
@@ -74,6 +77,17 @@ export const useAuthStore = create<AuthState>()((set) => ({
       localStorage.getItem(AUTH_KEY) !== null,
     );
     set({ permissions });
+  },
+  refreshPermissions: async (): Promise<string[]> => {
+    const current = useAuthStore.getState();
+    if (!current.token) return [];
+    const permissions = await apiFetch<string[]>("/permissions/my", {}, current.token);
+    persistSession(
+      { token: current.token, user: current.user, permissions },
+      localStorage.getItem(AUTH_KEY) !== null,
+    );
+    set({ permissions });
+    return permissions;
   },
   logout: () => {
     clearPersistedSession();

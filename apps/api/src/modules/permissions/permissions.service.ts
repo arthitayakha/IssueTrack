@@ -109,6 +109,7 @@ export class PermissionsService implements OnModuleInit {
         if (posPerm.denied) return false;
         return true;
       }
+      return false;
     }
     const rolePerm = await this.repo.findOne({ where: { roleId, permission } });
     if (rolePerm) return true;
@@ -119,20 +120,13 @@ export class PermissionsService implements OnModuleInit {
     if (!roleId) return [];
     const adminRole = await this.rolesRepo.findOne({ where: { name: "admin" } });
     if (adminRole && roleId === adminRole.id) return [...ALL_PERMISSIONS];
-    const permissions = new Set<string>();
-    const rolePerms = await this.repo.find({ where: { roleId } });
-    rolePerms.forEach((p) => permissions.add(p.permission));
     if (positionId) {
       const posPerms = await this.positionPermissions.find({ where: { positionId } });
-      posPerms.forEach((p) => {
-        if (p.denied) {
-          permissions.delete(p.permission);
-        } else {
-          permissions.add(p.permission);
-        }
-      });
+      const denied = posPerms.filter((p) => p.denied).map((p) => p.permission);
+      return posPerms.filter((p) => !p.denied && !denied.includes(p.permission)).map((p) => p.permission);
     }
-    return [...permissions];
+    const rolePerms = await this.repo.find({ where: { roleId } });
+    return rolePerms.map((p) => p.permission);
   }
 
   async updateMatrix(grants: Record<string, string[]>) {

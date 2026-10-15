@@ -30,6 +30,15 @@ export default function RequirePermission({
     setMounted(true);
   }, []);
 
+  const hasPermissionToCheck = Boolean(permission) || Boolean(permissions && permissions.length > 0);
+  const permissionGranted = permission
+    ? can(permission)
+    : permissions && permissions.length > 0
+      ? requireAll
+        ? permissions.every((p) => can(p))
+        : permissions.some((p) => can(p))
+      : true;
+
   useEffect(() => {
     if (!mounted) return;
 
@@ -38,20 +47,10 @@ export default function RequirePermission({
       return;
     }
 
-    if (permission && !can(permission)) {
+    if (hasPermissionToCheck && !permissionGranted) {
       router.replace("/");
-      return;
     }
-
-    if (permissions && permissions.length > 0) {
-      const hasPermission = requireAll
-        ? permissions.every((p) => can(p))
-        : permissions.some((p) => can(p));
-      if (!hasPermission) {
-        router.replace("/");
-      }
-    }
-  }, [mounted, token, permission, permissions, requireAll, can, router, pathname]);
+  }, [mounted, token, hasPermissionToCheck, permissionGranted, router, pathname]);
 
   useEffect(() => {
     if (mounted && token && pathname === "/login") {

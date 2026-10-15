@@ -53,6 +53,7 @@ import { usePermissions, roleLabel } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
 import { PERMISSION_LABELS, ALL_PERMISSIONS, permissionsForRole, PERMISSION_DEPENDENCIES } from "@kanban/shared";
 import { useNotification } from "@/components/notification";
+import { useRouter } from "@/i18n/navigation";
 
 
 const PERMISSION_GROUPS = [
@@ -216,6 +217,7 @@ export default function UsersPage() {
   const t = useTranslations("Users");
   const { can } = usePermissions();
   const token = useAuthStore((s) => s.token);
+  const router = useRouter();
   const { notify } = useNotification();
   const [tab, setTab] = useState(0);
   const [users, setUsers] = useState<User[]>([]);
@@ -251,7 +253,14 @@ export default function UsersPage() {
   const canViewUsers = can("user.view");
   const canViewRoles = can("role.view");
   const canViewPositions = can("position.view");
+  const hasAnyViewPermission = canViewUsers || canViewRoles || canViewPositions;
   const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    if (mounted && !hasAnyViewPermission) {
+      router.replace("/");
+    }
+  }, [mounted, hasAnyViewPermission, router]);
 
   useEffect(() => {
     setMounted(true);
@@ -400,6 +409,7 @@ export default function UsersPage() {
       }
       const updated = await apiFetch<PaginatedResponse<Position>>("/positions?page=1&limit=100", {}, token);
       setPositions(updated.data);
+      await useAuthStore.getState().refreshPermissions();
       setPositionDialogOpen(false);
     } catch (err) {
       if (err instanceof ApiError) {
