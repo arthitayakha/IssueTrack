@@ -84,6 +84,7 @@ export class IssuesService {
       .leftJoinAndSelect("issue.labels", "labels")
       .leftJoinAndSelect("issue.programmer", "programmer")
       .leftJoinAndSelect("issue.customer", "customer")
+      .leftJoinAndSelect("issue.attachments", "attachments")
       .getMany();
 
     const mapped = issues.map((i) => this.toResponse(i));
@@ -236,8 +237,7 @@ export class IssuesService {
     const sourceStatus = issue.statusId
       ? await this.issueStatuses.findOne({ where: { id: issue.statusId } })
       : null;
-    issue.statusId = statusId;
-    await this.issues.save(issue);
+    await this.issues.update(id, { statusId });
 
     await this.logActivity({
       action: "card.moved",
@@ -248,7 +248,9 @@ export class IssuesService {
       }),
       actor,
     });
-    return this.toResponse(issue);
+
+    const updated = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
+    return this.toResponse(updated ?? issue);
   }
 
   async setActualFixDuration(id: number, duration: number) {

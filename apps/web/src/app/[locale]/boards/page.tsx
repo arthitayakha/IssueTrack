@@ -66,7 +66,6 @@ import { CSS } from "@dnd-kit/utilities";
 import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
 import TableChartIcon from "@mui/icons-material/TableChart";
 import AddIcon from "@mui/icons-material/Add";
-import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import SaveIcon from "@mui/icons-material/Save";
 import HistoryIcon from "@mui/icons-material/History";
@@ -89,8 +88,9 @@ import CalendarTodayIcon from "@mui/icons-material/CalendarToday";
 import PersonIcon from "@mui/icons-material/Person";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DeleteIcon from "@mui/icons-material/Delete";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import PostAddIcon from "@mui/icons-material/PostAdd";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 
@@ -128,7 +128,6 @@ import {
   uploadAttachment,
   fetchAttachments,
   deleteAttachment,
-  openAttachment,
   type BoardIssue,
   type ActivityLog,
   type Comment,
@@ -143,6 +142,7 @@ import {
 } from "@/lib/board-api";
 import { fetchLabels, createLabel, updateLabel, type Label } from "@/lib/labels-api";
 import { Pagination } from "@/components/pagination";
+import AttachmentPreviewDialog from "@/components/attachment-preview-dialog";
 
 function getErrorMessage(e: unknown, fallback: string): string | null {
   if (isApiError(e, 403)) return null;
@@ -255,6 +255,14 @@ const dropAnimation: DropAnimation = {
     },
   }),
 };
+
+function getCategoryLabel(issue: BoardIssue): string {
+  const { categoryName, customCategory } = issue;
+  if (categoryName && customCategory) return `${categoryName}: ${customCategory}`;
+  if (categoryName) return categoryName;
+  if (customCategory) return customCategory;
+  return "—";
+}
 
 function TrelloCardContent({ issue, actions }: { issue: BoardIssue; actions?: ReactNode }) {
   const theme = useTheme();
@@ -713,7 +721,7 @@ function RecycleBinDialog({
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-        <DeleteOutlineIcon color="error" />
+        <RestoreFromTrashIcon color="error" />
         {t("recycleBin")}
       </DialogTitle>
       <DialogContent>
@@ -728,7 +736,7 @@ function RecycleBinDialog({
           </Box>
         ) : items.length === 0 ? (
           <Box sx={{ textAlign: "center", py: 4 }}>
-            <DeleteOutlineIcon sx={{ fontSize: 48, color: "text.disabled", mb: 1 }} />
+            <RestoreFromTrashIcon sx={{ fontSize: 48, color: "text.disabled", mb: 1 }} />
             <Typography color="text.secondary">{t("noTrashItems")}</Typography>
           </Box>
         ) : (
@@ -770,62 +778,6 @@ function RecycleBinDialog({
                           <Typography variant="subtitle2" fontWeight={700} noWrap>
                             {item.title}
                           </Typography>
-                        </Box>
-                      }
-                      secondary={
-                        <Box sx={{ mt: 0.5, display: "flex", flexDirection: "column", gap: 0.5 }}>
-                          <Typography variant="caption" color="text.secondary">
-                            {t("deletedBy")}: {item.deletedByName ?? "—"} · {t("deletedAt")}: {formatDateTime(item.deletedAt)}
-                          </Typography>
-                          {item.description && (
-                            <Typography variant="caption" color="text.secondary" noWrap>
-                              {t("trashDescription")}: {item.description}
-                            </Typography>
-                          )}
-                          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mt: 0.5 }}>
-                            {item.priorityName && (
-                              <Chip
-                                size="small"
-                                label={PRIORITY_LABELS[item.priorityName.toLowerCase()] ?? item.priorityName}
-                                color={PRIORITY_COLORS[item.priorityName.toLowerCase()] ?? "default"}
-                                variant="outlined"
-                              />
-                            )}
-                            {(item.categoryName || item.customCategory) && (
-                              <Chip
-                                size="small"
-                                label={item.categoryName ?? item.customCategory}
-                                variant="outlined"
-                                color="info"
-                              />
-                            )}
-                            {item.labels?.map((lbl) => (
-                              <Chip
-                                key={lbl.id}
-                                size="small"
-                                label={lbl.name}
-                                sx={{ bgcolor: lbl.color, color: "common.white" }}
-                              />
-                            ))}
-                          </Box>
-                          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2, mt: 0.5 }}>
-                            {item.programmerName && (
-                              <Typography variant="caption" color="text.secondary">
-                                {t("trashProgrammer")}: {item.programmerName}
-                              </Typography>
-                            )}
-                            {item.customerName && (
-                              <Typography variant="caption" color="text.secondary">
-                                {t("trashCustomer")}: {item.customerName}
-                              </Typography>
-                            )}
-                            <Typography variant="caption" color="text.secondary">
-                              {t("trashComments")}: {item.commentCount}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {t("trashAttachments")}: {item.attachmentCount}
-                            </Typography>
-                          </Box>
                         </Box>
                       }
                     />
@@ -905,18 +857,21 @@ function IssueDialog({
   onClose,
   onSave,
   labels,
+  priorities,
 }: {
   issue: BoardIssue | null;
   statusId: number | null;
   open: boolean;
   onClose: () => void;
-  onSave: (data: { title: string; description: string; statusId: number; labelId?: number | null }) => void;
+  onSave: (data: { title: string; description: string; statusId: number; labelId?: number | null; priorityId?: number | null }) => void;
   labels: Label[];
+  priorities: IssuePriority[];
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [sId, setSId] = useState<number | null>(null);
   const [labelId, setLabelId] = useState<number | "">("");
+  const [priorityId, setPriorityId] = useState<number | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -924,12 +879,13 @@ function IssueDialog({
       setDescription(issue?.description ?? "");
       setSId(issue?.statusId ?? statusId);
       setLabelId(issue?.labelId ?? "");
+      setPriorityId(issue?.priorityId ?? null);
     }
   }, [open, issue, statusId]);
 
   const handleSave = () => {
     if (!title.trim() || !sId) return;
-    onSave({ title: title.trim(), description: description.trim(), statusId: sId, labelId: labelId === "" ? null : labelId });
+    onSave({ title: title.trim(), description: description.trim(), statusId: sId, labelId: labelId === "" ? null : labelId, priorityId });
   };
 
   return (
@@ -963,6 +919,19 @@ function IssueDialog({
             <MenuItem value="">—</MenuItem>
             {labels.filter(l => l.isActive).map((l) => (
               <MenuItem key={l.id} value={l.id}>{l.name}</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <FormControl fullWidth margin="dense">
+          <InputLabel>ความสำคัญ</InputLabel>
+          <Select
+            value={priorityId ?? ""}
+            label="ความสำคัญ"
+            onChange={(e) => setPriorityId(e.target.value === "" ? null : Number(e.target.value))}
+          >
+            <MenuItem value="">—</MenuItem>
+            {priorities.filter(p => p.isActive).map((p) => (
+              <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>
             ))}
           </Select>
         </FormControl>
@@ -1029,6 +998,7 @@ function IssueDetailDialog({
   const [titleDraft, setTitleDraft] = useState("");
   const [savingTitle, setSavingTitle] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
   const t = useTranslations("Boards");
 
   const canViewComments = can("comment.view");
@@ -1197,9 +1167,7 @@ function IssueDetailDialog({
   const status = current?.statusId ? statuses.find((s) => s.id === current.statusId) : null;
   const statusName = status ? (status.customName ?? status.name) : null;
   const columnColor = getColumnColor(statusName ?? "", theme);
-  const categoryName = current?.categoryName
-    ? (current?.customCategory ? `${current.categoryName}: ${current.customCategory}` : current.categoryName)
-    : (current?.customCategory ?? "—");
+  const categoryName = current ? getCategoryLabel(current) : "—";
   const programmers = users.filter((u) => u.isActive && u.roleName === "programmer");
   const member = current?.programmerId
     ? programmers.find((u) => Number(u.id) === current.programmerId) ?? null
@@ -1604,7 +1572,7 @@ function IssueDetailDialog({
                     </Box>
                     <IconButton
                       size="small"
-                      onClick={() => openAttachment(file.id)}
+                      onClick={() => setPreviewAttachment(file)}
                       sx={{ color: "text.secondary" }}
                     >
                       <OpenInNewIcon sx={{ fontSize: 18 }} />
@@ -2030,6 +1998,11 @@ function IssueDetailDialog({
           {readOnly ? t("close") : "บันทึก"}
         </Button>
       </Box>
+      <AttachmentPreviewDialog
+        attachment={previewAttachment}
+        open={previewAttachment !== null}
+        onClose={() => setPreviewAttachment(null)}
+      />
     </Dialog>
   );
 }
@@ -3060,7 +3033,7 @@ function KanbanView({
   toolbar: React.ReactNode;
   roleName: string;
 }) {
-  const t = useTranslations("boards");
+  const t = useTranslations("Boards");
   const theme = useTheme();
   const [activeIssue, setActiveIssue] = useState<BoardIssue | null>(null);
   const [activeStatus, setActiveStatus] = useState<IssueStatus | null>(null);
@@ -3295,12 +3268,12 @@ function KanbanView({
     dragTargetStatusId.current = null;
   };
 
-  const handleSaveIssue = async (data: { title: string; description: string; statusId: number; labelId?: number | null }) => {
+  const handleSaveIssue = async (data: { title: string; description: string; statusId: number; labelId?: number | null; priorityId?: number | null }) => {
     try {
       if (editIssue) {
-        await updateIssue(editIssue.id, { title: data.title, description: data.description, labelId: data.labelId ?? undefined });
+        await updateIssue(editIssue.id, { title: data.title, description: data.description, labelId: data.labelId ?? undefined, priorityId: data.priorityId ?? null });
       } else {
-        await createIssue(data);
+        await createIssue({ ...data, priorityId: data.priorityId ?? undefined });
       }
       setEditIssue(null);
       onRefresh();
@@ -3314,6 +3287,7 @@ function KanbanView({
     try {
       await deleteIssue(issueToDelete.id);
       setIssueToDelete(null);
+      setDetailIssue(null);
       onRefresh();
     } catch (e) {
       setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
@@ -3392,7 +3366,7 @@ function KanbanView({
                 roleName={roleName}
                 onOpenIssue={(issue) => setDetailIssue(issue)}
                 onEditIssue={(issue) => setDetailIssue(issue)}
-                onDeleteIssue={(issue) => setIssueToDelete(issue)}
+                onDeleteIssue={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
                 onViewActivity={(issue) => setActivityIssue(issue)}
                 onDeleteColumn={(statusId) => setDeleteStatusId(statusId)}
                 onUnlockIssue={handleUnlockIssue}
@@ -3467,10 +3441,7 @@ function KanbanView({
         statuses={localStatuses}
         labels={labels}
         onRefresh={onRefresh}
-        onDelete={(issue) => {
-          setDetailIssue(null);
-          setIssueToDelete(issue);
-        }}
+        onDelete={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
       />
       <IssueDialog
         issue={editIssue}
@@ -3481,6 +3452,7 @@ function KanbanView({
         }}
         onSave={handleSaveIssue}
         labels={labels}
+        priorities={priorities}
       />
       <Dialog open={!!issueToDelete} onClose={() => setIssueToDelete(null)}>
         <DialogTitle>ยืนยันการลบ</DialogTitle>
@@ -3518,6 +3490,7 @@ function TableView({
   statuses,
   issues,
   labels,
+  priorities,
   categories,
   selectedStatusIds,
   selectedPriorityIds,
@@ -3535,6 +3508,7 @@ function TableView({
   statuses: IssueStatus[];
   issues: BoardIssue[];
   labels: Label[];
+  priorities: IssuePriority[];
   categories: Category[];
   selectedStatusIds: number[];
   selectedPriorityIds: number[];
@@ -3609,6 +3583,7 @@ function TableView({
     try {
       await deleteIssue(issueToDelete.id);
       setIssueToDelete(null);
+      setDetailIssue(null);
       onRefresh();
     } catch (e) {
       setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
@@ -3715,7 +3690,7 @@ function TableView({
                       />
                     ) : "—"}
                   </td>
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>{issue.categoryName ?? "—"}</td>
+                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>{getCategoryLabel(issue)}</td>
                   <td style={{ padding: "12px", fontSize: "0.8rem" }}>{issue.programmerName ?? "รอมอบหมาย"}</td>
                   {canSeeReporter && (
                     <td style={{ padding: "12px", fontSize: "0.8rem" }}>{issue.customerName ?? "—"}</td>
@@ -3737,7 +3712,7 @@ function TableView({
                           </IconButton>
                         )}
                         {canManage && (
-                          <IconButton size="small" onClick={(e) => { e.stopPropagation(); setIssueToDelete(issue); }} color="error">
+                          <IconButton size="small" onClick={(e) => { e.stopPropagation(); setDetailIssue(null); setIssueToDelete(issue); }} color="error">
                             <DeleteIcon fontSize="small" />
                           </IconButton>
                         )}
@@ -3770,10 +3745,7 @@ function TableView({
         statuses={statuses}
         labels={labels}
         onRefresh={onRefresh}
-        onDelete={(issue) => {
-          setDetailIssue(null);
-          setIssueToDelete(issue);
-        }}
+        onDelete={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
       />
       <IssueDialog
         issue={editIssue}
@@ -3784,6 +3756,7 @@ function TableView({
         }}
         onSave={handleSaveIssue}
         labels={labels}
+        priorities={priorities}
       />
       <Dialog open={!!issueToDelete} onClose={() => setIssueToDelete(null)}>
         <DialogTitle>ยืนยันการลบ</DialogTitle>
@@ -4027,7 +4000,7 @@ export default function BoardsPage() {
                       {can("issue.trash.view") && (
                         <Tooltip title={t("recycleBin")}>
                           <IconButton size="small" onClick={() => setRecycleBinOpen(true)}>
-                            <DeleteOutlineIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                            <RestoreFromTrashIcon sx={{ fontSize: 20, color: "text.secondary" }} />
                           </IconButton>
                         </Tooltip>
                       )}
@@ -4057,6 +4030,7 @@ export default function BoardsPage() {
                 statuses={statuses}
                 issues={issues}
                 labels={labels}
+                priorities={priorities}
                 categories={categories}
                 selectedStatusIds={selectedStatusIds}
                 selectedPriorityIds={selectedPriorityIds}
@@ -4100,7 +4074,7 @@ export default function BoardsPage() {
                       {can("issue.trash.view") && (
                         <Tooltip title={t("recycleBin")}>
                           <IconButton size="small" onClick={() => setRecycleBinOpen(true)}>
-                            <DeleteOutlineIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                            <RestoreFromTrashIcon sx={{ fontSize: 20, color: "text.secondary" }} />
                           </IconButton>
                         </Tooltip>
                       )}

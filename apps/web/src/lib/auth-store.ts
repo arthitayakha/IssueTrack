@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-import { apiFetch } from "./api";
+import { apiFetch, setUnauthorizedHandler } from "./api";
 
 export interface AuthUser {
   id: string;
@@ -94,3 +94,10 @@ export const useAuthStore = create<AuthState>()((set) => ({
     set({ token: null, user: null, permissions: null });
   },
 }));
+
+setUnauthorizedHandler(() => {
+  useAuthStore.getState().logout();
+  if (typeof window !== "undefined") {
+    window.location.href = "/login";
+  }
+});

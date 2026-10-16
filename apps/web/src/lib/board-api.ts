@@ -105,7 +105,7 @@ export interface TrashedIssue extends BoardIssue {
   deletedByName: string | null;
 }
 
-function getToken(): string | null {
+export function getToken(): string | null {
   return useAuthStore.getState().token;
 }
 

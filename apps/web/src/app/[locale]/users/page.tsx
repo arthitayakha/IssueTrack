@@ -692,9 +692,7 @@ export default function UsersPage() {
                     <DataTableCell>{user.name}</DataTableCell>
                     <DataTableCell>{user.email}</DataTableCell>
                     <DataTableCell>
-                      <Typography sx={{ textTransform: "capitalize" }}>
-                        {user.roleName}
-                      </Typography>
+                      <Typography>{roleLabel(user.roleName)}</Typography>
                     </DataTableCell>
                     <DataTableCell>{user.positionName ?? "—"}</DataTableCell>
                     <DataTableCell align="center">
@@ -766,9 +764,7 @@ export default function UsersPage() {
                 {roles.map((role) => (
                   <DataTableRow key={role.id}>
                     <DataTableCell>
-                      <Typography sx={{ textTransform: "capitalize" }}>
-                        {role.name}
-                      </Typography>
+                      <Typography>{roleLabel(role.name)}</Typography>
                     </DataTableCell>
                     <DataTableCell align="center">
                       {role.userCount}

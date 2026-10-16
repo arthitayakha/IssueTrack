@@ -16,6 +16,13 @@ export function isApiError(e: unknown, status?: number): e is ApiError {
   return e instanceof ApiError && (status === undefined || e.status === status);
 }
 
+type UnauthorizedHandler = () => void;
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null) {
+  unauthorizedHandler = handler;
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
@@ -31,6 +38,9 @@ export async function apiFetch<T>(
   });
 
   if (!res.ok) {
+    if (res.status === 401) {
+      unauthorizedHandler?.();
+    }
     const body = (await res.json().catch(() => ({}))) as {
       message?: string | string[];
     };

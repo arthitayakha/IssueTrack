@@ -3,9 +3,16 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import type { Response } from "express";
 import { createReadStream, existsSync, unlinkSync } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 import { Attachment } from "./entities/attachment.entity";
 import { Issue } from "../issues/entities/issue.entity";
+
+function resolveFilePath(storedPath: string): string {
+  const cwd = process.cwd();
+  const primary = join(cwd, storedPath);
+  if (existsSync(primary)) return primary;
+  return join(cwd, "uploads", basename(storedPath));
+}
 
 @Injectable()
 export class AttachmentsService {
@@ -60,7 +67,7 @@ export class AttachmentsService {
 
   async download(id: number, res: Response) {
     const attachment = await this.findOne(id);
-    const fullPath = join(process.cwd(), attachment.filePath);
+    const fullPath = resolveFilePath(attachment.filePath);
     if (!existsSync(fullPath)) {
       throw new NotFoundException(`File not found on disk`);
     }
@@ -75,7 +82,7 @@ export class AttachmentsService {
 
   async remove(id: number) {
     const attachment = await this.findOne(id);
-    const fullPath = join(process.cwd(), attachment.filePath);
+    const fullPath = resolveFilePath(attachment.filePath);
     if (existsSync(fullPath)) {
       unlinkSync(fullPath);
     }

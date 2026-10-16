@@ -16,6 +16,7 @@ import { WorkSession } from "./modules/work-sessions/entities/work-session.entit
 import { IssuePriority } from "./modules/issue-priorities/entities/issue-priority.entity";
 import { ActivityLog } from "./modules/activity-logs/entities/activity-log.entity";
 import { Label } from "./modules/labels/entities/label.entity";
+import * as bcrypt from "bcryptjs";
 
 const dataSource = new DataSource({
   type: "postgres",
@@ -143,6 +144,24 @@ async function seed() {
        VALUES ($1, NULL, true, $2, $3, $4)
        ON CONFLICT (name) DO UPDATE SET sort_order = $2, is_timer_running = $3, is_end_status = $4`,
       [s.name, s.sortOrder, s.isTimerRunning, s.isEndStatus],
+    );
+  }
+
+  const defaultUsers = [
+    { email: "admin@example.com", password: "admin123", name: "Admin", roleName: "admin" },
+    { email: "programmer@gmail.com", password: "123456", name: "Programmer", roleName: "programmer" },
+  ];
+
+  for (const u of defaultUsers) {
+    const roleId = roleMap.get(u.roleName);
+    if (!roleId) continue;
+
+    const passwordHash = await bcrypt.hash(u.password, 12);
+    await manager.query(
+      `INSERT INTO users (email, password, name, role_id, is_active)
+       VALUES ($1, $2, $3, $4, true)
+       ON CONFLICT (email) DO UPDATE SET password = $2, is_active = true`,
+      [u.email, passwordHash, u.name, roleId],
     );
   }
 

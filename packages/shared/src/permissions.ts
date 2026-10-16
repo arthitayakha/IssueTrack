@@ -177,7 +177,6 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "label.view",
     "status.view",
     "priority.view",
-    "user.view",
   ],
   customer: [
     "auth.login",
@@ -200,7 +199,6 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "status.view",
     "priority.view",
     "time.actual.view",
-    "user.view",
   ],
 };
 
