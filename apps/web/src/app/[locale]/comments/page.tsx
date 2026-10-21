@@ -205,7 +205,7 @@ export default function CommentsPage() {
               ) : (
                 pageComments.map((comment, index) => {
                   const isOwner = currentUser && comment.authorId === Number(currentUser.id);
-                  const canEdit = isOwner || can("comment.all.delete");
+                  const canEdit = isOwner;
                   const canDelete = isOwner || can("comment.all.delete");
                   return (
                     <DataTableRow key={comment.id}>

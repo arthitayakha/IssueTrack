@@ -258,6 +258,19 @@ export async function createComment(issueId: number, content: string): Promise<C
   }, getToken());
 }
 
+export async function updateComment(id: number, content: string): Promise<Comment> {
+  return apiFetch<Comment>(`/comments/${id}`, {
+    method: "PUT",
+    body: JSON.stringify({ content }),
+  }, getToken());
+}
+
+export async function deleteComment(id: number): Promise<{ deleted: boolean }> {
+  return apiFetch<{ deleted: boolean }>(`/comments/${id}`, {
+    method: "DELETE",
+  }, getToken());
+}
+
 export interface Attachment {
   id: number;
   issueId: number;

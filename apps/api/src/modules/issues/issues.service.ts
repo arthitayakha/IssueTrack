@@ -70,9 +70,10 @@ export class IssuesService {
     }
 
     if (search && search.trim()) {
-      qb.andWhere("(issue.title ILIKE :q OR issue.description ILIKE :q)", {
-        q: `%${search.trim()}%`,
-      });
+      qb.andWhere(
+        "(issue.title ILIKE :q OR issue.description ILIKE :q OR labels.name ILIKE :q OR label.name ILIKE :q)",
+        { q: `%${search.trim()}%` },
+      );
     }
 
     qb.orderBy("issue.id", "ASC");
@@ -170,9 +171,9 @@ export class IssuesService {
     data: {
       title?: string;
       description?: string;
-      priorityId?: number;
-      categoryId?: number;
-      labelId?: number;
+      priorityId?: number | null;
+      categoryId?: number | null;
+      labelId?: number | null;
       labelIds?: number[];
     },
     actor?: ActorInfo | null,
@@ -182,34 +183,41 @@ export class IssuesService {
       throw new NotFoundException(`Issue ${id} not found`);
     }
     const changes: string[] = [];
+    const updates: Partial<Issue> = {};
+
     if (data.title !== undefined && data.title !== issue.title) {
-      issue.title = data.title;
+      updates.title = data.title;
       changes.push("title");
     }
     if (data.description !== undefined && data.description !== issue.description) {
-      issue.description = data.description;
+      updates.description = data.description;
       changes.push("description");
     }
     if (data.priorityId !== undefined && data.priorityId !== issue.priorityId) {
-      issue.priorityId = data.priorityId;
+      updates.priorityId = data.priorityId;
       changes.push("priority");
     }
     if (data.categoryId !== undefined && data.categoryId !== issue.categoryId) {
-      issue.categoryId = data.categoryId;
+      updates.categoryId = data.categoryId;
       changes.push("category");
     }
     if (data.labelId !== undefined && data.labelId !== issue.labelId) {
-      issue.labelId = data.labelId;
+      updates.labelId = data.labelId;
       changes.push("label");
     }
     if (data.labelIds !== undefined) {
-      issue.labels = data.labelIds.length
+      const labels = data.labelIds.length
         ? await this.labels.find({ where: data.labelIds.map((labelId) => ({ id: labelId })) })
         : [];
+      await this.issues.save({ id, labels } as Issue);
       changes.push("labels");
     }
+
     if (changes.length === 0) return this.toResponse(issue);
-    await this.issues.save(issue);
+
+    if (Object.keys(updates).length > 0) {
+      await this.issues.update(id, updates);
+    }
     await this.logActivity({
       action: "card.edited",
       entityId: issue.id,

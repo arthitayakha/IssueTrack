@@ -53,8 +53,8 @@ export class CommentsController {
   }
 
   @Delete("comments/:id")
-  @Permissions("comment.own.delete", "comment.all.delete")
+  @Permissions("comment.own.delete")
   remove(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
-    return this.comments.remove(id, Number(user.id), user.roleId === 1, actorInfo(user));
+    return this.comments.remove(id, Number(user.id), user.roleId, user.positionId, actorInfo(user));
   }
 }

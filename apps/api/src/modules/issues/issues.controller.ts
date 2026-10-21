@@ -84,9 +84,9 @@ export class IssuesController {
     body: {
       title?: string;
       description?: string;
-      priorityId?: number;
-      categoryId?: number;
-      labelId?: number;
+      priorityId?: number | null;
+      categoryId?: number | null;
+      labelId?: number | null;
       labelIds?: number[];
     },
     @CurrentUser() user: AuthUser,

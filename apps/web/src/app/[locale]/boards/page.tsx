@@ -32,9 +32,6 @@ import {
   Checkbox,
   InputAdornment,
   Popover,
-  ToggleButton,
-  ToggleButtonGroup,
-  ClickAwayListener,
   ListItemButton,
   List,
   ListItem,
@@ -70,7 +67,6 @@ import EditIcon from "@mui/icons-material/Edit";
 import SaveIcon from "@mui/icons-material/Save";
 import HistoryIcon from "@mui/icons-material/History";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import SearchIcon from "@mui/icons-material/Search";
 import CategoryIcon from "@mui/icons-material/Category";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
@@ -80,21 +76,19 @@ import CloseIcon from "@mui/icons-material/Close";
 import CheckIcon from "@mui/icons-material/Check";
 import ReportProblemOutlinedIcon from "@mui/icons-material/ReportProblemOutlined";
 import CancelIcon from "@mui/icons-material/Cancel";
-import SendIcon from "@mui/icons-material/Send";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import LockIcon from "@mui/icons-material/Lock";
 import LockOpenIcon from "@mui/icons-material/LockOpen";
 import CalendarTodayIcon from "@mui/icons-material/CalendarToday";
 import PersonIcon from "@mui/icons-material/Person";
 import FilterListIcon from "@mui/icons-material/FilterList";
-import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import DeleteIcon from "@mui/icons-material/Delete";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
+import RestoreIcon from "@mui/icons-material/Restore";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import PostAddIcon from "@mui/icons-material/PostAdd";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import SendIcon from "@mui/icons-material/Send";
 
-import CloudUploadIcon from "@mui/icons-material/CloudUpload";
 import LinkIcon from "@mui/icons-material/Link";
 import FlagIcon from "@mui/icons-material/Flag";
 import LabelIcon from "@mui/icons-material/Label";
@@ -103,7 +97,7 @@ import { alpha } from "@mui/material/styles";
 import { useTranslations } from "next-intl";
 import { usePermissions } from "@/lib/permissions";
 import { useAuthStore } from "@/lib/auth-store";
-import { apiFetch, isApiError } from "@/lib/api";
+import { isApiError } from "@/lib/api";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import {
@@ -119,12 +113,13 @@ import {
   fetchStatuses,
   createStatus,
   updateStatus,
-  deleteStatus,
   reorderStatuses,
   fetchPriorities,
   fetchUsers,
   fetchCategories,
   createComment,
+  updateComment,
+  deleteComment,
   uploadAttachment,
   fetchAttachments,
   deleteAttachment,
@@ -244,6 +239,16 @@ function labelContrast(color: string, theme: Theme): string {
   return theme.palette.getContrastText(COLOR_MAP[color] ?? theme.palette.grey[400]);
 }
 
+function labelChipSx(color: string | null | undefined, theme: Theme) {
+  const base = COLOR_MAP[color ?? "default"] ?? color ?? theme.palette.grey[400];
+  return {
+    bgcolor: `${base}26`,
+    color: theme.palette.common.black,
+    border: `1px solid ${base}66`,
+    borderRadius: 6,
+  };
+}
+
 const dropAnimation: DropAnimation = {
   duration: 250,
   easing: "cubic-bezier(0.25, 1, 0.5, 1)",
@@ -287,28 +292,24 @@ function TrelloCardContent({ issue, actions }: { issue: BoardIssue; actions?: Re
             <Chip
               label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
               size="small"
+              variant="outlined"
               color={priorityColor}
               sx={{ height: 18, fontSize: "0.65rem", fontWeight: 600 }}
             />
           )}
-          {issue.labels?.slice(0, 2).map((lbl) => {
-            const bg = COLOR_MAP[lbl.color ?? "default"] ?? lbl.color ?? theme.palette.grey[400];
-            const txt = theme.palette.getContrastText(bg);
-            return (
-              <Chip
-                key={lbl.id}
-                label={lbl.name}
-                size="small"
-                sx={{
-                  height: 18,
-                  fontSize: "0.65rem",
-                  fontWeight: 600,
-                  bgcolor: bg,
-                  color: txt,
-                }}
-              />
-            );
-          })}
+          {issue.labels?.slice(0, 2).map((lbl) => (
+            <Chip
+              key={lbl.id}
+              label={lbl.name}
+              size="small"
+              sx={{
+                ...labelChipSx(lbl.color, theme),
+                height: 20,
+                fontSize: "0.75rem",
+                fontWeight: 600,
+              }}
+            />
+          ))}
         </Box>
       )}
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mt: 0.75 }}>
@@ -319,14 +320,18 @@ function TrelloCardContent({ issue, actions }: { issue: BoardIssue; actions?: Re
           </Typography>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
-            <ChatBubbleOutlineIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-            <Typography variant="caption" color="text.secondary">{issue.commentCount}</Typography>
-          </Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
-            <AttachFileIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-            <Typography variant="caption" color="text.secondary">{issue.attachmentCount}</Typography>
-          </Box>
+          {issue.commentCount > 0 && (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
+              <ChatBubbleOutlineIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+              <Typography variant="caption" color="text.secondary">{issue.commentCount}</Typography>
+            </Box>
+          )}
+          {issue.attachmentCount > 0 && (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
+              <AttachFileIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+              <Typography variant="caption" color="text.secondary">{issue.attachmentCount}</Typography>
+            </Box>
+          )}
           {avatarChar ? (
             <Avatar
               sx={{
@@ -400,6 +405,7 @@ function TrelloCard({
   };
 
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+  const [hovered, setHovered] = useState(false);
 
   return (
     <Paper
@@ -407,6 +413,8 @@ function TrelloCard({
       style={style}
       {...attributes}
       {...(!issue.isLocked ? listeners : {})}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       onClick={() => {
         if (!issue.isLocked) onOpen?.(issue);
       }}
@@ -430,7 +438,12 @@ function TrelloCard({
             <IconButton
               size="small"
               onClick={(e) => { e.stopPropagation(); setMenuAnchor(e.currentTarget); }}
-              sx={{ p: 0.3 }}
+              sx={{
+                p: 0.3,
+                opacity: hovered ? 1 : 0,
+                pointerEvents: hovered ? "auto" : "none",
+                transition: "opacity 0.15s ease",
+              }}
             >
               <MoreHorizIcon sx={{ fontSize: 16, color: "text.secondary" }} />
             </IconButton>
@@ -484,7 +497,6 @@ function KanbanColumn({
   onEditIssue,
   onDeleteIssue,
   onViewActivity,
-  onDeleteColumn,
   onUnlockIssue,
 }: {
   status: IssueStatus;
@@ -499,7 +511,6 @@ function KanbanColumn({
   onEditIssue: (issue: BoardIssue) => void;
   onDeleteIssue: (issue: BoardIssue) => void;
   onViewActivity: (issue: BoardIssue) => void;
-  onDeleteColumn: (statusId: number) => void;
   onUnlockIssue: (issueId: number) => void;
 }) {
   const { setNodeRef: setDroppableNodeRef, isOver: isColumnOver } = useDroppable({
@@ -509,7 +520,6 @@ function KanbanColumn({
 
   const theme = useTheme();
 
-  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const color = getColumnColor(status.name, theme);
   const visibleIssues = [...issues].sort((a, b) => b.id - a.id);
 
@@ -543,24 +553,8 @@ function KanbanColumn({
           <Typography variant="caption" color="text.secondary" fontWeight={600}>
             {issues.length}
           </Typography>
-
-          {canManage && (
-            <IconButton size="small" onClick={(e) => setMenuAnchor(e.currentTarget)} sx={{ p: 0.3 }}>
-              <MoreHorizIcon sx={{ fontSize: 16, color: "text.secondary" }} />
-            </IconButton>
-          )}
         </Box>
       </Box>
-      <Menu
-        anchorEl={menuAnchor}
-        open={Boolean(menuAnchor)}
-        onClose={() => setMenuAnchor(null)}
-      >
-        <MenuItem onClick={() => { setMenuAnchor(null); onDeleteColumn(status.id); }}>
-          <ListItemIcon><DeleteIcon fontSize="small" color="error" /></ListItemIcon>
-          <ListItemText sx={{ color: "error.main" }}>ลบคอลัมน์</ListItemText>
-        </MenuItem>
-      </Menu>
       <SortableContext items={visibleIssues.map((i) => `issue-${i.id}`)} strategy={verticalListSortingStrategy}>
         <Box
           ref={setDroppableNodeRef}
@@ -999,10 +993,20 @@ function IssueDetailDialog({
   const [savingTitle, setSavingTitle] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
+  const [editingComment, setEditingComment] = useState<Comment | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [savingComment, setSavingComment] = useState(false);
+  const [deletingComment, setDeletingComment] = useState<Comment | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const currentUser = useAuthStore((s) => s.user) ?? null;
+  const currentUserId = currentUser?.id ?? null;
   const t = useTranslations("Boards");
 
   const canViewComments = can("comment.view");
   const canPostComment = can("comment.create");
+  const canEditComment = can("comment.own.update");
+  const canDeleteOwnComment = can("comment.own.delete");
+  const canDeleteAnyComment = can("comment.all.delete");
   const canViewHistory = can("issue.detail.view");
   const canEditIssue = !readOnly && can("issue.all.update");
   const canDeleteIssue = !readOnly && can("issue.delete");
@@ -1059,6 +1063,41 @@ function IssueDetailDialog({
       setError(getErrorMessage(e, "ส่งความคิดเห็นไม่สำเร็จ"));
     } finally {
       setPosting(false);
+    }
+  };
+
+  const openEditComment = (comment: Comment) => {
+    setEditingComment(comment);
+    setEditDraft(comment.content);
+  };
+
+  const handleUpdateComment = async () => {
+    if (!editingComment || savingComment) return;
+    const content = editDraft.trim();
+    if (!content) return;
+    setSavingComment(true);
+    try {
+      const updated = await updateComment(editingComment.id, content);
+      setComments((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      setEditingComment(null);
+    } catch (e) {
+      setError(getErrorMessage(e, "แก้ไขความคิดเห็นไม่สำเร็จ"));
+    } finally {
+      setSavingComment(false);
+    }
+  };
+
+  const handleDeleteComment = async () => {
+    if (!deletingComment || deleteLoading) return;
+    setDeleteLoading(true);
+    try {
+      await deleteComment(deletingComment.id);
+      setComments((prev) => prev.filter((c) => c.id !== deletingComment.id));
+      setDeletingComment(null);
+    } catch (e) {
+      setError(getErrorMessage(e, "ลบความคิดเห็นไม่สำเร็จ"));
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -1396,6 +1435,7 @@ function IssueDetailDialog({
                   <Chip
                     label={PRIORITY_LABELS[current.priorityName.toLowerCase()] ?? current.priorityName}
                     size="small"
+                    variant="outlined"
                     icon={<FlagIcon sx={{ fontSize: 15 }} />}
                     color={PRIORITY_COLORS[current.priorityName.toLowerCase()] ?? "default"}
                     sx={{ fontSize: "0.7rem", fontWeight: 600, mt: 0.5 }}
@@ -1421,11 +1461,10 @@ function IssueDetailDialog({
                       onDelete={() => handleToggleLabel(l.id)}
                       deleteIcon={<CancelIcon sx={{ fontSize: 14 }} />}
                       sx={{
-                        fontSize: "0.7rem",
+                        ...labelChipSx(l.color, theme),
+                        fontSize: "0.75rem",
                         fontWeight: 600,
                         cursor: "pointer",
-                        bgcolor: COLOR_MAP[l.color] ?? l.color,
-                        color: labelContrast(l.color, theme),
                       }}
                     />
                   ))}
@@ -1446,10 +1485,9 @@ function IssueDetailDialog({
                   label={current.labelName}
                   size="small"
                   sx={{
-                    fontSize: "0.7rem",
+                    ...labelChipSx(current.labelColor, theme),
+                    fontSize: "0.75rem",
                     fontWeight: 600,
-                    bgcolor: COLOR_MAP[current.labelColor ?? "default"] ?? current.labelColor ?? undefined,
-                    color: labelContrast(current.labelColor ?? "default", theme),
                   }}
                 />
               ) : (
@@ -1679,11 +1717,10 @@ function IssueDetailDialog({
                       label={l.name}
                       size="small"
                       sx={{
+                        ...labelChipSx(l.color, theme),
                         flex: 1,
-                        fontSize: "0.7rem",
+                        fontSize: "0.75rem",
                         fontWeight: 600,
-                        bgcolor: COLOR_MAP[l.color] ?? l.color,
-                        color: labelContrast(l.color, theme),
                       }}
                     />
                     {canEditLabel && (
@@ -1855,9 +1892,9 @@ function IssueDetailDialog({
                   mt: 0.5,
                 }}
               >
-                {users[0]?.name ? users[0].name.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 18 }} />}
+                {currentUser?.name ? currentUser.name.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 18 }} />}
               </Avatar>
-              <Box sx={{ flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
+              <Box sx={{ flex: 1, display: "flex", alignItems: "flex-end", gap: 1 }}>
                 <TextField
                   fullWidth
                   size="small"
@@ -1874,7 +1911,18 @@ function IssueDetailDialog({
                   maxRows={3}
                   sx={{ "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
                 />
-
+                <Tooltip title="ส่ง">
+                  <span>
+                    <IconButton
+                      color="primary"
+                      onClick={handlePost}
+                      disabled={posting || !draft.trim()}
+                      sx={{ mb: 0.5 }}
+                    >
+                      <SendIcon />
+                    </IconButton>
+                  </span>
+                </Tooltip>
               </Box>
             </Box>
           )}
@@ -1889,36 +1937,53 @@ function IssueDetailDialog({
               ) : comments.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">ยังไม่มีความคิดเห็น</Typography>
               ) : (
-                comments.map((c) => (
-                  <Box key={c.id} sx={{ display: "flex", gap: 1.5 }}>
-                    <Avatar
-                      sx={{
-                        width: 36,
-                        height: 36,
-                        fontSize: "0.9rem",
-                        fontWeight: 700,
-                        bgcolor: "primary.main",
-                        color: "primary.contrastText",
-                        flexShrink: 0,
-                      }}
-                    >
-                      {c.authorName ? c.authorName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 18 }} />}
-                    </Avatar>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                        <Typography variant="body2" fontWeight={700}>{c.authorName ?? "ไม่ทราบชื่อ"}</Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {formatDateTime(c.createdAt)}
-                        </Typography>
-                        <Box sx={{ flex: 1 }} />
-                        <IconButton size="small" sx={{ color: "text.secondary" }}>
-                          <MoreVertIcon sx={{ fontSize: 18 }} />
-                        </IconButton>
+                comments.map((c) => {
+                  const isOwner = currentUserId !== null && c.authorId === Number(currentUserId);
+                  const canEdit = !readOnly && canEditComment && isOwner;
+                  const canDelete =
+                    !readOnly && ((canDeleteOwnComment && isOwner) || canDeleteAnyComment);
+                  return (
+                    <Box key={c.id} sx={{ display: "flex", gap: 1.5 }}>
+                      <Avatar
+                        sx={{
+                          width: 36,
+                          height: 36,
+                          fontSize: "0.9rem",
+                          fontWeight: 700,
+                          bgcolor: "primary.main",
+                          color: "primary.contrastText",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {c.authorName ? c.authorName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 18 }} />}
+                      </Avatar>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                          <Typography variant="body2" fontWeight={700}>{c.authorName ?? "ไม่ทราบชื่อ"}</Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {formatDateTime(c.createdAt)}
+                          </Typography>
+                          <Box sx={{ flex: 1 }} />
+                          {canEdit && (
+                            <Tooltip title="แก้ไข">
+                              <IconButton size="small" sx={{ color: "text.secondary" }} onClick={() => openEditComment(c)}>
+                                <EditIcon sx={{ fontSize: 18 }} />
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                          {canDelete && (
+                            <Tooltip title="ลบ">
+                              <IconButton size="small" color="error" onClick={() => setDeletingComment(c)}>
+                                <DeleteIcon sx={{ fontSize: 18 }} />
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                        </Box>
+                        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.5 }}>{c.content}</Typography>
                       </Box>
-                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.5 }}>{c.content}</Typography>
                     </Box>
-                  </Box>
-                ))
+                  );
+                })
               )
             ) : tab === "history" ? (
               !canViewHistory ? (
@@ -1957,6 +2022,59 @@ function IssueDetailDialog({
               {error}
             </Alert>
           )}
+          <Dialog
+            open={!!editingComment}
+            onClose={() => !savingComment && setEditingComment(null)}
+            maxWidth="sm"
+            fullWidth
+          >
+            <DialogTitle>แก้ไขความคิดเห็น</DialogTitle>
+            <DialogContent>
+              <TextField
+                fullWidth
+                size="small"
+                multiline
+                minRows={3}
+                value={editDraft}
+                onChange={(e) => setEditDraft(e.target.value)}
+                sx={{ mt: 1 }}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setEditingComment(null)} disabled={savingComment}>
+                ยกเลิก
+              </Button>
+              <Button
+                variant="contained"
+                onClick={handleUpdateComment}
+                disabled={savingComment || !editDraft.trim()}
+              >
+                บันทึก
+              </Button>
+            </DialogActions>
+          </Dialog>
+          <Dialog
+            open={!!deletingComment}
+            onClose={() => !deleteLoading && setDeletingComment(null)}
+            maxWidth="xs"
+          >
+            <DialogTitle>ลบความคิดเห็น</DialogTitle>
+            <DialogContent>
+              {deleteLoading ? (
+                <CircularProgress size={24} />
+              ) : (
+                <Typography variant="body2">ต้องการลบความคิดเห็นนี้ใช่หรือไม่?</Typography>
+              )}
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setDeletingComment(null)} disabled={deleteLoading}>
+                ยกเลิก
+              </Button>
+              <Button variant="contained" color="error" onClick={handleDeleteComment} disabled={deleteLoading}>
+                ลบ
+              </Button>
+            </DialogActions>
+          </Dialog>
         </Box>
       </Box>
       <Divider />
@@ -2069,472 +2187,6 @@ function LabelEditDialog({
           onClick={() => label && onSave(label.id, { name: name.trim(), color })}
         >
           บันทึก
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
-function ReportIssueDialog({
-  open,
-  onClose,
-  onSubmit,
-  statuses,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onSubmit: (data: {
-    title: string;
-    categoryId?: number | null;
-    customCategory?: string;
-    statusId: number;
-    description: string;
-    files: File[];
-  }) => void;
-  statuses: IssueStatus[];
-}) {
-  const theme = useTheme();
-  const [title, setTitle] = useState("");
-  const [categoryId, setCategoryId] = useState<number | null>(null);
-  const [customCategory, setCustomCategory] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [statusId, setStatusId] = useState<number | "">("");
-  const [description, setDescription] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
-  const [categories, setCategories] = useState<{ id: number; name: string }[]>([]);
-  const [catDropOpen, setCatDropOpen] = useState(false);
-  const [isDragOver, setIsDragOver] = useState(false);
-  const catDropRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const token = useAuthStore.getState().token;
-    apiFetch<{ data: { id: number; name: string }[] }>("/categories", {}, token)
-      .then((res) => setCategories(res?.data ?? []))
-      .catch(() => setCategories([]));
-    setStatusId(statuses[0]?.id ?? "");
-  }, [open, statuses]);
-
-  useEffect(() => {
-    if (open) {
-      setTitle("");
-      setCategoryId(null);
-      setCustomCategory("");
-      setSearchQuery("");
-      setDescription("");
-      setFiles([]);
-      setIsDragOver(false);
-    }
-  }, [open]);
-
-  const allCategories = useMemo(() => {
-    const hasOther = categories.some((c) => c.name === "อื่น ๆ");
-    if (hasOther) return categories;
-    return [...categories, { id: -1, name: "อื่น ๆ" }];
-  }, [categories]);
-
-  const filteredCategories = allCategories.filter((c) =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
-
-  const selectedCategory = allCategories.find((c) => c.id === categoryId) ?? null;
-  const isOtherSelected = selectedCategory?.name === "อื่น ๆ";
-  const canSubmit =
-    statuses.length > 0 &&
-    title.trim().length > 0 &&
-    (selectedCategory !== null || customCategory.trim().length > 0);
-
-  const addFiles = (fileList: FileList | File[]) => {
-    const incoming = Array.from(fileList);
-    if (incoming.length > 0) {
-      setFiles((prev) => [...prev, ...incoming]);
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      addFiles(e.target.files);
-      e.target.value = "";
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    if (e.dataTransfer.files) {
-      addFiles(e.dataTransfer.files);
-    }
-  };
-
-  const removeFile = (index: number) => {
-    setFiles((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const handleSubmit = () => {
-    if (!canSubmit) return;
-    onSubmit({
-      title: title.trim(),
-      categoryId: selectedCategory && !isOtherSelected ? selectedCategory.id : null,
-      customCategory: isOtherSelected ? customCategory.trim() : undefined,
-      statusId: statusId as number,
-      description: description.trim(),
-      files,
-    });
-  };
-
-  return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      fullWidth
-      maxWidth="sm"
-      PaperProps={{
-        sx: {
-          borderRadius: 3,
-          m: 1,
-          overflow: "hidden",
-        },
-      }}
-    >
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, p: 2.5, pb: 2 }}>
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 44,
-            height: 44,
-            borderRadius: 2,
-            bgcolor: "sky.light",
-            flexShrink: 0,
-          }}
-        >
-          <PostAddIcon sx={{ fontSize: 26, color: "primary.main" }} />
-        </Box>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="h6" fontWeight={700} sx={{ lineHeight: 1.3 }}>
-            แจ้งปัญหาใหม่
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            กรอกข้อมูลเพื่อแจ้งปัญหาใหม่ให้ทีมงานตรวจสอบ
-          </Typography>
-        </Box>
-        <IconButton size="small" onClick={onClose} sx={{ color: "text.secondary" }}>
-          <CloseIcon fontSize="small" />
-        </IconButton>
-      </Box>
-      <Divider />
-      <DialogContent sx={{ p: 2.5 }}>
-        <Box sx={{ mb: 2 }}>
-          <Typography
-            variant="body2"
-            fontWeight={600}
-            sx={{ mb: 0.75, display: "flex", alignItems: "center" }}
-          >
-            หัวข้อ
-            <Box component="span" sx={{ color: "error.main" }}>
-              {" *"}
-            </Box>
-          </Typography>
-          <TextField
-            autoFocus
-            size="small"
-            fullWidth
-            placeholder="รูปหัวข้อปัญหา"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-        </Box>
-
-        <ClickAwayListener onClickAway={() => setCatDropOpen(false)}>
-          <Box ref={catDropRef} sx={{ position: "relative", mb: 2 }}>
-            <Typography
-              variant="body2"
-              fontWeight={600}
-              sx={{ mb: 0.75, display: "flex", alignItems: "center" }}
-            >
-              หมวดหมู่
-              <Box component="span" sx={{ color: "error.main" }}>
-                {" *"}
-              </Box>
-            </Typography>
-            <TextField
-              size="small"
-              fullWidth
-              placeholder="เลือกหมวดหมู่"
-              value={selectedCategory?.name ?? ""}
-              onClick={() => setCatDropOpen(!catDropOpen)}
-              InputProps={{
-                readOnly: true,
-                endAdornment: (
-                  <ArrowDropDownIcon
-                    sx={{
-                      fontSize: 20,
-                      color: "text.secondary",
-                      transform: catDropOpen ? "rotate(180deg)" : "none",
-                      transition: "transform 0.2s",
-                    }}
-                  />
-                ),
-              }}
-              sx={{
-                cursor: "pointer",
-                "& .MuiOutlinedInput-root": {
-                  cursor: "pointer",
-                },
-                "& input": {
-                  cursor: "pointer",
-                },
-              }}
-            />
-
-            {catDropOpen && (
-              <Paper
-                sx={{
-                  position: "absolute",
-                  top: "100%",
-                  left: 0,
-                  right: 0,
-                  zIndex: 10,
-                  mt: 0.5,
-                  border: "1px solid",
-                  borderColor: "divider",
-                  borderRadius: 1.5,
-                  boxShadow: theme.custom.cardShadow,
-                  overflow: "hidden",
-                }}
-              >
-                <TextField
-                  size="small"
-                  fullWidth
-                  autoFocus
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="ค้นหา..."
-                  InputProps={{
-                    startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
-                  }}
-                  sx={{
-                    p: 1,
-                    "& .MuiOutlinedInput-root": {
-                      "& fieldset": { border: "none" },
-                    },
-                  }}
-                />
-
-                <Box sx={{ maxHeight: 200, overflowY: "auto" }}>
-                  {filteredCategories.length > 0 ? (
-                    filteredCategories.map((cat) => (
-                      <ListItemButton
-                        key={cat.id}
-                        onClick={() => {
-                          setCategoryId(cat.id);
-                          setCatDropOpen(false);
-                          setSearchQuery("");
-                        }}
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 1.5,
-                          px: 2,
-                          py: 1.25,
-                          bgcolor: categoryId === cat.id ? "sky.dark" : "transparent",
-                          "&:hover": { bgcolor: categoryId === cat.id ? "sky.dark" : "action.hover" },
-                        }}
-                        >
-                          <Typography variant="body2" sx={{ flex: 1 }}>
-                            {cat.name}
-                          </Typography>
-                          {categoryId === cat.id && <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />}
-                      </ListItemButton>
-                    ))
-                  ) : (
-                    <Box sx={{ px: 2, py: 3, textAlign: "center" }}>
-                      <Typography variant="body2" color="text.disabled">
-                        ไม่มีข้อมูลนี้
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-              </Paper>
-            )}
-          </Box>
-        </ClickAwayListener>
-
-        {isOtherSelected && (
-          <TextField
-            size="small"
-            label="ระบุหมวดหมู่เพิ่มเติม"
-            fullWidth
-            value={customCategory}
-            onChange={(e) => setCustomCategory(e.target.value)}
-            placeholder="ระบุหมวดหมู่เพิ่มเติม"
-            sx={{ mb: 2 }}
-          />
-        )}
-
-        {statuses.length === 0 && (
-          <Alert severity="warning" sx={{ mb: 1.5 }}>
-            ยังไม่มีคอลัมน์บนบอร์ด กรุณาเพิ่มคอลัมน์ก่อนแจ้งปัญหา
-          </Alert>
-        )}
-
-        <Box sx={{ mb: 2 }}>
-          <Typography
-            variant="body2"
-            fontWeight={600}
-            sx={{ mb: 0.75, display: "flex", alignItems: "center" }}
-          >
-            รายละเอียด
-            <Box component="span" sx={{ color: "error.main" }}>
-              {" *"}
-            </Box>
-          </Typography>
-          <TextField
-            size="small"
-            fullWidth
-            multiline
-            rows={5}
-            placeholder="อธิบายรายละเอียดของปัญหาให้ชัดเจน..."
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            inputProps={{ maxLength: 1000 }}
-          />
-          <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 0.5 }}>
-            <Typography variant="caption" color="text.secondary">
-              {description.length} / 1000
-            </Typography>
-          </Box>
-        </Box>
-
-        <Box sx={{ mb: 2 }}>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept="image/*,.pdf"
-            style={{ display: "none" }}
-            onChange={handleFileChange}
-          />
-          <Typography
-            variant="body2"
-            fontWeight={600}
-            sx={{ mb: 0.75, display: "flex", alignItems: "center" }}
-          >
-            แนบไฟล์ (รูปภาพ, PDF)
-          </Typography>
-          <Box
-            role="button"
-            onClick={() => fileInputRef.current?.click()}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            sx={{
-              border: "2px dashed",
-              borderColor: isDragOver ? "primary.main" : "divider",
-              bgcolor: isDragOver ? "sky.dark" : "background.default",
-              borderRadius: 2,
-              p: 3,
-              textAlign: "center",
-              cursor: "pointer",
-              transition: "background-color 0.2s, border-color 0.2s",
-              "&:hover": {
-                bgcolor: "action.hover",
-              },
-            }}
-          >
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 44,
-                height: 44,
-                borderRadius: "50%",
-                bgcolor: "primary.light",
-                color: "primary.contrastText",
-                mx: "auto",
-                mb: 1.5,
-              }}
-            >
-              <CloudUploadIcon sx={{ fontSize: 24 }} />
-            </Box>
-            <Typography variant="body2">
-              ลากและวางไฟล์ที่นี่ หรือ{" "}
-              <Box
-                component="span"
-                sx={{
-                  color: "primary.main",
-                  fontWeight: 600,
-                  textDecoration: "underline",
-                  cursor: "pointer",
-                }}
-              >
-                เลือกไฟล์
-              </Box>
-            </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-              รับไฟล์: .jpg, .png, pdf (ขนาดไม่เกิน 10 MB)
-            </Typography>
-          </Box>
-          {files.length > 0 && (
-            <Box sx={{ mt: 1, display: "flex", flexDirection: "column", gap: 0.5 }}>
-              {files.map((file, index) => (
-                <Box
-                  key={index}
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1,
-                    p: 0.75,
-                    px: 1.5,
-                    bgcolor: "sky.dark",
-                    borderRadius: 1.5,
-                    border: "1px solid",
-                    borderColor: "sky.main",
-                  }}
-                >
-                  <AttachFileIcon sx={{ fontSize: 16, color: "navy.main" }} />
-                  <Typography
-                    variant="caption"
-                    sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", color: "navy.main" }}
-                  >
-                    {file.name}
-                  </Typography>
-                  <IconButton size="small" onClick={() => removeFile(index)} sx={{ p: 0.2 }}>
-                    <CloseIcon sx={{ fontSize: 14 }} />
-                  </IconButton>
-                </Box>
-              ))}
-            </Box>
-          )}
-        </Box>
-
-      </DialogContent>
-      <Divider />
-      <DialogActions sx={{ px: 2.5, py: 2, justifyContent: "flex-end", gap: 1 }}>
-        <Button onClick={onClose} color="inherit" size="small">
-          ยกเลิก
-        </Button>
-        <Button
-          onClick={handleSubmit}
-          variant="contained"
-          disabled={!canSubmit}
-          startIcon={<SendIcon />}
-          size="small"
-        >
-          ส่งปัญหา
         </Button>
       </DialogActions>
     </Dialog>
@@ -3041,7 +2693,6 @@ function KanbanView({
   const [editIssue, setEditIssue] = useState<BoardIssue | null>(null);
   const [activityIssue, setActivityIssue] = useState<BoardIssue | null>(null);
   const [addColumnOpen, setAddColumnOpen] = useState(false);
-  const [deleteStatusId, setDeleteStatusId] = useState<number | null>(null);
   const [issueToDelete, setIssueToDelete] = useState<BoardIssue | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [localIssues, setLocalIssues] = useState<BoardIssue[]>(issues);
@@ -3079,7 +2730,11 @@ function KanbanView({
       if (selectedReporterIds.length > 0) {
         if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
       }
-      if (query && !issue.title.toLowerCase().includes(query)) return false;
+      if (query) {
+        const matchTitle = issue.title.toLowerCase().includes(query);
+        const matchLabel = (issue.labels ?? []).some((l) => l.name.toLowerCase().includes(query));
+        if (!matchTitle && !matchLabel) return false;
+      }
       return true;
     });
   }, [localIssues, localStatuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
@@ -3304,17 +2959,6 @@ function KanbanView({
     }
   };
 
-  const handleDeleteColumn = async () => {
-    if (!deleteStatusId) return;
-    try {
-      await deleteStatus(deleteStatusId);
-      setDeleteStatusId(null);
-      onRefresh();
-    } catch (e) {
-      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
-    }
-  };
-
   const handleUnlockIssue = async (issueId: number) => {
     try {
       await unlockIssue(issueId);
@@ -3332,13 +2976,17 @@ function KanbanView({
         </Alert>
       )}
       <Box
+        component="nav"
         sx={{
           position: "sticky",
           top: 0,
           zIndex: 1200,
           bgcolor: "background.default",
-          py: 1,
-          mb: 1,
+          pb: 1,
+          mb: 3,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+          width: "100%",
         }}
       >
         {toolbar}
@@ -3368,7 +3016,6 @@ function KanbanView({
                 onEditIssue={(issue) => setDetailIssue(issue)}
                 onDeleteIssue={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
                 onViewActivity={(issue) => setActivityIssue(issue)}
-                onDeleteColumn={(statusId) => setDeleteStatusId(statusId)}
                 onUnlockIssue={handleUnlockIssue}
               />
             ))}
@@ -3468,20 +3115,6 @@ function KanbanView({
           </Button>
         </DialogActions>
       </Dialog>
-      <Dialog open={!!deleteStatusId} onClose={() => setDeleteStatusId(null)}>
-        <DialogTitle>ยืนยันการลบคอลัมน์</DialogTitle>
-        <DialogContent>
-          <Typography>
-            {t("deleteStatusConfirm")}
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteStatusId(null)}>ยกเลิก</Button>
-          <Button onClick={handleDeleteColumn} color="error">
-            ลบ
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 }
@@ -3558,7 +3191,11 @@ function TableView({
       if (selectedReporterIds.length > 0) {
         if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
       }
-      if (query && !issue.title.toLowerCase().includes(query)) return false;
+      if (query) {
+        const matchTitle = issue.title.toLowerCase().includes(query);
+        const matchLabel = (issue.labels ?? []).some((l) => l.name.toLowerCase().includes(query));
+        if (!matchTitle && !matchLabel) return false;
+      }
       return true;
     });
   }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
@@ -3611,14 +3248,18 @@ function TableView({
       )}
       {toolbar && (
         <Box
+          component="nav"
           sx={{
             position: "sticky",
             top: 0,
             zIndex: 1200,
             bgcolor: "background.default",
-            py: 1,
-            mb: 1,
+            pb: 1,
+            mb: 3,
             minWidth: 0,
+            borderBottom: "1px solid",
+            borderColor: "divider",
+            width: "100%",
           }}
         >
           {toolbar}
@@ -3631,9 +3272,9 @@ function TableView({
               <tr style={{ backgroundColor: theme.custom.tableStripe }}>
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ID</th>
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>หัวข้อ</th>
-                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>สถานะ</th>
-                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ความสำคัญ</th>
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>หมวดหมู่</th>
+                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ความสำคัญ</th>
+                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>สถานะ</th>
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ผู้รับผิดชอบ</th>
                 {canSeeReporter && (
                   <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ผู้แจ้ง</th>
@@ -3668,6 +3309,18 @@ function TableView({
                       {issue.title}
                     </Typography>
                   </td>
+                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>{getCategoryLabel(issue)}</td>
+                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>
+                    {issue.priorityName ? (
+                      <Chip
+                        label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
+                        size="small"
+                        variant="outlined"
+                        color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
+                        sx={{ fontSize: "0.7rem", fontWeight: 600 }}
+                      />
+                    ) : "—"}
+                  </td>
                   <td style={{ padding: "12px", fontSize: "0.8rem" }}>
                     <Chip
                       label={getStatusName(issue.statusId)}
@@ -3675,22 +3328,12 @@ function TableView({
                       sx={{
                         bgcolor: `${getColumnColor(getStatusName(issue.statusId), theme)}20`,
                         color: getColumnColor(getStatusName(issue.statusId), theme),
+                        border: `1px solid ${getColumnColor(getStatusName(issue.statusId), theme)}`,
                         fontWeight: 600,
                         fontSize: "0.7rem",
                       }}
                     />
                   </td>
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>
-                    {issue.priorityName ? (
-                      <Chip
-                        label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
-                        size="small"
-                        color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
-                        sx={{ fontSize: "0.7rem", fontWeight: 600 }}
-                      />
-                    ) : "—"}
-                  </td>
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>{getCategoryLabel(issue)}</td>
                   <td style={{ padding: "12px", fontSize: "0.8rem" }}>{issue.programmerName ?? "รอมอบหมาย"}</td>
                   {canSeeReporter && (
                     <td style={{ padding: "12px", fontSize: "0.8rem" }}>{issue.customerName ?? "—"}</td>
@@ -3783,6 +3426,8 @@ export default function BoardsPage() {
   const currentUserId = useAuthStore((s) => s.user?.id) ?? null;
   const isCustomer = roleName === "customer";
   const [view, setView] = useState<"board" | "table">("table");
+  const isBoardView = view === "board";
+  const isTableView = view === "table";
   const [issues, setIssues] = useState<BoardIssue[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
@@ -3801,14 +3446,12 @@ export default function BoardsPage() {
   const [filterOpen, setFilterOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reportOpen, setReportOpen] = useState(false);
 
   const canEdit = can("issue.all.update");
   const canDelete = can("issue.delete");
   const canAssign = can("issue.assign");
   const canUnlockIssue = can("issue.all.update");
   const canManage = canEdit || canDelete || canAssign;
-  const canReport = can("issue.create");
   const canSeeReporter = can("issue.all.view");
   const canViewOwnHistory = can("issue.own.view");
 
@@ -3909,36 +3552,10 @@ export default function BoardsPage() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  const handleReportIssue = async (data: {
-    title: string;
-    categoryId?: number | null;
-    customCategory?: string;
-    statusId: number;
-    description: string;
-    files: File[];
-  }) => {
-    try {
-      const issue = await createIssue({
-        title: data.title,
-        description: data.description,
-        statusId: data.statusId,
-        categoryId: data.categoryId ?? undefined,
-        customCategory: data.customCategory,
-      });
-      if (data.files.length > 0) {
-        await Promise.all(data.files.map((file) => uploadAttachment(issue.id, file)));
-      }
-      setReportOpen(false);
-      loadData();
-    } catch (e) {
-      setError(getErrorMessage(e, "แจ้งปัญหาไม่สำเร็จ"));
-    }
-  };
-
   return (
     <RequirePermission permission="board.view">
       <DashboardLayout>
-        <Box sx={{ py: 2 }}>
+        <Box sx={{ pb: 2 }}>
           {error && (
             <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
               {error}
@@ -3949,7 +3566,7 @@ export default function BoardsPage() {
               <CircularProgress />
             </Box>
           ) : (
-            view === "board" ? (
+            isBoardView ? (
               <KanbanView
                 statuses={statuses}
                 issues={issues}
@@ -3976,51 +3593,66 @@ export default function BoardsPage() {
                       placeholder={t("searchPlaceholder")}
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      sx={{ width: 240, maxWidth: 240, minWidth: 160 }}
+                      sx={{ flexGrow: 1, maxWidth: 480, minWidth: 200 }}
                       InputProps={{
                         startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
                       }}
                     />
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
                       {!isCustomer && (
-                        <ToggleButtonGroup
-                          size="small"
-                          exclusive
-                          value={view}
-                          onChange={(_, v) => v && setView(v)}
-                        >
-                          <ToggleButton value="board">
-                            <ViewKanbanIcon fontSize="small" />
-                          </ToggleButton>
-                          <ToggleButton value="table">
-                            <TableChartIcon fontSize="small" />
-                          </ToggleButton>
-                        </ToggleButtonGroup>
+                        <>
+                          <Tooltip title={t("board")}>
+                            <IconButton
+                              size="small"
+                              onClick={() => setView("board")}
+                              sx={{
+                                width: 36,
+                                height: 36,
+                                color: isBoardView ? "primary.contrastText" : "text.secondary",
+                                bgcolor: isBoardView ? "primary.main" : "transparent",
+                                "&:hover": { bgcolor: isBoardView ? "primary.dark" : "action.hover" },
+                              }}
+                            >
+                              <ViewKanbanIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title={t("table")}>
+                            <IconButton
+                              size="small"
+                              onClick={() => setView("table")}
+                              sx={{
+                                width: 36,
+                                height: 36,
+                                color: isTableView ? "primary.contrastText" : "text.secondary",
+                                bgcolor: isTableView ? "primary.main" : "transparent",
+                                "&:hover": { bgcolor: isTableView ? "primary.dark" : "action.hover" },
+                              }}
+                            >
+                              <TableChartIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        </>
                       )}
                       {can("issue.trash.view") && (
                         <Tooltip title={t("recycleBin")}>
-                          <IconButton size="small" onClick={() => setRecycleBinOpen(true)}>
-                            <RestoreFromTrashIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                          <IconButton
+                            size="small"
+                            onClick={() => setRecycleBinOpen(true)}
+                            sx={{ width: 36, height: 36 }}
+                          >
+                            <RestoreIcon sx={{ fontSize: 20, color: "text.secondary" }} />
                           </IconButton>
                         </Tooltip>
                       )}
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        startIcon={<FilterListIcon />}
-                        onClick={() => setFilterOpen(true)}
-                      >
-                        {t("filter")}
-                      </Button>
-                      {canReport && (
-                        <Button
-                          variant="contained"
-                          startIcon={<AddIcon />}
-                          onClick={() => setReportOpen(true)}
+                      <Tooltip title={t("filter")}>
+                        <IconButton
+                          size="small"
+                          onClick={() => setFilterOpen(true)}
+                          sx={{ width: 36, height: 36 }}
                         >
-                          {t("reportIssue")}
-                        </Button>
-                      )}
+                          <FilterListIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                        </IconButton>
+                      </Tooltip>
                     </Box>
                   </Box>
                 }
@@ -4050,51 +3682,66 @@ export default function BoardsPage() {
                       placeholder={t("searchPlaceholder")}
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      sx={{ width: 240, maxWidth: 240, minWidth: 160 }}
+                      sx={{ flexGrow: 1, maxWidth: 480, minWidth: 200 }}
                       InputProps={{
                         startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
                       }}
                     />
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
                       {!isCustomer && (
-                        <ToggleButtonGroup
-                          size="small"
-                          exclusive
-                          value={view}
-                          onChange={(_, v) => v && setView(v)}
-                        >
-                          <ToggleButton value="board">
-                            <ViewKanbanIcon fontSize="small" />
-                          </ToggleButton>
-                          <ToggleButton value="table">
-                            <TableChartIcon fontSize="small" />
-                          </ToggleButton>
-                        </ToggleButtonGroup>
+                        <>
+                          <Tooltip title={t("board")}>
+                            <IconButton
+                              size="small"
+                              onClick={() => setView("board")}
+                              sx={{
+                                width: 36,
+                                height: 36,
+                                color: isBoardView ? "primary.contrastText" : "text.secondary",
+                                bgcolor: isBoardView ? "primary.main" : "transparent",
+                                "&:hover": { bgcolor: isBoardView ? "primary.dark" : "action.hover" },
+                              }}
+                            >
+                              <ViewKanbanIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title={t("table")}>
+                            <IconButton
+                              size="small"
+                              onClick={() => setView("table")}
+                              sx={{
+                                width: 36,
+                                height: 36,
+                                color: isTableView ? "primary.contrastText" : "text.secondary",
+                                bgcolor: isTableView ? "primary.main" : "transparent",
+                                "&:hover": { bgcolor: isTableView ? "primary.dark" : "action.hover" },
+                              }}
+                            >
+                              <TableChartIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        </>
                       )}
                       {can("issue.trash.view") && (
                         <Tooltip title={t("recycleBin")}>
-                          <IconButton size="small" onClick={() => setRecycleBinOpen(true)}>
-                            <RestoreFromTrashIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                          <IconButton
+                            size="small"
+                            onClick={() => setRecycleBinOpen(true)}
+                            sx={{ width: 36, height: 36 }}
+                          >
+                            <RestoreIcon sx={{ fontSize: 20, color: "text.secondary" }} />
                           </IconButton>
                         </Tooltip>
                       )}
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        startIcon={<FilterListIcon />}
-                        onClick={() => setFilterOpen(true)}
-                      >
-                        {t("filter")}
-                      </Button>
-                      {canReport && (
-                        <Button
-                          variant="contained"
-                          startIcon={<AddIcon />}
-                          onClick={() => setReportOpen(true)}
+                      <Tooltip title={t("filter")}>
+                        <IconButton
+                          size="small"
+                          onClick={() => setFilterOpen(true)}
+                          sx={{ width: 36, height: 36 }}
                         >
-                          {t("reportIssue")}
-                        </Button>
-                      )}
+                          <FilterListIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                        </IconButton>
+                      </Tooltip>
                     </Box>
                   </Box>
                 }
@@ -4123,12 +3770,6 @@ export default function BoardsPage() {
             onSelectAllStatuses={handleSelectAllStatuses}
             onClearAll={handleClearAllFilters}
             onClose={() => setFilterOpen(false)}
-          />
-          <ReportIssueDialog
-            open={reportOpen}
-            onClose={() => setReportOpen(false)}
-            onSubmit={handleReportIssue}
-            statuses={statuses}
           />
           <RecycleBinDialog
             open={recycleBinOpen}

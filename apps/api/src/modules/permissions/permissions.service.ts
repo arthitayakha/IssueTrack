@@ -98,7 +98,8 @@ export class PermissionsService implements OnModuleInit {
     return categories;
   }
 
-  async hasPermission(roleId: number, permission: string, positionId?: number | null): Promise<boolean> {
+  async hasPermission(roleId: number | null, permission: string, positionId?: number | null): Promise<boolean> {
+    if (roleId === null || roleId === undefined) return false;
     const adminRole = await this.rolesRepo.findOne({ where: { name: "admin" } });
     if (adminRole && roleId === adminRole.id) return true;
     const role = await this.rolesRepo.findOne({ where: { id: roleId } });

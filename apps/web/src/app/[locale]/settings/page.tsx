@@ -869,6 +869,10 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
         await apiFetch(`/issue-priorities/${deleteTarget.id}`, { method: "DELETE" }, token);
         setPriorities((prev) => prev.filter((p) => p.id !== deleteTarget.id));
         notify(t("priorityDeleted"));
+      } else if (deleteTarget.type === "label") {
+        await deleteLabel(deleteTarget.id);
+        setLabels((prev) => prev.filter((l) => l.id !== deleteTarget.id));
+        notify(t("labelDeleted"));
       }
       setDeleteTarget(null);
       setDeleteCheck(null);
@@ -928,7 +932,6 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   <DataTableRow>
                     <DataTableCell>{t("columnName")}</DataTableCell>
                     <DataTableCell>{t("columnPosition")}</DataTableCell>
-                    <DataTableCell align="center">{t("columnIssueCount")}</DataTableCell>
                     <DataTableCell align="center">{t("columnStatus")}</DataTableCell>
                     <DataTableCell align="right">{t("columnActions")}</DataTableCell>
                   </DataTableRow>
@@ -938,7 +941,6 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                     <DataTableRow key={category.id}>
                       <DataTableCell>{category.name}</DataTableCell>
                       <DataTableCell>{category.position ?? "—"}</DataTableCell>
-                      <DataTableCell align="center">{category.issueCount}</DataTableCell>
                       <DataTableCell align="center">
                         <Chip
                           label={category.isVisible ? t("active") : t("inactive")}
@@ -1048,7 +1050,6 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   <DataTableRow>
                     <DataTableCell>{t("columnName")}</DataTableCell>
                     <DataTableCell>{t("columnDescription")}</DataTableCell>
-                    <DataTableCell align="center">{t("columnIssueCount")}</DataTableCell>
                     <DataTableCell align="center">{t("columnStatus")}</DataTableCell>
                     <DataTableCell align="right">{t("columnActions")}</DataTableCell>
                   </DataTableRow>
@@ -1058,7 +1059,6 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                     <DataTableRow key={priority.id}>
                       <DataTableCell>{priority.name}</DataTableCell>
                       <DataTableCell>{priority.description ?? "—"}</DataTableCell>
-                      <DataTableCell align="center">{priority.issueCount}</DataTableCell>
                       <DataTableCell align="center">
                         <Chip
                           label={priority.isActive ? t("active") : t("inactive")}

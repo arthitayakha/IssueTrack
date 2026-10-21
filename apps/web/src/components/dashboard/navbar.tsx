@@ -22,7 +22,13 @@ export default function Navbar() {
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
 
-  const routeTitleKey = pathname.replace(/^\//, "").split("/")[0] || "dashboard";
+  const routeTitleMap: Record<string, string> = {
+    "/issues/new": "reportIssue",
+    "/issues": "issues",
+  };
+  const routeTitleKey =
+    routeTitleMap[pathname] ??
+    (pathname.replace(/^\//, "").split("/")[0] || "dashboard");
 
   function handleLogout() {
     logout();

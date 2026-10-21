@@ -17,6 +17,7 @@ import DashboardIcon from "@mui/icons-material/Dashboard";
 import SettingsIcon from "@mui/icons-material/Settings";
 import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
 import PeopleIcon from "@mui/icons-material/People";
+import PostAddIcon from "@mui/icons-material/PostAdd";
 import { DRAWER_WIDTH } from "./navbar";
 import { usePermissions } from "@/lib/permissions";
 import { Link, usePathname } from "@/i18n/navigation";
@@ -28,6 +29,9 @@ export default function Sidebar() {
 
   const navItems = [
     { label: t("dashboard"), href: "/", icon: <DashboardIcon /> },
+    ...(can("issue.create")
+      ? [{ label: t("reportIssue"), href: "/issues/new", icon: <PostAddIcon /> }]
+      : []),
     { label: t("boards"), href: "/boards", icon: <ViewKanbanIcon /> },
     ...(can("user.view") || can("role.view") || can("position.view")
       ? [{ label: t("users"), href: "/users", icon: <PeopleIcon /> }]
