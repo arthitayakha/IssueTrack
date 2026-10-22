@@ -19,6 +19,13 @@ import { CurrentUser } from "../auth/current-user.decorator";
 import { AuthUser, actorInfo } from "../auth/auth-user";
 import { ActorInfo, ActivityLogsService } from "../activity-logs/activity-logs.service";
 
+function parseIdList(value?: string): number[] {
+  return (value ?? "")
+    .split(",")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class IssuesController {
@@ -35,14 +42,26 @@ export class IssuesController {
   @Permissions("issue.own.view")
   findAll(
     @Query()
-    query: { page?: string; limit?: string; statuses?: string; search?: string },
+    query: {
+      page?: string;
+      limit?: string;
+      statuses?: string;
+      search?: string;
+      mine?: string;
+      priorityIds?: string;
+      categoryIds?: string;
+      assigneeIds?: string;
+      reporterIds?: string;
+    },
     @CurrentUser() user: AuthUser,
   ) {
-    const statuses = (query.statuses ?? "")
-      .split(",")
-      .map((s) => parseInt(s.trim(), 10))
-      .filter((n) => Number.isInteger(n) && n > 0);
-    return this.issues.findAll(normalizePagination(query), statuses, user, query.search);
+    const statuses = parseIdList(query.statuses);
+    return this.issues.findAll(normalizePagination(query), statuses, user, query.search, {
+      priorityIds: parseIdList(query.priorityIds),
+      categoryIds: parseIdList(query.categoryIds),
+      assigneeIds: parseIdList(query.assigneeIds),
+      reporterIds: parseIdList(query.reporterIds),
+    });
   }
 
   @Get("issues/trash")

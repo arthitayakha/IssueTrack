@@ -96,6 +96,7 @@ export interface Comment {
   issueId: number;
   authorId: number;
   authorName: string;
+  authorRole: string | null;
   createdAt: string;
 }
 
@@ -147,6 +148,12 @@ export async function fetchIssues(
   statuses?: number[],
   search?: string,
   mine?: boolean,
+  filters?: {
+    priorityIds?: number[];
+    categoryIds?: number[];
+    assigneeIds?: string[];
+    reporterIds?: string[];
+  },
 ): Promise<PaginatedResponse<BoardIssue>> {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (statuses && statuses.length > 0) {
@@ -157,6 +164,18 @@ export async function fetchIssues(
   }
   if (mine) {
     params.set("mine", "true");
+  }
+  if (filters?.priorityIds && filters.priorityIds.length > 0) {
+    params.set("priorityIds", filters.priorityIds.join(","));
+  }
+  if (filters?.categoryIds && filters.categoryIds.length > 0) {
+    params.set("categoryIds", filters.categoryIds.join(","));
+  }
+  if (filters?.assigneeIds && filters.assigneeIds.length > 0) {
+    params.set("assigneeIds", filters.assigneeIds.join(","));
+  }
+  if (filters?.reporterIds && filters.reporterIds.length > 0) {
+    params.set("reporterIds", filters.reporterIds.join(","));
   }
   return apiFetch<PaginatedResponse<BoardIssue>>(
     `/issues?${params.toString()}`,

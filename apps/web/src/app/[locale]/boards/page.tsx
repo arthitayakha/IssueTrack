@@ -27,6 +27,8 @@ import {
   Divider,
   Tabs,
   Tab,
+  Grid,
+  useMediaQuery,
   useTheme,
   type Theme,
   Checkbox,
@@ -84,7 +86,6 @@ import PersonIcon from "@mui/icons-material/Person";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import DeleteIcon from "@mui/icons-material/Delete";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
-import RestoreIcon from "@mui/icons-material/Restore";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import SendIcon from "@mui/icons-material/Send";
@@ -221,26 +222,22 @@ function formatActivityAction(log: ActivityLog): string {
   }
 }
 
-const COLOR_MAP: Record<string, string> = {
-  green: "#4caf50",
-  red: "#f44336",
-  yellow: "#ffeb3b",
-  blue: "#2196f3",
-  purple: "#9c27b0",
-  orange: "#ff9800",
-  pink: "#e91e63",
-  gray: "#9e9e9e",
-  default: "#9e9e9e",
-};
+function labelColorValue(color: string | null | undefined, theme: Theme): string {
+  const map = theme.custom.labelColors as Record<string, string>;
+  return map[color ?? "default"] ?? color ?? theme.palette.grey[400];
+}
 
-const LABEL_COLORS = Object.keys(COLOR_MAP).filter((c) => c !== "default");
+function labelColorKeys(theme: Theme): string[] {
+  const map = theme.custom.labelColors as Record<string, string>;
+  return Object.keys(map).filter((k) => k !== "default");
+}
 
 function labelContrast(color: string, theme: Theme): string {
-  return theme.palette.getContrastText(COLOR_MAP[color] ?? theme.palette.grey[400]);
+  return theme.palette.getContrastText(labelColorValue(color, theme));
 }
 
 function labelChipSx(color: string | null | undefined, theme: Theme) {
-  const base = COLOR_MAP[color ?? "default"] ?? color ?? theme.palette.grey[400];
+  const base = labelColorValue(color, theme);
   return {
     bgcolor: `${base}26`,
     color: theme.palette.common.black,
@@ -396,6 +393,7 @@ function TrelloCard({
     isDragging,
   } = useSortable({ id: `issue-${issue.id}`, data: { type: "issue" }, disabled: issue.isLocked });
 
+  const t = useTranslations("Boards");
   const theme = useTheme();
 
   const style = {
@@ -454,29 +452,38 @@ function TrelloCard({
         anchorEl={menuAnchor}
         open={Boolean(menuAnchor)}
         onClose={() => setMenuAnchor(null)}
+        elevation={0}
+        PaperProps={{
+          sx: {
+            border: "1px solid",
+            borderColor: "divider",
+            borderRadius: 1.5,
+            overflow: "hidden",
+          },
+        }}
       >
         {canEdit && (
           <MenuItem onClick={() => { setMenuAnchor(null); onEdit?.(issue); }}>
             <ListItemIcon><EditIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>แก้ไข</ListItemText>
+            <ListItemText>{t("edit")}</ListItemText>
           </MenuItem>
         )}
         {canEdit && (
           <MenuItem onClick={() => { setMenuAnchor(null); onViewActivity?.(issue); }}>
             <ListItemIcon><HistoryIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>ประวัติ</ListItemText>
+            <ListItemText>{t("history")}</ListItemText>
           </MenuItem>
         )}
         {issue.isLocked && canUnlockIssue && (
           <MenuItem onClick={() => { setMenuAnchor(null); onUnlock?.(issue); }}>
             <ListItemIcon><LockOpenIcon fontSize="small" color="warning" /></ListItemIcon>
-            <ListItemText sx={{ color: "warning.main" }}>ปลดล็อก</ListItemText>
+            <ListItemText sx={{ color: "warning.main" }}>{t("unlock")}</ListItemText>
           </MenuItem>
         )}
         {canDelete && (
           <MenuItem onClick={() => { setMenuAnchor(null); onDelete?.(issue); }}>
             <ListItemIcon><DeleteIcon fontSize="small" color="error" /></ListItemIcon>
-            <ListItemText sx={{ color: "error.main" }}>ลบ</ListItemText>
+            <ListItemText sx={{ color: "error.main" }}>{t("delete")}</ListItemText>
           </MenuItem>
         )}
       </Menu>
@@ -486,7 +493,11 @@ function TrelloCard({
 
 function KanbanColumn({
   status,
-  issues,
+  items,
+  total,
+  hasMore,
+  loading,
+  onLoadMore,
   canManage,
   canEdit,
   canDelete,
@@ -500,7 +511,11 @@ function KanbanColumn({
   onUnlockIssue,
 }: {
   status: IssueStatus;
-  issues: BoardIssue[];
+  items: BoardIssue[];
+  total: number;
+  hasMore: boolean;
+  loading: boolean;
+  onLoadMore: (statusId: number) => void;
   canManage: boolean;
   canEdit: boolean;
   canDelete: boolean;
@@ -521,7 +536,14 @@ function KanbanColumn({
   const theme = useTheme();
 
   const color = getColumnColor(status.name, theme);
-  const visibleIssues = [...issues].sort((a, b) => b.id - a.id);
+  const visibleIssues = [...items].sort((a, b) => b.id - a.id);
+
+  const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget;
+    if (hasMore && !loading && el.scrollTop + el.clientHeight >= el.scrollHeight - 48) {
+      onLoadMore(status.id);
+    }
+  };
 
   return (
     <Box
@@ -551,7 +573,7 @@ function KanbanColumn({
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
           <Typography variant="caption" color="text.secondary" fontWeight={600}>
-            {issues.length}
+            {total}
           </Typography>
         </Box>
       </Box>
@@ -559,6 +581,7 @@ function KanbanColumn({
         <Box
           ref={setDroppableNodeRef}
           data-status-drop-id={status.id}
+          onScroll={handleScroll}
           sx={{
             flexGrow: 1,
             overflowY: "auto",
@@ -585,7 +608,7 @@ function KanbanColumn({
               onUnlock={(iss) => onUnlockIssue(iss.id)}
             />
           ))}
-          {issues.length === 0 && (
+          {items.length === 0 && !loading && (
             <Box
               sx={{
                 py: 3,
@@ -604,6 +627,11 @@ function KanbanColumn({
               >
                 {isDropTarget ? "วางที่นี่" : "ไม่มีการ์ด"}
               </Typography>
+            </Box>
+          )}
+          {loading && (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 1 }}>
+              <CircularProgress size={18} />
             </Box>
           )}
         </Box>
@@ -790,60 +818,6 @@ function RecycleBinDialog({
   );
 }
 
-function ActivityLogDialog({
-  issue,
-  open,
-  onClose,
-}: {
-  issue: BoardIssue | null;
-  open: boolean;
-  onClose: () => void;
-}) {
-  const [logs, setLogs] = useState<ActivityLog[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!issue || !open) return;
-    setLoading(true);
-    fetchIssueActivity(issue.id)
-      .then(setLogs)
-      .catch(() => setLogs([]))
-      .finally(() => setLoading(false));
-  }, [issue, open]);
-
-  return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>ประวัติ: {issue?.title}</DialogTitle>
-      <DialogContent>
-        {loading ? (
-          <Box sx={{ display: "flex", justifyContent: "center", p: 2 }}>
-            <CircularProgress />
-          </Box>
-        ) : logs.length === 0 ? (
-          <Typography color="text.secondary">ยังไม่มีประวัติ</Typography>
-        ) : (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-            {logs.map((log) => (
-              <Box key={log.id} sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
-                <Typography variant="caption" color="text.secondary" sx={{ minWidth: 60 }}>
-                  {new Date(log.createdAt).toLocaleTimeString("th-TH", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </Typography>
-                <Typography variant="body2">{formatActivityAction(log)}</Typography>
-              </Box>
-            ))}
-          </Box>
-        )}
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>ปิด</Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
 function IssueDialog({
   issue,
   statusId,
@@ -947,9 +921,9 @@ function IssueDetailDialog({
   statuses,
   labels,
   onRefresh,
-  onDelete,
   readOnly = false,
   onRestore,
+  initialTab = "comments",
 }: {
   issue: BoardIssue | null;
   open: boolean;
@@ -957,12 +931,12 @@ function IssueDetailDialog({
   statuses: IssueStatus[];
   labels: Label[];
   onRefresh: () => void;
-  onDelete: (issue: BoardIssue) => void;
   readOnly?: boolean;
   onRestore?: (id: number) => void;
+  initialTab?: "comments" | "history";
 }) {
   const { can } = usePermissions();
-  const [tab, setTab] = useState<"comments" | "history">("comments");
+  const [tab, setTab] = useState<"comments" | "history">(initialTab);
   const [comments, setComments] = useState<Comment[]>([]);
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -971,6 +945,9 @@ function IssueDetailDialog({
   const [posting, setPosting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [localIssue, setLocalIssue] = useState<BoardIssue | null>(null);
+  const [draftPriorityId, setDraftPriorityId] = useState<number | null>(null);
+  const [draftProgrammerId, setDraftProgrammerId] = useState<number | null>(null);
+  const [draftLabelIds, setDraftLabelIds] = useState<number[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
@@ -1009,7 +986,6 @@ function IssueDetailDialog({
   const canDeleteAnyComment = can("comment.all.delete");
   const canViewHistory = can("issue.detail.view");
   const canEditIssue = !readOnly && can("issue.all.update");
-  const canDeleteIssue = !readOnly && can("issue.delete");
   const canSetPriority = can("priority.view") && canEditIssue;
   const canSetLabels = can("label.view") && canEditIssue;
   const canCreateLabel = can("label.create");
@@ -1021,8 +997,15 @@ function IssueDetailDialog({
 
   useEffect(() => {
     setLocalIssue(issue);
+    setDraftPriorityId(issue?.priorityId ?? null);
+    setDraftProgrammerId(issue?.programmerId ?? null);
+    setDraftLabelIds(issue?.labelIds ?? []);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issue?.id]);
+
+  useEffect(() => {
+    if (open) setTab(initialTab);
+  }, [open, initialTab]);
 
   useEffect(() => {
     if (!issue || !open) return;
@@ -1059,6 +1042,7 @@ function IssueDetailDialog({
       const comment = await createComment(localIssue.id, content);
       setComments((prev) => [...prev, comment]);
       setDraft("");
+      onRefresh();
     } catch (e) {
       setError(getErrorMessage(e, "ส่งความคิดเห็นไม่สำเร็จ"));
     } finally {
@@ -1094,6 +1078,7 @@ function IssueDetailDialog({
       await deleteComment(deletingComment.id);
       setComments((prev) => prev.filter((c) => c.id !== deletingComment.id));
       setDeletingComment(null);
+      onRefresh();
     } catch (e) {
       setError(getErrorMessage(e, "ลบความคิดเห็นไม่สำเร็จ"));
     } finally {
@@ -1101,50 +1086,25 @@ function IssueDetailDialog({
     }
   };
 
-  const applyUpdate = async (data: { priorityId?: number | null; labelIds?: number[] }) => {
-    if (!localIssue) return;
-    setSaving(true);
-    try {
-      const updated = await updateIssue(localIssue.id, data);
-      setLocalIssue(updated);
-      onRefresh();
-    } catch (e) {
-      setError(getErrorMessage(e, "บันทึกไม่สำเร็จ"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleSetPriority = async (priorityId: number | null) => {
+  const handleSetPriority = (priorityId: number | null) => {
     setPriorityAnchor(null);
-    await applyUpdate({ priorityId: priorityId ?? null });
+    setDraftPriorityId(priorityId);
   };
 
-  const handleAssign = async (programmerId: number | null) => {
+  const handleAssign = (programmerId: number | null) => {
     setMemberAnchor(null);
     setMemberSearch("");
-    if (!localIssue) return;
-    setSaving(true);
-    try {
-      const updated = await assignIssue(localIssue.id, programmerId);
-      setLocalIssue((prev) => ({ ...prev, ...updated }));
-      onRefresh();
-    } catch (e) {
-      setError(getErrorMessage(e, "มอบหมายไม่สำเร็จ"));
-    } finally {
-      setSaving(false);
-    }
+    setDraftProgrammerId(programmerId);
   };
 
-  const selectedLabelIds = localIssue?.labelIds ?? [];
+  const selectedLabelIds = draftLabelIds;
 
   const selectedLabels = labels.filter((l) => selectedLabelIds.includes(l.id));
 
-  const handleToggleLabel = async (labelId: number) => {
-    const next = selectedLabelIds.includes(labelId)
-      ? selectedLabelIds.filter((id) => id !== labelId)
-      : [...selectedLabelIds, labelId];
-    await applyUpdate({ labelIds: next });
+  const handleToggleLabel = (labelId: number) => {
+    setDraftLabelIds((prev) =>
+      prev.includes(labelId) ? prev.filter((id) => id !== labelId) : [...prev, labelId],
+    );
   };
 
   const handleCreateLabel = async () => {
@@ -1156,9 +1116,55 @@ function IssueDetailDialog({
       setNewLabelName("");
       setNewLabelColor("default");
       setCreatingLabel(false);
-      await applyUpdate({ labelIds: [...selectedLabelIds, label.id] });
+      setDraftLabelIds((prev) => [...prev, label.id]);
     } catch (e) {
       setError(getErrorMessage(e, "สร้ายป้ายไม่สำเร็จ"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const sortedEqual = (a: number[], b: number[]) =>
+    JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+
+  const hasDraftChanges =
+    (localIssue?.priorityId ?? null) !== draftPriorityId ||
+    (localIssue?.programmerId ?? null) !== draftProgrammerId ||
+    !sortedEqual(localIssue?.labelIds ?? [], draftLabelIds);
+
+  const resetDrafts = () => {
+    setDraftPriorityId(localIssue?.priorityId ?? null);
+    setDraftProgrammerId(localIssue?.programmerId ?? null);
+    setDraftLabelIds(localIssue?.labelIds ?? []);
+  };
+
+  const handleCancel = () => {
+    resetDrafts();
+    onClose();
+  };
+
+  const handleSave = async () => {
+    if (!localIssue || saving) return;
+    setSaving(true);
+    try {
+      const data: { priorityId?: number | null; labelIds?: number[] } = {};
+      if ((localIssue.priorityId ?? null) !== draftPriorityId) {
+        data.priorityId = draftPriorityId;
+      }
+      if (!sortedEqual(localIssue.labelIds ?? [], draftLabelIds)) {
+        data.labelIds = draftLabelIds;
+      }
+      if (Object.keys(data).length > 0) {
+        await updateIssue(localIssue.id, data);
+      }
+      if ((localIssue.programmerId ?? null) !== draftProgrammerId) {
+        await assignIssue(localIssue.id, draftProgrammerId);
+      }
+      onRefresh();
+      resetDrafts();
+      onClose();
+    } catch (e) {
+      setError(getErrorMessage(e, "บันทึกไม่สำเร็จ"));
     } finally {
       setSaving(false);
     }
@@ -1202,14 +1208,16 @@ function IssueDetailDialog({
   };
 
   const theme = useTheme();
+  const isNarrow = useMediaQuery(theme.breakpoints.down("md"));
   const current = localIssue;
   const status = current?.statusId ? statuses.find((s) => s.id === current.statusId) : null;
   const statusName = status ? (status.customName ?? status.name) : null;
-  const columnColor = getColumnColor(statusName ?? "", theme);
   const categoryName = current ? getCategoryLabel(current) : "—";
+  const draftPriority = priorities.find((p) => p.id === draftPriorityId) ?? null;
+  const draftPriorityName = draftPriority?.name ?? null;
   const programmers = users.filter((u) => u.isActive && u.roleName === "programmer");
-  const member = current?.programmerId
-    ? programmers.find((u) => Number(u.id) === current.programmerId) ?? null
+  const member = draftProgrammerId
+    ? programmers.find((u) => Number(u.id) === draftProgrammerId) ?? null
     : null;
   const visibleProgrammers = programmers.filter(
     (u) =>
@@ -1227,21 +1235,74 @@ function IssueDetailDialog({
       open={open}
       onClose={onClose}
       maxWidth={false}
-      PaperProps={{ sx: { borderRadius: 4, width: "1100px", maxWidth: "95vw", height: "90vh", display: "flex", flexDirection: "column", overflow: "hidden" } }}
+      PaperProps={{ sx: { borderRadius: 4, width: { xs: "100%", md: 1100 }, maxWidth: "95vw", height: { xs: "100%", md: "90vh" }, display: "flex", flexDirection: "column", overflow: "hidden" } }}
     >
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, px: 2.5, pt: 2, pb: 1.5 }}>
-        <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1, letterSpacing: 0.5 }}>
-          {statusName}
-        </Typography>
-        <Typography
-          variant="subtitle2"
-          fontWeight={700}
-          color="common.black"
-          sx={{ ml: "auto", mr: 1, letterSpacing: 0.5 }}
-        >
+        {isEditingTitle ? (
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 1, flex: 1, minWidth: 0 }}>
+            <TextField
+              fullWidth
+              size="small"
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              disabled={savingTitle}
+              autoFocus
+            />
+            <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end" }}>
+              <Button size="small" onClick={() => setIsEditingTitle(false)} disabled={savingTitle}>
+                {t("cancel")}
+              </Button>
+              <Button
+                size="small"
+                variant="contained"
+                disabled={savingTitle}
+                startIcon={<SaveIcon sx={{ fontSize: 16 }} />}
+                onClick={async () => {
+                  if (!current) return;
+                  setSavingTitle(true);
+                  try {
+                    const updated = await updateIssue(current.id, { title: titleDraft });
+                    setLocalIssue(updated);
+                    onRefresh();
+                    setIsEditingTitle(false);
+                  } finally {
+                    setSavingTitle(false);
+                  }
+                }}
+              >
+                {t("save")}
+              </Button>
+            </Box>
+          </Box>
+        ) : (
+          <Box
+            onClick={() => {
+              if (readOnly) return;
+              setTitleDraft(current?.title ?? "");
+              setIsEditingTitle(true);
+            }}
+            sx={{ display: "flex", alignItems: "center", gap: 1, flex: 1, minWidth: 0, cursor: readOnly ? "default" : "pointer" }}
+          >
+            <Typography
+              variant="h5"
+              fontWeight={700}
+              sx={{
+                lineHeight: 1.3,
+                flex: 1,
+                minWidth: 0,
+                overflowWrap: "anywhere",
+                "&:hover": readOnly ? {} : { color: "primary.main" },
+              }}
+            >
+              {current?.title}
+            </Typography>
+            {!readOnly && <EditIcon sx={{ fontSize: 16, color: "text.secondary" }} />}
+          </Box>
+        )}
+        <Typography variant="subtitle2" fontWeight={700} color="common.black">
           {issueKey}
         </Typography>
-        <IconButton size="small" onClick={onClose}>
+        <IconButton size="small" onClick={onClose} aria-label={t("close")}>
           <CloseIcon />
         </IconButton>
       </Box>
@@ -1251,253 +1312,218 @@ function IssueDetailDialog({
           {t("trashDetailBanner")}
         </Alert>
       )}
-      <Box sx={{ display: "flex", flex: 1, minHeight: 0 }}>
+      <Box
+        sx={{
+          display: "flex",
+          flex: 1,
+          minHeight: 0,
+          flexDirection: isNarrow ? "column" : "row",
+        }}
+      >
         <Box
           sx={{
             flex: 1.2,
             minWidth: 0,
             p: 3,
             overflowY: "auto",
-            borderRight: "1px solid",
+            borderRight: isNarrow ? "none" : "1px solid",
+            borderBottom: isNarrow ? "1px solid" : "none",
             borderColor: "divider",
             display: "flex",
             flexDirection: "column",
             gap: 2.5,
           }}
         >
-          {isEditingTitle ? (
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-              <TextField
-                fullWidth
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={4}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {t("detail.category")}
+              </Typography>
+              <Chip
+                icon={<CategoryIcon sx={{ fontSize: 16 }} />}
+                label={categoryName}
                 size="small"
-                value={titleDraft}
-                onChange={(e) => setTitleDraft(e.target.value)}
-                disabled={savingTitle}
-                autoFocus
+                sx={{ mt: 0.5, fontSize: "0.75rem", fontWeight: 600 }}
               />
-              <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end" }}>
-                <Button size="small" onClick={() => setIsEditingTitle(false)} disabled={savingTitle}>
-                  ยกเลิก
-                </Button>
-                <Button
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {t("detail.priority")}
+              </Typography>
+              {canSetPriority ? (
+                <Chip
                   size="small"
-                  variant="contained"
-                  disabled={savingTitle}
-                  startIcon={<SaveIcon sx={{ fontSize: 16 }} />}
-                  onClick={async () => {
-                    if (!current) return;
-                    setSavingTitle(true);
-                    try {
-                      const updated = await updateIssue(current.id, { title: titleDraft });
-                      setLocalIssue(updated);
-                      onRefresh();
-                      setIsEditingTitle(false);
-                    } finally {
-                      setSavingTitle(false);
-                    }
+                  label={
+                    draftPriorityName
+                      ? PRIORITY_LABELS[draftPriorityName.toLowerCase()] ?? draftPriorityName
+                      : t("detail.selectPriority")
+                  }
+                  color={PRIORITY_COLORS[draftPriorityName?.toLowerCase() ?? ""] ?? "default"}
+                  variant="outlined"
+                  disabled={saving}
+                  onClick={(e) => setPriorityAnchor(e.currentTarget)}
+                  sx={{ fontWeight: 600, fontSize: "0.7rem", mt: 0.5 }}
+                />
+              ) : draftPriorityName ? (
+                <Chip
+                  label={PRIORITY_LABELS[draftPriorityName.toLowerCase()] ?? draftPriorityName}
+                  size="small"
+                  variant="outlined"
+                  color={PRIORITY_COLORS[draftPriorityName.toLowerCase()] ?? "default"}
+                  sx={{ fontSize: "0.7rem", fontWeight: 600, mt: 0.5 }}
+                />
+              ) : (
+                <Typography variant="body2" sx={{ mt: 0.5 }}>—</Typography>
+              )}
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {t("detail.status")}
+              </Typography>
+              <Chip
+                label={statusName ?? "—"}
+                size="small"
+                sx={{
+                  mt: 0.5,
+                  fontSize: "0.7rem",
+                  fontWeight: 600,
+                  bgcolor: statusName ? `${getColumnColor(statusName, theme)}20` : undefined,
+                  color: statusName ? getColumnColor(statusName, theme) : undefined,
+                  border: statusName ? `1px solid ${getColumnColor(statusName, theme)}` : undefined,
+                }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {t("detail.reporter")}
+              </Typography>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.5 }}>
+                <Avatar
+                  sx={{
+                    width: 28,
+                    height: 28,
+                    fontSize: "0.75rem",
+                    fontWeight: 700,
+                    bgcolor: "primary.main",
+                    color: "primary.contrastText",
                   }}
                 >
-                  บันทึก
-                </Button>
+                  {current?.customerName ? current.customerName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 15 }} />}
+                </Avatar>
+                <Typography variant="body2">{current?.customerName ?? "—"}</Typography>
               </Box>
-            </Box>
-          ) : (
-            <Box
-              onClick={() => {
-                if (readOnly) return;
-                setTitleDraft(current?.title ?? "");
-                setIsEditingTitle(true);
-              }}
-              sx={{ display: "flex", alignItems: "center", gap: 1, cursor: readOnly ? "default" : "pointer" }}
-            >
-              <Typography
-                variant="h5"
-                fontWeight={700}
-                sx={{
-                  lineHeight: 1.3,
-                  "&:hover": readOnly ? {} : { color: "primary.main" },
-                }}
-              >
-                {current?.title}
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {t("detail.assignee")}
               </Typography>
-              {!readOnly && <EditIcon sx={{ fontSize: 16, color: "text.secondary" }} />}
-            </Box>
-          )}
-          <Box sx={{ display: "flex", gap: 3 }}>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
-              <CategoryIcon sx={{ fontSize: 18, color: "text.secondary" }} />
-              <Box>
-                <Typography variant="caption" color="text.secondary" display="block">หมวดหมู่</Typography>
-                <Chip
-                  label={categoryName}
-                  size="small"
-                  sx={{ mt: 0.5, fontSize: "0.7rem", fontWeight: 600 }}
-                />
-              </Box>
-            </Box>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
-              <Box>
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>ผู้แจ้ง</Typography>
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <Avatar
-                    sx={{
-                      width: 32,
-                      height: 32,
-                      fontSize: "0.8rem",
-                      fontWeight: 700,
-                      bgcolor: "primary.main",
-                      color: "primary.contrastText",
-                    }}
-                  >
-                    {current?.customerName ? current.customerName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 16 }} />}
-                  </Avatar>
-                  <Typography variant="body2" fontWeight={600}>{current?.customerName ?? "—"}</Typography>
-                </Box>
-              </Box>
-            </Box>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
-              <Box>
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>ผู้รับผิดชอบ</Typography>
-                {canAssign ? (
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                    {member ? (
-                      <Chip
-                        size="small"
-                        disabled={saving}
-                        avatar={
-                          <Avatar
-                            sx={{
-                              width: 24,
-                              height: 24,
-                              fontSize: "0.7rem",
-                              fontWeight: 700,
-                              bgcolor: "primary.main",
-                              color: "primary.contrastText",
-                            }}
-                          >
-                            {member.name.charAt(0).toUpperCase()}
-                          </Avatar>
-                        }
-                        label={member.name}
-                        onDelete={() => handleAssign(null)}
-                        sx={{ fontWeight: 600 }}
-                      />
-                    ) : (
-                      <Chip label="รอมอบหมาย" size="small" variant="outlined" />
-                    )}
-                    <IconButton
-                      size="small"
-                      disabled={saving}
-                      onClick={(e) => setMemberAnchor(e.currentTarget)}
-                      sx={{ border: "1px dashed", borderColor: "divider", borderRadius: "50%", width: 28, height: 28 }}
-                    >
-                      <AddIcon sx={{ fontSize: 15 }} />
-                    </IconButton>
-                  </Box>
-                ) : (
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-                    <Avatar
-                      sx={{
-                        width: 28,
-                        height: 28,
-                        fontSize: "0.75rem",
-                        fontWeight: 700,
-                        bgcolor: current?.programmerName ? "primary.main" : theme.palette.grey[300],
-                        color: current?.programmerName ? "primary.contrastText" : theme.palette.grey[600],
-                      }}
-                    >
-                      {current?.programmerName ? current.programmerName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 15 }} />}
-                    </Avatar>
-                    <Typography variant="body2">{current?.programmerName ?? "รอมอบหมาย"}</Typography>
-                  </Box>
-                )}
-              </Box>
-            </Box>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
-              <Box>
-                <Typography variant="caption" color="text.secondary" display="block">ความสำคัญ</Typography>
-                {canSetPriority ? (
-                  <Chip
-                    size="small"
-                    icon={<FlagIcon sx={{ fontSize: 15 }} />}
-                    label={
-                      current?.priorityName
-                        ? PRIORITY_LABELS[current.priorityName.toLowerCase()] ?? current.priorityName
-                        : "เลือกความสำคัญ"
-                    }
-                    color={PRIORITY_COLORS[current?.priorityName?.toLowerCase() ?? ""] ?? "default"}
-                    variant={current?.priorityName ? "filled" : "outlined"}
-                    disabled={saving}
-                    onClick={(e) => setPriorityAnchor(e.currentTarget)}
-                    sx={{ fontWeight: 600, fontSize: "0.7rem", mt: 0.5 }}
-                  />
-                ) : current?.priorityName ? (
-                  <Chip
-                    label={PRIORITY_LABELS[current.priorityName.toLowerCase()] ?? current.priorityName}
-                    size="small"
-                    variant="outlined"
-                    icon={<FlagIcon sx={{ fontSize: 15 }} />}
-                    color={PRIORITY_COLORS[current.priorityName.toLowerCase()] ?? "default"}
-                    sx={{ fontSize: "0.7rem", fontWeight: 600, mt: 0.5 }}
-                  />
-                ) : (
-                  <Typography variant="body2" sx={{ mt: 0.5 }}>—</Typography>
-                )}
-              </Box>
-            </Box>
-          </Box>
-          <Box sx={{ display: "flex", gap: 3 }}>
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>ป้ายกำกับ</Typography>
-              {canSetLabels ? (
-                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center" }}>
-                  {selectedLabels.map((l) => (
+              {canAssign ? (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mt: 0.5 }}>
+                  {member ? (
                     <Chip
-                      key={l.id}
-                      label={l.name}
                       size="small"
                       disabled={saving}
-                      onClick={() => handleToggleLabel(l.id)}
-                      onDelete={() => handleToggleLabel(l.id)}
-                      deleteIcon={<CancelIcon sx={{ fontSize: 14 }} />}
-                      sx={{
-                        ...labelChipSx(l.color, theme),
-                        fontSize: "0.75rem",
-                        fontWeight: 600,
-                        cursor: "pointer",
-                      }}
+                      avatar={
+                        <Avatar
+                          sx={{
+                            width: 24,
+                            height: 24,
+                            fontSize: "0.7rem",
+                            fontWeight: 700,
+                            bgcolor: "primary.main",
+                            color: "primary.contrastText",
+                          }}
+                        >
+                          {member.name.charAt(0).toUpperCase()}
+                        </Avatar>
+                      }
+                      label={member.name}
+                      onDelete={() => handleAssign(null)}
+                      sx={{ fontWeight: 600 }}
                     />
-                  ))}
-                  {selectedLabels.length === 0 && !current?.labelName && (
-                    <Typography variant="caption" color="text.secondary">เพิ่มป้าย</Typography>
+                  ) : (
+                    <Chip label={t("detail.unassigned")} size="small" variant="outlined" />
                   )}
                   <IconButton
                     size="small"
                     disabled={saving}
-                    onClick={(e) => setLabelAnchor(e.currentTarget)}
+                    onClick={(e) => setMemberAnchor(e.currentTarget)}
                     sx={{ border: "1px dashed", borderColor: "divider", borderRadius: "50%", width: 28, height: 28 }}
                   >
                     <AddIcon sx={{ fontSize: 15 }} />
                   </IconButton>
                 </Box>
-              ) : current?.labelName ? (
-                <Chip
-                  label={current.labelName}
-                  size="small"
-                  sx={{
-                    ...labelChipSx(current.labelColor, theme),
-                    fontSize: "0.75rem",
-                    fontWeight: 600,
-                  }}
-                />
               ) : (
-                <Typography variant="body2">—</Typography>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mt: 0.5 }}>
+                  <Avatar
+                    sx={{
+                      width: 28,
+                      height: 28,
+                      fontSize: "0.75rem",
+                      fontWeight: 700,
+                      bgcolor: member ? "primary.main" : theme.palette.grey[300],
+                      color: member ? "primary.contrastText" : theme.palette.grey[600],
+                    }}
+                  >
+                    {member ? member.name.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 15 }} />}
+                  </Avatar>
+                  <Typography variant="body2">{member?.name ?? t("detail.unassigned")}</Typography>
+                </Box>
               )}
-            </Box>
+            </Grid>
+          </Grid>
+          <Box>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+              {t("detail.labels")}
+            </Typography>
+            {canSetLabels ? (
+              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, alignItems: "center" }}>
+                {selectedLabels.map((l) => (
+                  <Chip
+                    key={l.id}
+                    label={l.name}
+                    size="small"
+                    disabled={saving}
+                    onClick={() => handleToggleLabel(l.id)}
+                    onDelete={() => handleToggleLabel(l.id)}
+                    deleteIcon={<CancelIcon sx={{ fontSize: 14 }} />}
+                    sx={{
+                      ...labelChipSx(l.color, theme),
+                      fontSize: "0.75rem",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  />
+                ))}
+                {selectedLabels.length === 0 && !current?.labelName && (
+                  <Typography variant="caption" color="text.secondary">{t("detail.addLabel")}</Typography>
+                )}
+                <IconButton
+                  size="small"
+                  disabled={saving}
+                  onClick={(e) => setLabelAnchor(e.currentTarget)}
+                  sx={{ border: "1px dashed", borderColor: "divider", borderRadius: "50%", width: 28, height: 28 }}
+                >
+                  <AddIcon sx={{ fontSize: 15 }} />
+                </IconButton>
+              </Box>
+            ) : current?.labelName ? (
+              <Chip
+                label={current.labelName}
+                size="small"
+                sx={{
+                  ...labelChipSx(current.labelColor, theme),
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                }}
+              />
+            ) : (
+              <Typography variant="body2">—</Typography>
+            )}
           </Box>
           <Box>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
-              <Typography variant="caption" color="text.secondary">คำอธิบาย</Typography>
+              <Typography variant="caption" color="text.secondary">{t("detail.description")}</Typography>
               {!isEditingDesc && !readOnly && (
                 <IconButton
                   size="small"
@@ -1518,7 +1544,7 @@ function IssueDetailDialog({
                   multiline
                   rows={5}
                   size="small"
-                  placeholder="เพิ่มคำอธิบายโดยละเอียด..."
+                  placeholder={t("detail.descriptionPlaceholder")}
                   value={descDraft}
                   onChange={(e) => setDescDraft(e.target.value)}
                   disabled={savingDesc}
@@ -1526,7 +1552,7 @@ function IssueDetailDialog({
                 />
                 <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end" }}>
                   <Button size="small" onClick={() => setIsEditingDesc(false)} disabled={savingDesc}>
-                    ยกเลิก
+                    {t("cancel")}
                   </Button>
                   <Button
                     size="small"
@@ -1546,7 +1572,7 @@ function IssueDetailDialog({
                       }
                     }}
                   >
-                    บันทึก
+                    {t("save")}
                   </Button>
                 </Box>
               </Box>
@@ -1562,7 +1588,7 @@ function IssueDetailDialog({
                   border: "1px solid",
                   borderColor: "divider",
                   borderRadius: 2,
-                  minHeight: 60,
+                  minHeight: 72,
                   cursor: readOnly ? "default" : "pointer",
                   "&:hover": readOnly ? {} : {
                     borderColor: "primary.main",
@@ -1574,74 +1600,81 @@ function IssueDetailDialog({
                   variant="body2"
                   sx={{ whiteSpace: "pre-wrap", color: current?.description ? "text.primary" : "text.secondary" }}
                 >
-                  {current?.description || "เพิ่มคำอธิบายโดยละเอียด..."}
+                  {current?.description || t("detail.descriptionPlaceholder")}
                 </Typography>
               </Box>
             )}
           </Box>
           {canViewAttachments && attachments.length > 0 && (
             <Box>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
-                <Typography variant="caption" color="text.secondary">ไฟล์แนบ</Typography>
-              </Box>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                {t("detail.attachments")}
+              </Typography>
               {attachments.map((file) => (
-                  <Box
-                    key={file.id}
-                    sx={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 1.5,
-        p: "8px 8px 12px",
-                      mb: 1,
-                      border: "1px solid",
-                      borderColor: "divider",
-                      borderRadius: 2,
-                    }}
+                <Box
+                  key={file.id}
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1.5,
+                    p: "8px 10px",
+                    mb: 1,
+                    border: "1px solid",
+                    borderColor: "divider",
+                    borderRadius: 2,
+                  }}
+                >
+                  <AttachFileIcon sx={{ fontSize: 20, color: "primary.main", flexShrink: 0 }} />
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography variant="body2" fontWeight={600} noWrap>
+                      {file.fileName}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {file.fileSize ? `${(file.fileSize / 1024).toFixed(1)} KB` : ""}
+                      {file.createdAt ? ` • ${formatDateTime(file.createdAt)}` : ""}
+                    </Typography>
+                  </Box>
+                  <IconButton
+                    size="small"
+                    onClick={() => setPreviewAttachment(file)}
+                    sx={{ color: "text.secondary" }}
                   >
-                    <AttachFileIcon sx={{ fontSize: 20, color: "primary.main", flexShrink: 0 }} />
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography variant="body2" fontWeight={600} noWrap>
-                        {file.fileName}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {file.fileSize ? `${(file.fileSize / 1024).toFixed(1)} KB` : ""}
-                        {file.createdAt ? ` • ${formatDateTime(file.createdAt)}` : ""}
-                      </Typography>
-                    </Box>
+                    <OpenInNewIcon sx={{ fontSize: 18 }} />
+                  </IconButton>
+                  {canDeleteAttachment && (
                     <IconButton
                       size="small"
-                      onClick={() => setPreviewAttachment(file)}
+                      onClick={() => handleDeleteAttachment(file.id)}
                       sx={{ color: "text.secondary" }}
                     >
-                      <OpenInNewIcon sx={{ fontSize: 18 }} />
+                      <DeleteIcon sx={{ fontSize: 18 }} />
                     </IconButton>
-                    {canDeleteAttachment && (
-                      <IconButton
-                        size="small"
-                        onClick={() => handleDeleteAttachment(file.id)}
-                        sx={{ color: "text.secondary" }}
-                      >
-                        <DeleteIcon sx={{ fontSize: 18 }} />
-                      </IconButton>
-                    )}
-                  </Box>
-                ))}
-              </Box>
-            )}
-            <Box sx={{ display: "flex", gap: 3 }}>
+                  )}
+                </Box>
+              ))}
+            </Box>
+          )}
+          <Box
+            sx={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 2,
+              pt: 1,
+              borderTop: "1px solid",
+              borderColor: "divider",
+            }}
+          >
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
-              <AccessTimeIcon sx={{ fontSize: 18, color: "text.secondary" }} />
-              <Box>
-                <Typography variant="caption" color="text.secondary" display="block">สร้างเมื่อ</Typography>
-                <Typography variant="body2">{current ? formatDateTime(current.createdAt) : "—"}</Typography>
-              </Box>
+              <AccessTimeIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+              <Typography variant="caption" color="text.secondary">
+                {t("detail.createdAt")} {current ? formatDateTime(current.createdAt) : "—"}
+              </Typography>
             </Box>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
-              <AccessTimeIcon sx={{ fontSize: 18, color: "text.secondary" }} />
-              <Box>
-                <Typography variant="caption" color="text.secondary" display="block">อัปเดตล่าสุด</Typography>
-                <Typography variant="body2">{current ? formatDateTime(current.updatedAt) : "—"}</Typography>
-              </Box>
+              <AccessTimeIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+              <Typography variant="caption" color="text.secondary">
+                {t("detail.updatedAt")} {current ? formatDateTime(current.updatedAt) : "—"}
+              </Typography>
             </Box>
           </Box>
           <Popover
@@ -1661,15 +1694,15 @@ function IssueDetailDialog({
                   label={PRIORITY_LABELS[p.name.toLowerCase()] ?? p.name}
                   size="small"
                   color={PRIORITY_COLORS[p.name.toLowerCase()] ?? "default"}
-                  variant={current?.priorityId === p.id ? "filled" : "outlined"}
+                  variant={draftPriorityId === p.id ? "filled" : "outlined"}
                   disabled={saving}
                   onClick={() => handleSetPriority(p.id)}
                   sx={{ fontWeight: 600 }}
                 />
               ))}
-            {current?.priorityId && (
+            {draftPriorityId && (
               <Button size="small" disabled={saving} onClick={() => handleSetPriority(null)}>
-                ล้าง
+                {t("detail.clear")}
               </Button>
             )}
           </Popover>
@@ -1683,14 +1716,14 @@ function IssueDetailDialog({
           >
             <TextField
               size="small"
-              placeholder="ค้นหาป้าย..."
+              placeholder={t("detail.searchLabels")}
               value={labelSearch}
               onChange={(e) => setLabelSearch(e.target.value)}
               autoFocus
             />
             <Box sx={{ maxHeight: 220, overflowY: "auto", display: "flex", flexDirection: "column", gap: 0.25 }}>
               {visibleLabels.length === 0 ? (
-                <Typography variant="caption" color="text.secondary">ไม่พบป้าย</Typography>
+                <Typography variant="caption" color="text.secondary">{t("detail.noLabelsFound")}</Typography>
               ) : (
                 visibleLabels.map((l) => (
                   <Box
@@ -1743,13 +1776,13 @@ function IssueDetailDialog({
                 <Box sx={{ borderTop: "1px solid", borderColor: "divider", pt: 1, display: "flex", flexDirection: "column", gap: 1 }}>
                   <TextField
                     size="small"
-                    placeholder="ชื่อป้ายใหม่"
+                    placeholder={t("detail.newLabelName")}
                     value={newLabelName}
                     onChange={(e) => setNewLabelName(e.target.value)}
                     fullWidth
                   />
                   <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                    {LABEL_COLORS.map((c) => (
+                    {labelColorKeys(theme).map((c) => (
                       <Box
                         key={c}
                         onClick={() => setNewLabelColor(c)}
@@ -1758,7 +1791,7 @@ function IssueDetailDialog({
                           width: 24,
                           height: 24,
                           borderRadius: "50%",
-                          bgcolor: COLOR_MAP[c],
+                          bgcolor: labelColorValue(c, theme),
                           cursor: "pointer",
                           border: newLabelColor === c ? "2px solid" : "1px solid",
                           borderColor: newLabelColor === c ? "primary.main" : "divider",
@@ -1773,10 +1806,10 @@ function IssueDetailDialog({
                       disabled={!newLabelName.trim() || saving}
                       onClick={handleCreateLabel}
                     >
-                      สร้างและใส่ป้าย
+                      {t("detail.createAndApplyLabel")}
                     </Button>
                     <Button size="small" disabled={saving} onClick={() => setCreatingLabel(false)}>
-                      ยกเลิก
+                      {t("cancel")}
                     </Button>
                   </Box>
                 </Box>
@@ -1787,7 +1820,7 @@ function IssueDetailDialog({
                   onClick={() => setCreatingLabel(true)}
                   sx={{ borderTop: "1px solid", borderColor: "divider", borderRadius: 0, justifyContent: "flex-start" }}
                 >
-                  สร้ายป้ายใหม่
+                  {t("detail.createLabel")}
                 </Button>
               ))}
           </Popover>
@@ -1801,14 +1834,14 @@ function IssueDetailDialog({
           >
             <TextField
               size="small"
-              placeholder="ค้นหาสมาชิก"
+              placeholder={t("detail.searchMembers")}
               value={memberSearch}
               onChange={(e) => setMemberSearch(e.target.value)}
               autoFocus
             />
             {member && (
               <Box>
-                <Typography variant="caption" color="text.secondary">สมาชิกในการ์ด</Typography>
+                <Typography variant="caption" color="text.secondary">{t("detail.membersInCard")}</Typography>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
                   <Avatar
                     sx={{
@@ -1829,10 +1862,10 @@ function IssueDetailDialog({
                 </Box>
               </Box>
             )}
-            <Typography variant="caption" color="text.secondary">เพิ่มสมาชิก</Typography>
+            <Typography variant="caption" color="text.secondary">{t("detail.addMembers")}</Typography>
             <Box sx={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column" }}>
               {visibleProgrammers.length === 0 ? (
-                <Typography variant="caption" color="text.secondary">ไม่พบสมาชิก</Typography>
+                <Typography variant="caption" color="text.secondary">{t("detail.noMembers")}</Typography>
               ) : (
                 visibleProgrammers.map((u) => (
                   <Box
@@ -1959,7 +1992,12 @@ function IssueDetailDialog({
                       </Avatar>
                       <Box sx={{ flex: 1, minWidth: 0 }}>
                         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                          <Typography variant="body2" fontWeight={700}>{c.authorName ?? "ไม่ทราบชื่อ"}</Typography>
+                          <Typography variant="body2" fontWeight={700}>
+                            {c.authorName ?? "ไม่ทราบชื่อ"}
+                            {c.authorRole ? (
+                              <Box component="span" sx={{ fontWeight: 400 }}>({c.authorRole})</Box>
+                            ) : null}
+                          </Typography>
                           <Typography variant="caption" color="text.secondary">
                             {formatDateTime(c.createdAt)}
                           </Typography>
@@ -2078,8 +2116,8 @@ function IssueDetailDialog({
         </Box>
       </Box>
       <Divider />
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", px: 2.5, py: 1.5 }}>
-        {readOnly ? (
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 2.5, py: 1.5 }}>
+        {readOnly && (
           <Button
             size="small"
             variant="contained"
@@ -2094,26 +2132,21 @@ function IssueDetailDialog({
           >
             {t("restore")}
           </Button>
-        ) : canDeleteIssue ? (
-          <Button
-            size="small"
-            variant="outlined"
-            color="error"
-            startIcon={<DeleteIcon />}
-            onClick={() => current && onDelete(current)}
-          >
-            ลบ
+        )}
+        <Box sx={{ flex: 1 }} />
+        {!readOnly && (
+          <Button size="small" variant="outlined" onClick={handleCancel} disabled={saving}>
+            {t("cancel")}
           </Button>
-        ) : (
-          <Box />
         )}
         <Button
           size="small"
           variant={readOnly ? "outlined" : "contained"}
-          onClick={onClose}
+          onClick={readOnly ? onClose : handleSave}
+          disabled={!readOnly && (saving || !hasDraftChanges)}
           sx={{ px: 3 }}
         >
-          {readOnly ? t("close") : "บันทึก"}
+          {readOnly ? t("close") : t("save")}
         </Button>
       </Box>
       <AttachmentPreviewDialog
@@ -2155,7 +2188,7 @@ function LabelEditDialog({
         <Box>
           <Typography variant="caption" color="text.secondary">สี</Typography>
           <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap", mt: 0.5 }}>
-            {LABEL_COLORS.map((c) => (
+            {labelColorKeys(theme).map((c) => (
               <Tooltip key={c} title={c}>
                 <Box
                   onClick={() => setColor(c)}
@@ -2163,7 +2196,7 @@ function LabelEditDialog({
                     width: 28,
                     height: 28,
                     borderRadius: "50%",
-                    bgcolor: COLOR_MAP[c],
+                    bgcolor: labelColorValue(c, theme),
                     cursor: "pointer",
                     display: "flex",
                     alignItems: "center",
@@ -2644,9 +2677,24 @@ function StatusFilterDialog({
   );
 }
 
+type KanbanColumnState = {
+  items: BoardIssue[];
+  page: number;
+  total: number;
+  loading: boolean;
+};
+
+function useDebouncedValue<T>(value: T, delay = 300): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(id);
+  }, [value, delay]);
+  return debounced;
+}
+
 function KanbanView({
   statuses,
-  issues,
   labels,
   priorities,
   categories,
@@ -2666,7 +2714,6 @@ function KanbanView({
   roleName,
 }: {
   statuses: IssueStatus[];
-  issues: BoardIssue[];
   labels: Label[];
   priorities: IssuePriority[];
   categories: Category[];
@@ -2691,80 +2738,110 @@ function KanbanView({
   const [activeStatus, setActiveStatus] = useState<IssueStatus | null>(null);
   const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null);
   const [editIssue, setEditIssue] = useState<BoardIssue | null>(null);
-  const [activityIssue, setActivityIssue] = useState<BoardIssue | null>(null);
+  const [detailTab, setDetailTab] = useState<"comments" | "history">("comments");
   const [addColumnOpen, setAddColumnOpen] = useState(false);
   const [issueToDelete, setIssueToDelete] = useState<BoardIssue | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [localIssues, setLocalIssues] = useState<BoardIssue[]>(issues);
   const [localStatuses, setLocalStatuses] = useState<IssueStatus[]>(statuses);
+  const [columns, setColumns] = useState<Record<number, KanbanColumnState>>({});
   const [dragStartStatusId, setDragStartStatusId] = useState<number | null>(null);
   const [hoverStatusId, setHoverStatusId] = useState<number | null>(null);
   const dragTargetStatusId = useRef<number | null>(null);
   const isDraggingRef = useRef(false);
+  const requestSeqRef = useRef<Record<number, number>>({});
 
-  const hasActiveFilters =
-    selectedStatusIds.length > 0 ||
-    selectedPriorityIds.length > 0 ||
-    selectedCategoryIds.length > 0 ||
-    selectedAssigneeIds.length > 0 ||
-    selectedReporterIds.length > 0 ||
-    searchQuery.trim() !== "";
+  const debouncedSearch = useDebouncedValue(searchQuery);
 
-  const filteredIssues = useMemo(() => {
-    if (!hasActiveFilters) return localIssues;
-    const query = searchQuery.trim().toLowerCase();
-    return localIssues.filter((issue) => {
-      if (selectedStatusIds.length > 0) {
-        if (issue.statusId === null || !selectedStatusIds.includes(issue.statusId)) return false;
+  const visibleStatuses = useMemo(
+    () =>
+      selectedStatusIds.length === 0
+        ? localStatuses
+        : localStatuses.filter((s) => selectedStatusIds.includes(s.id)),
+    [localStatuses, selectedStatusIds],
+  );
+
+  const loadColumn = useCallback(
+    async (statusId: number, pageNum: number, append: boolean) => {
+      const seq = (requestSeqRef.current[statusId] = (requestSeqRef.current[statusId] ?? 0) + 1);
+      setColumns((prev) => ({
+        ...prev,
+        [statusId]: {
+          ...(prev[statusId] ?? { items: [], page: 0, total: 0, loading: false }),
+          loading: true,
+        },
+      }));
+      try {
+        const res = await fetchIssues(
+          pageNum,
+          20,
+          [statusId],
+          debouncedSearch,
+          roleName === "programmer",
+          {
+            priorityIds: selectedPriorityIds,
+            categoryIds: selectedCategoryIds,
+            assigneeIds: selectedAssigneeIds,
+            reporterIds: selectedReporterIds,
+          },
+        );
+        if (requestSeqRef.current[statusId] !== seq) return;
+        setColumns((prev) => {
+          const existing = prev[statusId] ?? { items: [], page: 0, total: 0, loading: false };
+          const items = append ? [...existing.items, ...res.data] : res.data;
+          return {
+            ...prev,
+            [statusId]: { items, page: res.page, total: res.total, loading: false },
+          };
+        });
+      } catch (e) {
+        if (requestSeqRef.current[statusId] !== seq) return;
+        setError(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ"));
+        setColumns((prev) => {
+          const existing = prev[statusId];
+          if (!existing) return prev;
+          return { ...prev, [statusId]: { ...existing, loading: false } };
+        });
       }
-      if (selectedPriorityIds.length > 0 && !selectedPriorityIds.includes(issue.priorityId ?? -1)) return false;
-      if (selectedCategoryIds.length > 0) {
-        const selectedCatNames = categories.filter((c) => selectedCategoryIds.includes(c.id)).map((c) => c.name);
-        const matchCat = selectedCategoryIds.includes(issue.categoryId ?? -1);
-        const matchCustom = issue.customCategory != null && selectedCatNames.includes(issue.customCategory);
-        if (!matchCat && !matchCustom) return false;
-      }
-      if (selectedAssigneeIds.length > 0) {
-        if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
-      }
-      if (selectedReporterIds.length > 0) {
-        if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
-      }
-      if (query) {
-        const matchTitle = issue.title.toLowerCase().includes(query);
-        const matchLabel = (issue.labels ?? []).some((l) => l.name.toLowerCase().includes(query));
-        if (!matchTitle && !matchLabel) return false;
-      }
-      return true;
-    });
-  }, [localIssues, localStatuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
+    },
+    [
+      debouncedSearch,
+      roleName,
+      selectedPriorityIds,
+      selectedCategoryIds,
+      selectedAssigneeIds,
+      selectedReporterIds,
+    ],
+  );
+
+  useEffect(() => {
+    if (visibleStatuses.length === 0) return;
+    void Promise.all(visibleStatuses.map((s) => loadColumn(s.id, 1, false)));
+  }, [loadColumn, visibleStatuses]);
 
   const issueMap = useMemo(() => {
     const map = new Map<number, BoardIssue>();
-    for (const i of localIssues) map.set(i.id, i);
-    return map;
-  }, [localIssues]);
-
-  const statusIssuesMap = useMemo(() => {
-    const map = new Map<number, BoardIssue[]>();
-    for (const i of filteredIssues) {
-      const sId = i.statusId ?? 0;
-      const arr = map.get(sId) ?? [];
-      arr.push(i);
-      map.set(sId, arr);
+    for (const col of Object.values(columns)) {
+      for (const i of col.items) map.set(i.id, i);
     }
     return map;
-  }, [filteredIssues]);
+  }, [columns]);
 
-  const visibleStatuses =
-    selectedStatusIds.length === 0
-      ? localStatuses
-      : localStatuses.filter((s) => selectedStatusIds.includes(s.id));
+  const handleLoadMore = useCallback(
+    (statusId: number) => {
+      const col = columns[statusId];
+      if (!col || col.loading || col.items.length >= col.total) return;
+      void loadColumn(statusId, col.page + 1, true);
+    },
+    [columns, loadColumn],
+  );
 
-  useEffect(() => {
-    if (isDraggingRef.current) return;
-    setLocalIssues(issues);
-  }, [issues]);
+  const reloadColumns = useCallback(
+    (ids?: number[]) => {
+      const targets = ids ?? visibleStatuses.map((s) => s.id);
+      void Promise.all(targets.map((id) => loadColumn(id, 1, false)));
+    },
+    [loadColumn, visibleStatuses],
+  );
 
   useEffect(() => {
     setLocalStatuses(statuses);
@@ -2842,13 +2919,17 @@ function KanbanView({
 
     dragTargetStatusId.current = targetStatusId;
     setHoverStatusId(targetStatusId);
-    setLocalIssues((prev) =>
-      prev.map((i) =>
-        i.id === activeId
-          ? { ...i, statusId: targetStatusId }
-          : i
-      )
-    );
+    setColumns((prev) => {
+      const sourceId = activeIssue.statusId ?? 0;
+      const source = prev[sourceId];
+      if (!source) return prev;
+      const moved = { ...activeIssue, statusId: targetStatusId };
+      const next = { ...prev };
+      next[sourceId] = { ...source, items: source.items.filter((i) => i.id !== activeId) };
+      const target = next[targetStatusId] ?? { items: [], page: 1, total: 0, loading: false };
+      next[targetStatusId] = { ...target, items: [...target.items, moved] };
+      return next;
+    });
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -2858,7 +2939,11 @@ function KanbanView({
     setHoverStatusId(null);
     isDraggingRef.current = false;
 
-    if (!over) return;
+    if (!over) {
+      if (dragStartStatusId !== null) reloadColumns([dragStartStatusId]);
+      setDragStartStatusId(null);
+      return;
+    }
 
     const activeType = active.data.current?.type;
 
@@ -2890,22 +2975,30 @@ function KanbanView({
     const issueId = Number(String(active.id).replace("issue-", ""));
 
     const issue = issueMap.get(issueId);
-    if (!issue || issue.isLocked) return;
-
-    const targetStatusId = dragTargetStatusId.current;
-    dragTargetStatusId.current = null;
-
-    if (targetStatusId === null) return;
-    if (dragStartStatusId !== null && targetStatusId === dragStartStatusId) {
+    if (!issue || issue.isLocked) {
+      if (dragStartStatusId !== null) reloadColumns([dragStartStatusId]);
       setDragStartStatusId(null);
       return;
     }
 
+    const sourceStatusId = dragStartStatusId;
+    const targetStatusId = dragTargetStatusId.current;
+    dragTargetStatusId.current = null;
+
+    if (targetStatusId === null) {
+      if (sourceStatusId !== null) reloadColumns([sourceStatusId]);
+      setDragStartStatusId(null);
+      return;
+    }
+    if (sourceStatusId !== null && targetStatusId === sourceStatusId) {
+      setDragStartStatusId(null);
+      reloadColumns([sourceStatusId]);
+      return;
+    }
+
     try {
-      const updated = await moveIssue(issueId, targetStatusId);
-      setLocalIssues((prev) =>
-        prev.map((i) => (i.id === issueId ? updated : i))
-      );
+      await moveIssue(issueId, targetStatusId);
+      reloadColumns(sourceStatusId !== null ? [sourceStatusId, targetStatusId] : [targetStatusId]);
     } catch (e) {
       setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
       onRefresh();
@@ -2917,6 +3010,7 @@ function KanbanView({
   const handleDragCancel = () => {
     setActiveIssue(null);
     setActiveStatus(null);
+    if (dragStartStatusId !== null) reloadColumns([dragStartStatusId]);
     setDragStartStatusId(null);
     setHoverStatusId(null);
     isDraggingRef.current = false;
@@ -2931,7 +3025,7 @@ function KanbanView({
         await createIssue({ ...data, priorityId: data.priorityId ?? undefined });
       }
       setEditIssue(null);
-      onRefresh();
+      reloadColumns();
     } catch (e) {
       setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
@@ -2943,7 +3037,7 @@ function KanbanView({
       await deleteIssue(issueToDelete.id);
       setIssueToDelete(null);
       setDetailIssue(null);
-      onRefresh();
+      reloadColumns();
     } catch (e) {
       setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
@@ -2962,7 +3056,7 @@ function KanbanView({
   const handleUnlockIssue = async (issueId: number) => {
     try {
       await unlockIssue(issueId);
-      onRefresh();
+      reloadColumns();
     } catch (e) {
       setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
@@ -3005,17 +3099,21 @@ function KanbanView({
               <KanbanColumn
                 key={status.id}
                 status={status}
-                issues={statusIssuesMap.get(status.id) ?? []}
+                items={columns[status.id]?.items ?? []}
+                total={columns[status.id]?.total ?? 0}
+                hasMore={(columns[status.id]?.items.length ?? 0) < (columns[status.id]?.total ?? 0)}
+                loading={columns[status.id]?.loading ?? false}
+                onLoadMore={handleLoadMore}
                 canManage={canManage}
                 canEdit={canEdit}
                 canDelete={canDelete}
                 canUnlockIssue={canUnlockIssue}
                 isDropTarget={hoverStatusId === status.id && !!activeIssue}
                 roleName={roleName}
-                onOpenIssue={(issue) => setDetailIssue(issue)}
-                onEditIssue={(issue) => setDetailIssue(issue)}
+                onOpenIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
+                onEditIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
                 onDeleteIssue={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
-                onViewActivity={(issue) => setActivityIssue(issue)}
+                onViewActivity={(issue) => { setDetailIssue(issue); setDetailTab("history"); }}
                 onUnlockIssue={handleUnlockIssue}
               />
             ))}
@@ -3076,19 +3174,14 @@ function KanbanView({
         )}
       </Box>
 
-      <ActivityLogDialog
-        issue={activityIssue}
-        open={!!activityIssue}
-        onClose={() => setActivityIssue(null)}
-      />
       <IssueDetailDialog
         issue={detailIssue}
         open={!!detailIssue}
         onClose={() => setDetailIssue(null)}
+        initialTab={detailTab}
         statuses={localStatuses}
         labels={labels}
         onRefresh={onRefresh}
-        onDelete={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
       />
       <IssueDialog
         issue={editIssue}
@@ -3160,8 +3253,12 @@ function TableView({
   const theme = useTheme();
   const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null);
   const [editIssue, setEditIssue] = useState<BoardIssue | null>(null);
-  const [activityIssue, setActivityIssue] = useState<BoardIssue | null>(null);
+  const [detailTab, setDetailTab] = useState<"comments" | "history">("comments");
   const [issueToDelete, setIssueToDelete] = useState<BoardIssue | null>(null);
+  const [actionAnchor, setActionAnchor] = useState<{
+    el: HTMLElement;
+    issue: BoardIssue;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const hasActiveFilters =
@@ -3281,7 +3378,7 @@ function TableView({
                 )}
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>สร้างเมื่อ</th>
                 {(canManage || canViewOwnHistory) && (
-                  <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>จัดการ</th>
+                  <th style={{ padding: "12px", textAlign: "right", fontWeight: 600, fontSize: "0.8rem", width: "1%", whiteSpace: "nowrap" }}>จัดการ</th>
                 )}
               </tr>
             </thead>
@@ -3289,7 +3386,7 @@ function TableView({
               {pageIssues.map((issue) => (
                 <tr
                   key={issue.id}
-                  onClick={() => setDetailIssue(issue)}
+                  onClick={() => { setDetailIssue(issue); setDetailTab("comments"); }}
                   style={{
                     borderBottom: `1px solid ${theme.custom.tableBorder}`,
                     cursor: "pointer",
@@ -3342,24 +3439,77 @@ function TableView({
                     {new Date(issue.createdAt).toLocaleDateString("th-TH")}
                   </td>
                   {(canManage || canViewOwnHistory) && (
-                    <td style={{ padding: "12px", fontSize: "0.8rem" }}>
-                      <Box sx={{ display: "flex", gap: 0.5 }}>
+                    <td style={{ padding: "12px", fontSize: "0.8rem", textAlign: "right", width: "1%", whiteSpace: "nowrap" }}>
+                      <IconButton
+                        size="small"
+                        aria-label={t("actions")}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActionAnchor({ el: e.currentTarget, issue });
+                        }}
+                      >
+                        <MoreHorizIcon fontSize="small" />
+                      </IconButton>
+                      <Menu
+                        anchorEl={actionAnchor?.el}
+                        open={Boolean(actionAnchor)}
+                        onClose={() => setActionAnchor(null)}
+                        elevation={0}
+                        PaperProps={{
+                          sx: {
+                            border: "1px solid",
+                            borderColor: "divider",
+                            borderRadius: 1.5,
+                            overflow: "hidden",
+                          },
+                        }}
+                      >
                         {canManage && (
-                          <IconButton size="small" onClick={(e) => { e.stopPropagation(); setDetailIssue(issue); }}>
-                            <EditIcon fontSize="small" />
-                          </IconButton>
+                          <MenuItem
+                            onClick={() => {
+                              const selected = actionAnchor?.issue;
+                              setActionAnchor(null);
+                              if (selected) {
+                                setDetailIssue(selected);
+                                setDetailTab("comments");
+                              }
+                            }}
+                          >
+                            <ListItemIcon><EditIcon fontSize="small" /></ListItemIcon>
+                            <ListItemText>{t("edit")}</ListItemText>
+                          </MenuItem>
                         )}
-                        {canViewHistory(issue) && (
-                          <IconButton size="small" onClick={(e) => { e.stopPropagation(); setActivityIssue(issue); }}>
-                            <HistoryIcon fontSize="small" />
-                          </IconButton>
+                        {actionAnchor && canViewHistory(actionAnchor.issue) && (
+                          <MenuItem
+                            onClick={() => {
+                              const selected = actionAnchor?.issue;
+                              setActionAnchor(null);
+                              if (selected) {
+                                setDetailIssue(selected);
+                                setDetailTab("history");
+                              }
+                            }}
+                          >
+                            <ListItemIcon><HistoryIcon fontSize="small" /></ListItemIcon>
+                            <ListItemText>{t("history")}</ListItemText>
+                          </MenuItem>
                         )}
                         {canManage && (
-                          <IconButton size="small" onClick={(e) => { e.stopPropagation(); setDetailIssue(null); setIssueToDelete(issue); }} color="error">
-                            <DeleteIcon fontSize="small" />
-                          </IconButton>
+                          <MenuItem
+                            onClick={() => {
+                              const selected = actionAnchor?.issue;
+                              setActionAnchor(null);
+                              if (selected) {
+                                setDetailIssue(null);
+                                setIssueToDelete(selected);
+                              }
+                            }}
+                          >
+                            <ListItemIcon><DeleteIcon fontSize="small" color="error" /></ListItemIcon>
+                            <ListItemText sx={{ color: "error.main" }}>{t("delete")}</ListItemText>
+                          </MenuItem>
                         )}
-                      </Box>
+                      </Menu>
                     </td>
                   )}
                 </tr>
@@ -3376,19 +3526,14 @@ function TableView({
         onPageChange={setPage}
       />
 
-      <ActivityLogDialog
-        issue={activityIssue}
-        open={!!activityIssue}
-        onClose={() => setActivityIssue(null)}
-      />
       <IssueDetailDialog
         issue={detailIssue}
         open={!!detailIssue}
         onClose={() => setDetailIssue(null)}
+        initialTab={detailTab}
         statuses={statuses}
         labels={labels}
         onRefresh={onRefresh}
-        onDelete={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
       />
       <IssueDialog
         issue={editIssue}
@@ -3543,15 +3688,6 @@ export default function BoardsPage() {
     loadData();
   }, [loadData]);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-        fetchIssues(1, 100, [], searchQuery.trim())
-        .then((res) => setIssues(res.data))
-        .catch(() => {});
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
-
   return (
     <RequirePermission permission="board.view">
       <DashboardLayout>
@@ -3569,7 +3705,6 @@ export default function BoardsPage() {
             isBoardView ? (
               <KanbanView
                 statuses={statuses}
-                issues={issues}
                 labels={labels}
                 priorities={priorities}
                 categories={categories}
@@ -3640,7 +3775,7 @@ export default function BoardsPage() {
                             onClick={() => setRecycleBinOpen(true)}
                             sx={{ width: 36, height: 36 }}
                           >
-                            <RestoreIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                            <RestoreFromTrashIcon sx={{ fontSize: 20, color: "text.secondary" }} />
                           </IconButton>
                         </Tooltip>
                       )}
@@ -3729,7 +3864,7 @@ export default function BoardsPage() {
                             onClick={() => setRecycleBinOpen(true)}
                             sx={{ width: 36, height: 36 }}
                           >
-                            <RestoreIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+                            <RestoreFromTrashIcon sx={{ fontSize: 20, color: "text.secondary" }} />
                           </IconButton>
                         </Tooltip>
                       )}
@@ -3787,7 +3922,6 @@ export default function BoardsPage() {
             statuses={statuses}
             labels={labels}
             onRefresh={() => {}}
-            onDelete={() => setTrashDetailIssue(null)}
             readOnly={!!trashDetailIssue}
             onRestore={async (id) => {
               try {

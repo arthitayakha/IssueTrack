@@ -25,7 +25,7 @@ export class CommentsService {
     const comments = await this.comments.find({
       where: { issueId },
       order: { createdAt: "ASC" },
-      relations: ["user"],
+      relations: ["user", "user.role"],
     });
     const mapped = comments.map((c) => this.toResponse(c));
     return paginate(mapped, params);
@@ -116,7 +116,7 @@ export class CommentsService {
   }
 
   private loadWithUser(id: number): Promise<Comment | null> {
-    return this.comments.findOne({ where: { id }, relations: ["user"] });
+    return this.comments.findOne({ where: { id }, relations: ["user", "user.role"] });
   }
 
   private toResponse(comment: Comment) {
@@ -126,6 +126,7 @@ export class CommentsService {
       issueId: comment.issueId,
       authorId: comment.userId,
       authorName: comment.user?.name ?? null,
+      authorRole: comment.user?.role?.name ?? null,
       createdAt: comment.createdAt,
     };
   }

@@ -27,6 +27,17 @@ declare module "@mui/material/styles" {
       };
       tableStripe: string;
       tableBorder: string;
+      labelColors: {
+        green: string;
+        red: string;
+        yellow: string;
+        blue: string;
+        purple: string;
+        orange: string;
+        pink: string;
+        gray: string;
+        default: string;
+      };
     };
   }
   interface ThemeOptions {
@@ -44,6 +55,17 @@ declare module "@mui/material/styles" {
       };
       tableStripe?: string;
       tableBorder?: string;
+      labelColors?: {
+        green: string;
+        red: string;
+        yellow: string;
+        blue: string;
+        purple: string;
+        orange: string;
+        pink: string;
+        gray: string;
+        default: string;
+      };
     };
   }
 }
@@ -76,5 +98,16 @@ export const theme = createTheme({
     },
     tableStripe: "#f5f5f5",
     tableBorder: "#eeeeee",
+    labelColors: {
+      green: "#4caf50",
+      red: "#f44336",
+      yellow: "#ffeb3b",
+      blue: "#2196f3",
+      purple: "#9c27b0",
+      orange: "#ff9800",
+      pink: "#e91e63",
+      gray: "#9e9e9e",
+      default: "#9e9e9e",
+    },
   },
 });

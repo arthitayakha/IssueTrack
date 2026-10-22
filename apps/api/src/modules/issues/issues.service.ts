@@ -15,7 +15,7 @@ import { Position } from "../positions/position.entity";
 import { WorkSessionsService } from "../work-sessions/work-sessions.service";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
-import { paginate, PaginationParams } from "../../common/pagination";
+import { PaginationParams } from "../../common/pagination";
 import { AuthUser } from "../auth/auth-user";
 
 const ISSUE_DETAIL_RELATIONS = [
@@ -54,6 +54,12 @@ export class IssuesService {
     statuses: number[] = [],
     user?: AuthUser | null,
     search?: string,
+    filters: {
+      priorityIds?: number[];
+      categoryIds?: number[];
+      assigneeIds?: number[];
+      reporterIds?: number[];
+    } = {},
   ) {
     const qb = this.issues.createQueryBuilder("issue").where("issue.deleted_at IS NULL");
 
@@ -70,15 +76,47 @@ export class IssuesService {
     }
 
     if (search && search.trim()) {
+      qb.leftJoin("issue.labels", "labels").leftJoin("issue.label", "label");
       qb.andWhere(
         "(issue.title ILIKE :q OR issue.description ILIKE :q OR labels.name ILIKE :q OR label.name ILIKE :q)",
         { q: `%${search.trim()}%` },
       );
     }
 
-    qb.orderBy("issue.id", "ASC");
+    if (filters.priorityIds && filters.priorityIds.length > 0) {
+      qb.andWhere("issue.priority_id IN (:...priorityIds)", { priorityIds: filters.priorityIds });
+    }
+    if (filters.categoryIds && filters.categoryIds.length > 0) {
+      qb.andWhere("issue.category_id IN (:...categoryIds)", { categoryIds: filters.categoryIds });
+    }
+    if (filters.assigneeIds && filters.assigneeIds.length > 0) {
+      qb.andWhere("issue.programmer_id IN (:...assigneeIds)", { assigneeIds: filters.assigneeIds });
+    }
+    if (filters.reporterIds && filters.reporterIds.length > 0) {
+      qb.andWhere("issue.customer_id IN (:...reporterIds)", { reporterIds: filters.reporterIds });
+    }
 
-    const issues = await qb
+    const total = await qb.clone().getCount();
+
+    const idRows = await qb
+      .clone()
+      .distinct(true)
+      .select("issue.id", "id")
+      .orderBy("issue.id", "ASC")
+      .offset((params.page - 1) * params.limit)
+      .limit(params.limit)
+      .getRawMany();
+    const ids = idRows.map((row) => Number(row.id));
+
+    const totalPages = Math.max(1, Math.ceil(total / params.limit));
+
+    if (ids.length === 0) {
+      return { data: [], total, page: params.page, limit: params.limit, totalPages };
+    }
+
+    const issues = await this.issues
+      .createQueryBuilder("issue")
+      .leftJoinAndSelect("issue.status", "status")
       .leftJoinAndSelect("issue.priority", "priority")
       .leftJoinAndSelect("issue.category", "category")
       .leftJoinAndSelect("issue.label", "label")
@@ -86,10 +124,18 @@ export class IssuesService {
       .leftJoinAndSelect("issue.programmer", "programmer")
       .leftJoinAndSelect("issue.customer", "customer")
       .leftJoinAndSelect("issue.attachments", "attachments")
+      .loadRelationCountAndMap("issue.commentCount", "issue.comments")
+      .where("issue.id IN (:...ids)", { ids })
+      .orderBy("issue.id", "ASC")
       .getMany();
 
-    const mapped = issues.map((i) => this.toResponse(i));
-    return paginate(mapped, params);
+    return {
+      data: issues.map((i) => this.toResponse(i)),
+      total,
+      page: params.page,
+      limit: params.limit,
+      totalPages,
+    };
   }
 
   private async canViewAllIssues(
@@ -473,7 +519,10 @@ export class IssuesService {
       programmerName: issue.programmer?.name ?? null,
       customerId: issue.customerId,
       customerName: issue.customer?.name ?? null,
-      commentCount: issue.comments?.length ?? 0,
+      commentCount:
+        (issue as Issue & { commentCount?: number }).commentCount ??
+        issue.comments?.length ??
+        0,
       attachmentCount: issue.attachments?.length ?? 0,
       trackedDuration: issue.trackedDuration,
       actualFixDuration: issue.actualFixDuration,

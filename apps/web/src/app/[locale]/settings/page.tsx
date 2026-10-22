@@ -113,8 +113,6 @@ function SortableStatusRow({
   canUpdate,
   canDelete,
   onToggle,
-  onToggleTimer,
-  onToggleTimeEntry,
 
   onEdit,
   onDelete,
@@ -124,8 +122,6 @@ function SortableStatusRow({
   canUpdate: boolean;
   canDelete: boolean;
   onToggle: (s: IssueStatus) => void;
-  onToggleTimer: (s: IssueStatus) => void;
-  onToggleTimeEntry: (s: IssueStatus) => void;
 
   onEdit: (s: IssueStatus) => void;
   onDelete: (id: number) => void;
@@ -255,48 +251,6 @@ function SortableStatusRow({
           flexShrink: 0,
         }}
       />
-
-      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexShrink: 0 }}>
-        {canUpdate && (
-          <FormControlLabel
-            control={
-              <Switch
-                checked={status.timerEnabled}
-                onChange={() => onToggleTimer(status)}
-                size="small"
-              />
-            }
-            label=""
-            sx={{ mr: 0.5 }}
-          />
-        )}
-        {canUpdate && (
-          <FormControlLabel
-            control={
-              <Switch
-                checked={status.timeEntryEnabled}
-                onChange={() => onToggleTimeEntry(status)}
-                size="small"
-              />
-            }
-            label=""
-            sx={{ mr: 0.5 }}
-          />
-        )}
-
-
-
-
-
-
-
-
-
-
-
-
-
-      </Box>
 
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexShrink: 0 }}>
         {canUpdate && (
@@ -620,42 +574,6 @@ export default function SettingsPage() {
         prev.map((s) => (s.id === status.id ? { ...s, isActive: !s.isActive } : s)),
       );
       notify(t("statusToggled"));
-    } catch (err) {
-      if (err instanceof ApiError) {
-        notify(err.message, "error");
-      } else {
-        notify(t("genericError"), "error");
-      }
-    }
-  }
-
-  async function handleToggleStatusTimer(status: IssueStatus) {
-    try {
-      await apiFetch(`/issue-statuses/${status.id}/timer`, {
-        method: "PATCH",
-        body: JSON.stringify({ timerEnabled: !status.timerEnabled }),
-      }, token);
-      setStatuses((prev) =>
-        prev.map((s) => (s.id === status.id ? { ...s, timerEnabled: !s.timerEnabled } : s)),
-      );
-    } catch (err) {
-      if (err instanceof ApiError) {
-        notify(err.message, "error");
-      } else {
-        notify(t("genericError"), "error");
-      }
-    }
-  }
-
-  async function handleToggleStatusTimeEntry(status: IssueStatus) {
-    try {
-      await apiFetch(`/issue-statuses/${status.id}/time-entry`, {
-        method: "PATCH",
-        body: JSON.stringify({ timeEntryEnabled: !status.timeEntryEnabled }),
-      }, token);
-      setStatuses((prev) =>
-        prev.map((s) => (s.id === status.id ? { ...s, timeEntryEnabled: !s.timeEntryEnabled } : s)),
-      );
     } catch (err) {
       if (err instanceof ApiError) {
         notify(err.message, "error");
@@ -1023,8 +941,6 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                         canUpdate={can("status.update")}
                         canDelete={can("status.delete")}
                         onToggle={handleToggleStatusActive}
-                        onToggleTimer={handleToggleStatusTimer}
-                        onToggleTimeEntry={handleToggleStatusTimeEntry}
 
                         onEdit={openEditStatus}
                         onDelete={handleDeleteStatus}
@@ -1245,18 +1161,6 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   multiline
                   rows={2}
                 />
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={statusForm.timerEnabled}
-                      onChange={(e) => setStatusForm({ ...statusForm, timerEnabled: e.target.checked })}
-                    />
-                  }
-                  label="เปิดระบบจับเวลา"
-                />
-
-
-
 
 
 
