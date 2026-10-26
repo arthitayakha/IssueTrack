@@ -41,6 +41,27 @@ export class UsersService {
     return paginate(mapped, params);
   }
 
+  /**
+   * Lightweight member list for the board (assignee/reporter pickers).
+   * Only exposes id/name/role - no email - so it can be read by anyone
+   * who is allowed to see the board, not only by `user.view` holders.
+   */
+  async findMembers() {
+    const users = await this.users
+      .createQueryBuilder("user")
+      .leftJoinAndSelect("user.role", "role")
+      .orderBy("user.id", "ASC")
+      .getMany();
+
+    return users.map((user) => ({
+      id: String(user.id),
+      name: user.name,
+      roleId: user.roleId,
+      roleName: user.role?.name ?? null,
+      isActive: user.isActive,
+    }));
+  }
+
   async create(data: {
     email: string;
     password: string;

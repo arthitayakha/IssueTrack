@@ -27,6 +27,12 @@ export class UsersController {
     return this.users.findAll(normalizePagination(query));
   }
 
+  @Get("members")
+  @Permissions("board.view")
+  findMembers() {
+    return this.users.findMembers();
+  }
+
   @Post()
   @Permissions("user.create")
   create(

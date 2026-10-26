@@ -113,6 +113,10 @@ const PERMISSION_GROUPS = [
     icon: SettingsOutlinedIcon,
     children: [
       {
+        key: "app",
+        permissions: ["app.view", "app.create", "app.update", "app.delete"],
+      },
+      {
         key: "category",
         permissions: [
           "category.view", "category.create", "category.update", "category.delete", "category.visibility.update",

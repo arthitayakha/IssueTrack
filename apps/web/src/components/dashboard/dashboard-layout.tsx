@@ -6,12 +6,14 @@ import Sidebar from "./sidebar";
 
 export default function DashboardLayout({
   children,
+  header,
 }: {
   children: React.ReactNode;
+  header?: React.ReactNode;
 }) {
   return (
     <Box sx={{ display: "flex", minHeight: "100vh", overflow: "hidden" }}>
-      <Navbar />
+      <Navbar header={header} />
       <Sidebar />
       <Box
         component="main"

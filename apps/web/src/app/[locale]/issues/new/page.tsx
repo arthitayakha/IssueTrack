@@ -11,6 +11,7 @@ import {
   Divider,
   IconButton,
   ListItemButton,
+  MenuItem,
   Paper,
   TextField,
   Typography,
@@ -28,11 +29,14 @@ import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
 import { isApiError } from "@/lib/api";
+import { useNotification } from "@/components/notification";
 import {
   createIssue,
+  fetchApps,
   fetchCategories,
   fetchStatuses,
   uploadAttachment,
+  type App,
   type IssueStatus,
 } from "@/lib/board-api";
 import { useRouter } from "@/i18n/navigation";
@@ -49,14 +53,17 @@ export default function ReportIssuePage() {
   const theme = useTheme();
   const router = useRouter();
   const token = useAuthStore((s) => s.token);
+  const { notify } = useNotification();
 
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
   const [categories, setCategories] = useState<{ id: number; name: string }[]>([]);
+  const [apps, setApps] = useState<App[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [title, setTitle] = useState("");
+  const [appId, setAppId] = useState<number | null>(null);
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [customCategory, setCustomCategory] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -70,13 +77,15 @@ export default function ReportIssuePage() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.allSettled([fetchStatuses(), fetchCategories()])
-      .then(([sts, cats]) => {
+    Promise.allSettled([fetchStatuses(), fetchCategories(), fetchApps()])
+      .then(([sts, cats, appsRes]) => {
         if (cancelled) return;
         const stsData = sts.status === "fulfilled" ? sts.value.data : [];
         const catsData = cats.status === "fulfilled" ? cats.value.data : [];
+        const appsData = appsRes.status === "fulfilled" ? appsRes.value.data : [];
         setStatuses(stsData);
         setCategories(catsData);
+        setApps(appsData);
         setStatusId(stsData[0]?.id ?? "");
       })
       .finally(() => {
@@ -99,9 +108,11 @@ export default function ReportIssuePage() {
 
   const selectedCategory = allCategories.find((c) => c.id === categoryId) ?? null;
   const isOtherSelected = selectedCategory?.name === OTHER_CATEGORY;
+  const visibleApps = useMemo(() => apps.filter((a) => a.isVisible), [apps]);
   const canSubmit =
     statuses.length > 0 &&
     title.trim().length > 0 &&
+    appId !== null &&
     (selectedCategory !== null || customCategory.trim().length > 0);
 
   const addFiles = (fileList: FileList | File[]) => {
@@ -149,13 +160,22 @@ export default function ReportIssuePage() {
         title: title.trim(),
         description: description.trim(),
         statusId: statusId as number,
+        appId: appId ?? undefined,
         categoryId: selectedCategory && !isOtherSelected ? selectedCategory.id : undefined,
         customCategory: isOtherSelected ? customCategory.trim() : undefined,
       });
       if (files.length > 0) {
         await Promise.all(files.map((file) => uploadAttachment(issue.id, file)));
       }
-      router.push("/issues");
+      // Stay on the form and confirm — the new issue shows up first on the
+      // board and in the issue list (both are ordered newest first).
+      notify(t("reportSuccess"), "success");
+      setTitle("");
+      setDescription("");
+      setFiles([]);
+      setCategoryId(null);
+      setCustomCategory("");
+      setSearchQuery("");
     } catch (e) {
       setError(getErrorMessage(e, t("errorSubmit")));
     } finally {
@@ -231,6 +251,38 @@ export default function ReportIssuePage() {
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                   />
+                </Box>
+
+                <Box sx={{ mb: 2 }}>
+                  <Typography
+                    variant="body2"
+                    fontWeight={600}
+                    sx={{ mb: 0.75, display: "flex", alignItems: "center" }}
+                  >
+                    {t("app")}
+                    <Box component="span" sx={{ color: "error.main" }}>
+                      {" *"}
+                    </Box>
+                  </Typography>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    select
+                    SelectProps={{ displayEmpty: true }}
+                    value={appId ?? ""}
+                    onChange={(e) =>
+                      setAppId(e.target.value === "" ? null : Number(e.target.value))
+                    }
+                  >
+                    <MenuItem value="" disabled>
+                      <em>{t("appPlaceholder")}</em>
+                    </MenuItem>
+                    {visibleApps.map((app) => (
+                      <MenuItem key={app.id} value={app.id}>
+                        {app.name}
+                      </MenuItem>
+                    ))}
+                  </TextField>
                 </Box>
 
                 <ClickAwayListener onClickAway={() => setCatDropOpen(false)}>

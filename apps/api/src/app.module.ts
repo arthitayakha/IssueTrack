@@ -11,6 +11,7 @@ import { UsersModule } from "./modules/users/users.module";
 import { RolesModule } from "./modules/roles/roles.module";
 import { PositionsModule } from "./modules/positions/positions.module";
 import { CategoriesModule } from "./modules/categories/categories.module";
+import { AppsModule } from "./modules/apps/apps.module";
 import { AttachmentsModule } from "./modules/attachments/attachments.module";
 import { IssueStatusesModule } from "./modules/issue-statuses/issue-statuses.module";
 import { IssuePrioritiesModule } from "./modules/issue-priorities/issue-priorities.module";
@@ -41,6 +42,7 @@ import { JwtAuthGuard } from "./modules/auth/jwt-auth.guard";
     RolesModule,
     PositionsModule,
     CategoriesModule,
+    AppsModule,
     AttachmentsModule,
     IssueStatusesModule,
     IssuePrioritiesModule,

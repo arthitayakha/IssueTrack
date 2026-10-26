@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
 import {
   Box,
+  Badge,
   Typography,
   Button,
   IconButton,
@@ -32,6 +33,7 @@ import {
   useTheme,
   type Theme,
   Checkbox,
+  FormControlLabel,
   InputAdornment,
   Popover,
   ListItemButton,
@@ -71,6 +73,7 @@ import HistoryIcon from "@mui/icons-material/History";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import SearchIcon from "@mui/icons-material/Search";
 import CategoryIcon from "@mui/icons-material/Category";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DriveFileMoveIcon from "@mui/icons-material/DriveFileMove";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
@@ -84,6 +87,7 @@ import LockOpenIcon from "@mui/icons-material/LockOpen";
 import CalendarTodayIcon from "@mui/icons-material/CalendarToday";
 import PersonIcon from "@mui/icons-material/Person";
 import FilterListIcon from "@mui/icons-material/FilterList";
+import AppsIcon from "@mui/icons-material/Apps";
 import DeleteIcon from "@mui/icons-material/Delete";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -116,8 +120,9 @@ import {
   updateStatus,
   reorderStatuses,
   fetchPriorities,
-  fetchUsers,
+  fetchMembers,
   fetchCategories,
+  fetchApps,
   createComment,
   updateComment,
   deleteComment,
@@ -129,10 +134,11 @@ import {
   type Comment,
   type IssueStatus,
   type IssuePriority,
-  type UserSummary,
+  type BoardMember,
   type TrashedIssue,
   type Attachment,
   type Category,
+  type App,
   fetchTrashedIssues,
   restoreIssue,
 } from "@/lib/board-api";
@@ -278,9 +284,24 @@ function TrelloCardContent({ issue, actions }: { issue: BoardIssue; actions?: Re
   return (
     <Box sx={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.25 }}>
-        <Typography variant="subtitle2" fontWeight={700} sx={{ lineHeight: 1.4, flex: 1, mr: 0.5 }}>
+        <Typography variant="subtitle2" fontWeight={700} sx={{ lineHeight: 1.4, flex: 1, minWidth: 0, mr: 0.5 }}>
           {issue.title}
         </Typography>
+        {issue.appName && (
+          <Chip
+            label={issue.appName}
+            size="small"
+            sx={{
+              height: 18,
+              fontSize: "0.65rem",
+              fontWeight: 600,
+              flexShrink: 0,
+              ml: 0.5,
+              bgcolor: "action.selected",
+              color: "text.secondary",
+            }}
+          />
+        )}
         {actions}
       </Box>
       {(issue.priorityName || (issue.labels && issue.labels.length > 0)) && (
@@ -536,7 +557,12 @@ function KanbanColumn({
   const theme = useTheme();
 
   const color = getColumnColor(status.name, theme);
-  const visibleIssues = [...items].sort((a, b) => b.id - a.id);
+  // Match the API ordering (created_at DESC, id DESC) so the newest card is
+  // always first and "load more" appends older cards underneath.
+  const visibleIssues = [...items].sort((a, b) => {
+    const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    return diff !== 0 ? diff : b.id - a.id;
+  });
 
   const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const el = event.currentTarget;
@@ -949,7 +975,7 @@ function IssueDetailDialog({
   const [draftProgrammerId, setDraftProgrammerId] = useState<number | null>(null);
   const [draftLabelIds, setDraftLabelIds] = useState<number[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
-  const [users, setUsers] = useState<UserSummary[]>([]);
+  const [users, setUsers] = useState<BoardMember[]>([]);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [priorityAnchor, setPriorityAnchor] = useState<HTMLElement | null>(null);
@@ -990,7 +1016,7 @@ function IssueDetailDialog({
   const canSetLabels = can("label.view") && canEditIssue;
   const canCreateLabel = can("label.create");
   const canEditLabel = can("label.update");
-  const canAssign = can("user.view") && can("issue.assign");
+  const canAssign = can("issue.assign");
   const canViewAttachments = can("board.view");
   const canUploadAttachment = can("issue.create") && !readOnly;
   const canDeleteAttachment = can("issue.all.update") && !readOnly;
@@ -1011,7 +1037,8 @@ function IssueDetailDialog({
     if (!issue || !open) return;
     setLoading(true);
     setError(null);
-    Promise.all([
+    // allSettled: one failing request must not blank out the whole popup
+    Promise.allSettled([
       canViewComments ? fetchIssueComments(issue.id).then((r) => r.data) : Promise.resolve([] as Comment[]),
       canViewHistory ? fetchIssueActivity(issue.id) : Promise.resolve([] as ActivityLog[]),
       canViewAttachments ? fetchAttachments(issue.id) : Promise.resolve([] as Attachment[]),
@@ -1019,17 +1046,21 @@ function IssueDetailDialog({
         ? fetchPriorities().then((r) => r.data)
         : Promise.resolve([] as IssuePriority[]),
       canAssign
-        ? fetchUsers().then((r) => r.data)
-        : Promise.resolve([] as UserSummary[]),
+        ? fetchMembers()
+        : Promise.resolve([] as BoardMember[]),
     ])
-      .then(([c, l, a, p, u]) => {
-        setComments(c);
-        setLogs(l);
-        setAttachments(a);
-        setPriorities(p);
-        setUsers(u);
+      .then((results) => {
+        const [c, l, a, p, u] = results;
+        setComments(c.status === "fulfilled" ? c.value : []);
+        setLogs(l.status === "fulfilled" ? l.value : []);
+        setAttachments(a.status === "fulfilled" ? a.value : []);
+        setPriorities(p.status === "fulfilled" ? p.value : []);
+        setUsers(u.status === "fulfilled" ? u.value : []);
+        const failed = results.find((r) => r.status === "rejected");
+        if (failed && failed.status === "rejected") {
+          setError(getErrorMessage(failed.reason, "โหลดข้อมูลไม่สำเร็จ"));
+        }
       })
-      .catch((e) => setError(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ")))
       .finally(() => setLoading(false));
   }, [issue, open, canViewComments, canViewHistory, canViewAttachments, canSetPriority, canAssign]);
 
@@ -1337,61 +1368,69 @@ function IssueDetailDialog({
           <Grid container spacing={2}>
             <Grid item xs={12} sm={4}>
               <Typography variant="caption" color="text.secondary" display="block">
+                {t("detail.app")}
+              </Typography>
+              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                {current?.appName ?? "—"}
+              </Typography>
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <Typography variant="caption" color="text.secondary" display="block">
                 {t("detail.category")}
               </Typography>
-              <Chip
-                icon={<CategoryIcon sx={{ fontSize: 16 }} />}
-                label={categoryName}
-                size="small"
-                sx={{ mt: 0.5, fontSize: "0.75rem", fontWeight: 600 }}
-              />
+              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                {categoryName}
+              </Typography>
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {t("detail.status")}
+              </Typography>
+              <Typography
+                variant="body2"
+                sx={{ mt: 0.5, color: statusName ? "text.primary" : "text.secondary" }}
+              >
+                {statusName ?? "—"}
+              </Typography>
             </Grid>
             <Grid item xs={12} sm={4}>
               <Typography variant="caption" color="text.secondary" display="block">
                 {t("detail.priority")}
               </Typography>
               {canSetPriority ? (
-                <Chip
-                  size="small"
-                  label={
-                    draftPriorityName
+                <Box
+                  onClick={saving ? undefined : (e) => setPriorityAnchor(e.currentTarget)}
+                  sx={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 0.5,
+                    mt: 0.5,
+                    px: 1,
+                    py: 0.25,
+                    border: "1px solid",
+                    borderColor: "divider",
+                    borderRadius: 1.5,
+                    cursor: saving ? "default" : "pointer",
+                    "&:hover": { bgcolor: "action.hover" },
+                  }}
+                >
+                  <Typography
+                    variant="body2"
+                    color={draftPriorityName ? "text.primary" : "text.secondary"}
+                  >
+                    {draftPriorityName
                       ? PRIORITY_LABELS[draftPriorityName.toLowerCase()] ?? draftPriorityName
-                      : t("detail.selectPriority")
-                  }
-                  color={PRIORITY_COLORS[draftPriorityName?.toLowerCase() ?? ""] ?? "default"}
-                  variant="outlined"
-                  disabled={saving}
-                  onClick={(e) => setPriorityAnchor(e.currentTarget)}
-                  sx={{ fontWeight: 600, fontSize: "0.7rem", mt: 0.5 }}
-                />
+                      : t("detail.selectPriority")}
+                  </Typography>
+                  <ExpandMoreIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+                </Box>
               ) : draftPriorityName ? (
-                <Chip
-                  label={PRIORITY_LABELS[draftPriorityName.toLowerCase()] ?? draftPriorityName}
-                  size="small"
-                  variant="outlined"
-                  color={PRIORITY_COLORS[draftPriorityName.toLowerCase()] ?? "default"}
-                  sx={{ fontSize: "0.7rem", fontWeight: 600, mt: 0.5 }}
-                />
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  {PRIORITY_LABELS[draftPriorityName.toLowerCase()] ?? draftPriorityName}
+                </Typography>
               ) : (
-                <Typography variant="body2" sx={{ mt: 0.5 }}>—</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>—</Typography>
               )}
-            </Grid>
-            <Grid item xs={12} sm={4}>
-              <Typography variant="caption" color="text.secondary" display="block">
-                {t("detail.status")}
-              </Typography>
-              <Chip
-                label={statusName ?? "—"}
-                size="small"
-                sx={{
-                  mt: 0.5,
-                  fontSize: "0.7rem",
-                  fontWeight: 600,
-                  bgcolor: statusName ? `${getColumnColor(statusName, theme)}20` : undefined,
-                  color: statusName ? getColumnColor(statusName, theme) : undefined,
-                  border: statusName ? `1px solid ${getColumnColor(statusName, theme)}` : undefined,
-                }}
-              />
             </Grid>
             <Grid item xs={12} sm={4}>
               <Typography variant="caption" color="text.secondary" display="block">
@@ -1418,31 +1457,37 @@ function IssueDetailDialog({
                 {t("detail.assignee")}
               </Typography>
               {canAssign ? (
-                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mt: 0.5 }}>
+                <Box sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, mt: 0.5 }}>
                   {member ? (
-                    <Chip
-                      size="small"
-                      disabled={saving}
-                      avatar={
-                        <Avatar
-                          sx={{
-                            width: 24,
-                            height: 24,
-                            fontSize: "0.7rem",
-                            fontWeight: 700,
-                            bgcolor: "primary.main",
-                            color: "primary.contrastText",
-                          }}
-                        >
-                          {member.name.charAt(0).toUpperCase()}
-                        </Avatar>
-                      }
-                      label={member.name}
-                      onDelete={() => handleAssign(null)}
-                      sx={{ fontWeight: 600 }}
-                    />
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
+                      <Avatar
+                        sx={{
+                          width: 28,
+                          height: 28,
+                          fontSize: "0.75rem",
+                          fontWeight: 700,
+                          bgcolor: "primary.main",
+                          color: "primary.contrastText",
+                        }}
+                      >
+                        {member.name.charAt(0).toUpperCase()}
+                      </Avatar>
+                      <Typography variant="body2" noWrap>
+                        {member.name}
+                      </Typography>
+                      <IconButton
+                        size="small"
+                        disabled={saving}
+                        onClick={() => handleAssign(null)}
+                        sx={{ p: 0.25 }}
+                      >
+                        <CloseIcon sx={{ fontSize: 14, color: "text.secondary" }} />
+                      </IconButton>
+                    </Box>
                   ) : (
-                    <Chip label={t("detail.unassigned")} size="small" variant="outlined" />
+                    <Typography variant="body2" color="text.secondary">
+                      {t("detail.unassigned")}
+                    </Typography>
                   )}
                   <IconButton
                     size="small"
@@ -1683,25 +1728,43 @@ function IssueDetailDialog({
             onClose={() => setPriorityAnchor(null)}
             anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
             transformOrigin={{ vertical: "top", horizontal: "left" }}
-            PaperProps={{ sx: { p: 1.5, display: "flex", flexWrap: "wrap", gap: 0.5, maxWidth: 280 } }}
+            PaperProps={{ sx: { p: 0.5, minWidth: 160 } }}
           >
             {priorities
               .filter((p) => p.isActive)
               .sort((a, b) => a.sortOrder - b.sortOrder)
-              .map((p) => (
-                <Chip
-                  key={p.id}
-                  label={PRIORITY_LABELS[p.name.toLowerCase()] ?? p.name}
-                  size="small"
-                  color={PRIORITY_COLORS[p.name.toLowerCase()] ?? "default"}
-                  variant={draftPriorityId === p.id ? "filled" : "outlined"}
-                  disabled={saving}
-                  onClick={() => handleSetPriority(p.id)}
-                  sx={{ fontWeight: 600 }}
-                />
-              ))}
+              .map((p) => {
+                const selected = draftPriorityId === p.id;
+                return (
+                  <Box
+                    key={p.id}
+                    onClick={saving ? undefined : () => handleSetPriority(p.id)}
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 1,
+                      px: 1.5,
+                      py: 0.5,
+                      borderRadius: 1,
+                      cursor: saving ? "default" : "pointer",
+                      "&:hover": { bgcolor: "action.hover" },
+                    }}
+                  >
+                    <Box sx={{ width: 16, display: "flex", alignItems: "center" }}>
+                      {selected && <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />}
+                    </Box>
+                    <Typography
+                      variant="body2"
+                      fontWeight={selected ? 600 : 400}
+                      color={selected ? "text.primary" : "text.secondary"}
+                    >
+                      {PRIORITY_LABELS[p.name.toLowerCase()] ?? p.name}
+                    </Typography>
+                  </Box>
+                );
+              })}
             {draftPriorityId && (
-              <Button size="small" disabled={saving} onClick={() => handleSetPriority(null)}>
+              <Button size="small" disabled={saving} onClick={() => handleSetPriority(null)} sx={{ mt: 0.5 }}>
                 {t("detail.clear")}
               </Button>
             )}
@@ -2254,166 +2317,352 @@ function getInitials(name: string): string {
     .join("");
 }
 
-function FilterSectionHeader({
-  icon,
+type FilterOption = {
+  id: number | string;
+  label: string;
+  checked: boolean;
+  onToggle: () => void;
+  start?: ReactNode;
+};
+
+const FILTER_VISIBLE_ITEMS = 6;
+
+function FilterSection({
   title,
+  icon,
   count,
+  options,
+  initialOpen,
 }: {
-  icon: React.ReactNode;
   title: string;
+  icon: ReactNode;
   count: number;
+  options: FilterOption[];
+  initialOpen: boolean;
 }) {
+  const t = useTranslations("Boards");
+  const [open, setOpen] = useState(initialOpen);
+  const [query, setQuery] = useState("");
+  const [showAll, setShowAll] = useState(false);
+
+  const trimmed = query.trim().toLowerCase();
+  const filtered = trimmed
+    ? options.filter((option) => option.label.toLowerCase().includes(trimmed))
+    : options;
+  const canExpand = options.length > FILTER_VISIBLE_ITEMS;
+  const expanded = showAll || Boolean(trimmed);
+  const visible = canExpand && !expanded ? filtered.slice(0, FILTER_VISIBLE_ITEMS) : filtered;
+  const isEmpty = options.length === 0;
+
   return (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, mb: 1.5 }}>
-      <Box
-        sx={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 28,
-          height: 28,
-          borderRadius: "8px",
-          bgcolor: "action.selected",
-          color: "primary.main",
-        }}
-      >
-        {icon}
+    <Box sx={{ borderBottom: "1px solid", borderColor: "divider", "&:last-of-type": { borderBottom: 0 } }}>
+      <Box sx={{ display: "flex", alignItems: "center", pr: 1.25 }}>
+        <Box
+          component="button"
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          sx={{
+            flex: 1,
+            minWidth: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            px: 2,
+            py: 1.25,
+            border: 0,
+            bgcolor: "transparent",
+            color: "text.primary",
+            textAlign: "left",
+            fontFamily: "inherit",
+            cursor: "pointer",
+            "&:hover": { bgcolor: "action.hover" },
+          }}
+        >
+          <ExpandMoreIcon
+            sx={{
+              fontSize: 20,
+              color: "text.secondary",
+              transition: "transform 0.15s ease",
+              transform: open ? "rotate(0deg)" : "rotate(-90deg)",
+            }}
+          />
+          <Box
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 26,
+              height: 26,
+              flexShrink: 0,
+              borderRadius: "8px",
+              bgcolor: "action.selected",
+              color: "primary.main",
+            }}
+          >
+            {icon}
+          </Box>
+          <Typography variant="subtitle2" fontWeight={700} noWrap sx={{ flex: 1 }}>
+            {title}
+          </Typography>
+          {count > 0 && (
+            <Chip
+              size="small"
+              color="primary"
+              label={count}
+              sx={{ height: 20, minWidth: 20, fontSize: 11, fontWeight: 700 }}
+            />
+          )}
+        </Box>
       </Box>
-      <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1 }}>
-        {title}
-      </Typography>
-      {count > 0 && (
-        <Chip
-          size="small"
-          label={count}
-          sx={{ height: 22, minWidth: 22, fontSize: 11, fontWeight: 700 }}
-        />
+
+      {open && (
+        <Box sx={{ px: 2, pb: 1.75 }}>
+          {canExpand && (
+            <TextField
+              fullWidth
+              size="small"
+              placeholder={t("filter.search")}
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setShowAll(false);
+              }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+                  </InputAdornment>
+                ),
+                endAdornment: query ? (
+                  <InputAdornment position="end">
+                    <IconButton size="small" onClick={() => setQuery("")} aria-label="clear">
+                      <CloseIcon sx={{ fontSize: 14 }} />
+                    </IconButton>
+                  </InputAdornment>
+                ) : null,
+              }}
+              sx={{ mb: 1.25, "& .MuiOutlinedInput-root": { borderRadius: "10px" } }}
+            />
+          )}
+
+          {isEmpty || filtered.length === 0 ? (
+            <Typography variant="body2" color="text.secondary" sx={{ py: 0.5 }}>
+              {t("filter.noResults")}
+            </Typography>
+          ) : (
+            <Box component="ul" sx={{ listStyle: "none", m: 0, p: 0 }}>
+              {visible.map((option) => (
+                <li key={option.id}>
+                  <FormControlLabel
+                    sx={{
+                      m: 0,
+                      width: "100%",
+                      px: 0.5,
+                      py: 0.25,
+                      borderRadius: 1,
+                      alignItems: "center",
+                      "&:hover": { bgcolor: "action.hover" },
+                    }}
+                    control={
+                      <Checkbox
+                        size="small"
+                        color="primary"
+                        checked={option.checked}
+                        onChange={option.onToggle}
+                      />
+                    }
+                    label={
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+                        {option.start}
+                        <Typography variant="body2" noWrap>
+                          {option.label}
+                        </Typography>
+                      </Box>
+                    }
+                  />
+                </li>
+              ))}
+            </Box>
+          )}
+
+          {canExpand && !trimmed && (
+            <Button
+              size="small"
+              onClick={() => setShowAll((value) => !value)}
+              sx={{ mt: 0.5, px: 1, textTransform: "none", fontWeight: 600 }}
+            >
+              {showAll ? t("filter.showLess") : t("filter.viewAll")}
+            </Button>
+          )}
+        </Box>
       )}
     </Box>
   );
 }
 
-function FilterChip({
-  label,
-  selected,
-  onClick,
-  color,
-  avatar,
-  icon,
-}: {
-  label: string;
-  selected: boolean;
-  onClick: () => void;
-  color?: string;
-  avatar?: React.ReactElement;
-  icon?: React.ReactElement;
-}) {
-  const theme = useTheme();
-  const active = color ?? theme.palette.primary.main;
-  const contrast = theme.palette.getContrastText(active);
-  return (
-    <Chip
-      label={label}
-      onClick={onClick}
-      avatar={avatar}
-      icon={icon}
-      variant={selected ? "filled" : "outlined"}
-      sx={{
-        borderRadius: "9px",
-        fontWeight: selected ? 600 : 400,
-        borderColor: selected ? active : "divider",
-        backgroundColor: selected ? active : "background.paper",
-        color: selected ? contrast : "text.primary",
-        transition: "all 0.15s ease",
-        "&:hover": {
-          borderColor: active,
-          backgroundColor: selected ? active : alpha(active, 0.08),
-        },
-        ...(icon
-          ? {
-              "& .MuiChip-icon": {
-                color: selected ? contrast : active,
-                marginLeft: "10px",
-              },
-            }
-          : {}),
-        ...(avatar
-          ? {
-              "& .MuiChip-avatar": {
-                bgcolor: selected ? alpha("#ffffff", 0.28) : theme.palette.grey[300],
-                color: selected ? "#ffffff" : "text.primary",
-              },
-            }
-          : {}),
-      }}
-    />
-  );
-}
-
-function StatusFilterDialog({
+function FilterPanel({
+  anchorEl,
   open,
+  onClose,
   statuses,
   priorities,
   categories,
+  apps,
   users,
   selectedStatusIds,
   selectedPriorityIds,
   selectedCategoryIds,
+  selectedAppIds,
   selectedAssigneeIds,
   selectedReporterIds,
-  searchQuery,
   isCustomer,
   onToggleStatus,
   onTogglePriority,
   onToggleCategory,
+  onToggleApp,
   onToggleAssignee,
   onToggleReporter,
-  onSearchChange,
-  onSelectAllStatuses,
   onClearAll,
-  onClose,
 }: {
+  anchorEl: HTMLElement | null;
   open: boolean;
+  onClose: () => void;
   statuses: IssueStatus[];
   priorities: IssuePriority[];
   categories: Category[];
-  users: UserSummary[];
+  apps: App[];
+  users: BoardMember[];
   selectedStatusIds: number[];
   selectedPriorityIds: number[];
   selectedCategoryIds: number[];
+  selectedAppIds: number[];
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
-  searchQuery: string;
   isCustomer: boolean;
   onToggleStatus: (statusId: number) => void;
   onTogglePriority: (priorityId: number) => void;
   onToggleCategory: (categoryId: number) => void;
+  onToggleApp: (appId: number) => void;
   onToggleAssignee: (userId: string) => void;
   onToggleReporter: (userId: string) => void;
-  onSearchChange: (query: string) => void;
-  onSelectAllStatuses: () => void;
   onClearAll: () => void;
-  onClose: () => void;
 }) {
+  const t = useTranslations("Boards");
   const theme = useTheme();
   const programmers = users.filter((u) => u.isActive && u.roleName === "programmer");
   const customers = users.filter((u) => u.isActive && u.roleName === "customer");
+  const visibleApps = useMemo(() => apps.filter((a) => a.isVisible), [apps]);
   const totalSelected =
     selectedStatusIds.length +
     selectedPriorityIds.length +
     selectedCategoryIds.length +
+    selectedAppIds.length +
     selectedAssigneeIds.length +
     selectedReporterIds.length;
+  const startsOpen = (count: number, fallback: boolean) =>
+    totalSelected > 0 ? count > 0 : fallback;
+
+  const statusOptions: FilterOption[] = statuses.map((status) => ({
+    id: status.id,
+    label: status.customName ?? status.name,
+    checked: selectedStatusIds.includes(status.id),
+    onToggle: () => onToggleStatus(status.id),
+    start: (
+      <Box
+        component="span"
+        sx={{
+          width: 8,
+          height: 8,
+          flexShrink: 0,
+          borderRadius: "50%",
+          bgcolor: getStatusColor(theme, status.name),
+        }}
+      />
+    ),
+  }));
+
+  const appOptions: FilterOption[] = visibleApps.map((app) => ({
+    id: app.id,
+    label: app.name,
+    checked: selectedAppIds.includes(app.id),
+    onToggle: () => onToggleApp(app.id),
+    start: <AppsIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main" }} />,
+  }));
+
+  const priorityOptions: FilterOption[] = priorities.map((priority) => ({
+    id: priority.id,
+    label: priority.name,
+    checked: selectedPriorityIds.includes(priority.id),
+    onToggle: () => onTogglePriority(priority.id),
+    start: (
+      <FlagIcon sx={{ fontSize: 16, flexShrink: 0, color: getPriorityColor(theme, priority.name) }} />
+    ),
+  }));
+
+  const categoryOptions: FilterOption[] = categories.map((category) => ({
+    id: category.id,
+    label: category.name,
+    checked: selectedCategoryIds.includes(category.id),
+    onToggle: () => onToggleCategory(category.id),
+    start: <CategoryIcon sx={{ fontSize: 16, flexShrink: 0, color: "secondary.main" }} />,
+  }));
+
+  const assigneeOptions: FilterOption[] = programmers.map((member) => ({
+    id: member.id,
+    label: member.name,
+    checked: selectedAssigneeIds.includes(member.id),
+    onToggle: () => onToggleAssignee(member.id),
+    start: (
+      <Avatar sx={{ width: 22, height: 22, fontSize: 11, flexShrink: 0 }}>
+        {getInitials(member.name)}
+      </Avatar>
+    ),
+  }));
+
+  const reporterOptions: FilterOption[] = customers.map((member) => ({
+    id: member.id,
+    label: member.name,
+    checked: selectedReporterIds.includes(member.id),
+    onToggle: () => onToggleReporter(member.id),
+    start: (
+      <Avatar sx={{ width: 22, height: 22, fontSize: 11, flexShrink: 0 }}>
+        {getInitials(member.name)}
+      </Avatar>
+    ),
+  }));
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle
+    <Popover
+      open={open}
+      anchorEl={anchorEl}
+      onClose={onClose}
+      anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+      transformOrigin={{ vertical: "top", horizontal: "left" }}
+      slotProps={{
+        paper: {
+          sx: {
+            width: 360,
+            maxWidth: "calc(100vw - 24px)",
+            maxHeight: "72vh",
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            borderRadius: 2,
+            border: "1px solid",
+            borderColor: "divider",
+            boxShadow: theme.custom.cardShadow,
+          },
+        },
+      }}
+    >
+      <Box
         sx={{
           display: "flex",
           alignItems: "center",
-          gap: 1.25,
-          px: 2.5,
-          py: 1.75,
+          gap: 1.5,
+          px: 2,
+          py: 1.5,
           borderBottom: "1px solid",
           borderColor: "divider",
         }}
@@ -2433,219 +2682,71 @@ function StatusFilterDialog({
           <FilterListIcon fontSize="small" />
         </Box>
         <Typography variant="subtitle1" fontWeight={700} sx={{ flex: 1 }}>
-          ตัวกรอง
+          {t("filter.title")}
         </Typography>
         {totalSelected > 0 && (
           <Chip
             size="small"
-            label={`${totalSelected} รายการ`}
             color="primary"
+            label={t("filter.selectedCount", { count: totalSelected })}
             sx={{ height: 22, fontSize: 11, fontWeight: 700 }}
           />
         )}
-        <IconButton size="small" onClick={onClose} aria-label="close">
-          <CloseIcon fontSize="small" />
-        </IconButton>
-      </DialogTitle>
+      </Box>
 
-      <DialogContent sx={{ p: 0 }}>
-        <Box sx={{ p: 2.5, maxHeight: "62vh", overflowY: "auto" }}>
-          <TextField
-            fullWidth
-            size="small"
-            placeholder="ค้นหาชื่องาน..."
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            InputProps={{
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon fontSize="small" />
-                </InputAdornment>
-              ),
-              endAdornment: searchQuery ? (
-                <InputAdornment position="end">
-                  <IconButton size="small" onClick={() => onSearchChange("")} aria-label="clear">
-                    <CloseIcon fontSize="small" />
-                  </IconButton>
-                </InputAdornment>
-              ) : null,
-            }}
-            sx={{
-              "& .MuiOutlinedInput-root": {
-                borderRadius: "10px",
-                bgcolor: "background.paper",
-              },
-            }}
+      <Box sx={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+        <FilterSection
+          title={t("filter.sectionStatus")}
+          icon={<ViewKanbanIcon sx={{ fontSize: 18 }} />}
+          count={selectedStatusIds.length}
+          options={statusOptions}
+          initialOpen={startsOpen(selectedStatusIds.length, true)}
+        />
+        <FilterSection
+          title={t("filter.sectionApp")}
+          icon={<AppsIcon sx={{ fontSize: 18 }} />}
+          count={selectedAppIds.length}
+          options={appOptions}
+          initialOpen={startsOpen(selectedAppIds.length, false)}
+        />
+        <FilterSection
+          title={t("filter.sectionPriority")}
+          icon={<FlagIcon sx={{ fontSize: 18 }} />}
+          count={selectedPriorityIds.length}
+          options={priorityOptions}
+          initialOpen={startsOpen(selectedPriorityIds.length, false)}
+        />
+        <FilterSection
+          title={t("filter.sectionCategory")}
+          icon={<CategoryIcon sx={{ fontSize: 18 }} />}
+          count={selectedCategoryIds.length}
+          options={categoryOptions}
+          initialOpen={startsOpen(selectedCategoryIds.length, false)}
+        />
+        <FilterSection
+          title={t("filter.sectionAssignee")}
+          icon={<PersonIcon sx={{ fontSize: 18 }} />}
+          count={selectedAssigneeIds.length}
+          options={assigneeOptions}
+          initialOpen={startsOpen(selectedAssigneeIds.length, false)}
+        />
+        {!isCustomer && (
+          <FilterSection
+            title={t("filter.sectionReporter")}
+            icon={<ChatBubbleOutlineIcon sx={{ fontSize: 18 }} />}
+            count={selectedReporterIds.length}
+            options={reporterOptions}
+            initialOpen={startsOpen(selectedReporterIds.length, false)}
           />
+        )}
+      </Box>
 
-          <Box sx={{ mt: 2.5 }}>
-            <FilterSectionHeader
-              icon={<ViewKanbanIcon sx={{ fontSize: 18 }} />}
-              title="สถานะ"
-              count={selectedStatusIds.length}
-            />
-            {statuses.length > 0 ? (
-              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-                {statuses.map((status) => {
-                  const selected = selectedStatusIds.includes(status.id);
-                  const color = getStatusColor(theme, status.name);
-                  return (
-                    <FilterChip
-                      key={status.id}
-                      label={status.name}
-                      selected={selected}
-                      onClick={() => onToggleStatus(status.id)}
-                      color={color}
-                      icon={
-                        <Box
-                          component="span"
-                          sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: color }}
-                        />
-                      }
-                    />
-                  );
-                })}
-              </Box>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                ไม่พบสถานะ
-              </Typography>
-            )}
-          </Box>
-
-          <Divider sx={{ my: 2.5 }} />
-
-          <FilterSectionHeader
-            icon={<FlagIcon sx={{ fontSize: 18 }} />}
-            title="ความสำคัญ"
-            count={selectedPriorityIds.length}
-          />
-          {priorities.length > 0 ? (
-            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-              {priorities.map((priority) => {
-                const selected = selectedPriorityIds.includes(priority.id);
-                return (
-                  <FilterChip
-                    key={priority.id}
-                    label={priority.name}
-                    selected={selected}
-                    onClick={() => onTogglePriority(priority.id)}
-                    color={getPriorityColor(theme, priority.name)}
-                    icon={<FlagIcon sx={{ fontSize: 16 }} />}
-                  />
-                );
-              })}
-            </Box>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              ไม่พบความสำคัญ
-            </Typography>
-          )}
-
-          <Divider sx={{ my: 2.5 }} />
-
-          <FilterSectionHeader
-            icon={<CategoryIcon sx={{ fontSize: 18 }} />}
-            title="หมวดหมู่"
-            count={selectedCategoryIds.length}
-          />
-          {categories.length > 0 ? (
-            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-              {categories.map((cat) => {
-                const selected = selectedCategoryIds.includes(cat.id);
-                return (
-                  <FilterChip
-                    key={cat.id}
-                    label={cat.name}
-                    selected={selected}
-                    onClick={() => onToggleCategory(cat.id)}
-                    color={theme.palette.secondary.main}
-                    icon={<CategoryIcon sx={{ fontSize: 16 }} />}
-                  />
-                );
-              })}
-            </Box>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              ไม่พบหมวดหมู่
-            </Typography>
-          )}
-
-          <Divider sx={{ my: 2.5 }} />
-
-          <FilterSectionHeader
-            icon={<PersonIcon sx={{ fontSize: 18 }} />}
-            title="ผู้รับผิดชอบ"
-            count={selectedAssigneeIds.length}
-          />
-          {programmers.length > 0 ? (
-            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-              {programmers.map((user) => {
-                const selected = selectedAssigneeIds.includes(user.id);
-                return (
-                  <FilterChip
-                    key={user.id}
-                    label={user.name}
-                    selected={selected}
-                    onClick={() => onToggleAssignee(user.id)}
-                    avatar={
-                      <Avatar sx={{ width: 22, height: 22, fontSize: 11 }}>
-                        {getInitials(user.name)}
-                      </Avatar>
-                    }
-                  />
-                );
-              })}
-            </Box>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              ไม่พบโปรแกรมเมอร์
-            </Typography>
-          )}
-
-          {!isCustomer && (
-            <>
-              <Divider sx={{ my: 2.5 }} />
-
-              <FilterSectionHeader
-                icon={<ChatBubbleOutlineIcon sx={{ fontSize: 18 }} />}
-                title="ผู้แจ้ง"
-                count={selectedReporterIds.length}
-              />
-              {customers.length > 0 ? (
-                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-                  {customers.map((user) => {
-                    const selected = selectedReporterIds.includes(user.id);
-                    return (
-                      <FilterChip
-                        key={user.id}
-                        label={user.name}
-                        selected={selected}
-                        onClick={() => onToggleReporter(user.id)}
-                        avatar={
-                          <Avatar sx={{ width: 22, height: 22, fontSize: 11 }}>
-                            {getInitials(user.name)}
-                          </Avatar>
-                        }
-                      />
-                    );
-                  })}
-                </Box>
-              ) : (
-                <Typography variant="body2" color="text.secondary">
-                  ไม่พบลูกค้า
-                </Typography>
-              )}
-            </>
-          )}
-        </Box>
-      </DialogContent>
-
-      <DialogActions
+      <Box
         sx={{
-          justifyContent: "space-between",
-          px: 2.5,
-          py: 1.5,
+          display: "flex",
+          alignItems: "center",
+          px: 2,
+          py: 1.25,
           borderTop: "1px solid",
           borderColor: "divider",
           bgcolor: "background.paper",
@@ -2653,27 +2754,15 @@ function StatusFilterDialog({
       >
         <Button
           size="small"
-          onClick={onSelectAllStatuses}
-          disabled={statuses.length === 0}
-          startIcon={<CheckIcon fontSize="small" />}
+          onClick={onClearAll}
+          disabled={totalSelected === 0}
+          startIcon={<DeleteOutlineIcon fontSize="small" />}
+          sx={{ textTransform: "none", fontWeight: 600 }}
         >
-          เลือกทั้งหมด
+          {t("filter.clearAll")}
         </Button>
-        <Box sx={{ display: "flex", gap: 1 }}>
-          <Button
-            size="small"
-            onClick={onClearAll}
-            startIcon={<DeleteOutlineIcon fontSize="small" />}
-            disabled={totalSelected === 0 && searchQuery === ""}
-          >
-            ล้างทั้งหมด
-          </Button>
-          <Button variant="contained" size="small" onClick={onClose}>
-            ปิด
-          </Button>
-        </Box>
-      </DialogActions>
-    </Dialog>
+      </Box>
+    </Popover>
   );
 }
 
@@ -2702,6 +2791,7 @@ function KanbanView({
   selectedStatusIds,
   selectedPriorityIds,
   selectedCategoryIds,
+  selectedAppIds,
   selectedAssigneeIds,
   selectedReporterIds,
   searchQuery,
@@ -2717,10 +2807,11 @@ function KanbanView({
   labels: Label[];
   priorities: IssuePriority[];
   categories: Category[];
-  users: UserSummary[];
+  users: BoardMember[];
   selectedStatusIds: number[];
   selectedPriorityIds: number[];
   selectedCategoryIds: number[];
+  selectedAppIds: number[];
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
   searchQuery: string;
@@ -2780,6 +2871,7 @@ function KanbanView({
           {
             priorityIds: selectedPriorityIds,
             categoryIds: selectedCategoryIds,
+            appIds: selectedAppIds,
             assigneeIds: selectedAssigneeIds,
             reporterIds: selectedReporterIds,
           },
@@ -2808,6 +2900,7 @@ function KanbanView({
       roleName,
       selectedPriorityIds,
       selectedCategoryIds,
+      selectedAppIds,
       selectedAssigneeIds,
       selectedReporterIds,
     ],
@@ -3221,6 +3314,7 @@ function TableView({
   selectedStatusIds,
   selectedPriorityIds,
   selectedCategoryIds,
+  selectedAppIds,
   selectedAssigneeIds,
   selectedReporterIds,
   searchQuery,
@@ -3239,6 +3333,7 @@ function TableView({
   selectedStatusIds: number[];
   selectedPriorityIds: number[];
   selectedCategoryIds: number[];
+  selectedAppIds: number[];
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
   searchQuery: string;
@@ -3265,6 +3360,7 @@ function TableView({
     selectedStatusIds.length > 0 ||
     selectedPriorityIds.length > 0 ||
     selectedCategoryIds.length > 0 ||
+    selectedAppIds.length > 0 ||
     selectedAssigneeIds.length > 0 ||
     selectedReporterIds.length > 0 ||
     searchQuery.trim() !== "";
@@ -3282,6 +3378,7 @@ function TableView({
         const matchCustom = issue.customCategory != null && selectedCatNames.includes(issue.customCategory);
         if (!matchCat && !matchCustom) return false;
       }
+      if (selectedAppIds.length > 0 && !selectedAppIds.includes(issue.appId ?? -1)) return false;
       if (selectedAssigneeIds.length > 0) {
         if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
       }
@@ -3295,7 +3392,7 @@ function TableView({
       }
       return true;
     });
-  }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
+  }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
   const pageIssues = filteredIssues.slice((page - 1) * 10, page * 10);
 
   const handleSaveIssue = async (data: { title: string; description: string; statusId: number; labelId?: number | null }) => {
@@ -3369,6 +3466,7 @@ function TableView({
               <tr style={{ backgroundColor: theme.custom.tableStripe }}>
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ID</th>
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>หัวข้อ</th>
+                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>แอป</th>
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>หมวดหมู่</th>
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ความสำคัญ</th>
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>สถานะ</th>
@@ -3405,6 +3503,9 @@ function TableView({
                     <Typography variant="body2" fontWeight={600}>
                       {issue.title}
                     </Typography>
+                  </td>
+                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>
+                    {issue.appName ?? "—"}
                   </td>
                   <td style={{ padding: "12px", fontSize: "0.8rem" }}>{getCategoryLabel(issue)}</td>
                   <td style={{ padding: "12px", fontSize: "0.8rem" }}>
@@ -3578,17 +3679,19 @@ export default function BoardsPage() {
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [users, setUsers] = useState<UserSummary[]>([]);
+  const [apps, setApps] = useState<App[]>([]);
+  const [users, setUsers] = useState<BoardMember[]>([]);
   const [selectedStatusIds, setSelectedStatusIds] = useState<number[]>([]);
   const [selectedPriorityIds, setSelectedPriorityIds] = useState<number[]>([]);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<number[]>([]);
+  const [selectedAppIds, setSelectedAppIds] = useState<number[]>([]);
   const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<string[]>([]);
   const [selectedReporterIds, setSelectedReporterIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [recycleBinOpen, setRecycleBinOpen] = useState(false);
   const [trashedIssues, setTrashedIssues] = useState<TrashedIssue[]>([]);
   const [trashDetailIssue, setTrashDetailIssue] = useState<TrashedIssue | null>(null);
-  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -3606,10 +3709,6 @@ export default function BoardsPage() {
         ? prev.filter((id) => id !== statusId)
         : [...prev, statusId],
     );
-  };
-
-  const handleSelectAllStatuses = () => {
-    setSelectedStatusIds(statuses.map((s) => s.id));
   };
 
   const handleTogglePriorityFilter = (priorityId: number) => {
@@ -3644,10 +3743,19 @@ export default function BoardsPage() {
     );
   };
 
+  const handleToggleAppFilter = (appId: number) => {
+    setSelectedAppIds((prev) =>
+      prev.includes(appId)
+        ? prev.filter((id) => id !== appId)
+        : [...prev, appId],
+    );
+  };
+
   const handleClearAllFilters = () => {
     setSelectedStatusIds([]);
     setSelectedPriorityIds([]);
     setSelectedCategoryIds([]);
+    setSelectedAppIds([]);
     setSelectedAssigneeIds([]);
     setSelectedReporterIds([]);
     setSearchQuery("");
@@ -3662,15 +3770,17 @@ export default function BoardsPage() {
         fetchStatuses(),
         fetchPriorities(),
         fetchCategories(),
-        fetchUsers(),
+        fetchApps(),
+        fetchMembers(),
       ]);
-      const [iss, lbls, sts, pri, cats, usr] = results;
+      const [iss, lbls, sts, pri, cats, aps, usr] = results;
       if (iss.status === "fulfilled") setIssues(iss.value.data);
       if (lbls.status === "fulfilled") setLabels(lbls.value.data);
       if (sts.status === "fulfilled") setStatuses(sts.value.data);
       if (pri.status === "fulfilled") setPriorities(pri.value.data);
       if (cats.status === "fulfilled") setCategories(cats.value.data);
-      if (usr.status === "fulfilled") setUsers(usr.value.data);
+      if (aps.status === "fulfilled") setApps(aps.value.data);
+      if (usr.status === "fulfilled") setUsers(usr.value);
       const firstError = results.find((r) => r.status === "rejected");
       if (firstError && firstError.status === "rejected") {
         setError(getErrorMessage(firstError.reason, "โหลดข้อมูลไม่สำเร็จ"));
@@ -3682,11 +3792,241 @@ export default function BoardsPage() {
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, []);
+  }, [roleName]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const activeFilterChips = useMemo(() => {
+    type FilterChipEntry = {
+      key: string;
+      label: string;
+      color?: string;
+      icon?: React.ReactElement;
+      avatar?: React.ReactElement;
+      onDelete: () => void;
+    };
+    const chips: FilterChipEntry[] = [];
+
+    for (const status of statuses) {
+      if (!selectedStatusIds.includes(status.id)) continue;
+      const color = getStatusColor(theme, status.name);
+      chips.push({
+        key: `status-${status.id}`,
+        label: status.customName ?? status.name,
+        color,
+        icon: (
+          <Box
+            component="span"
+            sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: color, ml: 0.5 }}
+          />
+        ),
+        onDelete: () => handleToggleStatusFilter(status.id),
+      });
+    }
+    for (const app of apps) {
+      if (!selectedAppIds.includes(app.id)) continue;
+      chips.push({
+        key: `app-${app.id}`,
+        label: app.name,
+        icon: <AppsIcon sx={{ fontSize: 16, ml: 0.5 }} />,
+        onDelete: () => handleToggleAppFilter(app.id),
+      });
+    }
+    for (const priority of priorities) {
+      if (!selectedPriorityIds.includes(priority.id)) continue;
+      const color = getPriorityColor(theme, priority.name);
+      chips.push({
+        key: `priority-${priority.id}`,
+        label: priority.name,
+        color,
+        icon: <FlagIcon sx={{ fontSize: 15, ml: 0.5, color }} />,
+        onDelete: () => handleTogglePriorityFilter(priority.id),
+      });
+    }
+    for (const category of categories) {
+      if (!selectedCategoryIds.includes(category.id)) continue;
+      chips.push({
+        key: `category-${category.id}`,
+        label: category.name,
+        onDelete: () => handleToggleCategoryFilter(category.id),
+      });
+    }
+    for (const member of users) {
+      if (!member.isActive) continue;
+      if (member.roleName === "programmer" && selectedAssigneeIds.includes(member.id)) {
+        chips.push({
+          key: `assignee-${member.id}`,
+          label: member.name,
+          avatar: <Avatar sx={{ width: 18, height: 18, fontSize: 10 }}>{getInitials(member.name)}</Avatar>,
+          onDelete: () => handleToggleAssigneeFilter(member.id),
+        });
+      }
+      if (member.roleName === "customer" && selectedReporterIds.includes(member.id)) {
+        chips.push({
+          key: `reporter-${member.id}`,
+          label: member.name,
+          avatar: <Avatar sx={{ width: 18, height: 18, fontSize: 10 }}>{getInitials(member.name)}</Avatar>,
+          onDelete: () => handleToggleReporterFilter(member.id),
+        });
+      }
+    }
+    return chips;
+  }, [
+    statuses,
+    apps,
+    priorities,
+    categories,
+    users,
+    selectedStatusIds,
+    selectedAppIds,
+    selectedPriorityIds,
+    selectedCategoryIds,
+    selectedAssigneeIds,
+    selectedReporterIds,
+    theme,
+  ]);
+
+  const filterCount = activeFilterChips.length;
+
+  const toolbar = (
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+        <TextField
+          size="small"
+          placeholder={t("searchPlaceholder")}
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          sx={{ flexGrow: 1, maxWidth: 480, minWidth: 200 }}
+          InputProps={{
+            startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
+          }}
+        />
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
+          {!isCustomer && (
+            <>
+              <Tooltip title={t("board")}>
+                <IconButton
+                  size="small"
+                  onClick={() => setView("board")}
+                  sx={{
+                    width: 36,
+                    height: 36,
+                    color: isBoardView ? "primary.contrastText" : "text.secondary",
+                    bgcolor: isBoardView ? "primary.main" : "transparent",
+                    "&:hover": { bgcolor: isBoardView ? "primary.dark" : "action.hover" },
+                  }}
+                >
+                  <ViewKanbanIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title={t("table")}>
+                <IconButton
+                  size="small"
+                  onClick={() => setView("table")}
+                  sx={{
+                    width: 36,
+                    height: 36,
+                    color: isTableView ? "primary.contrastText" : "text.secondary",
+                    bgcolor: isTableView ? "primary.main" : "transparent",
+                    "&:hover": { bgcolor: isTableView ? "primary.dark" : "action.hover" },
+                  }}
+                >
+                  <TableChartIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            </>
+          )}
+          {can("issue.trash.view") && (
+            <Tooltip title={t("recycleBin")}>
+              <IconButton
+                size="small"
+                onClick={() => setRecycleBinOpen(true)}
+                sx={{ width: 36, height: 36 }}
+              >
+                <RestoreFromTrashIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+              </IconButton>
+            </Tooltip>
+          )}
+          <Tooltip title={t("filter.label")}>
+            <Badge
+              badgeContent={filterCount}
+              max={99}
+              overlap="circular"
+              sx={{
+                "& .MuiBadge-badge": {
+                  minWidth: 16,
+                  height: 16,
+                  px: 0.4,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                  bgcolor: "primary.contrastText",
+                  color: "primary.main",
+                  top: 4,
+                  right: 4,
+                },
+              }}
+            >
+              <IconButton
+                size="small"
+                onClick={(event) => setFilterAnchor(event.currentTarget)}
+                aria-haspopup="dialog"
+                aria-expanded={Boolean(filterAnchor)}
+                sx={{
+                  width: 36,
+                  height: 36,
+                  color: filterCount > 0 ? "primary.contrastText" : "text.secondary",
+                  bgcolor: filterCount > 0 ? "primary.main" : "transparent",
+                  "&:hover": {
+                    bgcolor: filterCount > 0 ? "primary.dark" : "action.hover",
+                  },
+                }}
+              >
+                <FilterListIcon sx={{ fontSize: 20 }} />
+              </IconButton>
+            </Badge>
+          </Tooltip>
+        </Box>
+      </Box>
+
+      {filterCount > 0 && (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+          {activeFilterChips.map((chip) => (
+            <Chip
+              key={chip.key}
+              size="small"
+              variant="outlined"
+              label={chip.label}
+              icon={chip.icon}
+              avatar={chip.avatar}
+              onDelete={chip.onDelete}
+              deleteIcon={<CloseIcon sx={{ fontSize: 14 }} />}
+              sx={{
+                borderColor: chip.color ?? "divider",
+                fontWeight: 600,
+                "&:hover": { bgcolor: "action.hover" },
+              }}
+            />
+          ))}
+          <Button
+            size="small"
+            onClick={handleClearAllFilters}
+            startIcon={<DeleteOutlineIcon fontSize="small" />}
+            sx={{
+              ml: 0.5,
+              textTransform: "none",
+              fontWeight: 600,
+              color: "text.secondary",
+            }}
+          >
+            {t("filter.clearAll")}
+          </Button>
+        </Box>
+      )}
+    </Box>
+  );
 
   return (
     <RequirePermission permission="board.view">
@@ -3712,6 +4052,7 @@ export default function BoardsPage() {
                 selectedStatusIds={selectedStatusIds}
                 selectedPriorityIds={selectedPriorityIds}
                 selectedCategoryIds={selectedCategoryIds}
+                selectedAppIds={selectedAppIds}
                 selectedAssigneeIds={selectedAssigneeIds}
                 selectedReporterIds={selectedReporterIds}
                 searchQuery={searchQuery}
@@ -3721,76 +4062,7 @@ export default function BoardsPage() {
                 canUnlockIssue={canUnlockIssue}
                 onRefresh={() => loadData(false)}
                 roleName={roleName}
-                toolbar={
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                    <TextField
-                      size="small"
-                      placeholder={t("searchPlaceholder")}
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      sx={{ flexGrow: 1, maxWidth: 480, minWidth: 200 }}
-                      InputProps={{
-                        startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
-                      }}
-                    />
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
-                      {!isCustomer && (
-                        <>
-                          <Tooltip title={t("board")}>
-                            <IconButton
-                              size="small"
-                              onClick={() => setView("board")}
-                              sx={{
-                                width: 36,
-                                height: 36,
-                                color: isBoardView ? "primary.contrastText" : "text.secondary",
-                                bgcolor: isBoardView ? "primary.main" : "transparent",
-                                "&:hover": { bgcolor: isBoardView ? "primary.dark" : "action.hover" },
-                              }}
-                            >
-                              <ViewKanbanIcon fontSize="small" />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title={t("table")}>
-                            <IconButton
-                              size="small"
-                              onClick={() => setView("table")}
-                              sx={{
-                                width: 36,
-                                height: 36,
-                                color: isTableView ? "primary.contrastText" : "text.secondary",
-                                bgcolor: isTableView ? "primary.main" : "transparent",
-                                "&:hover": { bgcolor: isTableView ? "primary.dark" : "action.hover" },
-                              }}
-                            >
-                              <TableChartIcon fontSize="small" />
-                            </IconButton>
-                          </Tooltip>
-                        </>
-                      )}
-                      {can("issue.trash.view") && (
-                        <Tooltip title={t("recycleBin")}>
-                          <IconButton
-                            size="small"
-                            onClick={() => setRecycleBinOpen(true)}
-                            sx={{ width: 36, height: 36 }}
-                          >
-                            <RestoreFromTrashIcon sx={{ fontSize: 20, color: "text.secondary" }} />
-                          </IconButton>
-                        </Tooltip>
-                      )}
-                      <Tooltip title={t("filter")}>
-                        <IconButton
-                          size="small"
-                          onClick={() => setFilterOpen(true)}
-                          sx={{ width: 36, height: 36 }}
-                        >
-                          <FilterListIcon sx={{ fontSize: 20, color: "text.secondary" }} />
-                        </IconButton>
-                      </Tooltip>
-                    </Box>
-                  </Box>
-                }
+                toolbar={toolbar}
               />
             ) : (
               <TableView
@@ -3802,6 +4074,7 @@ export default function BoardsPage() {
                 selectedStatusIds={selectedStatusIds}
                 selectedPriorityIds={selectedPriorityIds}
                 selectedCategoryIds={selectedCategoryIds}
+                selectedAppIds={selectedAppIds}
                 selectedAssigneeIds={selectedAssigneeIds}
                 selectedReporterIds={selectedReporterIds}
                 searchQuery={searchQuery}
@@ -3810,101 +4083,33 @@ export default function BoardsPage() {
                 canViewOwnHistory={canViewOwnHistory}
                 currentUserId={currentUserId}
                 onRefresh={() => loadData(false)}
-                toolbar={
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                    <TextField
-                      size="small"
-                      placeholder={t("searchPlaceholder")}
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      sx={{ flexGrow: 1, maxWidth: 480, minWidth: 200 }}
-                      InputProps={{
-                        startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
-                      }}
-                    />
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
-                      {!isCustomer && (
-                        <>
-                          <Tooltip title={t("board")}>
-                            <IconButton
-                              size="small"
-                              onClick={() => setView("board")}
-                              sx={{
-                                width: 36,
-                                height: 36,
-                                color: isBoardView ? "primary.contrastText" : "text.secondary",
-                                bgcolor: isBoardView ? "primary.main" : "transparent",
-                                "&:hover": { bgcolor: isBoardView ? "primary.dark" : "action.hover" },
-                              }}
-                            >
-                              <ViewKanbanIcon fontSize="small" />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title={t("table")}>
-                            <IconButton
-                              size="small"
-                              onClick={() => setView("table")}
-                              sx={{
-                                width: 36,
-                                height: 36,
-                                color: isTableView ? "primary.contrastText" : "text.secondary",
-                                bgcolor: isTableView ? "primary.main" : "transparent",
-                                "&:hover": { bgcolor: isTableView ? "primary.dark" : "action.hover" },
-                              }}
-                            >
-                              <TableChartIcon fontSize="small" />
-                            </IconButton>
-                          </Tooltip>
-                        </>
-                      )}
-                      {can("issue.trash.view") && (
-                        <Tooltip title={t("recycleBin")}>
-                          <IconButton
-                            size="small"
-                            onClick={() => setRecycleBinOpen(true)}
-                            sx={{ width: 36, height: 36 }}
-                          >
-                            <RestoreFromTrashIcon sx={{ fontSize: 20, color: "text.secondary" }} />
-                          </IconButton>
-                        </Tooltip>
-                      )}
-                      <Tooltip title={t("filter")}>
-                        <IconButton
-                          size="small"
-                          onClick={() => setFilterOpen(true)}
-                          sx={{ width: 36, height: 36 }}
-                        >
-                          <FilterListIcon sx={{ fontSize: 20, color: "text.secondary" }} />
-                        </IconButton>
-                      </Tooltip>
-                    </Box>
-                  </Box>
-                }
+                toolbar={toolbar}
               />
             ))}
 
-          <StatusFilterDialog
-            open={filterOpen}
+          <FilterPanel
+            open={Boolean(filterAnchor)}
+            anchorEl={filterAnchor}
             statuses={statuses}
             priorities={priorities}
             categories={categories}
+            apps={apps}
             users={users}
             selectedStatusIds={selectedStatusIds}
             selectedPriorityIds={selectedPriorityIds}
             selectedCategoryIds={selectedCategoryIds}
+            selectedAppIds={selectedAppIds}
             selectedAssigneeIds={selectedAssigneeIds}
             selectedReporterIds={selectedReporterIds}
-            searchQuery={searchQuery}
             isCustomer={isCustomer}
             onToggleStatus={handleToggleStatusFilter}
             onTogglePriority={handleTogglePriorityFilter}
             onToggleCategory={handleToggleCategoryFilter}
+            onToggleApp={handleToggleAppFilter}
             onToggleAssignee={handleToggleAssigneeFilter}
             onToggleReporter={handleToggleReporterFilter}
-            onSearchChange={setSearchQuery}
-            onSelectAllStatuses={handleSelectAllStatuses}
             onClearAll={handleClearAllFilters}
-            onClose={() => setFilterOpen(false)}
+            onClose={() => setFilterAnchor(null)}
           />
           <RecycleBinDialog
             open={recycleBinOpen}

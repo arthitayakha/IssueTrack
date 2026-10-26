@@ -37,6 +37,15 @@ export interface UserSummary {
   isActive: boolean;
 }
 
+/** Minimal member info used by board pickers (assignee / reporter). */
+export interface BoardMember {
+  id: string;
+  name: string;
+  roleId: number | null;
+  roleName: string | null;
+  isActive: boolean;
+}
+
 export interface BoardIssue {
   id: number;
   issueNumber: string | null;
@@ -49,6 +58,8 @@ export interface BoardIssue {
   categoryId: number | null;
   categoryName: string | null;
   customCategory: string | null;
+  appId: number | null;
+  appName: string | null;
   labelId: number | null;
   labelIds: number[];
   labelName: string | null;
@@ -151,6 +162,7 @@ export async function fetchIssues(
   filters?: {
     priorityIds?: number[];
     categoryIds?: number[];
+    appIds?: number[];
     assigneeIds?: string[];
     reporterIds?: string[];
   },
@@ -170,6 +182,9 @@ export async function fetchIssues(
   }
   if (filters?.categoryIds && filters.categoryIds.length > 0) {
     params.set("categoryIds", filters.categoryIds.join(","));
+  }
+  if (filters?.appIds && filters.appIds.length > 0) {
+    params.set("appIds", filters.appIds.join(","));
   }
   if (filters?.assigneeIds && filters.assigneeIds.length > 0) {
     params.set("assigneeIds", filters.assigneeIds.join(","));
@@ -192,6 +207,7 @@ export async function createIssue(
     priorityId?: number;
     categoryId?: number;
     customCategory?: string;
+    appId?: number;
     programmerId?: number;
     customerId?: number;
   },
@@ -362,6 +378,31 @@ export async function fetchUsers(): Promise<PaginatedResponse<UserSummary>> {
   return apiFetch<PaginatedResponse<UserSummary>>("/users", {}, getToken());
 }
 
+export interface PositionSummary {
+  id: number;
+  name: string;
+}
+
+/**
+ * Positions for the rule wizard pickers. Requires `position.view`
+ * (callers use allSettled, so a missing permission just yields an empty list).
+ */
+export async function fetchPositions(): Promise<PaginatedResponse<PositionSummary>> {
+  return apiFetch<PaginatedResponse<PositionSummary>>(
+    "/positions?page=1&limit=100",
+    {},
+    getToken(),
+  );
+}
+
+/**
+ * Members for the board pickers. Requires `board.view` only (not `user.view`),
+ * so every role that can open the board also gets the assignee/reporter lists.
+ */
+export async function fetchMembers(): Promise<BoardMember[]> {
+  return apiFetch<BoardMember[]>("/users/members", {}, getToken());
+}
+
 export interface Category {
   id: number;
   name: string;
@@ -372,6 +413,21 @@ export interface Category {
 export async function fetchCategories(): Promise<PaginatedResponse<Category>> {
   return apiFetch<PaginatedResponse<Category>>(
     "/categories?page=1&limit=100",
+    {},
+    getToken(),
+  );
+}
+
+export interface App {
+  id: number;
+  name: string;
+  isVisible: boolean;
+  issueCount: number;
+}
+
+export async function fetchApps(): Promise<PaginatedResponse<App>> {
+  return apiFetch<PaginatedResponse<App>>(
+    "/apps?page=1&limit=100",
     {},
     getToken(),
   );

@@ -50,6 +50,7 @@ export class IssuesController {
       mine?: string;
       priorityIds?: string;
       categoryIds?: string;
+      appIds?: string;
       assigneeIds?: string;
       reporterIds?: string;
     },
@@ -59,6 +60,7 @@ export class IssuesController {
     return this.issues.findAll(normalizePagination(query), statuses, user, query.search, {
       priorityIds: parseIdList(query.priorityIds),
       categoryIds: parseIdList(query.categoryIds),
+      appIds: parseIdList(query.appIds),
       assigneeIds: parseIdList(query.assigneeIds),
       reporterIds: parseIdList(query.reporterIds),
     });
@@ -87,6 +89,7 @@ export class IssuesController {
       priorityId?: number;
       categoryId?: number;
       customCategory?: string;
+      appId?: number;
       programmerId?: number;
       customerId?: number;
     },

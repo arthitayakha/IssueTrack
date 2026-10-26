@@ -12,6 +12,7 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  Tooltip,
   TextField,
   Typography,
   Tab,
@@ -37,6 +38,7 @@ import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
+import BoltIcon from "@mui/icons-material/Bolt";
 import { usePermissions } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useNotification } from "@/components/notification";
@@ -67,6 +69,13 @@ import {
   type Label,
 } from "@/lib/labels-api";
 import ColorPicker from "@/components/color-picker";
+
+interface App {
+  id: number;
+  name: string;
+  isVisible: boolean;
+  issueCount: number;
+}
 
 interface Category {
   id: number;
@@ -309,6 +318,7 @@ export default function SettingsPage() {
   const { notify } = useNotification();
   const theme = useTheme();
   const [tab, setTab] = useState(0);
+  const [apps, setApps] = useState<App[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
@@ -317,6 +327,10 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [page, setPage] = useState(1);
+
+  const [appDialogOpen, setAppDialogOpen] = useState(false);
+  const [editingApp, setEditingApp] = useState<App | null>(null);
+  const [appForm, setAppForm] = useState({ name: "" });
 
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
@@ -343,10 +357,11 @@ export default function SettingsPage() {
   const [editingLabel, setEditingLabel] = useState<Label | null>(null);
   const [labelForm, setLabelForm] = useState({ name: "", color: "default" });
 
-  const [deleteTarget, setDeleteTarget] = useState<{ type: "category" | "status" | "priority" | "label"; id: number; name: string } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ type: "app" | "category" | "status" | "priority" | "label"; id: number; name: string } | null>(null);
   const [deleteCheck, setDeleteCheck] = useState<{ canDelete: boolean; issueCount: number; columnCount: number } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
+  const canViewApps = can("app.view");
   const canViewCategories = can("category.view");
   const canViewStatuses = can("status.view");
   const canViewPriorities = can("priority.view");
@@ -403,6 +418,9 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const requests: Promise<any>[] = [];
+    if (canViewApps) {
+      requests.push(apiFetch<PaginatedResponse<App>>("/apps?page=1&limit=100", {}, token).then(r => r.data));
+    }
     if (canViewCategories) {
       requests.push(apiFetch<PaginatedResponse<Category>>("/categories?page=1&limit=100", {}, token).then(r => r.data));
     }
@@ -416,6 +434,9 @@ export default function SettingsPage() {
     Promise.all(requests)
       .then((results) => {
         let idx = 0;
+        if (canViewApps) {
+          setApps(results[idx++]);
+        }
         if (canViewCategories) {
           setCategories(results[idx++]);
         }
@@ -428,7 +449,100 @@ export default function SettingsPage() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [canViewCategories, canViewStatuses, canViewPriorities, canViewPositions, canViewLabels, token]);
+  }, [canViewApps, canViewCategories, canViewStatuses, canViewPriorities, canViewPositions, canViewLabels, token]);
+
+  // Support deep links such as /settings?tab=statuses — used by the back link on /automation.
+  useEffect(() => {
+    const tabParam = new URLSearchParams(window.location.search).get("tab");
+    if (!tabParam) return;
+    const contents = [
+      ...(canViewApps ? ["apps"] : []),
+      ...(canViewCategories ? ["categories"] : []),
+      ...(canViewStatuses ? ["statuses"] : []),
+      ...(canViewPriorities ? ["priorities"] : []),
+      ...(canViewLabels ? ["labels"] : []),
+    ];
+    const idx = contents.indexOf(tabParam);
+    if (idx >= 0) setTab(idx);
+  }, [canViewApps, canViewCategories, canViewStatuses, canViewPriorities, canViewLabels]);
+
+  function openAddApp() {
+    setEditingApp(null);
+    setAppForm({ name: "" });
+    setAppDialogOpen(true);
+  }
+
+  function openEditApp(app: App) {
+    setEditingApp(app);
+    setAppForm({ name: app.name });
+    setAppDialogOpen(true);
+  }
+
+  async function handleSaveApp() {
+    try {
+      const payload = { name: appForm.name };
+      if (editingApp) {
+        await apiFetch(`/apps/${editingApp.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        }, token);
+        notify(t("appUpdated"));
+      } else {
+        await apiFetch("/apps", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }, token);
+        notify(t("appCreated"));
+      }
+      const updated = await apiFetch<PaginatedResponse<App>>("/apps?page=1&limit=100", {}, token);
+      setApps(updated.data);
+      setAppDialogOpen(false);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
+    }
+  }
+
+  async function handleToggleAppActive(app: App) {
+    try {
+      await apiFetch(`/apps/${app.id}/active`, {
+        method: "PATCH",
+        body: JSON.stringify({ isActive: !app.isVisible }),
+      }, token);
+      setApps((prev) =>
+        prev.map((a) => (a.id === app.id ? { ...a, isVisible: !a.isVisible } : a)),
+      );
+      notify(t("appToggled"));
+    } catch (err) {
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
+    }
+  }
+
+  async function handleDeleteApp(id: number) {
+    const app = apps.find((a) => a.id === id);
+    if (!app) return;
+    setDeleteTarget({ type: "app", id, name: app.name });
+    setDeleteLoading(true);
+    try {
+      const result = await apiFetch<{ canDelete: boolean; issueCount: number }>(
+        `/apps/${id}/check`,
+        {},
+        token,
+      );
+      setDeleteCheck({ ...result, columnCount: 0 });
+    } catch (err) {
+      setDeleteTarget(null);
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
 
   function openAddCategory() {
     setEditingCategory(null);
@@ -775,7 +889,11 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
   async function confirmDelete() {
     if (!deleteTarget) return;
     try {
-      if (deleteTarget.type === "category") {
+      if (deleteTarget.type === "app") {
+        await apiFetch(`/apps/${deleteTarget.id}`, { method: "DELETE" }, token);
+        setApps((prev) => prev.filter((a) => a.id !== deleteTarget.id));
+        notify(t("appDeleted"));
+      } else if (deleteTarget.type === "category") {
         await apiFetch(`/categories/${deleteTarget.id}`, { method: "DELETE" }, token);
         setCategories((prev) => prev.filter((c) => c.id !== deleteTarget.id));
         notify(t("categoryDeleted"));
@@ -816,6 +934,7 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
   }
 
   const tabs = [
+    ...(canViewApps ? [{ label: t("tabApps"), content: "apps" }] : []),
     ...(canViewCategories ? [{ label: t("tabCategories"), content: "categories" }] : []),
     ...(canViewStatuses ? [{ label: t("tabStatuses"), content: "statuses" }] : []),
     ...(canViewPriorities ? [{ label: t("tabPriorities"), content: "priorities" }] : []),
@@ -835,6 +954,74 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
               <Tab key={t2.label} label={t2.label} />
             ))}
           </Tabs>
+
+          {tabs[tab]?.content === "apps" && (
+            <Box>
+              <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
+                {can("app.create") && (
+                  <Button variant="contained" startIcon={<AddIcon />} onClick={openAddApp}>
+                    {t("addApp")}
+                  </Button>
+                )}
+              </Box>
+              <DataTable>
+                <DataTableHead>
+                  <DataTableRow>
+                    <DataTableCell>{t("columnName")}</DataTableCell>
+                    <DataTableCell align="center">{t("columnStatus")}</DataTableCell>
+                    <DataTableCell align="right">{t("columnActions")}</DataTableCell>
+                  </DataTableRow>
+                </DataTableHead>
+                <DataTableBody>
+                  {apps.map((app) => (
+                    <DataTableRow key={app.id}>
+                      <DataTableCell>{app.name}</DataTableCell>
+                      <DataTableCell align="center">
+                        <Chip
+                          label={app.isVisible ? t("active") : t("inactive")}
+                          color={app.isVisible ? "success" : "error"}
+                          size="small"
+                          variant="outlined"
+                        />
+                      </DataTableCell>
+                      <DataTableCell align="right">
+                        {can("app.update") && (
+                          <FormControlLabel
+                            control={
+                              <Switch
+                                checked={app.isVisible}
+                                onChange={() => handleToggleAppActive(app)}
+                                size="small"
+                              />
+                            }
+                            label=""
+                            sx={{ mr: 1 }}
+                          />
+                        )}
+                        {can("app.update") && (
+                          <IconButton size="small" onClick={() => openEditApp(app)}>
+                            <EditIcon fontSize="small" />
+                          </IconButton>
+                        )}
+                        {can("app.delete") && (
+                          <IconButton size="small" onClick={() => handleDeleteApp(app.id)}>
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        )}
+                      </DataTableCell>
+                    </DataTableRow>
+                  ))}
+                </DataTableBody>
+              </DataTable>
+              <Pagination
+                page={page}
+                totalPages={Math.max(1, Math.ceil(apps.length / 10))}
+                total={apps.length}
+                limit={10}
+                onPageChange={setPage}
+              />
+            </Box>
+          )}
 
           {tabs[tab]?.content === "categories" && (
             <Box>
@@ -917,11 +1104,38 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                     ลากเพื่อเรียงลำดับสถานะ
                   </Typography>
                 </Box>
-                {can("status.create") && (
-                  <Button variant="contained" startIcon={<AddIcon />} onClick={openAddStatus}>
-                    {t("addStatus")}
-                  </Button>
-                )}
+                
+<Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+  <Tooltip title="กฎ Automation">
+    <IconButton
+      color="primary"
+      aria-label="กฎ Automation"
+      onClick={() => router.push("/automation")}
+      sx={{
+        border: 1,
+        borderColor: "primary.main",
+        borderRadius: 1,
+        width: 40,
+        height: 40,
+        p: 0,
+      }}
+    >
+      <BoltIcon fontSize="small" />
+    </IconButton>
+  </Tooltip>
+
+  {can("status.create") && (
+    <Button
+      variant="contained"
+      startIcon={<AddIcon />}
+      onClick={openAddStatus}
+      sx={{ height: 40 }}
+    >
+      {t("addStatus")}
+    </Button>
+  )}
+</Box>
+
               </Box>
               <DndContext
                 sensors={statusSensors}
@@ -1108,6 +1322,26 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
             </Box>
           )}
 
+          <Dialog open={appDialogOpen} onClose={() => setAppDialogOpen(false)} maxWidth="sm" fullWidth>
+            <DialogTitle>{editingApp ? t("editApp") : t("addApp")}</DialogTitle>
+            <DialogContent>
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 1 }}>
+                <TextField
+                  label={t("columnName")}
+                  value={appForm.name}
+                  onChange={(e) => setAppForm({ ...appForm, name: e.target.value })}
+                  fullWidth
+                />
+              </Box>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setAppDialogOpen(false)}>{t("cancel")}</Button>
+              <Button variant="contained" onClick={handleSaveApp}>
+                {t("save")}
+              </Button>
+            </DialogActions>
+          </Dialog>
+
           <Dialog open={categoryDialogOpen} onClose={() => setCategoryDialogOpen(false)} maxWidth="sm" fullWidth>
             <DialogTitle>{editingCategory ? t("editCategory") : t("addCategory")}</DialogTitle>
             <DialogContent>
@@ -1239,7 +1473,7 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
               ) : deleteTarget ? (
                 <Typography variant="body2">
                   {t("deleteConfirmMessage", {
-                    type: deleteTarget.type === "category" ? t("category") : deleteTarget.type === "status" ? t("status") : deleteTarget.type === "priority" ? t("priority") : t("label"),
+                    type: deleteTarget.type === "app" ? t("app") : deleteTarget.type === "category" ? t("category") : deleteTarget.type === "status" ? t("status") : deleteTarget.type === "priority" ? t("priority") : t("label"),
                     name: deleteTarget.name,
                   })}
                 </Typography>

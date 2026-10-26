@@ -22,6 +22,7 @@ const ISSUE_DETAIL_RELATIONS = [
   "status",
   "priority",
   "category",
+  "app",
   "label",
   "labels",
   "programmer",
@@ -57,6 +58,7 @@ export class IssuesService {
     filters: {
       priorityIds?: number[];
       categoryIds?: number[];
+      appIds?: number[];
       assigneeIds?: number[];
       reporterIds?: number[];
     } = {},
@@ -89,6 +91,9 @@ export class IssuesService {
     if (filters.categoryIds && filters.categoryIds.length > 0) {
       qb.andWhere("issue.category_id IN (:...categoryIds)", { categoryIds: filters.categoryIds });
     }
+    if (filters.appIds && filters.appIds.length > 0) {
+      qb.andWhere("issue.app_id IN (:...appIds)", { appIds: filters.appIds });
+    }
     if (filters.assigneeIds && filters.assigneeIds.length > 0) {
       qb.andWhere("issue.programmer_id IN (:...assigneeIds)", { assigneeIds: filters.assigneeIds });
     }
@@ -98,11 +103,15 @@ export class IssuesService {
 
     const total = await qb.clone().getCount();
 
+    // Newest first: `created_at` must also be selected because Postgres
+    // requires every ORDER BY expression to appear in a SELECT DISTINCT list.
     const idRows = await qb
       .clone()
       .distinct(true)
       .select("issue.id", "id")
-      .orderBy("issue.id", "ASC")
+      .addSelect("issue.createdAt", "createdAt")
+      .orderBy("issue.createdAt", "DESC")
+      .addOrderBy("issue.id", "DESC")
       .offset((params.page - 1) * params.limit)
       .limit(params.limit)
       .getRawMany();
@@ -119,6 +128,7 @@ export class IssuesService {
       .leftJoinAndSelect("issue.status", "status")
       .leftJoinAndSelect("issue.priority", "priority")
       .leftJoinAndSelect("issue.category", "category")
+      .leftJoinAndSelect("issue.app", "app")
       .leftJoinAndSelect("issue.label", "label")
       .leftJoinAndSelect("issue.labels", "labels")
       .leftJoinAndSelect("issue.programmer", "programmer")
@@ -126,7 +136,8 @@ export class IssuesService {
       .leftJoinAndSelect("issue.attachments", "attachments")
       .loadRelationCountAndMap("issue.commentCount", "issue.comments")
       .where("issue.id IN (:...ids)", { ids })
-      .orderBy("issue.id", "ASC")
+      .orderBy("issue.createdAt", "DESC")
+      .addOrderBy("issue.id", "DESC")
       .getMany();
 
     return {
@@ -165,6 +176,7 @@ export class IssuesService {
       priorityId?: number;
       categoryId?: number;
       customCategory?: string;
+      appId?: number;
       programmerId?: number;
       customerId?: number;
       labelId?: number;
@@ -193,6 +205,7 @@ export class IssuesService {
       priorityId: data.priorityId ?? null,
       categoryId: data.categoryId ?? null,
       customCategory: data.customCategory?.trim() || null,
+      appId: data.appId ?? null,
       programmerId: resolvedProgrammerId,
       customerId: resolvedCustomerId,
       labelId: data.labelId ?? null,
@@ -510,6 +523,8 @@ export class IssuesService {
       categoryId: issue.categoryId,
       categoryName: issue.category?.name ?? null,
       customCategory: issue.customCategory,
+      appId: issue.appId,
+      appName: issue.app?.name ?? null,
       labelId: issue.labelId,
       labelIds: (issue.labels ?? []).map((l) => l.id).sort((a, b) => a - b),
       labelName: issue.labels?.[0]?.name ?? issue.label?.name ?? null,

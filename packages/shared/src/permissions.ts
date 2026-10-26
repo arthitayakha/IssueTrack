@@ -34,6 +34,10 @@ export type Permission =
   | "user.create"
   | "user.update"
   | "user.delete"
+  | "app.view"
+  | "app.create"
+  | "app.update"
+  | "app.delete"
   | "category.view"
   | "category.create"
   | "category.update"
@@ -103,6 +107,10 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   "user.create",
   "user.update",
   "user.delete",
+  "app.view",
+  "app.create",
+  "app.update",
+  "app.delete",
   "category.view",
   "category.create",
   "category.update",
@@ -294,6 +302,10 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "user.create": "สร้างผู้ใช้",
   "user.update": "แก้ไขผู้ใช้",
   "user.delete": "ลบผู้ใช้",
+  "app.view": "ดูแอป",
+  "app.create": "สร้างแอป",
+  "app.update": "แก้ไขแอป",
+  "app.delete": "ลบแอป",
   "category.view": "ดูหมวดหมู่",
   "category.create": "สร้างหมวดหมู่",
   "category.update": "แก้ไขหมวดหมู่",
@@ -346,6 +358,9 @@ export const PERMISSION_DEPENDENCIES: Record<string, string[]> = {
   "position.create": ["position.view"],
   "position.update": ["position.view"],
   "position.delete": ["position.view"],
+  "app.create": ["app.view"],
+  "app.update": ["app.view"],
+  "app.delete": ["app.view"],
   "category.create": ["category.view"],
   "category.update": ["category.view"],
   "category.delete": ["category.view"],

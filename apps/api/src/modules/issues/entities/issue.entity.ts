@@ -11,6 +11,7 @@ import {
   UpdateDateColumn,
 } from "typeorm";
 import { Category } from "../../categories/entities/category.entity";
+import { App } from "../../apps/entities/app.entity";
 import { Comment } from "../../comments/entities/comment.entity";
 import { Attachment } from "../../attachments/entities/attachment.entity";
 import { WorkSession } from "../../work-sessions/entities/work-session.entity";
@@ -43,6 +44,13 @@ export class Issue {
 
   @Column({ name: "custom_category", type: "varchar", length: 500, nullable: true })
   customCategory!: string | null;
+
+  @Column({ name: "app_id", type: "int", nullable: true })
+  appId!: number | null;
+
+  @ManyToOne(() => App, { nullable: true, onDelete: "SET NULL" })
+  @JoinColumn({ name: "app_id" })
+  app?: App;
 
   @Column({ type: "varchar", length: 300 })
   title!: string;

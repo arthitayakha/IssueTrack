@@ -16,7 +16,7 @@ import LanguageSwitcher from "./language-switcher";
 
 export const DRAWER_WIDTH = 240;
 
-export default function Navbar() {
+export default function Navbar({ header }: { header?: React.ReactNode }) {
   const t = useTranslations("Nav");
   const router = useRouter();
   const pathname = usePathname();
@@ -48,15 +48,14 @@ export default function Navbar() {
       }}
     >
       <Toolbar>
-        <Typography
-          variant="h6"
-          fontWeight={700}
-          color="text.primary"
-          sx={{ flexGrow: 1 }}
-        >
-          {t(routeTitleKey)}
-        </Typography>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          {header ?? (
+            <Typography variant="h6" fontWeight={700} color="text.primary">
+              {t(routeTitleKey)}
+            </Typography>
+          )}
+        </Box>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexShrink: 0 }}>
           <LanguageSwitcher />
           <Typography
             variant="body2"
