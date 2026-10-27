@@ -16,6 +16,7 @@ import { WorkSessionsService } from "../work-sessions/work-sessions.service";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
 import { RulesEngineService } from "../rules/rules-engine.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { PaginationParams } from "../../common/pagination";
 import { AuthUser } from "../auth/auth-user";
 
@@ -50,6 +51,7 @@ export class IssuesService {
     private readonly workSessions: WorkSessionsService,
     private readonly permissions: PermissionsService,
     private readonly rulesEngine: RulesEngineService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async findAll(
@@ -214,6 +216,22 @@ export class IssuesService {
       issueNumber,
     } as DeepPartial<Issue>);
     await this.issues.save(issue);
+    // notify the assignee (auto-assign included) — best-effort, never blocks create
+    const createdCategory = data.categoryId
+      ? await this.categories.findOne({ where: { id: data.categoryId } })
+      : null;
+    await this.notifications.notifyIssueEvent({
+      issue: {
+        id: issue.id,
+        title: issue.title,
+        programmerId: resolvedProgrammerId,
+        customerId: resolvedCustomerId,
+        category: createdCategory,
+      },
+      action: "created",
+      recipients: [resolvedProgrammerId],
+      actor,
+    });
     await this.logActivity({
       action: "card.created",
       entityId: issue.id,
@@ -296,6 +314,13 @@ export class IssuesService {
     if (Object.keys(updates).length > 0) {
       await this.issues.update(id, updates);
     }
+    // notify the assignee that their issue was edited
+    await this.notifications.notifyIssueEvent({
+      issue,
+      action: "edited",
+      recipients: [issue.programmerId],
+      actor,
+    });
     await this.logActivity({
       action: "card.edited",
       entityId: issue.id,
@@ -360,6 +385,14 @@ export class IssuesService {
       : null;
     await this.issues.update(id, { statusId });
 
+    // notify assignee + reporter about the status change
+    await this.notifications.notifyIssueEvent({
+      issue,
+      action: "moved",
+      recipients: [issue.programmerId, issue.customerId],
+      actor,
+    });
+
     await this.logActivity({
       action: "card.moved",
       entityId: issue.id,
@@ -399,7 +432,8 @@ export class IssuesService {
   }
 
   async assign(id: number, programmerId: number | null, actor?: ActorInfo | null) {
-    const issue = await this.issues.findOne({ where: { id } });
+    // category relation so the notification carries the same context as other events
+    const issue = await this.issues.findOne({ where: { id }, relations: ["category"] });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
@@ -411,6 +445,13 @@ export class IssuesService {
     }
     const oldAssignee = issue.programmerId;
     await this.issues.update(id, { programmerId });
+    // notify the new assignee + the reporter (notify() skips the actor themselves)
+    await this.notifications.notifyIssueEvent({
+      issue,
+      action: "assigned",
+      recipients: [programmerId, issue.customerId],
+      actor,
+    });
     await this.logActivity({
       action: "card.assigned",
       entityId: id,
@@ -447,7 +488,7 @@ export class IssuesService {
   async remove(id: number, actor?: ActorInfo | null) {
     const issue = await this.issues.findOne({
       where: { id },
-      relations: ["status"],
+      relations: ["status", "category"],
     });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
@@ -458,6 +499,13 @@ export class IssuesService {
     issue.deletedAt = new Date();
     issue.deletedBy = actor?.actorId ?? null;
     await this.issues.save(issue);
+    // notify assignee + reporter that the issue was deleted (soft)
+    await this.notifications.notifyIssueEvent({
+      issue,
+      action: "deleted",
+      recipients: [issue.programmerId, issue.customerId],
+      actor,
+    });
     await this.logActivity({
       action: "card.deleted",
       entityId: issue.id,
@@ -485,6 +533,13 @@ export class IssuesService {
     issue.deletedAt = null;
     issue.deletedBy = null;
     await this.issues.save(issue);
+    // notify assignee + reporter that the issue is back
+    await this.notifications.notifyIssueEvent({
+      issue,
+      action: "restored",
+      recipients: [issue.programmerId, issue.customerId],
+      actor,
+    });
     await this.logActivity({
       action: "card.restored",
       entityId: issue.id,

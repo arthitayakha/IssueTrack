@@ -11,6 +11,7 @@ import { Issue } from "../issues/entities/issue.entity";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
 import { RulesEngineService } from "../rules/rules-engine.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
@@ -24,6 +25,7 @@ export class CommentsService {
     private readonly issues: Repository<Issue>,
     private readonly permissions: PermissionsService,
     private readonly rulesEngine: RulesEngineService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async findByIssue(issueId: number, params: PaginationParams) {
@@ -50,7 +52,16 @@ export class CommentsService {
       actor,
     });
     // automation rules — status comes from the issue, text from the comment
-    const issue = await this.issues.findOne({ where: { id: issueId } });
+    const issue = await this.issues.findOne({ where: { id: issueId }, relations: ["category"] });
+    // notify assignee + reporter about the new comment (never the commenter)
+    if (issue) {
+      await this.notifications.notifyIssueEvent({
+        issue,
+        action: "commented",
+        recipients: [issue.programmerId, issue.customerId],
+        actor,
+      });
+    }
     await this.rulesEngine.evaluate("comment.created", {
       issueId,
       actorId: userId,
