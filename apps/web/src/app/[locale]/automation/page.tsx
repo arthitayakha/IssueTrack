@@ -90,7 +90,7 @@ export default function AutomationPage() {
   );
 
   return (
-    <RequirePermission permission="permission.update">
+    <RequirePermission permission="automation.update">
       <DashboardLayout header={header}>
         <Box sx={{ mb: 3 }}>
           <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 2, flexWrap: "wrap" }}>

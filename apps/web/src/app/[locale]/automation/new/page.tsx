@@ -38,7 +38,7 @@ export default function NewRulePage() {
   );
 
   return (
-    <RequirePermission permission="permission.update">
+    <RequirePermission permission="automation.update">
       <DashboardLayout header={header}>
         <Box sx={{ mb: 3 }}>
           <Typography variant="h4" fontWeight={700} sx={{ color: theme.palette.navy.main }}>
