@@ -5,6 +5,7 @@ import { RulesService } from "./rules.service";
 import { RulesEngineService } from "./rules-engine.service";
 import { Rule } from "./entities/rule.entity";
 import { RuleCondition } from "./entities/rule-condition.entity";
+import { RuleRun } from "./entities/rule-run.entity";
 import { Issue } from "../issues/entities/issue.entity";
 import { Comment } from "../comments/entities/comment.entity";
 import { User } from "../auth/entities/user.entity";
@@ -20,6 +21,7 @@ import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
     TypeOrmModule.forFeature([
       Rule,
       RuleCondition,
+      RuleRun,
       Issue,
       Comment,
       User,

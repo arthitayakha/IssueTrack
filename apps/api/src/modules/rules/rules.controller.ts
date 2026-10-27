@@ -8,6 +8,7 @@ import {
   Post,
   Put,
   Patch,
+  Query,
   UseGuards,
 } from "@nestjs/common";
 import { RulesService, RuleInput } from "./rules.service";
@@ -26,6 +27,13 @@ export class RulesController {
   @Permissions("automation.view")
   findAll() {
     return this.rules.findAll();
+  }
+
+  // must stay above GET :id — otherwise "runs" is parsed as an id
+  @Get("runs")
+  @Permissions("automation.view")
+  findRuns(@Query() query: { ruleId?: string; page?: string; limit?: string }) {
+    return this.rules.findRuns(query);
   }
 
   @Get(":id")

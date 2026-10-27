@@ -1,9 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import type { RuleCondition as RuleConditionDto, RuleDto, RuleOperator } from "@kanban/shared";
+import type { RuleCondition as RuleConditionDto, RuleDto, RuleOperator, RuleRunDto } from "@kanban/shared";
+import { normalizePagination, type Paginated } from "../../common/pagination";
 import { Rule } from "./entities/rule.entity";
 import { RuleCondition } from "./entities/rule-condition.entity";
+import { RuleRun } from "./entities/rule-run.entity";
 
 /** Shape of the body the wizard sends (create and update share it). */
 export interface RuleInput {
@@ -25,6 +27,8 @@ export class RulesService {
     private readonly rules: Repository<Rule>,
     @InjectRepository(RuleCondition)
     private readonly conditions: Repository<RuleCondition>,
+    @InjectRepository(RuleRun)
+    private readonly runs: Repository<RuleRun>,
   ) {}
 
   private toDto(rule: Rule): RuleDto {
@@ -147,5 +151,47 @@ export class RulesService {
     const result = await this.rules.delete(id); // rule_conditions drop via FK CASCADE
     if (!result.affected) throw new NotFoundException(`Rule ${id} not found`);
     return { deleted: true };
+  }
+
+  /** Run history — newest first, optionally filtered to one rule. */
+  async findRuns(query: {
+    ruleId?: string;
+    page?: string;
+    limit?: string;
+  }): Promise<Paginated<RuleRunDto>> {
+    const params = normalizePagination(query);
+    const ruleId = Number(query.ruleId);
+    const where: { ruleId?: number } =
+      query.ruleId !== undefined && Number.isFinite(ruleId) ? { ruleId } : {};
+
+    const [rows, total] = await this.runs.findAndCount({
+      where,
+      relations: { issue: true },
+      order: { createdAt: "DESC", id: "DESC" },
+      skip: (params.page - 1) * params.limit,
+      take: params.limit,
+    });
+
+    const data: RuleRunDto[] = rows.map((run) => ({
+      id: run.id,
+      ruleId: run.ruleId,
+      ruleName: run.ruleName,
+      triggerKey: run.triggerKey,
+      issueId: run.issueId,
+      issueTitle: run.issue?.title ?? null,
+      status: run.status,
+      actionKey: run.actionKey,
+      detail: run.detail,
+      durationMs: run.durationMs,
+      createdAt: new Date(run.createdAt).toISOString(),
+    }));
+
+    return {
+      data,
+      total,
+      page: params.page,
+      limit: params.limit,
+      totalPages: Math.max(1, Math.ceil(total / params.limit)),
+    };
   }
 }

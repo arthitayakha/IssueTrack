@@ -12,6 +12,7 @@ import { IssuePriority } from "../issue-priorities/entities/issue-priority.entit
 import { Category } from "../categories/entities/category.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
 import { Rule } from "./entities/rule.entity";
+import { RuleRun, type RuleRunStatus } from "./entities/rule-run.entity";
 
 /** Triggers the engine listens for — one per hook placed in the services. */
 export type EngineTrigger =
@@ -29,14 +30,18 @@ export type EngineTrigger =
   | "work_session.started"
   | "work_session.stopped";
 
+/** What an action did — `reason` explains a skip and is stored on the run. */
+interface ActionResult {
+  applied: boolean;
+  reason?: string;
+}
+
 /**
- * Runs automation rules when a hook fires.
+ * Runs automation rules when a hook fires and records every execution in
+ * `rule_runs` (only when the conditions pass, so the table stays readable).
  *
- * Phase 2 covers every card/content action: move, assign/unassign, labels,
- * lock/unlock, delete/restore and auto-comments (with Thai placeholder tokens).
- * Timer actions (`work_session.*`, `issue.set_time`) and `issue.set_due_date`
- * are skipped until their semantics are settled.
- *
+ * Phase 2 covers every card/content action; timer actions and
+ * `issue.set_due_date` are skipped until their semantics are settled.
  * Actions write through repositories directly, so a rule-driven change never
  * re-enters the hooks; the `running` counter is a second line of defence. A
  * failing rule must never break the caller's request.
@@ -49,6 +54,7 @@ export class RulesEngineService {
 
   constructor(
     @InjectRepository(Rule) private readonly rules: Repository<Rule>,
+    @InjectRepository(RuleRun) private readonly runs: Repository<RuleRun>,
     @InjectRepository(Issue) private readonly issues: Repository<Issue>,
     @InjectRepository(Comment) private readonly comments: Repository<Comment>,
     @InjectRepository(User) private readonly users: Repository<User>,
@@ -73,14 +79,25 @@ export class RulesEngineService {
       this.running++;
       try {
         for (const rule of active) {
+          // conditions that do not pass are not recorded — only real executions
+          if (!this.conditionsPass(rule, triggerKey, ctx)) continue;
+
+          const startedAt = Date.now();
+          let status: RuleRunStatus;
+          let detail: string | null = null;
           try {
-            if (!this.conditionsPass(rule, triggerKey, ctx)) continue;
-            await this.runAction(rule, triggerKey, ctx);
+            const result = await this.runAction(rule, triggerKey, ctx);
+            status = result.applied ? "applied" : "skipped";
+            detail = result.reason ?? null;
           } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            this.logger.warn(`rule #${rule.id} "${rule.name}" failed: ${message}`);
-            if (rule.stopOnError) break;
+            status = "failed";
+            detail = err instanceof Error ? err.message : String(err);
+            this.logger.warn(`rule #${rule.id} "${rule.name}" failed: ${detail}`);
           }
+
+          await this.recordRun(rule, triggerKey, ctx, status, detail, Date.now() - startedAt);
+
+          if (status === "failed" && rule.stopOnError) break;
         }
       } finally {
         this.running--;
@@ -89,6 +106,35 @@ export class RulesEngineService {
       // evaluating rules must never break the request that triggered it
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`rule evaluation failed for ${triggerKey}: ${message}`);
+    }
+  }
+
+  /** Store the execution; a failing insert must not break anything either. */
+  private async recordRun(
+    rule: Rule,
+    triggerKey: string,
+    ctx: RuleContext,
+    status: RuleRunStatus,
+    detail: string | null,
+    durationMs: number,
+  ): Promise<void> {
+    try {
+      const issueId = Number(ctx.issueId);
+      await this.runs.save(
+        this.runs.create({
+          ruleId: rule.id,
+          ruleName: rule.name.slice(0, 150),
+          triggerKey,
+          issueId: Number.isFinite(issueId) && issueId > 0 ? issueId : null,
+          status,
+          actionKey: rule.actionKey,
+          detail,
+          durationMs: Math.max(0, Math.round(durationMs)),
+        }),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`could not record run for rule #${rule.id}: ${message}`);
     }
   }
 
@@ -144,126 +190,110 @@ export class RulesEngineService {
     }
   }
 
-  private async runAction(rule: Rule, triggerKey: EngineTrigger, ctx: RuleContext): Promise<void> {
+  private async runAction(
+    rule: Rule,
+    triggerKey: EngineTrigger,
+    ctx: RuleContext,
+  ): Promise<ActionResult> {
     const issueId = Number(ctx.issueId);
-    if (!Number.isFinite(issueId) || issueId <= 0) return;
+    if (!Number.isFinite(issueId) || issueId <= 0) {
+      return { applied: false, reason: "no issue in context" };
+    }
     const config = (rule.actionConfig ?? {}) as Record<string, unknown>;
-    const log = (message: string) => this.logger.log(`rule "${rule.name}": ${message}`);
+    const applied = (message: string): ActionResult => {
+      this.logger.log(`rule "${rule.name}": ${message}`);
+      return { applied: true };
+    };
 
     switch (rule.actionKey) {
       case "issue.set_priority": {
         const priorityId = Number(config.priority);
-        if (!Number.isFinite(priorityId)) return;
+        if (!Number.isFinite(priorityId)) return { applied: false, reason: "no priority configured" };
         await this.issues.update(issueId, { priorityId });
-        log(`set priority ${priorityId} on #${issueId}`);
-        return;
+        return applied(`set priority ${priorityId} on #${issueId}`);
       }
       case "issue.set_category": {
         const categoryId = Number(config.category);
-        if (!Number.isFinite(categoryId)) return;
+        if (!Number.isFinite(categoryId)) return { applied: false, reason: "no category configured" };
         await this.issues.update(issueId, { categoryId });
-        log(`set category ${categoryId} on #${issueId}`);
-        return;
+        return applied(`set category ${categoryId} on #${issueId}`);
       }
       case "issue.move_status": {
         const statusId = Number(config.targetStatus);
-        if (!Number.isFinite(statusId)) return;
+        if (!Number.isFinite(statusId)) return { applied: false, reason: "no target status configured" };
         const status = await this.statuses.findOne({ where: { id: statusId } });
-        if (!status) {
-          this.logger.warn(`rule "${rule.name}": status ${statusId} not found — skipped`);
-          return;
-        }
+        if (!status) return { applied: false, reason: `status ${statusId} not found` };
         await this.issues.update(issueId, { statusId });
-        log(`moved #${issueId} to status "${status.name}"`);
-        return;
+        return applied(`moved #${issueId} to status "${status.name}"`);
       }
       case "issue.assign": {
         const positionId = Number(config.position);
-        if (!Number.isFinite(positionId)) return;
+        if (!Number.isFinite(positionId)) return { applied: false, reason: "no position configured" };
         const user = await this.users.findOne({
           where: { positionId, isActive: true },
           order: { id: "ASC" },
         });
         if (!user) {
-          this.logger.warn(
-            `rule "${rule.name}": no active user holds position ${positionId} — skipped`,
-          );
-          return;
+          return { applied: false, reason: `no active user holds position ${positionId}` };
         }
         await this.issues.update(issueId, { programmerId: user.id });
-        log(`assigned #${issueId} to ${user.name} (position ${positionId})`);
-        return;
+        return applied(`assigned #${issueId} to ${user.name} (position ${positionId})`);
       }
       case "issue.unassign": {
         await this.issues.update(issueId, { programmerId: null });
-        log(`unassigned #${issueId}`);
-        return;
+        return applied(`unassigned #${issueId}`);
       }
       case "issue.add_label":
       case "issue.remove_label": {
         const labelId = Number(config.label);
-        if (!Number.isFinite(labelId)) return;
+        if (!Number.isFinite(labelId)) return { applied: false, reason: "no label configured" };
         const issue = await this.issues.findOne({ where: { id: issueId }, relations: ["labels"] });
-        if (!issue) return;
+        if (!issue) return { applied: false, reason: `issue ${issueId} not found` };
         const current = issue.labels ?? [];
         const has = current.some((l) => l.id === labelId);
         if (rule.actionKey === "issue.add_label") {
-          if (has) return;
+          if (has) return { applied: false, reason: "label already present" };
           const label = await this.labels.findOne({ where: { id: labelId } });
-          if (!label) {
-            this.logger.warn(`rule "${rule.name}": label ${labelId} not found — skipped`);
-            return;
-          }
+          if (!label) return { applied: false, reason: `label ${labelId} not found` };
           issue.labels = [...current, label];
           await this.issues.save(issue);
           // legacy single-label column still drives some board views
           if (issue.labelId == null) await this.issues.update(issueId, { labelId });
-          log(`added label ${labelId} to #${issueId}`);
-        } else {
-          if (!has) return;
-          issue.labels = current.filter((l) => l.id !== labelId);
-          await this.issues.save(issue);
-          if (issue.labelId === labelId) await this.issues.update(issueId, { labelId: null });
-          log(`removed label ${labelId} from #${issueId}`);
+          return applied(`added label ${labelId} to #${issueId}`);
         }
-        return;
+        if (!has) return { applied: false, reason: "label not present" };
+        issue.labels = current.filter((l) => l.id !== labelId);
+        await this.issues.save(issue);
+        if (issue.labelId === labelId) await this.issues.update(issueId, { labelId: null });
+        return applied(`removed label ${labelId} from #${issueId}`);
       }
       case "issue.lock":
         await this.issues.update(issueId, { isLocked: true });
-        log(`locked #${issueId}`);
-        return;
+        return applied(`locked #${issueId}`);
       case "issue.unlock":
         await this.issues.update(issueId, { isLocked: false });
-        log(`unlocked #${issueId}`);
-        return;
+        return applied(`unlocked #${issueId}`);
       case "issue.delete": {
         const existing = await this.issues.findOne({ where: { id: issueId } });
-        if (!existing || existing.deletedAt) return;
+        if (!existing) return { applied: false, reason: `issue ${issueId} not found` };
+        if (existing.deletedAt) return { applied: false, reason: "already deleted" };
         await this.issues.update(issueId, { deletedAt: new Date(), deletedBy: null });
-        log(`deleted #${issueId}`);
-        return;
+        return applied(`deleted #${issueId}`);
       }
       case "issue.restore": {
-        // deletedAt is a plain column (not TypeORM soft delete) — plain find works
         const existing = await this.issues.findOne({ where: { id: issueId } });
-        if (!existing?.deletedAt) return;
+        if (!existing?.deletedAt) return { applied: false, reason: "not in trash" };
         await this.issues.update(issueId, { deletedAt: null, deletedBy: null });
-        log(`restored #${issueId}`);
-        return;
+        return applied(`restored #${issueId}`);
       }
       case "issue.comment": {
         const text = typeof config.text === "string" ? config.text : "";
-        if (!text.trim()) return;
+        if (!text.trim()) return { applied: false, reason: "no message configured" };
         const issue = await this.issues.findOne({ where: { id: issueId } });
-        if (!issue) return;
+        if (!issue) return { applied: false, reason: `issue ${issueId} not found` };
         const content = await this.renderMessage(text, triggerKey, issue, ctx);
         const author = await this.resolveCommentAuthor(rule, ctx);
-        if (!author) {
-          this.logger.warn(
-            `rule "${rule.name}": no user available to own the comment — skipped`,
-          );
-          return;
-        }
+        if (!author) return { applied: false, reason: "no user available to own the comment" };
         const saved = await this.comments.save(
           this.comments.create({ issueId, comment: content, userId: author.id }),
         );
@@ -277,13 +307,13 @@ export class RulesEngineService {
             actorRole: author.role?.name ?? null,
           }),
         );
-        log(`commented on #${issueId}`);
-        return;
+        return applied(`commented on #${issueId}`);
       }
       default:
-        this.logger.debug(
-          `rule "${rule.name}": action ${rule.actionKey} is not supported yet (timer / due-date actions)`,
-        );
+        return {
+          applied: false,
+          reason: `action ${rule.actionKey} is not supported yet (timer / due-date actions)`,
+        };
     }
   }
 

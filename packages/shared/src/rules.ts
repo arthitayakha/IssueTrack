@@ -125,6 +125,23 @@ export interface RuleDto {
   updatedAt: string;
 }
 
+export type RuleRunStatus = "applied" | "skipped" | "failed";
+
+/** One recorded execution of a rule (history shown on /automation/runs). */
+export interface RuleRunDto {
+  id: number;
+  ruleId: number | null;
+  ruleName: string | null;
+  triggerKey: string;
+  issueId: number | null;
+  issueTitle: string | null;
+  status: RuleRunStatus;
+  actionKey: string | null;
+  detail: string | null;
+  durationMs: number;
+  createdAt: string;
+}
+
 export interface RuleContext {
   [key: string]: unknown;
 }
