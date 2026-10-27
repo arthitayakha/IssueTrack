@@ -15,6 +15,7 @@ import { Position } from "../positions/position.entity";
 import { WorkSessionsService } from "../work-sessions/work-sessions.service";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
+import { RulesEngineService } from "../rules/rules-engine.service";
 import { PaginationParams } from "../../common/pagination";
 import { AuthUser } from "../auth/auth-user";
 
@@ -48,6 +49,7 @@ export class IssuesService {
     private readonly positions: Repository<Position>,
     private readonly workSessions: WorkSessionsService,
     private readonly permissions: PermissionsService,
+    private readonly rulesEngine: RulesEngineService,
   ) {}
 
   async findAll(
@@ -218,6 +220,16 @@ export class IssuesService {
       detail: JSON.stringify({ title: issue.title }),
       actor,
     });
+    // automation rules run before the reload so their effect shows in the response
+    await this.rulesEngine.evaluate("issue.created", {
+      issueId: issue.id,
+      toStatusId: status.id,
+      priorityId: issue.priorityId ?? null,
+      categoryId: issue.categoryId ?? null,
+      reporterId: issue.customerId ?? null,
+      actorId: actor?.actorId ?? null,
+      actorRole: actor?.actorRole ?? null,
+    });
     const created = await this.issues.findOne({
       where: { id: issue.id },
       relations: ISSUE_DETAIL_RELATIONS,
@@ -241,6 +253,13 @@ export class IssuesService {
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
+    const previous = {
+      title: issue.title,
+      description: issue.description,
+      priorityId: issue.priorityId ?? null,
+      categoryId: issue.categoryId ?? null,
+      statusId: issue.statusId ?? null,
+    };
     const changes: string[] = [];
     const updates: Partial<Issue> = {};
 
@@ -283,6 +302,41 @@ export class IssuesService {
       detail: JSON.stringify({ fields: changes }),
       actor,
     });
+    // automation rules — one trigger per changed field, before the response reload
+    const engineCtx = {
+      issueId: id,
+      actorId: actor?.actorId ?? null,
+      actorRole: actor?.actorRole ?? null,
+      toStatusId: issue.statusId ?? null,
+    };
+    if (changes.includes("priority")) {
+      await this.rulesEngine.evaluate("issue.priority_changed", {
+        ...engineCtx,
+        newValue: updates.priorityId ?? null,
+        oldValue: previous.priorityId,
+      });
+    }
+    if (changes.includes("category")) {
+      await this.rulesEngine.evaluate("issue.category_changed", {
+        ...engineCtx,
+        newValue: updates.categoryId ?? null,
+        oldValue: previous.categoryId,
+      });
+    }
+    if (changes.includes("title")) {
+      await this.rulesEngine.evaluate("issue.title_changed", {
+        ...engineCtx,
+        newValue: updates.title ?? null,
+        oldValue: previous.title,
+      });
+    }
+    if (changes.includes("description")) {
+      await this.rulesEngine.evaluate("issue.description_changed", {
+        ...engineCtx,
+        newValue: updates.description ?? null,
+        oldValue: previous.description,
+      });
+    }
     const fresh = await this.issues.findOne({
       where: { id: issue.id },
       relations: ISSUE_DETAIL_RELATIONS,
@@ -314,6 +368,14 @@ export class IssuesService {
         to: targetStatus.name,
       }),
       actor,
+    });
+
+    await this.rulesEngine.evaluate("issue.moved", {
+      issueId: id,
+      toStatusId: statusId,
+      fromStatusId: issue.statusId ?? null,
+      actorId: actor?.actorId ?? null,
+      actorRole: actor?.actorRole ?? null,
     });
 
     const updated = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
@@ -357,6 +419,16 @@ export class IssuesService {
         to: programmerId,
       }),
       actor,
+    });
+    // the trigger works on positions, so resolve the assignee's position first
+    const assignee = programmerId ? await this.users.findOne({ where: { id: programmerId } }) : null;
+    await this.rulesEngine.evaluate("issue.assigned", {
+      issueId: id,
+      assigneePositionId: assignee?.positionId ?? null,
+      newValue: programmerId ?? null,
+      oldValue: oldAssignee ?? null,
+      actorId: actor?.actorId ?? null,
+      actorRole: actor?.actorRole ?? null,
     });
     const updated = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
     return this.toResponse(updated!);

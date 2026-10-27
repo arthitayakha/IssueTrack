@@ -12,9 +12,10 @@ import { Position } from "../positions/position.entity";
 import { WorkSessionsModule } from "../work-sessions/work-sessions.module";
 import { PermissionsModule } from "../permissions/permissions.module";
 import { ActivityLogsModule } from "../activity-logs/activity-logs.module";
+import { RulesModule } from "../rules/rules.module";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Issue, ActivityLog, User, IssueStatus, Category, Label, Position]), WorkSessionsModule, PermissionsModule, ActivityLogsModule],
+  imports: [TypeOrmModule.forFeature([Issue, ActivityLog, User, IssueStatus, Category, Label, Position]), WorkSessionsModule, PermissionsModule, ActivityLogsModule, RulesModule],
   controllers: [IssuesController],
   providers: [IssuesService],
   exports: [IssuesService],
