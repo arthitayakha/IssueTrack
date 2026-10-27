@@ -7,6 +7,7 @@ import {
   RULE_TRIGGERS,
   RULE_TRIGGER_CATEGORIES,
   getMessageTokens,
+  getRecommendedActions,
   isActionCompatible,
 } from "@kanban/shared";
 
@@ -22,9 +23,10 @@ const ENGINE_SOURCE = readFileSync(
 );
 
 /**
- * Actions the registry advertises as `supported` but the engine still skips
- * (they land in `rule_runs` as `skipped`). Timer semantics are undecided, so
- * they are tracked here on purpose — drop an entry once the engine handles it.
+ * Timer actions parked as `unsupported`: the registry must not offer them and
+ * the engine has no `case` for them (they would only be recorded as `skipped`).
+ * Tracked on purpose — drop an entry once the time model is settled and the
+ * engine handles it again.
  */
 const ENGINE_PENDING_ACTIONS = ["work_session.start", "work_session.stop", "issue.set_time"];
 
@@ -64,6 +66,19 @@ describe("rules registry integrity", () => {
         expect(actionKeys.has(actionKey)).toBe(true);
         // never recommend a combination the picker hides as invalid
         expect(isActionCompatible(triggerKey, actionKey)).toBe(true);
+      }
+    }
+  });
+
+  it("never recommends an action the picker refuses to select", () => {
+    const unsupported = new Set(
+      RULE_ACTIONS.filter((a) => a.status === "unsupported").map((a) => a.key),
+    );
+    expect(unsupported.size).toBeGreaterThan(0); // the parked timer actions
+
+    for (const trigger of RULE_TRIGGERS) {
+      for (const actionKey of getRecommendedActions(trigger.key)) {
+        expect(unsupported.has(actionKey)).toBe(false);
       }
     }
   });
@@ -124,17 +139,20 @@ describe("rules registry integrity", () => {
   it("implements every supported action in the engine", () => {
     const supported = RULE_ACTIONS.filter((a) => a.status === "supported").map((a) => a.key);
     for (const key of supported) {
-      if (ENGINE_PENDING_ACTIONS.includes(key)) continue;
       expect(ENGINE_SOURCE).toContain(`case "${key}":`);
     }
-    // and the pending ones really are missing from the switch
+  });
+
+  it("parks the timer actions as unsupported, with no engine case", () => {
     for (const key of ENGINE_PENDING_ACTIONS) {
+      const action = RULE_ACTIONS.find((a) => a.key === key);
+      expect(action?.status).toBe("unsupported");
       expect(ENGINE_SOURCE).not.toContain(`case "${key}":`);
     }
   });
 });
 
-describe("i18n parity for the automation feature", () => {
+describe("i18n parity for the shipped features", () => {
   const readMessages = (locale: "th" | "en"): Record<string, unknown> =>
     JSON.parse(
       readFileSync(join(__dirname, `../../../web/src/messages/${locale}.json`), "utf8").replace(
@@ -158,7 +176,7 @@ describe("i18n parity for the automation feature", () => {
     leaves(readMessages(locale)[namespace] ?? {}, `${namespace}.`);
 
   // only the namespaces this feature owns — other pages have pre-existing drift
-  const NAMESPACES = ["Automation", "Notifications"];
+  const NAMESPACES = ["Automation", "Notifications", "Labels"];
 
   it.each(NAMESPACES)("%s has identical keys in th and en", (namespace) => {
     const thKeys = namespaceLeaves("th", namespace).map(([key]) => key).sort();

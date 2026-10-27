@@ -414,28 +414,38 @@ export const RULE_ACTIONS: RuleActionDef[] = [
   },
 
   // ── time ────────────────────────────────────────────────────────
+  // Parked as `unsupported` until the time model is settled: the engine has no
+  // implementation for them yet (they would only be recorded as `skipped`).
+  // Flipping them back to `supported` is a one-line change here — the picker
+  // greys out whatever this field says.
   {
     key: "work_session.start",
     category: "time",
-    status: "supported",
+    status: "unsupported",
     label: { th: "เริ่มจับเวลา", en: "Start timer" },
-    description: { th: "เริ่มจับเวลาให้ผู้รับผิดชอบ", en: "Start the timer for the assignee" },
+    description: {
+      th: "เริ่มจับเวลาให้ผู้รับผิดชอบ — ยังไม่เปิดใช้ระหว่างที่ยังไม่กำหนดรูปแบบการจับเวลา",
+      en: "Start the timer for the assignee — parked until the time model is settled",
+    },
   },
   {
     key: "work_session.stop",
     category: "time",
-    status: "supported",
+    status: "unsupported",
     label: { th: "หยุดจับเวลา", en: "Stop timer" },
-    description: { th: "หยุดจับเวลาของการ์ด", en: "Stop the timer of the card" },
+    description: {
+      th: "หยุดจับเวลาของการ์ด — ยังไม่เปิดใช้ระหว่างที่ยังไม่กำหนดรูปแบบการจับเวลา",
+      en: "Stop the timer of the card — parked until the time model is settled",
+    },
   },
   {
     key: "issue.set_time",
     category: "time",
-    status: "supported",
+    status: "unsupported",
     label: { th: "ตั้งเวลาแก้ไขจริง", en: "Set actual fix time" },
     description: {
-      th: "บันทึกเวลาที่ใช้แก้ไขจริงจากนาฬิกาจับเวลา",
-      en: "Record the actual fix time from the timer",
+      th: "บันทึกเวลาที่ใช้แก้ไขจริงจากนาฬิกาจับเวลา — ยังไม่เปิดใช้",
+      en: "Record the actual fix time from the timer — parked until the time model is settled",
     },
   },
   {
@@ -544,7 +554,12 @@ export const RULE_ACTION_RECOMMENDATIONS: Record<string, string[]> = {
 
 export function getRecommendedActions(triggerKey: string | null): string[] {
   if (!triggerKey) return [];
-  return RULE_ACTION_RECOMMENDATIONS[triggerKey] ?? [];
+  const recommended = RULE_ACTION_RECOMMENDATIONS[triggerKey] ?? [];
+  // never push an action the picker refuses to select (parked / unsupported)
+  const supported = new Set(
+    RULE_ACTIONS.filter((a) => a.status === "supported").map((a) => a.key),
+  );
+  return recommended.filter((key) => supported.has(key));
 }
 
 export function isRecommendedAction(triggerKey: string | null, actionKey: string): boolean {

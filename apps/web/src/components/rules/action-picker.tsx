@@ -230,19 +230,29 @@ export default function ActionPicker({
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1, mt: 1.5 }}>
         {actions.map((action) => {
           const isSelected = action.key === actionKey;
+          // `unsupported` = the registry knows the engine cannot run it yet
+          // (timer actions). Shown, but not selectable.
+          const unavailable = action.status === "unsupported";
           return (
             <Box
               key={action.key}
-              onClick={() => onActionChange(action.key)}
+              aria-disabled={unavailable}
+              onClick={() => {
+                if (!unavailable) onActionChange(action.key);
+              }}
               sx={{
                 p: 1.5,
                 borderRadius: 1.5,
-                cursor: "pointer",
+                cursor: unavailable ? "not-allowed" : "pointer",
                 border: "1px solid",
                 borderColor: isSelected ? "primary.main" : "divider",
                 // selected = white card + blue border (no tint), like the trigger rows
                 bgcolor: "background.paper",
-                "&:hover": { bgcolor: isSelected ? "background.paper" : "action.hover" },
+                // parked actions read as inert: no hover feedback, washed out
+                opacity: unavailable ? 0.55 : 1,
+                "&:hover": unavailable
+                  ? {}
+                  : { bgcolor: isSelected ? "background.paper" : "action.hover" },
               }}
             >
               <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
@@ -250,6 +260,9 @@ export default function ActionPicker({
                 <Typography variant="body2" fontWeight={600} sx={{ color: theme.palette.navy.main }}>
                   {actionTitle(action.key, action.label.th)}
                 </Typography>
+                {unavailable && (
+                  <Chip size="small" variant="outlined" label={t("badgeUnsupported")} />
+                )}
               </Box>
               <Typography variant="caption" color="text.secondary">
                 {actionDescription(action)}
