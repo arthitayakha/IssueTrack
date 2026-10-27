@@ -9,6 +9,7 @@
     "lint": "eslint \"src/**/*.ts\" --fix",
     "typecheck": "tsc --noEmit",
     "test": "jest",
+    "test:e2e": "node test/e2e/run-all.js",
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/data-source.ts",
     "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/data-source.ts",
     "seed": "ts-node -r tsconfig-paths/register src/seed.ts"
@@ -37,6 +38,7 @@
     "@nestjs/testing": "^10.4.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/express": "^4.17.21",
+    "@types/jest": "^30.0.0",
     "@types/multer": "^2.3.0",
     "@types/node": "^20.14.0",
     "@types/passport-jwt": "^4.0.1",
