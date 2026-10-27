@@ -9,3 +9,5 @@ dist
 coverage
 *.log
 .DS_Store
+# user-uploaded attachments live here — runtime data, never committed
+apps/api/uploads/
