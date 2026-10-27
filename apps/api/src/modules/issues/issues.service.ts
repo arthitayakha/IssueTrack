@@ -493,8 +493,13 @@ export class IssuesService {
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
-    if (actor?.actorRole === "customer" && issue.status?.name !== "BACKLOG") {
-      throw new ForbiddenException("Customer can only delete issues in BACKLOG");
+    // statuses are stored as "Backlog" — compare case-insensitively so the
+    // restriction actually matches instead of blocking every customer delete
+    if (
+      actor?.actorRole === "customer" &&
+      issue.status?.name?.toUpperCase() !== "BACKLOG"
+    ) {
+      throw new ForbiddenException("Customer can only delete issues in Backlog");
     }
     issue.deletedAt = new Date();
     issue.deletedBy = actor?.actorId ?? null;
