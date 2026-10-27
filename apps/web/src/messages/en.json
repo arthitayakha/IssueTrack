@@ -384,6 +384,8 @@
     "emptyDescription": "New comments, assignments and changes that involve you will appear here",
     "markRead": "Mark all as read",
     "markReadTooltip": "Backend not connected yet",
+    "refresh": "Refresh",
+    "loadError": "Failed to load notifications",
     "tabs": {
       "inbox": "Inbox",
       "general": "General",
@@ -397,7 +399,9 @@
       "assigned": "assigned",
       "commented": "commented on",
       "moved": "moved",
-      "edited": "edited"
+      "edited": "edited",
+      "deleted": "deleted",
+      "restored": "restored"
     },
     "emptyInbox": {
       "title": "No new notifications",

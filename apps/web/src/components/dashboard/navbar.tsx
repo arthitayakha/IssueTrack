@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   AppBar,
@@ -17,7 +17,13 @@ import { useAuthStore } from "@/lib/auth-store";
 import { usePathname, useRouter } from "@/i18n/navigation";
 import LanguageSwitcher from "./language-switcher";
 import NotificationPopover from "@/components/notifications/notification-popover";
-import { MOCK_NOTIFICATIONS } from "@/components/notifications/notifications.mock";
+import {
+  archiveNotification,
+  fetchNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  type AppNotification,
+} from "@/lib/notifications-api";
 
 export const DRAWER_WIDTH = 240;
 
@@ -29,7 +35,6 @@ export default function Navbar({ header }: { header?: React.ReactNode }) {
 
   const routeTitleMap: Record<string, string> = {
     "/issues/new": "reportIssue",
-    "/issues": "issues",
   };
   const routeTitleKey =
     routeTitleMap[pathname] ??
@@ -40,25 +45,52 @@ export default function Navbar({ header }: { header?: React.ReactNode }) {
     router.replace("/login");
   }
 
-  // TODO(backend): replace MOCK_NOTIFICATIONS with GET /notifications + polling
-  const [notifications, setNotifications] = useState(MOCK_NOTIFICATIONS);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [bellAnchorEl, setBellAnchorEl] = useState<HTMLElement | null>(null);
-  const unreadCount = notifications.filter((n) => !n.isRead && !n.isArchived).length;
 
+  const refreshNotifications = useCallback(async () => {
+    try {
+      const res = await fetchNotifications();
+      setNotifications(res.data);
+      // the badge must reflect the server count, not just the loaded rows
+      setUnreadCount(res.unreadCount);
+    } catch {
+      // keep the last known list — the next poll retries
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshNotifications();
+    const timer = setInterval(refreshNotifications, 30_000);
+    return () => clearInterval(timer);
+  }, [refreshNotifications]);
+
+  // optimistic update; on API failure the next poll resyncs the list
   function handleMarkRead(id: number) {
+    const target = notifications.find((n) => n.id === id);
+    const wasUnread = !!target && !target.isRead && !target.isArchived;
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)),
     );
+    if (wasUnread) setUnreadCount((count) => Math.max(0, count - 1));
+    markNotificationRead(id).catch(refreshNotifications);
   }
 
   function handleMarkAllRead() {
     setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    setUnreadCount(0);
+    markAllNotificationsRead().catch(refreshNotifications);
   }
 
   function handleArchive(id: number) {
+    const target = notifications.find((n) => n.id === id);
+    const wasUnread = !!target && !target.isRead && !target.isArchived;
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, isArchived: true } : n)),
     );
+    if (wasUnread) setUnreadCount((count) => Math.max(0, count - 1));
+    archiveNotification(id).catch(refreshNotifications);
   }
 
   return (

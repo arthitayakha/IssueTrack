@@ -18,7 +18,7 @@ import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { useRouter } from "@/i18n/navigation";
 import { timeAgo } from "@/lib/time-ago";
-import type { AppNotification, NotificationAction, NotificationTab } from "./notifications.mock";
+import type { AppNotification, NotificationTab } from "@/lib/notifications-api";
 
 interface NotificationPopoverProps {
   open: boolean;
@@ -89,12 +89,14 @@ export default function NotificationPopover({
     archived: { title: t("emptyArchived.title"), description: t("emptyArchived.description") },
   };
 
-  const actionLabels: Record<NotificationAction, string> = {
+  const actionLabels: Record<string, string> = {
     created: t("actions.created"),
     assigned: t("actions.assigned"),
     commented: t("actions.commented"),
     moved: t("actions.moved"),
     edited: t("actions.edited"),
+    deleted: t("actions.deleted"),
+    restored: t("actions.restored"),
   };
 
   const visibleItems = items.filter((item) => matchesTab(item, tab));
@@ -102,7 +104,7 @@ export default function NotificationPopover({
   function handleItemClick(item: AppNotification) {
     onMarkRead(item.id);
     onClose();
-    router.push("/issues");
+    router.push(item.link ?? "/boards");
   }
 
   return (
@@ -274,7 +276,7 @@ export default function NotificationPopover({
                       flexShrink: 0,
                     }}
                   >
-                    {getInitials(item.actorName)}
+                    {getInitials(item.actorName ?? "System")}
                   </Avatar>
 
                   <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -287,16 +289,33 @@ export default function NotificationPopover({
                         whiteSpace: "nowrap",
                       }}
                     >
-                      <Box component="span" sx={{ fontWeight: 700 }}>
-                        {item.actorName}
+                      <Box
+                        component="span"
+                        sx={{
+                          fontWeight: 700,
+                          ...(item.action === "deleted"
+                            ? { color: "text.secondary", textDecoration: "line-through" }
+                            : {}),
+                        }}
+                      >
+                        {item.actorName ?? "System"}
                       </Box>{" "}
-                      {actionLabels[item.action]}{" "}
-                      <Box component="span" sx={{ fontWeight: 700 }}>
+                      {actionLabels[item.action] ?? item.action}{" "}
+                      <Box
+                        component="span"
+                        sx={{
+                          fontWeight: 700,
+                          ...(item.action === "deleted"
+                            ? { color: "text.secondary", textDecoration: "line-through" }
+                            : {}),
+                        }}
+                      >
                         {item.target}
                       </Box>
                     </Typography>
                     <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                      {timeAgo(item.createdAt, locale)} • {item.context}
+                      {timeAgo(item.createdAt, locale)}
+                      {item.context ? ` • ${item.context}` : ""}
                     </Typography>
                   </Box>
 
