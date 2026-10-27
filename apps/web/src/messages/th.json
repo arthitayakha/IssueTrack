@@ -165,18 +165,6 @@
       "createAndApplyLabel": "สร้างและใส่ป้าย"
     }
   },
-  "Issues": {
-    "title": "ปัญหา",
-    "comingSoon": "หน้านี้กำลังอยู่ระหว่างการพัฒนา",
-    "trackedTime": "เวลาที่ติดตาม",
-    "actualTime": "เวลาจริง",
-    "setActualTime": "กรอกเวลาจริง",
-    "noIssues": "ไม่พบปัญหา",
-    "columnTitle": "หัวข้อ",
-    "columnStatus": "สถานะ",
-    "columnProgrammer": "ผู้รับผิดชอบ",
-    "columnTime": "เวลา"
-  },
   "Labels": {
     "title": "ป้ายกำกับ",
     "comingSoon": "หน้านี้กำลังอยู่ระหว่างการพัฒนา"
@@ -404,7 +392,6 @@
     "dashboard": "แดชบอร์ด",
     "boards": "บอร์ด",
     "reportIssue": "แจ้งปัญหา",
-    "issues": "ปัญหา",
     "labels": "ป้ายกำกับ",
     "comments": "ควมคิดเห็น",
     "users": "จัดการผู้ใช้",
@@ -462,7 +449,23 @@
       "emptyTitle": "ยังไม่มีประวัติการรัน",
       "emptyDescription": "เมื่อระบบเริ่มรันกฎ ผลแต่ละครั้งจะแสดงที่นี่",
       "refresh": "รีเฟรช",
-      "refreshTooltip": "ยังไม่ได้เชื่อม backend"
+      "refreshTooltip": "ยังไม่ได้เชื่อม backend",
+      "filterAll": "ทุกกฎ",
+      "loadError": "โหลดประวัติไม่สำเร็จ",
+      "total": "ทั้งหมด {count} รายการ",
+      "columnTime": "เวลา",
+      "columnRule": "กฎ",
+      "columnTrigger": "เหตุการณ์",
+      "columnAction": "การกระทำ",
+      "columnIssue": "การ์ด",
+      "columnStatus": "ผล",
+      "columnDuration": "เวลาที่ใช้",
+      "statusApplied": "ผ่าน",
+      "statusSkipped": "ข้าม",
+      "statusFailed": "ล้มเหลว",
+      "prev": "ก่อนหน้า",
+      "next": "ถัดไป",
+      "pageOf": "หน้า {page}/{total}"
     },
     "wizard": {
       "title": "สร้างกฎใหม่",

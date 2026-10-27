@@ -164,18 +164,6 @@
       "createAndApplyLabel": "Create & apply"
     }
   },
-  "Issues": {
-    "title": "Issues",
-    "comingSoon": "This page is under development",
-    "trackedTime": "Tracked Time",
-    "actualTime": "Actual Time",
-    "setActualTime": "Set Actual Time",
-    "noIssues": "No issues found",
-    "columnTitle": "Title",
-    "columnStatus": "Status",
-    "columnProgrammer": "Programmer",
-    "columnTime": "Time"
-  },
   "Labels": {
     "title": "Labels",
     "comingSoon": "This page is under development"
@@ -428,7 +416,6 @@
     "dashboard": "Dashboard",
     "boards": "Boards",
     "reportIssue": "Report Issue",
-    "issues": "Issues",
     "labels": "Labels",
     "users": "Users",
     "roles": "Roles",
@@ -499,7 +486,23 @@
       "emptyTitle": "No runs yet",
       "emptyDescription": "Every time the system executes a rule, the result will appear here",
       "refresh": "Refresh",
-      "refreshTooltip": "Backend not connected yet"
+      "refreshTooltip": "Backend not connected yet",
+      "filterAll": "All rules",
+      "loadError": "Failed to load runs",
+      "total": "Total {count}",
+      "columnTime": "Time",
+      "columnRule": "Rule",
+      "columnTrigger": "Trigger",
+      "columnAction": "Action",
+      "columnIssue": "Card",
+      "columnStatus": "Result",
+      "columnDuration": "Duration",
+      "statusApplied": "Applied",
+      "statusSkipped": "Skipped",
+      "statusFailed": "Failed",
+      "prev": "Previous",
+      "next": "Next",
+      "pageOf": "Page {page} of {total}"
     },
     "wizard": {
       "title": "Create a rule",
