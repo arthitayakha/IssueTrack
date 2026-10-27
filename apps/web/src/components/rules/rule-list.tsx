@@ -26,9 +26,11 @@ import {
 } from "@mui/material";
 import BoltIcon from "@mui/icons-material/Bolt";
 import DeleteIcon from "@mui/icons-material/Delete";
+import EditIcon from "@mui/icons-material/Edit";
 import LockIcon from "@mui/icons-material/Lock";
 import LockOpenIcon from "@mui/icons-material/LockOpen";
 import { useTranslations } from "next-intl";
+import { Link } from "@/i18n/navigation";
 import type { RuleDto } from "@kanban/shared";
 import { RULE_ACTIONS, RULE_TRIGGER_CATEGORIES, buildRuleSentence, getActionByKey } from "@kanban/shared";
 import { useNotification } from "@/components/notification";
@@ -270,6 +272,15 @@ export default function RuleList({ rules, onToggle, onDelete }: RuleListProps) {
                   <Tooltip title={rule.isActive ? t("enabled") : t("disabled")}>
                     <Switch checked={rule.isActive} onChange={(e) => onToggle(rule, e.target.checked)} size="small" />
                   </Tooltip>
+                  <IconButton
+                    size="small"
+                    aria-label={t("edit")}
+                    component={Link}
+                    href={`/automation/${rule.id}`}
+                    sx={{ color: theme.palette.primary.main, flexShrink: 0 }}
+                  >
+                    <EditIcon fontSize="small" />
+                  </IconButton>
                   <IconButton
                     size="small"
                     aria-label={t("delete")}

@@ -395,7 +395,34 @@
     "emptyTitle": "No notifications yet",
     "emptyDescription": "New comments, assignments and changes that involve you will appear here",
     "markRead": "Mark all as read",
-    "markReadTooltip": "Backend not connected yet"
+    "markReadTooltip": "Backend not connected yet",
+    "tabs": {
+      "inbox": "Inbox",
+      "general": "General",
+      "archived": "Archived"
+    },
+    "settings": "Notification settings",
+    "archive": "Archive",
+    "unread": "Unread",
+    "actions": {
+      "created": "created",
+      "assigned": "assigned",
+      "commented": "commented on",
+      "moved": "moved",
+      "edited": "edited"
+    },
+    "emptyInbox": {
+      "title": "No new notifications",
+      "description": "Unread notifications will show up here"
+    },
+    "emptyGeneral": {
+      "title": "Nothing here yet",
+      "description": "Notifications you have read will move here"
+    },
+    "emptyArchived": {
+      "title": "Nothing archived yet",
+      "description": "Notifications you archive will live here"
+    }
   },
   "Nav": {
     "dashboard": "Dashboard",
@@ -464,8 +491,19 @@
     "enabled": "Active",
     "disabled": "Inactive",
     "delete": "Delete",
+    "edit": "Edit",
+    "runs": {
+      "title": "Rule runs",
+      "subtitle": "Execution history of your automation rules",
+      "backendNote": "Backend not connected yet — runs will show up here once it is ready",
+      "emptyTitle": "No runs yet",
+      "emptyDescription": "Every time the system executes a rule, the result will appear here",
+      "refresh": "Refresh",
+      "refreshTooltip": "Backend not connected yet"
+    },
     "wizard": {
       "title": "Create a rule",
+      "editTitle": "Edit rule",
       "subtitle": "Select trigger → select action → review and save",
       "step1": "Select trigger",
       "step2": "Select action",
@@ -511,7 +549,9 @@
       "active": "Active",
       "payload": "Payload to save (JSON)",
       "save": "Save",
+      "saveEdit": "Save changes",
       "saveTooltip": "Backend not connected yet",
+      "saveError": "Failed to save. Please try again.",
       "insertToken": "Insert variable",
       "noTrigger": "No trigger selected",
       "noAction": "No action selected",

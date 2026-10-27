@@ -13,10 +13,13 @@ import {
   getFieldLabel,
   isActionCompatible,
   isDropdownFieldType,
+  type RuleDto,
   type RuleOperator,
 } from "@kanban/shared";
 import { fetchCategories, fetchPositions, fetchPriorities, fetchStatuses, fetchUsers } from "@/lib/board-api";
 import { fetchLabels } from "@/lib/labels-api";
+import { useNotification } from "@/components/notification";
+import { createRule, updateRule, type RulePayload } from "@/lib/rules-api";
 import TriggerPicker, { slotKey, type SlotValues } from "./trigger-picker";
 import ActionPicker from "./action-picker";
 import RuleReview from "./rule-review";
@@ -45,20 +48,37 @@ async function fetchRoleNames(token: string | null): Promise<string[]> {
   }
 }
 
-export default function RuleWizard() {
+/** Prefill the sentence slots from a stored rule so edit mode opens with its values. */
+function slotValuesFromRule(rule?: RuleDto): SlotValues {
+  if (!rule) return {};
+  const tpl = getTriggerByKey(rule.triggerKey)?.templates.find((tp) => tp.key === rule.templateKey);
+  if (!tpl) return {};
+  const values: SlotValues = {};
+  for (const cond of rule.conditions) {
+    const slot = tpl.slots.find((s) => s.field === cond.field);
+    if (slot) values[slotKey(rule.triggerKey, rule.templateKey, slot.name)] = String(cond.value ?? "");
+  }
+  return values;
+}
+
+export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
   const t = useTranslations("Automation.wizard");
   const router = useRouter();
   const token = useAuthStore((s) => s.token);
+  const { notify } = useNotification();
 
   const [refs, setRefs] = useState<ReferenceData>(EMPTY_REFERENCES);
   const [step, setStep] = useState(0);
+  const [saving, setSaving] = useState(false);
 
-  const [triggerKey, setTriggerKey] = useState<string | null>(null);
-  const [templateKey, setTemplateKey] = useState<string | null>(null);
-  const [slotValues, setSlotValues] = useState<SlotValues>({});
+  const [triggerKey, setTriggerKey] = useState<string | null>(initialRule?.triggerKey ?? null);
+  const [templateKey, setTemplateKey] = useState<string | null>(initialRule?.templateKey ?? null);
+  const [slotValues, setSlotValues] = useState<SlotValues>(() => slotValuesFromRule(initialRule));
 
-  const [actionKey, setActionKey] = useState<string | null>(null);
-  const [actionConfig, setActionConfig] = useState<Record<string, string>>({});
+  const [actionKey, setActionKey] = useState<string | null>(initialRule?.actionKey ?? null);
+  const [actionConfig, setActionConfig] = useState<Record<string, string>>(() =>
+    Object.fromEntries(Object.entries(initialRule?.actionConfig ?? {}).map(([k, v]) => [k, String(v)])),
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -229,6 +249,50 @@ export default function RuleWizard() {
   const error = stepError(step);
   const steps = [t("step1"), t("step2"), t("step3")];
 
+  /** Rule name is generated from the two summary sentences (kept ≤150 chars). */
+  function buildRuleName(): string {
+    const name = `${summaryWhen} → ${summaryThen}`;
+    return name.length > 150 ? `${name.slice(0, 147)}…` : name;
+  }
+
+  function buildPayload(): RulePayload {
+    return {
+      name: buildRuleName(),
+      triggerKey: triggerKey ?? "",
+      templateKey,
+      category: trigger?.category ?? "",
+      actionKey: actionKey ?? "",
+      actionConfig,
+      conditions: builtConditions.map((c) => ({
+        field: c.field,
+        operator: c.operator,
+        value: c.value,
+        position: c.position,
+      })),
+      // editing must keep the rule's on/off state, creating starts active
+      isActive: initialRule ? initialRule.isActive : true,
+      stopOnError: initialRule ? initialRule.stopOnError : false,
+    };
+  }
+
+  /**
+   * Fully wired to POST/PUT /rules — the button stays disabled with its
+   * "backend not connected" tooltip until the rules API lands.
+   */
+  async function handleSave() {
+    if (saving || !triggerKey || !actionKey) return;
+    setSaving(true);
+    try {
+      const payload = buildPayload();
+      if (initialRule) await updateRule(initialRule.id, payload);
+      else await createRule(payload);
+      router.push("/automation");
+    } catch (err) {
+      notify(err instanceof Error ? err.message : t("saveError"), "error");
+      setSaving(false);
+    }
+  }
+
   return (
     <Box>
       <Stepper activeStep={step} sx={{ mb: 3, maxWidth: 800, mx: "auto" }}>
@@ -302,8 +366,8 @@ export default function RuleWizard() {
         ) : (
           <Tooltip title={t("saveTooltip")}>
             <span>
-              <Button variant="contained" disabled>
-                {t("save")}
+              <Button variant="contained" disabled onClick={handleSave}>
+                {initialRule ? t("saveEdit") : t("save")}
               </Button>
             </span>
           </Tooltip>

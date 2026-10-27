@@ -10,12 +10,43 @@ export interface ListRulesOptions {
   isActive?: boolean;
 }
 
+/** Everything the wizard sends when creating or updating a rule. */
+export interface RulePayload {
+  name: string;
+  triggerKey: string;
+  templateKey: string | null;
+  category: string;
+  actionKey: string;
+  actionConfig: Record<string, string>;
+  conditions: Array<{ field: string; operator: string; value: string; position?: number }>;
+  isActive: boolean;
+  stopOnError: boolean;
+}
+
 export function getToken(): string | null {
   return useAuthStore.getState().token;
 }
 
 export async function fetchRules(): Promise<RuleDto[]> {
   return apiFetch<RuleDto[]>("/rules", {}, getToken());
+}
+
+export async function fetchRule(id: number | string): Promise<RuleDto> {
+  return apiFetch<RuleDto>(`/rules/${id}`, {}, getToken());
+}
+
+export async function createRule(payload: RulePayload): Promise<RuleDto> {
+  return apiFetch<RuleDto>("/rules", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }, getToken());
+}
+
+export async function updateRule(id: number | string, payload: RulePayload): Promise<RuleDto> {
+  return apiFetch<RuleDto>(`/rules/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  }, getToken());
 }
 
 export async function toggleRule(id: number, isActive: boolean): Promise<RuleDto> {

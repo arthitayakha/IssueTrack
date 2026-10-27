@@ -103,13 +103,13 @@ export default function AutomationPage() {
               </Typography>
             </Box>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <Tooltip title={t("historyTooltip")}>
-                <span>
-                  <Button variant="outlined" startIcon={<HistoryIcon />} disabled>
-                    {t("history")}
-                  </Button>
-                </span>
-              </Tooltip>
+              <Button
+                variant="outlined"
+                startIcon={<HistoryIcon />}
+                onClick={() => router.push("/automation/runs")}
+              >
+                {t("history")}
+              </Button>
               <Tooltip title={t("createTooltip")}>
                 <span>
                   <Button
