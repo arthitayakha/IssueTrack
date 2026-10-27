@@ -557,7 +557,7 @@ export default function ReportIssuePage() {
 
                 <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1 }}>
                   <Button
-                    onClick={() => router.push("/issues")}
+                    onClick={() => router.push("/boards")}
                     color="inherit"
                     size="small"
                     disabled={submitting}

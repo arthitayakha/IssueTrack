@@ -89,7 +89,7 @@ npm run migration:generate
 - **i18n is implemented** with `next-intl`: locales `["th", "en"]`, default `th`. Messages in `src/messages/{th,en}.json`. Use `useTranslations()` from `next-intl` in client components.
 - **Navigation**: use `useRouter`, `usePathname`, `Link`, `redirect` from `@/i18n/navigation` — NOT from `next/navigation`.
 - **Middleware**: `middleware.ts` (root + `src/`) is next-intl locale middleware, not auth. Auth is still client-side only (pages redirect in `useEffect`).
-- **Routes**: `/` (dashboard), `/login`, `/users`, `/roles`, `/settings`, `/boards`, `/issues`, `/labels`, `/comments`. All under `[locale]/`.
+- **Routes**: `/` (dashboard), `/login`, `/users`, `/roles`, `/settings`, `/boards`, `/issues/new` (report issue), `/labels`, `/comments`. All under `[locale]/`.
 - **`[locale]/layout.tsx`**: `generateStaticParams` returns all locales; `notFound()` for invalid locale; wraps children in `QueryClientProvider` + `ThemeProvider` + `NextIntlClientProvider`.
 - Theme: `apps/web/src/lib/theme.ts`; `ThemeProvider` + `CssBaseline` wired in `[locale]/layout.tsx`. It augments MUI with palette colors `navy` / `sky` and `theme.custom.loginGradient` / `theme.custom.cardShadow`. Use these tokens; do not hardcode hex.
 - Auth state: Zustand `useAuthStore`, persisted under key `kanban-auth` (localStorage when "remember me", else sessionStorage).
