@@ -364,6 +364,15 @@
     "errorTitle": "เกิดข้อผิดพลาด",
     "genericError": "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง"
   },
+  "Notifications": {
+    "title": "การแจ้งเตือน",
+    "subtitle": "รายการแจ้งเตือนจากกิจกรรมในระบบ",
+    "backendNote": "ยังไม่ได้เชื่อม backend — รายการจะแสดงที่นี่เมื่อระบบพร้อม",
+    "emptyTitle": "ยังไม่มีการแจ้งเตือน",
+    "emptyDescription": "เมื่อมีคอมเมนต์ใหม่ การมอบหมาย หรือความเปลี่ยนแปลงที่เกี่ยวกับคุณ จะขึ้นที่นี่",
+    "markRead": "ทำเครื่องหมายว่าอ่านแล้ว",
+    "markReadTooltip": "ยังไม่ได้เชื่อม backend"
+  },
   "Nav": {
     "dashboard": "แดชบอร์ด",
     "boards": "บอร์ด",
@@ -378,7 +387,8 @@
     "reports": "รายงาน",
     "signOut": "ออกจากระบบ",
     "switchLanguage": "เปลี่ยนภาษา",
-    "automation": "กฎอัตโนมัติ"
+    "automation": "กฎอัตโนมัติ",
+    "notifications": "การแจ้งเตือน"
   },
   "timer": {
     "elapsed": "เวลาที่ผ่านไป",
@@ -438,6 +448,8 @@
       "addCondition": "+ เพิ่มเงื่อนไข",
       "remove": "ลบ",
       "when": "เมื่อ",
+      "sectionTrigger": "เหตุการณ์",
+      "sectionAction": "การกระทำ",
       "then": "แล้ว",
       "badgeMvp": "MVP",
       "badgePlanned": "เตรียมไว้",
@@ -461,8 +473,9 @@
       "priorityHint": "น้อย = ทำก่อนเมื่อกฎชนกัน",
       "active": "เปิดใช้งาน",
       "payload": "ข้อมูลที่จะบันทึก (JSON)",
-      "save": "บันทึกกฎ",
+      "save": "บันทึก",
       "saveTooltip": "ยังไม่ได้เชื่อม backend",
+      "insertToken": "แทรกตัวแปร",
       "noTrigger": "ยังไม่ได้เลือกเหตุการณ์",
       "noAction": "ยังไม่ได้เลือกการกระทำ",
       "errTrigger": "กรุณาเลือกเหตุการณ์",
@@ -476,8 +489,6 @@
       "recommended": "แนะนำ",
       "appliesTo": "การกระทำนี้จะทำงานกับการ์ดที่ตรงเงื่อนไข",
       "selectOption": "— เลือก —",
-      "conditions": "เงื่อนไข",
-      "allCases": "ทุกกรณี (ไม่จำกัด)",
       "paramTargetStatus": "ย้ายไปสถานะ",
       "defaultStatusHint": "การ์ดใหม่จะถูกย้ายมาที่นี่เป็นค่าเริ่มต้น",
       "defaultStatusActionLabel": "ตั้งสถานะเริ่มต้นของการ์ดใหม่",

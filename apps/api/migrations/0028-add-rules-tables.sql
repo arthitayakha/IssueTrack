@@ -5,14 +5,12 @@
 CREATE TABLE IF NOT EXISTS rules (
   id              SERIAL PRIMARY KEY,
   name            VARCHAR(150) NOT NULL,
-  description     TEXT,
   trigger_key     VARCHAR(64)  NOT NULL,      -- "issue.moved"
   template_key    VARCHAR(64),                -- "moved_to"
   category        VARCHAR(64),                -- "card_move"
   action_key      VARCHAR(64)  NOT NULL,      -- "issue.lock"
   action_config   JSONB        NOT NULL DEFAULT '{}',
   condition_group VARCHAR(4)   DEFAULT 'AND',
-  priority        INT          DEFAULT 5,
   is_active       BOOLEAN      DEFAULT false,
   stop_on_error   BOOLEAN      DEFAULT false,
   created_by      INT          REFERENCES users(id) ON DELETE SET NULL,

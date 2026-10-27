@@ -388,6 +388,15 @@
     "errorTitle": "Error",
     "genericError": "Something went wrong. Please try again."
   },
+  "Notifications": {
+    "title": "Notifications",
+    "subtitle": "Activity alerts from around the app",
+    "backendNote": "Backend not connected yet — items will show up here once it is ready",
+    "emptyTitle": "No notifications yet",
+    "emptyDescription": "New comments, assignments and changes that involve you will appear here",
+    "markRead": "Mark all as read",
+    "markReadTooltip": "Backend not connected yet"
+  },
   "Nav": {
     "dashboard": "Dashboard",
     "boards": "Boards",
@@ -412,7 +421,8 @@
     "priority": "Priorities",
     "report": "Reports",
     "selectAll": "Select All",
-    "automation": "Automation"
+    "automation": "Automation",
+    "notifications": "Notifications"
   },
   "pagination": {
     "showing": "Showing {start}-{end} of {total}"
@@ -475,6 +485,8 @@
       "addCondition": "+ Add condition",
       "remove": "Remove",
       "when": "When",
+      "sectionTrigger": "Trigger",
+      "sectionAction": "Action",
       "then": "then",
       "badgeMvp": "MVP",
       "badgePlanned": "Planned",
@@ -498,8 +510,9 @@
       "priorityHint": "Lower runs first when rules conflict",
       "active": "Active",
       "payload": "Payload to save (JSON)",
-      "save": "Save rule",
+      "save": "Save",
       "saveTooltip": "Backend not connected yet",
+      "insertToken": "Insert variable",
       "noTrigger": "No trigger selected",
       "noAction": "No action selected",
       "errTrigger": "Please select a trigger",
@@ -513,8 +526,6 @@
       "recommended": "Recommended",
       "appliesTo": "This action applies to the card that matches the conditions",
       "selectOption": "— Select —",
-      "conditions": "Conditions",
-      "allCases": "All cases (no filter)",
       "paramTargetStatus": "Move to status",
       "defaultStatusHint": "New cards are moved here by default",
       "defaultStatusActionLabel": "Set the default status for new cards",

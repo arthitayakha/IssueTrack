@@ -4,12 +4,14 @@ import { useTranslations } from "next-intl";
 import {
   AppBar,
   Avatar,
+  Badge,
   Box,
   IconButton,
   Toolbar,
   Typography,
 } from "@mui/material";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
+import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePathname, useRouter } from "@/i18n/navigation";
 import LanguageSwitcher from "./language-switcher";
@@ -35,6 +37,9 @@ export default function Navbar({ header }: { header?: React.ReactNode }) {
     router.replace("/login");
   }
 
+  // TODO(backend): count unread items from GET /notifications — 0 hides the badge
+  const unreadCount = 0;
+
   return (
     <AppBar
       position="fixed"
@@ -56,6 +61,16 @@ export default function Navbar({ header }: { header?: React.ReactNode }) {
           )}
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexShrink: 0 }}>
+          <IconButton
+            onClick={() => router.push("/notifications")}
+            aria-label={t("notifications")}
+            title={t("notifications")}
+            size="small"
+          >
+            <Badge badgeContent={unreadCount} color="error">
+              <NotificationsNoneIcon fontSize="small" />
+            </Badge>
+          </IconButton>
           <LanguageSwitcher />
           <Typography
             variant="body2"

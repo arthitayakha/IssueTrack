@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Box, Button, Step, StepLabel, Stepper } from "@mui/material";
+import { Box, Button, Step, StepLabel, Stepper, Tooltip } from "@mui/material";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { apiFetch } from "@/lib/api";
@@ -21,6 +21,7 @@ import TriggerPicker, { slotKey, type SlotValues } from "./trigger-picker";
 import ActionPicker from "./action-picker";
 import RuleReview from "./rule-review";
 import { EMPTY_REFERENCES, type ReferenceData } from "./reference-data";
+import { getParamLabel } from "./param-labels";
 
 /** A single condition derived from the values typed into the sentence. */
 interface RuleConditionRow {
@@ -58,11 +59,6 @@ export default function RuleWizard() {
 
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [actionConfig, setActionConfig] = useState<Record<string, string>>({});
-
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [priority, setPriority] = useState(5);
-  const [isActive, setIsActive] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,15 +126,6 @@ export default function RuleWizard() {
       .filter((c) => c.value !== "");
   }
 
-  function buildActionConfig(): Record<string, string> {
-    if (!action?.configSchema) return {};
-    const out: Record<string, string> = {};
-    for (const key of Object.keys(action.configSchema)) {
-      out[key] = actionConfig[key] ?? "";
-    }
-    return out;
-  }
-
   function resolveValue(field: string, value: unknown): string {
     if (value == null) return "";
     const raw = String(value);
@@ -196,7 +183,7 @@ export default function RuleWizard() {
       }
       return null;
     }
-    if (!name.trim()) return t("errName");
+    // step ③ shows the summary only — nothing left to validate
     return null;
   }
 
@@ -212,28 +199,32 @@ export default function RuleWizard() {
     ? `${action.label.th}${actionConfig.reason ? ` (${actionConfig.reason})` : ""}`
     : t("noAction");
 
-  const payload = JSON.stringify(
-    {
-      name: name || null,
-      description: description || null,
-      triggerKey,
-      templateKey,
-      category: trigger?.category ?? null,
-      actionKey,
-      actionConfig: buildActionConfig(),
-      conditions: builtConditions.map((c) => ({
-        field: c.field,
-        operator: c.operator,
-        value: c.value,
-        position: c.position ?? 0,
-      })),
-      priority,
-      isActive,
-      stopOnError: false,
-    },
-    null,
-    2,
-  );
+  /** Action config values as human text for the step ③ "action" block. */
+  function resolveConfigValue(key: string, value: string): string {
+    switch (key) {
+      case "targetStatus":
+        return refs.statuses.find((s) => s.id === Number(value))?.name ?? value;
+      case "position":
+        return refs.positions.find((p) => p.id === Number(value))?.name ?? value;
+      case "priority":
+        return refs.priorities.find((p) => p.id === Number(value))?.name ?? value;
+      case "category":
+        return refs.categories.find((c) => c.id === Number(value))?.name ?? value;
+      case "label":
+        return refs.labels.find((l) => String(l.id) === value)?.name ?? value;
+      default:
+        return value;
+    }
+  }
+
+  const actionParams = action?.configSchema
+    ? Object.entries(action.configSchema)
+        .filter(([key]) => (actionConfig[key] ?? "").trim() !== "")
+        .map(([key]) => ({
+          label: getParamLabel(t, key),
+          value: resolveConfigValue(key, actionConfig[key] ?? ""),
+        }))
+    : [];
 
   const error = stepError(step);
   const steps = [t("step1"), t("step2"), t("step3")];
@@ -282,15 +273,7 @@ export default function RuleWizard() {
             summaryWhen={summaryWhen}
             summaryThen={summaryThen}
             conditionRows={conditionRows}
-            name={name}
-            description={description}
-            priority={priority}
-            isActive={isActive}
-            payload={payload}
-            onNameChange={setName}
-            onDescriptionChange={setDescription}
-            onPriorityChange={setPriority}
-            onIsActiveChange={setIsActive}
+            actionParams={actionParams}
           />
         )}
       </Box>
@@ -308,13 +291,23 @@ export default function RuleWizard() {
         <Button variant="text" onClick={() => router.push("/automation")}>
           {t("cancel")}
         </Button>
-        <Button
-          variant="contained"
-          disabled={error != null}
-          onClick={() => setStep(Math.min(step + 1, steps.length - 1))}
-        >
-          {t("next")}
-        </Button>
+        {step < steps.length - 1 ? (
+          <Button
+            variant="contained"
+            disabled={error != null}
+            onClick={() => setStep(Math.min(step + 1, steps.length - 1))}
+          >
+            {t("next")}
+          </Button>
+        ) : (
+          <Tooltip title={t("saveTooltip")}>
+            <span>
+              <Button variant="contained" disabled>
+                {t("save")}
+              </Button>
+            </span>
+          </Tooltip>
+        )}
       </Box>
     </Box>
   );

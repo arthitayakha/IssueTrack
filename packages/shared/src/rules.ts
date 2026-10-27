@@ -92,6 +92,12 @@ export interface RuleTriggerDef {
   templates: RuleTemplateDef[];
 }
 
+/** A variable that can be dropped into a free-text message (auto-comment). */
+export interface RulePlaceholder {
+  token: string;
+  label: { th: string; en: string };
+}
+
 export type RuleActionStatus = "supported" | "unsupported";
 
 export interface RuleActionDef {
@@ -106,14 +112,12 @@ export interface RuleActionDef {
 export interface RuleDto {
   id: number;
   name: string;
-  description: string | null;
   triggerKey: string;
   templateKey: string | null;
   category: string;
   actionKey: string;
   actionConfig: Record<string, unknown>;
   conditions: RuleCondition[];
-  priority: number;
   isActive: boolean;
   stopOnError: boolean;
   createdBy: number | null;
@@ -314,7 +318,7 @@ export const RULE_ACTION_CATEGORIES: Array<{ key: string; label: { th: string; e
   { key: "card", label: { th: "การ์ด & สถานะ", en: "Cards & Status" } },
   { key: "labels", label: { th: "ป้าย & หมวด & ลำดับ", en: "Labels, Categories & Priority" } },
   { key: "time", label: { th: "เวลา", en: "Time" } },
-  { key: "content", label: { th: "เนื้อหา & แจ้งเตือน", en: "Content & Notifications" } },
+  { key: "content", label: { th: "เนื้อหา", en: "Content" } },
 ];
 
 export const RULE_ACTIONS: RuleActionDef[] = [
@@ -412,8 +416,10 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     category: "time",
     status: "supported",
     label: { th: "ตั้งเวลาแก้ไขจริง", en: "Set actual fix time" },
-    description: { th: "บันทึกเวลาที่ใช้แก้ไขจริง (นาที)", en: "Record the actual fix duration in minutes" },
-    configSchema: { minutes: { type: "number", required: true } },
+    description: {
+      th: "บันทึกเวลาที่ใช้แก้ไขจริงจากนาฬิกาจับเวลา",
+      en: "Record the actual fix time from the timer",
+    },
   },
   {
     key: "issue.set_due_date",
@@ -423,7 +429,7 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     description: { th: "กำหนดวันที่ครบกำหนด — ระบบยังไม่มีฟิลด์วันครบกำหนด", en: "Set a deadline — the system has no due date field yet" },
   },
 
-  // ── content & notifications ─────────────────────────────────────
+  // ── content ─────────────────────────────────────────────────────
   {
     key: "issue.comment",
     category: "content",
@@ -431,17 +437,6 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     label: { th: "เพิ่มคอมเมนต์อัตโนมัติ", en: "Add a comment" },
     description: { th: "โพสต์คอมเมนต์ในการ์ดให้อัตโนมัติ", en: "Post a comment on the card automatically" },
     configSchema: { text: { type: "text", required: true, maxLength: 1000 } },
-  },
-  {
-    key: "notify",
-    category: "content",
-    status: "supported",
-    label: { th: "แจ้งเตือน", en: "Notify" },
-    description: { th: "ส่งข้อความแจ้งเตือนให้ผู้ที่เกี่ยวข้อง", en: "Send a notification to the relevant people" },
-    configSchema: {
-      target: { type: "notify_target", required: true },
-      message: { type: "text", required: false, maxLength: 1000 },
-    },
   },
   {
     key: "issue.delete",
@@ -513,35 +508,21 @@ export function isActionCompatible(triggerKey: string | null, actionKey: string)
   return !INVALID_ACTION_COMBOS.some((c) => c.trigger === triggerKey && c.action === actionKey);
 }
 
-/** Actions that make sense with every trigger, so they always stay listed. */
-export const UNIVERSAL_RULE_ACTIONS = ["notify", "issue.comment"];
-
-/**
- * The actions shown for a trigger: its recommendations, plus the universal
- * ones, minus the invalid combos. Actions that do not fit the trigger are
- * hidden instead of being offered and then rejected.
- */
-export function getActionsForTrigger(triggerKey: string | null): RuleActionDef[] {
-  if (!triggerKey) return RULE_ACTIONS; // no trigger picked yet — show everything
-  const allowed = new Set([...getRecommendedActions(triggerKey), ...UNIVERSAL_RULE_ACTIONS]);
-  return RULE_ACTIONS.filter((a) => allowed.has(a.key) && isActionCompatible(triggerKey, a.key));
-}
-
 /** Actions that make sense for a trigger — surfaced first with a "recommended" badge. */
 export const RULE_ACTION_RECOMMENDATIONS: Record<string, string[]> = {
-  "issue.moved": ["work_session.start", "work_session.stop", "issue.lock", "notify", "issue.set_priority"],
-  "issue.created": ["issue.move_status", "notify", "issue.assign", "issue.add_label", "issue.set_priority"],
-  "issue.assigned": ["notify", "issue.comment"],
-  "comment.created": ["notify"],
-  "attachment.created": ["notify"],
-  "issue.title_changed": ["notify", "issue.add_label"],
-  "issue.description_changed": ["notify", "issue.add_label"],
-  "issue.priority_changed": ["notify"],
-  "issue.category_changed": ["notify", "issue.set_category"],
-  "issue.deleted": ["notify"],
-  "issue.restored": ["notify", "issue.move_status"],
-  "work_session.started": ["notify", "issue.set_time"],
-  "work_session.stopped": ["notify", "issue.set_time"],
+  "issue.moved": ["work_session.start", "work_session.stop", "issue.lock", "issue.set_priority"],
+  "issue.created": ["issue.move_status", "issue.assign", "issue.add_label", "issue.set_priority"],
+  "issue.assigned": ["issue.comment"],
+  "comment.created": [],
+  "attachment.created": [],
+  "issue.title_changed": ["issue.add_label"],
+  "issue.description_changed": ["issue.add_label"],
+  "issue.priority_changed": [],
+  "issue.category_changed": ["issue.set_category"],
+  "issue.deleted": [],
+  "issue.restored": ["issue.move_status"],
+  "work_session.started": ["issue.set_time"],
+  "work_session.stopped": ["issue.set_time"],
 };
 
 export function getRecommendedActions(triggerKey: string | null): string[] {
@@ -551,6 +532,47 @@ export function getRecommendedActions(triggerKey: string | null): string[] {
 
 export function isRecommendedAction(triggerKey: string | null, actionKey: string): boolean {
   return getRecommendedActions(triggerKey).includes(actionKey);
+}
+
+/** Tokens every message can use — the card it happened on and who did it. */
+const COMMON_MESSAGE_TOKENS: RulePlaceholder[] = [
+  { token: "{ชื่อการ์ด}", label: { th: "ชื่อของการ์ดที่เกิดเหตุ", en: "Title of the card involved" } },
+  { token: "{ผู้กระทำ}", label: { th: "คนที่ทำสิ่งนี้ (สร้าง / แก้ไข / ย้าย)", en: "Who performed the action" } },
+];
+
+/** Extra tokens that only exist for a specific trigger. */
+const TRIGGER_MESSAGE_TOKENS: Record<string, RulePlaceholder[]> = {
+  "issue.moved": [
+    { token: "{สถานะเดิม}", label: { th: "สถานะก่อนย้าย", en: "Status before the move" } },
+    { token: "{สถานะใหม่}", label: { th: "สถานะหลังย้าย", en: "Status after the move" } },
+  ],
+  "issue.assigned": [{ token: "{ตำแหน่ง}", label: { th: "ตำแหน่งที่มอบหมาย", en: "Assigned position" } }],
+  "comment.created": [
+    { token: "{ข้อความคอมเมนต์}", label: { th: "ข้อความคอมเมนต์ที่ถูกส่ง", en: "The comment that was posted" } },
+  ],
+  "attachment.created": [
+    { token: "{ชื่อไฟล์}", label: { th: "ชื่อไฟล์ที่ถูกแนบ", en: "Name of the attached file" } },
+  ],
+  "issue.title_changed": [{ token: "{ชื่อใหม่}", label: { th: "ชื่อการ์ดใหม่", en: "New card title" } }],
+  "issue.description_changed": [
+    { token: "{รายละเอียดใหม่}", label: { th: "รายละเอียดใหม่", en: "New description" } },
+  ],
+  "issue.priority_changed": [
+    { token: "{ความสำคัญใหม่}", label: { th: "ความสำคัญใหม่", en: "New priority" } },
+  ],
+  "issue.category_changed": [{ token: "{หมวดหมู่ใหม่}", label: { th: "หมวดหมู่ใหม่", en: "New category" } }],
+  "work_session.stopped": [
+    { token: "{ระยะเวลา}", label: { th: "เวลาที่ใช้ทำ (นาที)", en: "Time spent (minutes)" } },
+  ],
+};
+
+/**
+ * Tokens offered under a free-text message field for the chosen trigger —
+ * the engine substitutes them when the rule actually runs.
+ */
+export function getMessageTokens(triggerKey: string | null): RulePlaceholder[] {
+  if (!triggerKey) return COMMON_MESSAGE_TOKENS;
+  return [...COMMON_MESSAGE_TOKENS, ...(TRIGGER_MESSAGE_TOKENS[triggerKey] ?? [])];
 }
 
 export function getTriggerByKey(key: string): RuleTriggerDef | undefined {

@@ -28,7 +28,6 @@ import BoltIcon from "@mui/icons-material/Bolt";
 import DeleteIcon from "@mui/icons-material/Delete";
 import LockIcon from "@mui/icons-material/Lock";
 import LockOpenIcon from "@mui/icons-material/LockOpen";
-import NotificationsIcon from "@mui/icons-material/Notifications";
 import { useTranslations } from "next-intl";
 import type { RuleDto } from "@kanban/shared";
 import { RULE_ACTIONS, RULE_TRIGGER_CATEGORIES, buildRuleSentence, getActionByKey } from "@kanban/shared";
@@ -121,11 +120,7 @@ export default function RuleList({ rules, onToggle, onDelete }: RuleListProps) {
         }
         return true;
       })
-      .sort((a, b) => {
-        const priorityDiff = (a.priority ?? 0) - (b.priority ?? 0);
-        if (priorityDiff !== 0) return priorityDiff;
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      });
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rules, search, statusFilter, categoryFilter, actionFilter]);
 
@@ -185,8 +180,6 @@ export default function RuleList({ rules, onToggle, onDelete }: RuleListProps) {
         return <LockIcon fontSize="small" sx={{ color }} />;
       case "issue.unlock":
         return <LockOpenIcon fontSize="small" sx={{ color }} />;
-      case "notify":
-        return <NotificationsIcon fontSize="small" sx={{ color: theme.palette.warning.main }} />;
       default:
         return <BoltIcon fontSize="small" sx={{ color }} />;
     }
