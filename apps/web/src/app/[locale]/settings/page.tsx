@@ -81,14 +81,7 @@ interface Category {
   id: number;
   name: string;
   isVisible: boolean;
-  position: string | null;
   issueCount: number;
-}
-
-interface Position {
-  id: number;
-  name: string;
-  isActive: boolean;
 }
 
 interface IssueStatus {
@@ -322,7 +315,6 @@ export default function SettingsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
-  const [positions, setPositions] = useState<Position[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
@@ -334,7 +326,7 @@ export default function SettingsPage() {
 
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
-  const [categoryForm, setCategoryForm] = useState({ name: "", position: "" });
+  const [categoryForm, setCategoryForm] = useState({ name: "" });
 
   const [statusDialogOpen, setStatusDialogOpen] = useState(false);
   const [editingStatus, setEditingStatus] = useState<IssueStatus | null>(null);
@@ -365,7 +357,6 @@ export default function SettingsPage() {
   const canViewCategories = can("category.view");
   const canViewStatuses = can("status.view");
   const canViewPriorities = can("priority.view");
-  const canViewPositions = can("position.view");
   const canViewLabels = can("label.view");
 
   const statusSensors = useSensors(
@@ -424,9 +415,6 @@ export default function SettingsPage() {
     if (canViewCategories) {
       requests.push(apiFetch<PaginatedResponse<Category>>("/categories?page=1&limit=100", {}, token).then(r => r.data));
     }
-    if (canViewPositions) {
-      requests.push(apiFetch<PaginatedResponse<Position>>("/positions?page=1&limit=100", {}, token).then(r => r.data));
-    }
     if (canViewStatuses) requests.push(apiFetch<PaginatedResponse<IssueStatus>>("/issue-statuses?page=1&limit=100", {}, token).then(r => r.data));
     if (canViewPriorities) requests.push(apiFetch<PaginatedResponse<IssuePriority>>("/issue-priorities?page=1&limit=100", {}, token).then(r => r.data));
     if (canViewLabels) requests.push(fetchLabels().then(r => r.data));
@@ -440,16 +428,13 @@ export default function SettingsPage() {
         if (canViewCategories) {
           setCategories(results[idx++]);
         }
-        if (canViewPositions) {
-          setPositions(results[idx++]);
-        }
         if (canViewStatuses) setStatuses(results[idx++]);
         if (canViewPriorities) setPriorities(results[idx++]);
         if (canViewLabels) setLabels(results[idx++]);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [canViewApps, canViewCategories, canViewStatuses, canViewPriorities, canViewPositions, canViewLabels, token]);
+  }, [canViewApps, canViewCategories, canViewStatuses, canViewPriorities, canViewLabels, token]);
 
   // Support deep links such as /settings?tab=statuses — used by the back link on /automation.
   useEffect(() => {
@@ -546,13 +531,13 @@ export default function SettingsPage() {
 
   function openAddCategory() {
     setEditingCategory(null);
-    setCategoryForm({ name: "", position: "" });
+    setCategoryForm({ name: "" });
     setCategoryDialogOpen(true);
   }
 
   function openEditCategory(category: Category) {
     setEditingCategory(category);
-    setCategoryForm({ name: category.name, position: category.position ?? "" });
+    setCategoryForm({ name: category.name });
     setCategoryDialogOpen(true);
   }
 
@@ -560,7 +545,6 @@ export default function SettingsPage() {
     try {
       const payload = {
         name: categoryForm.name,
-        position: categoryForm.position || undefined,
       };
       if (editingCategory) {
         await apiFetch(`/categories/${editingCategory.id}`, {
@@ -1036,7 +1020,6 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                 <DataTableHead>
                   <DataTableRow>
                     <DataTableCell>{t("columnName")}</DataTableCell>
-                    <DataTableCell>{t("columnPosition")}</DataTableCell>
                     <DataTableCell align="center">{t("columnStatus")}</DataTableCell>
                     <DataTableCell align="right">{t("columnActions")}</DataTableCell>
                   </DataTableRow>
@@ -1045,7 +1028,6 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   {categories.map((category) => (
                     <DataTableRow key={category.id}>
                       <DataTableCell>{category.name}</DataTableCell>
-                      <DataTableCell>{category.position ?? "—"}</DataTableCell>
                       <DataTableCell align="center">
                         <Chip
                           label={category.isVisible ? t("active") : t("inactive")}
@@ -1352,21 +1334,6 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })}
                   fullWidth
                 />
-                <FormControl fullWidth>
-                  <InputLabel>{t("columnPosition")}</InputLabel>
-                  <Select
-                    value={categoryForm.position}
-                    label={t("columnPosition")}
-                    onChange={(e) => setCategoryForm({ ...categoryForm, position: e.target.value })}
-                  >
-                    <MenuItem value="">—</MenuItem>
-                    {positions.filter(p => p.isActive).map((position) => (
-                      <MenuItem key={position.id} value={position.name}>
-                        {position.name}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
               </Box>
             </DialogContent>
             <DialogActions>
