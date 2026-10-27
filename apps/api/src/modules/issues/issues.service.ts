@@ -11,7 +11,6 @@ import { User } from "../auth/entities/user.entity";
 import { IssueStatus } from "../issue-statuses/entities/issue-status.entity";
 import { Category } from "../categories/entities/category.entity";
 import { Label } from "../labels/entities/label.entity";
-import { Position } from "../positions/position.entity";
 import { WorkSessionsService } from "../work-sessions/work-sessions.service";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
@@ -46,8 +45,6 @@ export class IssuesService {
     private readonly categories: Repository<Category>,
     @InjectRepository(Label)
     private readonly labels: Repository<Label>,
-    @InjectRepository(Position)
-    private readonly positions: Repository<Position>,
     private readonly workSessions: WorkSessionsService,
     private readonly permissions: PermissionsService,
     private readonly rulesEngine: RulesEngineService,
@@ -198,9 +195,10 @@ export class IssuesService {
       actor?.actorRole === "customer"
         ? Number(actor.actorId)
         : (data.customerId ?? null);
-    const resolvedProgrammerId =
-      data.programmerId ??
-      (data.categoryId ? await this.resolveAutoAssign(data.categoryId) : null);
+    // Assignment stays manual for now: the admin picks the assignee on the board.
+    // Category auto-assign (`categories.position` → resolveAutoAssign) is parked —
+    // see AGENTS.md. The column still holds data, nothing reads it at runtime.
+    const resolvedProgrammerId = data.programmerId ?? null;
 
     const issue = this.issues.create({
       title: data.title,
@@ -573,42 +571,6 @@ export class IssuesService {
       deletedBy: i.deletedBy,
       deletedByName: i.deletedByUser?.name ?? null,
     }));
-  }
-
-  private async resolveAutoAssign(categoryId: number): Promise<number | null> {
-    const category = await this.categories.findOne({ where: { id: categoryId } });
-    if (!category?.position) return null;
-
-    const position = await this.positions.findOne({
-      where: { name: category.position },
-    });
-    if (!position) return null;
-
-    const programmers = await this.users
-      .createQueryBuilder("user")
-      .innerJoin("user.role", "role")
-      .where("user.position_id = :positionId", { positionId: position.id })
-      .andWhere("role.name = :roleName", { roleName: "programmer" })
-      .andWhere("user.is_active = true")
-      .getMany();
-
-    if (programmers.length === 0) return null;
-
-    const openCounts = await Promise.all(
-      programmers.map(async (p) => {
-        const count = await this.issues
-          .createQueryBuilder("issue")
-          .innerJoin("issue.status", "status")
-          .where("issue.programmer_id = :pid", { pid: p.id })
-          .andWhere("issue.deleted_at IS NULL")
-          .andWhere("status.name != :done", { done: "DONE" })
-          .getCount();
-        return { userId: p.id, count };
-      }),
-    );
-
-    openCounts.sort((a, b) => a.count - b.count);
-    return openCounts[0].userId;
   }
 
   private async generateIssueNumber(): Promise<string> {
