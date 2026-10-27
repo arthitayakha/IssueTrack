@@ -167,7 +167,35 @@
   },
   "Labels": {
     "title": "ป้ายกำกับ",
-    "comingSoon": "หน้านี้กำลังอยู่ระหว่างการพัฒนา"
+    "comingSoon": "หน้านี้กำลังอยู่ระหว่างการพัฒนา",
+    "subtitle": "จัดการป้ายกำกับที่ใช้บนบอร์ด",
+    "searchPlaceholder": "ค้นหาป้ายกำกับ",
+    "addLabel": "เพิ่มป้าย",
+    "editLabel": "แก้ไขป้าย",
+    "columnName": "ชื่อ",
+    "columnIssues": "การ์ดที่ใช้",
+    "columnStatus": "สถานะ",
+    "columnActions": "การดำเนินการ",
+    "active": "ใช้งาน",
+    "inactive": "ปิดการใช้งาน",
+    "nameLabel": "ชื่อป้าย",
+    "colorLabel": "สี",
+    "save": "บันทึก",
+    "cancel": "ยกเลิก",
+    "edit": "แก้ไข",
+    "delete": "ลบ",
+    "ok": "ตกลง",
+    "empty": "ยังไม่มีป้ายกำกับ",
+    "noResults": "ไม่พบป้ายกำกับที่ค้นหา",
+    "loadError": "โหลดรายชื่อป้ายไม่สำเร็จ",
+    "genericError": "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง",
+    "labelCreated": "เพิ่มป้ายแล้ว",
+    "labelUpdated": "บันทึกการแก้ไขแล้ว",
+    "labelDeleted": "ลบป้ายแล้ว",
+    "deleteConfirmTitle": "ลบป้ายกำกับนี้",
+    "deleteConfirmMessage": "ป้าย {name} จะถูกลบออกอย่างถาวร",
+    "inUseTitle": "ยังลบไม่ได้",
+    "inUseMessage": "ป้าย {name} ยังถูกใช้งานอยู่ใน {count} การ์ด — เปลี่ยนป้ายในการ์ดเหล่านั้นก่อน"
   },
   "Comments": {
     "title": "ความคิดเห็น",
@@ -407,6 +435,9 @@
     "switchLanguage": "เปลี่ยนภาษา",
     "automation": "กฎอัตโนมัติ",
     "notifications": "การแจ้งเตือน"
+  },
+  "pagination": {
+    "showing": "แสดง {start}-{end} จาก {total}"
   },
   "timer": {
     "elapsed": "เวลาที่ผ่านไป",
