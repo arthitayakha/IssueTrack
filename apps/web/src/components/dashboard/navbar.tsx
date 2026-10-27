@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   AppBar,
@@ -15,6 +16,8 @@ import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePathname, useRouter } from "@/i18n/navigation";
 import LanguageSwitcher from "./language-switcher";
+import NotificationPopover from "@/components/notifications/notification-popover";
+import { MOCK_NOTIFICATIONS } from "@/components/notifications/notifications.mock";
 
 export const DRAWER_WIDTH = 240;
 
@@ -37,8 +40,26 @@ export default function Navbar({ header }: { header?: React.ReactNode }) {
     router.replace("/login");
   }
 
-  // TODO(backend): count unread items from GET /notifications — 0 hides the badge
-  const unreadCount = 0;
+  // TODO(backend): replace MOCK_NOTIFICATIONS with GET /notifications + polling
+  const [notifications, setNotifications] = useState(MOCK_NOTIFICATIONS);
+  const [bellAnchorEl, setBellAnchorEl] = useState<HTMLElement | null>(null);
+  const unreadCount = notifications.filter((n) => !n.isRead && !n.isArchived).length;
+
+  function handleMarkRead(id: number) {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)),
+    );
+  }
+
+  function handleMarkAllRead() {
+    setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+  }
+
+  function handleArchive(id: number) {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, isArchived: true } : n)),
+    );
+  }
 
   return (
     <AppBar
@@ -62,15 +83,26 @@ export default function Navbar({ header }: { header?: React.ReactNode }) {
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexShrink: 0 }}>
           <IconButton
-            onClick={() => router.push("/notifications")}
+            onClick={(event) => setBellAnchorEl(event.currentTarget)}
             aria-label={t("notifications")}
             title={t("notifications")}
             size="small"
+            aria-haspopup="dialog"
+            aria-expanded={Boolean(bellAnchorEl)}
           >
             <Badge badgeContent={unreadCount} color="error">
               <NotificationsNoneIcon fontSize="small" />
             </Badge>
           </IconButton>
+          <NotificationPopover
+            open={Boolean(bellAnchorEl)}
+            anchorEl={bellAnchorEl}
+            items={notifications}
+            onClose={() => setBellAnchorEl(null)}
+            onMarkRead={handleMarkRead}
+            onMarkAllRead={handleMarkAllRead}
+            onArchive={handleArchive}
+          />
           <LanguageSwitcher />
           <Typography
             variant="body2"
