@@ -2,7 +2,7 @@
 
 import { apiFetch } from "./api";
 import { useAuthStore } from "./auth-store";
-import type { RuleDto } from "@kanban/shared";
+import type { RuleDto, RuleRunDto } from "@kanban/shared";
 
 export interface ListRulesOptions {
   category?: string;
@@ -62,6 +62,21 @@ export async function deleteRule(id: number): Promise<{ deleted: boolean }> {
   }, getToken());
 }
 
-export async function fetchRuleRuns(): Promise<unknown[]> {
-  return apiFetch<unknown[]>("/rules/runs", {}, getToken());
+export interface PaginatedRuns {
+  data: RuleRunDto[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export async function fetchRuleRuns(
+  options: { ruleId?: number; page?: number; limit?: number } = {},
+): Promise<PaginatedRuns> {
+  const params = new URLSearchParams();
+  if (options.ruleId != null) params.set("ruleId", String(options.ruleId));
+  if (options.page != null) params.set("page", String(options.page));
+  if (options.limit != null) params.set("limit", String(options.limit));
+  const query = params.toString();
+  return apiFetch<PaginatedRuns>(`/rules/runs${query ? `?${query}` : ""}`, {}, getToken());
 }
