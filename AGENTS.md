@@ -100,7 +100,7 @@ npm run migration:generate                  # needs a name/path argument
 - **i18n is implemented** with `next-intl`: locales `["th", "en"]`, default `th`. Messages in `src/messages/{th,en}.json`. Use `useTranslations()` from `next-intl` in client components.
 - **Navigation**: use `useRouter`, `usePathname`, `Link`, `redirect` from `@/i18n/navigation` — NOT from `next/navigation`.
 - **Middleware**: `middleware.ts` (root + `src/`) is next-intl locale middleware, not auth. Auth is still client-side only (pages redirect in `useEffect`).
-- **Routes** (all under `[locale]/`): `/` (dashboard), `/login`, `/boards`, `/issues/new` (report issue), `/automation` (rules), `/automation/new` (wizard), `/automation/[id]` (edit), `/automation/runs` (history), `/notifications` (inbox), `/reports`, `/users`, `/roles`, `/settings`, `/labels`, `/comments`. There is **no issue list page** anymore. `/labels` is still a placeholder ("coming soon") even though the `labels` API is complete — the one unfinished page.
+- **Routes** (all under `[locale]/`): `/` (dashboard), `/login`, `/boards`, `/issues/new` (report issue), `/automation` (rules), `/automation/new` (wizard), `/automation/[id]` (edit), `/automation/runs` (history), `/notifications` (inbox), `/reports`, `/users`, `/roles`, `/settings`, `/labels` (label manager), `/comments`. There is **no issue list page** anymore — `/labels` is the last page that was a placeholder, and it now uses the `labels` API end to end (page gated by `label.view`, buttons by `label.create|update|delete`).
 - **`[locale]/layout.tsx`**: `generateStaticParams` returns all locales; `notFound()` for invalid locale; wraps children in `QueryClientProvider` + `ThemeProvider` + `NextIntlClientProvider`.
 - Theme: `apps/web/src/lib/theme.ts`; `ThemeProvider` + `CssBaseline` wired in `[locale]/layout.tsx`. It augments MUI with palette colors `navy` / `sky` and `theme.custom.loginGradient` / `theme.custom.cardShadow`. Use these tokens; do not hardcode hex.
 - Auth state: Zustand `useAuthStore`, persisted under key `kanban-auth` (localStorage when "remember me", else sessionStorage).
@@ -109,6 +109,7 @@ npm run migration:generate                  # needs a name/path argument
 - **Two `DataTable` components exist**: `src/components/data-table.tsx` (styled, used) and `src/components/data-table/index.tsx` (older, unused). Import from `@/components/data-table`.
 - **ไทย:** ใช้ `useRouter`/`usePathname`/`Link`/`redirect` จาก `@/i18n/navigation` ไม่ใช่จาก `next/navigation`
 - **ไทย:** `middleware.ts` เป็น locale middleware ไม่ใช่ auth; การป้องกัน route ทำฝั่ง client เท่านั้น
+- **ไทย:** เส้นทาง (ใต้ `[locale]/`): `/` (แดชบอร์ด), `/login`, `/boards`, `/issues/new` (แจ้งปัญหา), `/automation` + `/automation/new` + `/automation/[id]` + `/automation/runs`, `/notifications`, `/reports`, `/users`, `/roles`, `/settings`, `/labels` (จัดการป้าย), `/comments` — **ไม่มีหน้า list การ์ดแล้ว**; `/labels` เดิมเป็น placeholder สุดท้าย และตอนนี้ต่อ `labels` API ครบทุกฟังก์ชันแล้ว (หน้ากันด้วย `label.view`, ปุ่มด้วย `label.create|update|delete`)
 - **ไทย:** ห้าม hardcode สี hex/rgba ให้ดึงจากธีมเสมอ; การตรวจสิทธิ์ต้องอิง permission ไม่กระจาย `if (role === ...)`
 
 ## Conventions / ข้อตกลง
