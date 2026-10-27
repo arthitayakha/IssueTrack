@@ -4,16 +4,27 @@
  *
  * Prerequisites: a running API (`npm run dev --workspace=@kanban/api`, port
  * 3002) and the local Postgres (used to assert what the API does not expose).
+ * Cards and `rule_runs` rows produced here are removed at the end — the API
+ * only soft-deletes, which would pile invisible test rows into `issues`.
  * Run via: npm run test:e2e --workspace=@kanban/api
  */
 const BASE = process.env.API_URL ?? "http://localhost:3002";
 const fs = require("fs");
 const path = require("path");
-const { suspendExistingRules } = require("./helpers");
+const {
+  captureRunWatermark,
+  cleanupRunRows,
+  connectDb,
+  countTestCards,
+  hardDeleteIssues,
+  suspendExistingRules,
+} = require("./helpers");
 let token = null;
 let failures = 0;
 const ruleIds = [];
 const issueIds = [];
+let watermark = 0;
+let cardsBefore = 0;
 /** Put back the active flags of rules that existed before this suite ran. */
 let restoreRules = async () => {};
 
@@ -43,17 +54,12 @@ function check(label, ok, extra) {
 
 const list = (b) => (Array.isArray(b) ? b : (b?.data ?? []));
 
-const pg = require("pg");
-const db = new pg.Client({
-  host: process.env.DB_HOST ?? "localhost",
-  port: Number(process.env.DB_PORT ?? 5432),
-  user: process.env.DB_USER ?? "postgres",
-  password: process.env.DB_PASSWORD ?? "1234",
-  database: process.env.DB_NAME ?? "trackdb",
-});
+const db = connectDb();
 
 (async () => {
   await db.connect();
+  watermark = await captureRunWatermark(db);
+  cardsBefore = await countTestCards(db);
   const login = await call("/auth/login", {
     method: "POST",
     body: { email: "aom@gmail.com", password: "123456" },
@@ -224,7 +230,6 @@ const db = new pg.Client({
 
   // ── cleanup: rules first (so deleting issues does not re-fire them) ─
   for (const id of ruleIds) await call(`/rules/${id}`, { method: "DELETE" });
-  for (const id of issueIds) await call(`/issues/${id}`, { method: "DELETE" });
 
   // the uploaded PDF must not linger: drop its row and the file on disk
   const uploaded = await db.query(
@@ -236,7 +241,17 @@ const db = new pg.Client({
     const file = path.resolve(__dirname, "../../uploads", path.basename(row.file_path));
     fs.rmSync(file, { force: true });
   }
-  await db.query("DELETE FROM attachments WHERE issue_id = ANY($1::int[])", [issueIds]);
+
+  // cards for real: DELETE /issues/:id only marks them deleted, and the run
+  // rows they produced must not outlive the test either
+  const removedCards = await hardDeleteIssues(db, issueIds);
+  const removedRuns = await cleanupRunRows(db, watermark);
+  const leftovers = await countTestCards(db);
+  check("cleanup: test cards removed for real", removedCards === issueIds.length,
+    `removed=${removedCards} created=${issueIds.length}`);
+  check("cleanup: card count back to where it started", leftovers === cardsBefore,
+    `left=${leftovers} before=${cardsBefore}`);
+  console.log(`       run rows removed: ${removedRuns}`);
 
   const after = list((await call("/rules")).body);
   check("cleanup: only pre-existing rules remain", after.length === existing.length,
@@ -249,6 +264,9 @@ const db = new pg.Client({
 })().catch(async (e) => {
   console.error("ERR", e.message);
   await restoreRules();
+  try {
+    await cleanupRunRows(db, watermark);
+  } catch {}
   try {
     await db.end();
   } catch {}

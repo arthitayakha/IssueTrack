@@ -3,10 +3,17 @@
  * survival after the rule itself is deleted.
  *
  * Prerequisites: a running API (`npm run dev --workspace=@kanban/api`, port
- * 3002) and the local Postgres. Run via: npm run test:e2e --workspace=@kanban/api
+ * 3002) and the local Postgres. The card it creates is hard-deleted at the
+ * end — the API only soft-deletes, and test rows must not pile up.
+ * Run via: npm run test:e2e --workspace=@kanban/api
  */
 const BASE = process.env.API_URL ?? "http://localhost:3002";
-const { suspendExistingRules } = require("./helpers");
+const {
+  connectDb,
+  countTestCards,
+  hardDeleteIssues,
+  suspendExistingRules,
+} = require("./helpers");
 let token = null;
 let failures = 0;
 /** Put back the active flags of rules that existed before this suite ran. */
@@ -38,19 +45,13 @@ function check(label, ok, extra) {
 
 const list = (b) => (Array.isArray(b) ? b : (b?.data ?? []));
 
-const pg = require("pg");
-const db = new pg.Client({
-  host: process.env.DB_HOST ?? "localhost",
-  port: Number(process.env.DB_PORT ?? 5432),
-  user: process.env.DB_USER ?? "postgres",
-  password: process.env.DB_PASSWORD ?? "1234",
-  database: process.env.DB_NAME ?? "trackdb",
-});
+const db = connectDb();
 
 (async () => {
   await db.connect();
   await db.query("DELETE FROM rule_runs WHERE rule_name LIKE 'E2E%'"); // leftovers from failed runs
   const startCount = (await db.query("SELECT COALESCE(MAX(id), 0) AS n FROM rule_runs")).rows[0].n;
+  const cardsBefore = await countTestCards(db);
 
   const login = await call("/auth/login", {
     method: "POST",
@@ -185,12 +186,18 @@ const db = new pg.Client({
   // cleanup — remove only the rows this run created (history from other rules stays)
   await call(`/rules/${ruleSkipped.id}`, { method: "DELETE" });
   await call(`/rules/${ruleFailed.id}`, { method: "DELETE" });
-  await call(`/issues/${issue.body.id}`, { method: "DELETE" });
   const created = await db.query("SELECT id FROM rule_runs WHERE id > $1", [startCount]);
   await db.query("DELETE FROM rule_runs WHERE id > $1", [startCount]);
   const left = await db.query("SELECT count(*)::int AS n FROM rule_runs WHERE id > $1", [startCount]);
   check("cleanup done", left.rows[0].n === 0 && created.rows.length >= 3,
     `created=${created.rows.length} left=${left.rows[0].n}`);
+
+  // the card too: the API only soft-deletes, and test rows must not pile up
+  const removedCards = await hardDeleteIssues(db, [issue.body.id]);
+  const cardsAfter = await countTestCards(db);
+  check("cleanup: test card removed for real", removedCards === 1, `removed=${removedCards}`);
+  check("cleanup: card count back to where it started", cardsAfter === cardsBefore,
+    `left=${cardsAfter} before=${cardsBefore}`);
 
   await restoreRules();
   await db.end();

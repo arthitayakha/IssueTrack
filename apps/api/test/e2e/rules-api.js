@@ -3,16 +3,34 @@
  *
  * Prerequisites: a running API (`npm run dev --workspace=@kanban/api`, port
  * 3002) and the local Postgres. The suite logs in with the seeded admin,
- * creates rules and cards through the API and deletes them again.
+ * creates rules and cards through the API and deletes them again — cards are
+ * hard-deleted (the API only soft-deletes) and the `rule_runs` rows produced
+ * here are dropped, so nothing survives the run.
  * Run via: npm run test:e2e --workspace=@kanban/api
  * Override the target with API_URL when the API runs elsewhere.
  */
 const BASE = process.env.API_URL ?? "http://localhost:3002";
-const { suspendExistingRules } = require("./helpers");
+const {
+  captureRunWatermark,
+  cleanupRunRows,
+  connectDb,
+  countTestCards,
+  hardDeleteIssues,
+  suspendExistingRules,
+} = require("./helpers");
+const db = connectDb();
+let watermark = 0;
+let cardsBefore = 0;
 let token = null;
 let failures = 0;
 /** Put back the active flags of rules that existed before this suite ran. */
 let restoreRules = async () => {};
+
+/** Everything the suite produced: run rows, then the cards themselves. */
+async function cleanup() {
+  await cleanupRunRows(db, watermark);
+  await restoreRules();
+}
 
 async function call(path, { method = "GET", body, auth = true } = {}) {
   const res = await fetch(BASE + path, {
@@ -53,6 +71,9 @@ const list = (b) => (Array.isArray(b) ? b : (b?.data ?? []));
     console.log(`\n${failures} FAILURES`);
     process.exit(1);
   }
+  await db.connect();
+  watermark = await captureRunWatermark(db);
+  cardsBefore = await countTestCards(db);
   // hand-made rules in this DB must not fire while the suite runs
   restoreRules = await suspendExistingRules(call);
 
@@ -187,14 +208,27 @@ const list = (b) => (Array.isArray(b) ? b : (b?.data ?? []));
   check("GET /rules no longer lists my rules", mine.length === 0,
     `mine=${mine.length} total=${list(after.body).length}`);
 
-  // 10) delete the test issue (cleanup)
-  if (issueId) await call(`/issues/${issueId}`, { method: "DELETE" });
+  // 10) cleanup — the card for real, plus every run row this suite produced
+  const removedCards = await hardDeleteIssues(db, [issueId]);
+  check("cleanup: test card removed for real", !issueId || removedCards === 1,
+    `removed=${removedCards}`);
+  const removedRuns = await cleanupRunRows(db, watermark);
+  const leftovers = await countTestCards(db);
+  check("cleanup: card count back to where it started", leftovers === cardsBefore,
+    `left=${leftovers} before=${cardsBefore}`);
+  console.log(`       run rows removed: ${removedRuns}`);
 
   await restoreRules();
+  await db.end();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })().catch(async (e) => {
   console.error("ERR", e.message);
-  await restoreRules();
+  try {
+    await cleanup();
+  } catch {}
+  try {
+    await db.end();
+  } catch {}
   process.exit(1);
 });

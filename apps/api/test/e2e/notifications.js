@@ -3,10 +3,19 @@
  * read / read-all / archive and the 401 gate.
  *
  * Prerequisites: a running API (`npm run dev --workspace=@kanban/api`, port
- * 3002) and the local Postgres (cleanup is done with SQL because an issue is
- * only soft-deleted). Run via: npm run test:e2e --workspace=@kanban/api
+ * 3002) and the local Postgres. Cleanup is done with SQL: the API only
+ * soft-deletes issues, so the card is removed for real at the end together
+ * with the notifications it produced and the `rule_runs` rows it caused.
+ * Run via: npm run test:e2e --workspace=@kanban/api
  */
 const BASE = process.env.API_URL ?? "http://localhost:3002";
+const {
+  captureRunWatermark,
+  cleanupRunRows,
+  connectDb,
+  countTestCards,
+  hardDeleteIssues,
+} = require("./helpers");
 let failures = 0;
 
 async function call(path, { method = "GET", body, token } = {}) {
@@ -41,8 +50,6 @@ async function login(email) {
   return res.body?.token ?? res.body?.accessToken ?? res.body?.access_token ?? null;
 }
 
-const pg = require("pg");
-
 (async () => {
   const adminToken = await login("aom@gmail.com"); // id 1
   const assigneeToken = await login("programmer@gmail.com"); // id 13
@@ -53,19 +60,15 @@ const pg = require("pg");
     process.exit(1);
   }
 
-  const db = new pg.Client({
-    host: process.env.DB_HOST ?? "localhost",
-    port: Number(process.env.DB_PORT ?? 5432),
-    user: process.env.DB_USER ?? "postgres",
-    password: process.env.DB_PASSWORD ?? "1234",
-    database: process.env.DB_NAME ?? "trackdb",
-  });
+  const db = connectDb();
   await db.connect();
+  const watermark = await captureRunWatermark(db);
   // purge leftovers from earlier runs so assertions only see this run's data
   await db.query("DELETE FROM issues WHERE title = $1 AND deleted_at IS NOT NULL", [
     "E2E notif card",
   ]);
   await db.query("DELETE FROM notifications WHERE title = $1", ["E2E notif card"]);
+  const cardsBefore = await countTestCards(db);
 
   const statuses = (await call("/issue-statuses?limit=100", { token: adminToken })).body;
   const st = Array.isArray(statuses) ? statuses : statuses?.data;
@@ -192,13 +195,23 @@ const pg = require("pg");
   const afterDelete = await listFor(assigneeToken);
   check("deleted event notified assignee", !!find(afterDelete, "deleted"));
 
-  // cleanup: remove the test notifications explicitly (issue is only soft-deleted)
+  // cleanup: the notifications, then the card itself — DELETE /issues/:id only
+  // marks it deleted, and its run rows must not outlive the test either
   await db.query("DELETE FROM notifications WHERE title = $1", ["E2E notif card"]);
   const left = await db.query(
     "SELECT count(*)::int AS n FROM notifications WHERE title = $1",
     ["E2E notif card"],
   );
   check("cleanup: test notifications removed", left.rows[0].n === 0, `left=${left.rows[0].n}`);
+
+  const removedCards = await hardDeleteIssues(db, [issueId]);
+  const removedRuns = await cleanupRunRows(db, watermark);
+  const leftovers = await countTestCards(db);
+  check("cleanup: test card removed for real", removedCards === 1, `removed=${removedCards}`);
+  check("cleanup: card count back to where it started", leftovers === cardsBefore,
+    `left=${leftovers} before=${cardsBefore}`);
+  console.log(`       run rows removed: ${removedRuns}`);
+
   await db.end();
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
