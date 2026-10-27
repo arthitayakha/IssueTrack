@@ -7,8 +7,10 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Comment } from "./entities/comment.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
+import { Issue } from "../issues/entities/issue.entity";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
+import { RulesEngineService } from "../rules/rules-engine.service";
 import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
@@ -18,7 +20,10 @@ export class CommentsService {
     private readonly comments: Repository<Comment>,
     @InjectRepository(ActivityLog)
     private readonly activityLogs: Repository<ActivityLog>,
+    @InjectRepository(Issue)
+    private readonly issues: Repository<Issue>,
     private readonly permissions: PermissionsService,
+    private readonly rulesEngine: RulesEngineService,
   ) {}
 
   async findByIssue(issueId: number, params: PaginationParams) {
@@ -43,6 +48,15 @@ export class CommentsService {
       entityId: issueId,
       detail: JSON.stringify({ commentId: comment.id }),
       actor,
+    });
+    // automation rules — status comes from the issue, text from the comment
+    const issue = await this.issues.findOne({ where: { id: issueId } });
+    await this.rulesEngine.evaluate("comment.created", {
+      issueId,
+      actorId: userId,
+      actorRole: actor?.actorRole ?? null,
+      toStatusId: issue?.statusId ?? null,
+      newValue: content,
     });
     const fresh = await this.loadWithUser(saved.id);
     return this.toResponse(fresh ?? saved);

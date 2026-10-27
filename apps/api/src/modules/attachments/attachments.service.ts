@@ -6,6 +6,8 @@ import { createReadStream, existsSync, unlinkSync } from "fs";
 import { basename, join } from "path";
 import { Attachment } from "./entities/attachment.entity";
 import { Issue } from "../issues/entities/issue.entity";
+import { User } from "../auth/entities/user.entity";
+import { RulesEngineService } from "../rules/rules-engine.service";
 
 function resolveFilePath(storedPath: string): string {
   const cwd = process.cwd();
@@ -21,6 +23,9 @@ export class AttachmentsService {
     private readonly attachments: Repository<Attachment>,
     @InjectRepository(Issue)
     private readonly issues: Repository<Issue>,
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
+    private readonly rulesEngine: RulesEngineService,
   ) {}
 
   async upload(
@@ -42,6 +47,15 @@ export class AttachmentsService {
         fileSize: file.size,
       }),
     );
+    // automation rules — file name + card status context
+    const uploader = await this.users.findOne({ where: { id: uploadedBy }, relations: ["role"] });
+    await this.rulesEngine.evaluate("attachment.created", {
+      issueId,
+      toStatusId: issue.statusId ?? null,
+      filename: file.originalname,
+      actorId: uploadedBy,
+      actorRole: uploader?.role?.name ?? null,
+    });
     return {
       id: attachment.id,
       fileName: attachment.fileName,

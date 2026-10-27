@@ -464,6 +464,12 @@ export class IssuesService {
       detail: JSON.stringify({ title: issue.title }),
       actor,
     });
+    await this.rulesEngine.evaluate("issue.deleted", {
+      issueId: issue.id,
+      fromStatusId: issue.statusId ?? null,
+      actorId: actor?.actorId ?? null,
+      actorRole: actor?.actorRole ?? null,
+    });
     return { deleted: true };
   }
 
@@ -484,6 +490,12 @@ export class IssuesService {
       entityId: issue.id,
       detail: JSON.stringify({ title: issue.title }),
       actor,
+    });
+    await this.rulesEngine.evaluate("issue.restored", {
+      issueId: issue.id,
+      toStatusId: issue.statusId ?? null,
+      actorId: actor?.actorId ?? null,
+      actorRole: actor?.actorRole ?? null,
     });
     return this.toResponse(issue);
   }

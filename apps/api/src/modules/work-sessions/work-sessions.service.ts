@@ -3,6 +3,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { IsNull, Repository } from "typeorm";
 import { WorkSession } from "./entities/work-session.entity";
 import { Issue } from "../issues/entities/issue.entity";
+import { RulesEngineService } from "../rules/rules-engine.service";
 
 @Injectable()
 export class WorkSessionsService {
@@ -11,6 +12,7 @@ export class WorkSessionsService {
     private readonly workSessions: Repository<WorkSession>,
     @InjectRepository(Issue)
     private readonly issues: Repository<Issue>,
+    private readonly rulesEngine: RulesEngineService,
   ) {}
 
   async start(issueId: number, programmerId: number) {
@@ -18,7 +20,7 @@ export class WorkSessionsService {
       where: { issueId, endedAt: IsNull() },
     });
     if (existing) return existing;
-    return this.workSessions.save(
+    const saved = await this.workSessions.save(
       this.workSessions.create({
         issueId,
         programmerId,
@@ -26,6 +28,14 @@ export class WorkSessionsService {
         duration: 0,
       }),
     );
+    // automation rules — timer just started for this assignee
+    const issue = await this.issues.findOne({ where: { id: issueId } });
+    await this.rulesEngine.evaluate("work_session.started", {
+      issueId,
+      actorId: programmerId,
+      toStatusId: issue?.statusId ?? null,
+    });
+    return saved;
   }
 
   async stop(issueId: number) {
@@ -39,6 +49,14 @@ export class WorkSessionsService {
     );
     await this.workSessions.save(open);
     await this.recalculateTrackedDuration(issueId);
+    // automation rules — duration is reported in minutes (registry: durationMinutes)
+    const issue = await this.issues.findOne({ where: { id: issueId } });
+    await this.rulesEngine.evaluate("work_session.stopped", {
+      issueId,
+      actorId: open.programmerId ?? null,
+      fromStatusId: issue?.statusId ?? null,
+      durationMinutes: Math.round((open.duration ?? 0) / 60),
+    });
     return open;
   }
 

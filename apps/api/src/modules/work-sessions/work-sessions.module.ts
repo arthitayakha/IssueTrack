@@ -5,9 +5,10 @@ import { WorkSessionsService } from "./work-sessions.service";
 import { WorkSessionsController } from "./work-sessions.controller";
 import { PermissionsModule } from "../permissions/permissions.module";
 import { Issue } from "../issues/entities/issue.entity";
+import { RulesModule } from "../rules/rules.module";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([WorkSession, Issue]), PermissionsModule],
+  imports: [TypeOrmModule.forFeature([WorkSession, Issue]), PermissionsModule, RulesModule],
   controllers: [WorkSessionsController],
   providers: [WorkSessionsService],
   exports: [WorkSessionsService],
