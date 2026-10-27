@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Box, Button, Step, StepLabel, Stepper, Tooltip } from "@mui/material";
+import { Box, Button, Step, StepLabel, Stepper } from "@mui/material";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { apiFetch } from "@/lib/api";
@@ -364,13 +364,13 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
             {t("next")}
           </Button>
         ) : (
-          <Tooltip title={t("saveTooltip")}>
-            <span>
-              <Button variant="contained" disabled onClick={handleSave}>
-                {initialRule ? t("saveEdit") : t("save")}
-              </Button>
-            </span>
-          </Tooltip>
+          <Button
+            variant="contained"
+            disabled={saving}
+            onClick={handleSave}
+          >
+            {initialRule ? t("saveEdit") : t("save")}
+          </Button>
         )}
       </Box>
     </Box>

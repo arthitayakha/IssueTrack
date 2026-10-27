@@ -18,6 +18,7 @@ import { IssuePrioritiesModule } from "./modules/issue-priorities/issue-prioriti
 import { NotificationsModule } from "./modules/notifications/notifications.module";
 import { WorkSessionsModule } from "./modules/work-sessions/work-sessions.module";
 import { ActivityLogsModule } from "./modules/activity-logs/activity-logs.module";
+import { RulesModule } from "./modules/rules/rules.module";
 import { JwtAuthGuard } from "./modules/auth/jwt-auth.guard";
 
 @Module({
@@ -49,6 +50,7 @@ import { JwtAuthGuard } from "./modules/auth/jwt-auth.guard";
     NotificationsModule,
     WorkSessionsModule,
     ActivityLogsModule,
+    RulesModule,
   ],
   providers: [
     {
