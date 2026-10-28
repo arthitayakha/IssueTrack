@@ -37,6 +37,7 @@
   "Boards": {
     "title": "บอร์ด",
     "comingSoon": "หน้านี้กำลังอยู่ระหว่างการพัฒนา",
+    "invalidTransition": "ย้ายได้เฉพาะคอลัมน์ที่อยู่ติดกันเท่านั้น (1 ขั้น) — ปิดกฎบังคับลากทีละคอลัมน์ในหน้าระบบอัตโนมัติเพื่อลากข้ามคอลัมน์ได้",
     "reportIssue": "แจ้งปัญหา",
     "reportIssueTitle": "แจ้งปัญหาใหม่",
     "reportIssueSubtitle": "กรอกข้อมูลเพื่อแจ้งปัญหาใหม่ให้ทีมงานตรวจสอบ",
@@ -147,6 +148,11 @@
       "labels": "ป้ายกำกับ",
       "description": "คำอธิบาย",
       "descriptionPlaceholder": "เพิ่มคำอธิบายโดยละเอียด...",
+      "analysisCause": "วิเคราะห์ / สาเหตุ",
+      "analysisPlaceholder": "ระบุสิ่งที่ผู้ใช้เจอและสาเหตุของปัญหา...",
+      "resolution": "การแก้ไข",
+      "resolutionPlaceholder": "อธิบายว่าแก้ไขอย่างไร...",
+      "lockedHint": "จะเปิดให้กรอกเมื่อการ์ดถึงสถานะที่กำหนดโดยกฎ",
       "attachments": "ไฟล์แนบ",
       "createdAt": "สร้างเมื่อ",
       "updatedAt": "อัปเดตล่าสุด",
@@ -162,7 +168,21 @@
       "noLabelsFound": "ไม่พบป้าย",
       "createLabel": "สร้ายป้ายใหม่",
       "newLabelName": "ชื่อป้ายใหม่",
-      "createAndApplyLabel": "สร้างและใส่ป้าย"
+      "createAndApplyLabel": "สร้างและใส่ป้าย",
+      "time": {
+        "title": "เวลา",
+        "running": "กำลังวิ่ง",
+        "stopped": "หยุดแล้ว",
+        "never": "ยังไม่เคยจับเวลา — เริ่มด้วยการลากการ์ดเข้าสถานะที่ตั้งกฎจับเวลาไว้",
+        "actualLabel": "เวลาแก้ไขจริง",
+        "actualReadonlyHint": "แก้ไขได้เมื่อการ์ดอยู่สถานะที่อนุญาตตามกฎ",
+        "hours": "ชม.",
+        "minutes": "นาที",
+        "due": "วันกำหนดส่ง",
+        "duePlaceholder": "เลือกวันที่…",
+        "dueTarget": "ต้องถึงสถานะ {status} ก่อน {due}",
+        "overdue": "ล่าช้า"
+      }
     }
   },
   "Labels": {
@@ -390,6 +410,7 @@
     "markReadTooltip": "ยังไม่ได้เชื่อม backend",
     "refresh": "รีเฟรช",
     "loadError": "โหลดการแจ้งเตือนไม่สำเร็จ",
+    "loading": "กำลังโหลด...",
     "tabs": {
       "inbox": "กล่องเข้า",
       "general": "ทั่วไป",
@@ -405,7 +426,9 @@
       "moved": "ย้ายสถานะของ",
       "edited": "แก้ไข",
       "deleted": "ลบ",
-      "restored": "กู้คืน"
+      "restored": "กู้คืน",
+      "rule_created": "สร้างกฎ",
+      "rule_updated": "แก้ไขกฎ"
     },
     "emptyInbox": {
       "title": "ไม่มีแจ้งเตือนใหม่",
@@ -470,6 +493,7 @@
     "deleteConfirm": "ลบ",
     "cancel": "ยกเลิก",
     "deleted": "ลบกฎเรียบร้อยแล้ว",
+    "ruleGone": "ไม่พบกฎนี้แล้ว (อาจถูกลบที่อื่น) — รายการถูกรีเฟรชใหม่",
     "genericError": "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง",
     "loadError": "ไม่สามารถโหลดกฎได้",
     "retry": "ลองใหม่อีกครั้ง",
@@ -479,22 +503,26 @@
     "edit": "แก้ไข",
     "runs": {
       "title": "ประวัติการทำงาน",
-      "subtitle": "ประวัติการรันของกฎอัตโนมัติ",
+      "subtitle": "ประวัติการสร้าง แก้ไข และลบกฎ",
       "backendNote": "ยังไม่ได้เชื่อม backend — รายการจะแสดงที่นี่เมื่อระบบพร้อม",
-      "emptyTitle": "ยังไม่มีประวัติการรัน",
-      "emptyDescription": "เมื่อระบบเริ่มรันกฎ ผลแต่ละครั้งจะแสดงที่นี่",
+      "emptyTitle": "ยังไม่มีประวัติการทำงาน",
+      "emptyDescription": "เมื่อมีการสร้าง แก้ไข หรือลบกฎ รายการจะแสดงที่นี่",
       "refresh": "รีเฟรช",
       "refreshTooltip": "ยังไม่ได้เชื่อม backend",
       "filterAll": "ทุกกฎ",
       "loadError": "โหลดประวัติไม่สำเร็จ",
       "total": "ทั้งหมด {count} รายการ",
       "columnTime": "เวลา",
+      "columnActor": "ผู้ดำเนินการ",
       "columnRule": "กฎ",
       "columnTrigger": "เหตุการณ์",
       "columnAction": "การกระทำ",
       "columnIssue": "การ์ด",
       "columnStatus": "ผล",
       "columnDuration": "เวลาที่ใช้",
+      "actionCreated": "สร้างกฎ",
+      "actionUpdated": "แก้ไขกฎ",
+      "actionDeleted": "ลบกฎ",
       "statusApplied": "ผ่าน",
       "statusSkipped": "ข้าม",
       "statusFailed": "ล้มเหลว",
@@ -511,6 +539,9 @@
       "step3": "ตรวจและบันทึก",
       "step1Intro": "เลือกเหตุการณ์ที่ต้องการตรวจจับ — เลือกได้ 1 เหตุการณ์ต่อกฎ",
       "step2Intro": "เมื่อเงื่อนไขผ่านแล้ว ระบบจะทำสิ่งนี้",
+      "step2FilteredHint": "แสดงเฉพาะการกระทำที่แนะนำสำหรับเหตุการณ์นี้",
+      "showAllActions": "แสดงการกระทำทั้งหมด",
+      "noRecommendedActions": "ยังไม่มีการกระทำที่แนะนำสำหรับเหตุการณ์นี้ — เปิดสวิตช์แสดงการกระทำทั้งหมดเพื่อดูรายการที่ใช้ได้",
       "step3Intro": "ตรวจสอบข้อมูลก่อนบันทึก",
       "back": "ย้อนกลับ",
       "next": "ถัดไป",
@@ -551,6 +582,7 @@
       "payload": "ข้อมูลที่จะบันทึก (JSON)",
       "save": "บันทึก",
       "saveEdit": "บันทึกการแก้ไข",
+      "saved": "บันทึกกฎเรียบร้อยแล้ว",
       "saveTooltip": "ยังไม่ได้เชื่อม backend",
       "saveError": "บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
       "insertToken": "แทรกตัวแปร",
@@ -576,7 +608,12 @@
       "paramCategory": "หมวดหมู่ใหม่",
       "paramLabel": "ป้ายกำกับ",
       "paramMinutes": "จำนวนนาที",
-      "paramComment": "ข้อความคอมเมนต์"
+      "paramDays": "จำนวนวัน",
+      "paramDueTargetStatus": "ต้องถึงสถานะ (ภายในกำหนด)",
+      "paramComment": "ข้อความคอมเมนต์",
+      "paramAnalysis": "วิเคราะห์ / สาเหตุ",
+      "paramResolution": "การแก้ไข",
+      "paramOpenAtStatus": "เปิดให้กรอกเมื่อการ์ดอยู่ที่สถานะ"
     }
   }
 }

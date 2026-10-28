@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
   ForbiddenException,
@@ -14,7 +15,7 @@ import { Label } from "../labels/entities/label.entity";
 import { WorkSessionsService } from "../work-sessions/work-sessions.service";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
-import { RulesEngineService } from "../rules/rules-engine.service";
+import { RulesEngineService, type StatusGates } from "../rules/rules-engine.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { PaginationParams } from "../../common/pagination";
 import { AuthUser } from "../auth/auth-user";
@@ -141,8 +142,11 @@ export class IssuesService {
       .addOrderBy("issue.id", "DESC")
       .getMany();
 
+    // one rules query for the whole page feeds `timerRuleApplies` and the
+    // analysis/resolution gates on every row
+    const gates = await this.rulesEngine.statusGates(issues.map((i) => i.statusId ?? null));
     return {
-      data: issues.map((i) => this.toResponse(i)),
+      data: await Promise.all(issues.map((i) => this.toResponse(i, gates))),
       total,
       page: params.page,
       limit: params.limit,
@@ -212,9 +216,14 @@ export class IssuesService {
       customerId: resolvedCustomerId,
       labelId: data.labelId ?? null,
       issueNumber,
+      // a fresh card starts with the entry field locked: an
+      // `issue.allow_time_entry` rule on `issue.created` may open it right away
+      timeEntryUnlocked: false,
+      timeEntryEverGranted: false,
     } as DeepPartial<Issue>);
     await this.issues.save(issue);
-    // notify the assignee (auto-assign included) — best-effort, never blocks create
+    // notify the assignee (auto-assign included) + every admin — best-effort,
+    // never blocks create; an unassigned card still reaches the admins
     const createdCategory = data.categoryId
       ? await this.categories.findOne({ where: { id: data.categoryId } })
       : null;
@@ -229,6 +238,7 @@ export class IssuesService {
       action: "created",
       recipients: [resolvedProgrammerId],
       actor,
+      alsoAdmins: true,
     });
     await this.logActivity({
       action: "card.created",
@@ -246,6 +256,21 @@ export class IssuesService {
       actorId: actor?.actorId ?? null,
       actorRole: actor?.actorRole ?? null,
     });
+    // A card born with a category never *changes* one, so rules like
+    // "when category is error → assign" would never see it. Emit the
+    // category_changed trigger with oldValue = null for that case; rules
+    // whose category condition does not match simply do not run (the card
+    // stays unassigned), exactly like on a real category change.
+    if (issue.categoryId != null) {
+      await this.rulesEngine.evaluate("issue.category_changed", {
+        issueId: issue.id,
+        toStatusId: status.id,
+        newValue: issue.categoryId,
+        oldValue: null,
+        actorId: actor?.actorId ?? null,
+        actorRole: actor?.actorRole ?? null,
+      });
+    }
     const created = await this.issues.findOne({
       where: { id: issue.id },
       relations: ISSUE_DETAIL_RELATIONS,
@@ -262,6 +287,8 @@ export class IssuesService {
       categoryId?: number | null;
       labelId?: number | null;
       labelIds?: number[];
+      analysisCause?: string | null;
+      resolution?: string | null;
     },
     actor?: ActorInfo | null,
   ) {
@@ -275,6 +302,8 @@ export class IssuesService {
       priorityId: issue.priorityId ?? null,
       categoryId: issue.categoryId ?? null,
       statusId: issue.statusId ?? null,
+      analysisCause: issue.analysisCause ?? null,
+      resolution: issue.resolution ?? null,
     };
     const changes: string[] = [];
     const updates: Partial<Issue> = {};
@@ -287,6 +316,22 @@ export class IssuesService {
       updates.description = data.description;
       changes.push("description");
     }
+    if (data.analysisCause !== undefined) {
+      // empty string is stored as null so the card shows the blank state again
+      const next = data.analysisCause?.trim() || null;
+      if (next !== (issue.analysisCause ?? null)) {
+        updates.analysisCause = next;
+        changes.push("analysisCause");
+      }
+    }
+    if (data.resolution !== undefined) {
+      const next = data.resolution?.trim() || null;
+      if (next !== (issue.resolution ?? null)) {
+        updates.resolution = next;
+        changes.push("resolution");
+      }
+    }
+
     if (data.priorityId !== undefined && data.priorityId !== issue.priorityId) {
       updates.priorityId = data.priorityId;
       changes.push("priority");
@@ -378,17 +423,28 @@ export class IssuesService {
     }
     if (issue.statusId === statusId) return this.toResponse(issue);
 
+    // the "one column at a time" rule (an active issue.move_step_only rule;
+    // pause it in /automation for free dragging) — checked before anything is
+    // written, so a rejected drag leaves no notification or activity behind
+    if (await this.rulesEngine.isStepOnlyMoveActive()) {
+      await this.assertAdjacentMove(issue.statusId, statusId);
+    }
+
     const sourceStatus = issue.statusId
       ? await this.issueStatuses.findOne({ where: { id: issue.statusId } })
       : null;
-    await this.issues.update(id, { statusId });
+    // moving re-locks the "actual fix time" field: an
+    // `issue.allow_time_entry` rule below may grant it again for the target
+    // status, everything else stays read-only (or hidden if never granted)
+    await this.issues.update(id, { statusId, timeEntryUnlocked: false });
 
-    // notify assignee + reporter about the status change
+    // notify assignee + reporter + every admin about the status change
     await this.notifications.notifyIssueEvent({
       issue,
       action: "moved",
       recipients: [issue.programmerId, issue.customerId],
       actor,
+      alsoAdmins: true,
     });
 
     await this.logActivity({
@@ -413,12 +469,42 @@ export class IssuesService {
     return this.toResponse(updated ?? issue);
   }
 
+  /** Board drag policy — the same flag the drop preview keys off (`GET /issues/move-policy`). */
+  async movePolicy() {
+    return { stepOnly: await this.rulesEngine.isStepOnlyMoveActive() };
+  }
+
+  /**
+   * The step-only rule allows a move only to the status directly before or
+   * after the card's own, in board order (`position`, the order the columns
+   * render in). Cards that cannot be placed on that ladder — no status yet
+   * (first placement) or a status that no longer exists — always pass, as does
+   * an unreadable status list: the guard must never wedge the board shut.
+   */
+  private async assertAdjacentMove(fromStatusId: number | null, toStatusId: number) {
+    if (fromStatusId == null) return;
+    const ordered = await this.issueStatuses.find({
+      select: { id: true },
+      order: { position: "ASC", id: "ASC" },
+    });
+    const from = ordered.findIndex((s) => s.id === fromStatusId);
+    const to = ordered.findIndex((s) => s.id === toStatusId);
+    if (from === -1 || to === -1) return;
+    if (Math.abs(from - to) === 1) return;
+    throw new BadRequestException(
+      "Cards can only move one column at a time while the step-by-step move rule is active",
+    );
+  }
+
   async setActualFixDuration(id: number, duration: number) {
     const issue = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
-    issue.actualFixDuration = duration;
+    if (!Number.isFinite(duration) || duration < 0) {
+      throw new BadRequestException("actualFixDuration must be a positive number of seconds");
+    }
+    issue.actualFixDuration = Math.round(duration);
     await this.issues.save(issue);
     return this.toResponse(issue);
   }
@@ -499,6 +585,8 @@ export class IssuesService {
     ) {
       throw new ForbiddenException("Customer can only delete issues in Backlog");
     }
+    // close a still-running timer first, so the trash never keeps one open
+    await this.workSessions.stop(id);
     issue.deletedAt = new Date();
     issue.deletedBy = actor?.actorId ?? null;
     await this.issues.save(issue);
@@ -565,12 +653,16 @@ export class IssuesService {
       relations: ["priority", "category", "label", "labels", "programmer", "customer", "deletedByUser"],
       withDeleted: true,
     });
-    return issues.map((i) => ({
-      ...this.toResponse(i),
-      deletedAt: i.deletedAt,
-      deletedBy: i.deletedBy,
-      deletedByName: i.deletedByUser?.name ?? null,
-    }));
+    // one rules query for the whole trash page (see `toResponse`)
+    const gates = await this.rulesEngine.statusGates(issues.map((i) => i.statusId ?? null));
+    return Promise.all(
+      issues.map(async (i) => ({
+        ...(await this.toResponse(i, gates)),
+        deletedAt: i.deletedAt,
+        deletedBy: i.deletedBy,
+        deletedByName: i.deletedByUser?.name ?? null,
+      })),
+    );
   }
 
   private async generateIssueNumber(): Promise<string> {
@@ -616,12 +708,30 @@ export class IssuesService {
     );
   }
 
-  private toResponse(issue: Issue) {
+  /**
+   * API shape of one card. `timerRuleApplies`, `isAnalysisOpen` and
+   * `isResolutionOpen` ask the engine which statuses an *active* rule covers
+   * (`statusGates`), so a rule created after the card already sat in that
+   * status still opens its field — no event has to fire for the card. Bulk
+   * paths pass precomputed gates so a 100-card page costs one rules query
+   * instead of 100.
+   */
+  private async toResponse(issue: Issue, precomputed?: StatusGates) {
+    const statusId = issue.statusId ?? null;
+    // a card with no status can never be covered (and costs no rules query)
+    const gates = precomputed ?? (await this.rulesEngine.statusGates([statusId]));
+    const covered = (set: Set<number>): boolean => statusId != null && set.has(statusId);
     return {
       id: issue.id,
       issueNumber: issue.issueNumber,
       title: issue.title,
       description: issue.description,
+      analysisCause: issue.analysisCause ?? null,
+      resolution: issue.resolution ?? null,
+      // the flag records that a rule fired for this card; the gate adds the
+      // cards that were already sitting in the status when the rule was made
+      isAnalysisOpen: (issue.isAnalysisOpen ?? false) || covered(gates.analysis),
+      isResolutionOpen: (issue.isResolutionOpen ?? false) || covered(gates.resolution),
       statusId: issue.statusId,
       statusName: issue.status?.name ?? null,
       priorityId: issue.priorityId,
@@ -647,6 +757,9 @@ export class IssuesService {
       attachmentCount: issue.attachments?.length ?? 0,
       trackedDuration: issue.trackedDuration,
       actualFixDuration: issue.actualFixDuration,
+      timeEntryUnlocked: issue.timeEntryUnlocked ?? false,
+      timeEntryEverGranted: issue.timeEntryEverGranted ?? false,
+      timerRuleApplies: covered(gates.timer),
       createdAt: issue.createdAt,
       updatedAt: issue.updatedAt,
     };

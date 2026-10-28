@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { IsNull, Repository } from "typeorm";
 import { getTriggerByKey, type RuleContext, type RuleOperator } from "@kanban/shared";
 import { Issue } from "../issues/entities/issue.entity";
 import { Comment } from "../comments/entities/comment.entity";
@@ -11,8 +11,8 @@ import { IssueStatus } from "../issue-statuses/entities/issue-status.entity";
 import { IssuePriority } from "../issue-priorities/entities/issue-priority.entity";
 import { Category } from "../categories/entities/category.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
+import { WorkSession } from "../work-sessions/entities/work-session.entity";
 import { Rule } from "./entities/rule.entity";
-import { RuleRun, type RuleRunStatus } from "./entities/rule-run.entity";
 
 /** Triggers the engine listens for — one per hook placed in the services. */
 export type EngineTrigger =
@@ -36,15 +36,22 @@ interface ActionResult {
   reason?: string;
 }
 
+/** Statuses covered by the active rules behind one card field each. */
+export interface StatusGates {
+  timer: Set<number>;
+  analysis: Set<number>;
+  resolution: Set<number>;
+}
+
 /**
- * Runs automation rules when a hook fires and records every execution in
- * `rule_runs` (only when the conditions pass, so the table stays readable).
+ * Runs automation rules when a hook fires.
  *
- * Phase 2 covers every card/content action; timer actions and
- * `issue.set_due_date` are skipped until their semantics are settled.
- * Actions write through repositories directly, so a rule-driven change never
- * re-enters the hooks; the `running` counter is a second line of defence. A
- * failing rule must never break the caller's request.
+ * Every action it can run is implemented below — including the time actions
+ * (`work_session.start` / `.stop` / `.reset`, `issue.allow_time_entry`); only
+ * `issue.set_time` is still parked. Actions write through repositories
+ * directly, so a rule-driven change never re-enters the hooks; the `running`
+ * counter is a second line of defence. A failing rule must never break the
+ * caller's request.
  */
 @Injectable()
 export class RulesEngineService {
@@ -54,7 +61,6 @@ export class RulesEngineService {
 
   constructor(
     @InjectRepository(Rule) private readonly rules: Repository<Rule>,
-    @InjectRepository(RuleRun) private readonly runs: Repository<RuleRun>,
     @InjectRepository(Issue) private readonly issues: Repository<Issue>,
     @InjectRepository(Comment) private readonly comments: Repository<Comment>,
     @InjectRepository(User) private readonly users: Repository<User>,
@@ -64,6 +70,7 @@ export class RulesEngineService {
     @InjectRepository(IssuePriority) private readonly priorities: Repository<IssuePriority>,
     @InjectRepository(Category) private readonly categories: Repository<Category>,
     @InjectRepository(ActivityLog) private readonly activityLogs: Repository<ActivityLog>,
+    @InjectRepository(WorkSession) private readonly workSessions: Repository<WorkSession>,
   ) {}
 
   async evaluate(triggerKey: EngineTrigger, ctx: RuleContext): Promise<void> {
@@ -71,33 +78,33 @@ export class RulesEngineService {
       if (this.running > 0) return;
       const active = await this.rules.find({
         where: { triggerKey, isActive: true },
-        relations: { conditions: true },
         order: { createdAt: "ASC" },
       });
       if (active.length === 0) return;
 
       this.running++;
       try {
-        for (const rule of active) {
-          // conditions that do not pass are not recorded — only real executions
+        // Timer actions are order-sensitive within one event: a reset must
+        // wipe the old total before anything starts, and leaving one timed
+        // status for another must stop before it starts again (5 → 3 resets
+        // then counts fresh; a → b leaves two clean sessions). Everything
+        // else keeps its original creation order in between — sort is stable.
+        const rank = (key: string): number =>
+          key === "work_session.reset" ? 0 : key === "work_session.stop" ? 1 : key === "work_session.start" ? 3 : 2;
+        for (const rule of [...active].sort((a, b) => rank(a.actionKey) - rank(b.actionKey))) {
+          // conditions that do not pass mean the rule simply does not run
           if (!this.conditionsPass(rule, triggerKey, ctx)) continue;
 
-          const startedAt = Date.now();
-          let status: RuleRunStatus;
-          let detail: string | null = null;
+          let failed = false;
           try {
-            const result = await this.runAction(rule, triggerKey, ctx);
-            status = result.applied ? "applied" : "skipped";
-            detail = result.reason ?? null;
+            await this.runAction(rule, triggerKey, ctx);
           } catch (err) {
-            status = "failed";
-            detail = err instanceof Error ? err.message : String(err);
+            failed = true;
+            const detail = err instanceof Error ? err.message : String(err);
             this.logger.warn(`rule #${rule.id} "${rule.name}" failed: ${detail}`);
           }
 
-          await this.recordRun(rule, triggerKey, ctx, status, detail, Date.now() - startedAt);
-
-          if (status === "failed" && rule.stopOnError) break;
+          if (failed && rule.stopOnError) break;
         }
       } finally {
         this.running--;
@@ -109,32 +116,77 @@ export class RulesEngineService {
     }
   }
 
-  /** Store the execution; a failing insert must not break anything either. */
-  private async recordRun(
-    rule: Rule,
-    triggerKey: string,
-    ctx: RuleContext,
-    status: RuleRunStatus,
-    detail: string | null,
-    durationMs: number,
-  ): Promise<void> {
+  /**
+   * Which statuses an *active* rule currently covers — asked **when the card
+   * is read**, not only when an event fires. A rule created after a card
+   * entered its status therefore applies to that card right away (the card
+   * detail shows the สาเหตุ / วิธีแก้ไข fields without waiting for the next
+   * move), and editing or disabling the rule changes the answer immediately.
+   *
+   * Only the rules' `to_status` conditions are checked: anything else
+   * (actor, role …) varies per request and must not hide a field; a rule
+   * without a status condition covers every status.
+   *
+   * `timer` feeds the card's ⏱ box, `analysis` / `resolution` the two
+   * fill-in fields — those persist an `is_*_open` flag when the rule fires,
+   * which never sees cards that were *already* sitting in the status.
+   */
+  async statusGates(statusIds: Array<number | null>): Promise<StatusGates> {
+    const gates: StatusGates = {
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+    };
+    const candidates = [...new Set(statusIds.filter((id): id is number => id != null))];
+    if (candidates.length === 0) return gates;
+
+    const buckets: Record<string, Set<number>> = {
+      "work_session.start": gates.timer,
+      "issue.open_analysis": gates.analysis,
+      "issue.open_resolution": gates.resolution,
+    };
+    const rules = await this.rules.find({ where: { isActive: true } });
+    for (const rule of rules) {
+      const target = buckets[rule.actionKey];
+      if (!target) continue; // actions without a status gate drive no field
+      const statusConditions = (rule.conditions ?? []).filter((c) => c.field === "to_status");
+      if (statusConditions.length === 0) {
+        // no status filter → the rule covers any status the card sits in
+        candidates.forEach((id) => target.add(id));
+        continue;
+      }
+      for (const id of candidates) {
+        if (statusConditions.every((c) => this.compare(c.operator as RuleOperator, c.value, id))) {
+          target.add(id);
+        }
+      }
+    }
+    return gates;
+  }
+
+  /** Statuses an active "start timer" rule would time (see `statusGates`). */
+  async startTimerApplies(statusIds: Array<number | null>): Promise<Set<number>> {
+    return (await this.statusGates(statusIds)).timer;
+  }
+
+  /**
+   * Is the "one column at a time" drag guard on? One active rule with this
+   * action key acts as the switch: pause it in /automation and cards can be
+   * dragged across columns freely again. The rule's conditions are ignored on
+   * purpose so the board's drop preview and the server's check in
+   * `IssuesService.move()` always agree on a single flag. Lookup errors fail
+   * open (free dragging) rather than blocking every move.
+   */
+  async isStepOnlyMoveActive(): Promise<boolean> {
     try {
-      const issueId = Number(ctx.issueId);
-      await this.runs.save(
-        this.runs.create({
-          ruleId: rule.id,
-          ruleName: rule.name.slice(0, 150),
-          triggerKey,
-          issueId: Number.isFinite(issueId) && issueId > 0 ? issueId : null,
-          status,
-          actionKey: rule.actionKey,
-          detail,
-          durationMs: Math.max(0, Math.round(durationMs)),
-        }),
-      );
+      const rule = await this.rules.findOne({
+        where: { actionKey: "issue.move_step_only", isActive: true },
+      });
+      return Boolean(rule);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`could not record run for rule #${rule.id}: ${message}`);
+      this.logger.error(`move guard lookup failed: ${message}`);
+      return false;
     }
   }
 
@@ -206,6 +258,11 @@ export class RulesEngineService {
     };
 
     switch (rule.actionKey) {
+      case "issue.move_step_only":
+        // not an event action — `IssuesService.move()` consults it before the
+        // write via isStepOnlyMoveActive(); returning early here keeps a rule
+        // with this key harmless when the engine runs after a real move
+        return { applied: false, reason: "checked before the move, not on it" };
       case "issue.set_priority": {
         const priorityId = Number(config.priority);
         if (!Number.isFinite(priorityId)) return { applied: false, reason: "no priority configured" };
@@ -273,6 +330,15 @@ export class RulesEngineService {
       case "issue.unlock":
         await this.issues.update(issueId, { isLocked: false });
         return applied(`unlocked #${issueId}`);
+      // The status gate for these two lives in the trigger's conditions
+      // (e.g. "card moved to สถานะ X" picked in step ①), so the action itself
+      // just flips the lock the moment the rule fires.
+      case "issue.open_analysis":
+        await this.issues.update(issueId, { isAnalysisOpen: true });
+        return applied(`opened analysis field on #${issueId}`);
+      case "issue.open_resolution":
+        await this.issues.update(issueId, { isResolutionOpen: true });
+        return applied(`opened resolution field on #${issueId}`);
       case "issue.delete": {
         const existing = await this.issues.findOne({ where: { id: issueId } });
         if (!existing) return { applied: false, reason: `issue ${issueId} not found` };
@@ -309,12 +375,91 @@ export class RulesEngineService {
         );
         return applied(`commented on #${issueId}`);
       }
+      // ── time actions (rule-driven — the card itself has no buttons) ──
+      case "work_session.start": {
+        const open = await this.workSessions.findOne({ where: { issueId, endedAt: IsNull() } });
+        if (open) return { applied: false, reason: "timer already running" };
+        const owner = await this.resolveTimerOwner(issueId, rule, ctx);
+        if (!owner) {
+          return { applied: false, reason: "no user to own the timer (assign the card first)" };
+        }
+        await this.workSessions.save(
+          this.workSessions.create({
+            issueId,
+            programmerId: owner.id,
+            startedAt: new Date(),
+            duration: 0,
+          }),
+        );
+        return applied(`started timer on #${issueId} for ${owner.name}`);
+      }
+      case "work_session.stop": {
+        const open = await this.workSessions.findOne({ where: { issueId, endedAt: IsNull() } });
+        if (!open) return { applied: false, reason: "no running timer" };
+        open.endedAt = new Date();
+        open.duration = Math.max(
+          0,
+          Math.floor((open.endedAt.getTime() - open.startedAt.getTime()) / 1000),
+        );
+        await this.workSessions.save(open);
+        await this.recalculateTrackedDuration(issueId);
+        return applied(`stopped timer on #${issueId} after ${open.duration}s`);
+      }
+      case "work_session.reset": {
+        // wipe every session (a still-running one included) so the next start
+        // counts from zero — e.g. a fix bounced back from the "done" status
+        const result = await this.workSessions.delete({ issueId });
+        await this.issues.update(issueId, { trackedDuration: 0 });
+        return applied(
+          `reset time on #${issueId} (${result.affected ?? 0} session(s) removed)`,
+        );
+      }
+      case "issue.allow_time_entry": {
+        // the *unlocked* flag is cleared again on every move/create, so this
+        // grant lasts exactly while the card sits in the status the rule matched
+        await this.issues.update(issueId, {
+          timeEntryUnlocked: true,
+          timeEntryEverGranted: true,
+        });
+        return applied(`unlocked actual time entry on #${issueId}`);
+      }
       default:
         return {
           applied: false,
-          reason: `action ${rule.actionKey} is not supported yet (timer / due-date actions)`,
+          reason: `action ${rule.actionKey} is not supported yet`,
         };
     }
+  }
+
+  /**
+   * Owner of a rule-started session: whoever the card is assigned to, then
+   * whoever triggered the rule, then the rule's author. The column is NOT
+   * NULL and FK-checked, so the user must actually exist.
+   */
+  private async resolveTimerOwner(
+    issueId: number,
+    rule: Rule,
+    ctx: RuleContext,
+  ): Promise<User | null> {
+    const issue = await this.issues.findOne({ where: { id: issueId } });
+    const actorId = Number(ctx.actorId);
+    const candidates = [
+      issue?.programmerId ?? null,
+      Number.isFinite(actorId) && actorId > 0 ? actorId : null,
+      Number(rule.createdBy) || null,
+    ].filter((id): id is number => id != null);
+    for (const id of candidates) {
+      const user = await this.users.findOne({ where: { id } });
+      if (user) return user;
+    }
+    return null;
+  }
+
+  /** `tracked_duration` = the sum of every finished session of the card. */
+  private async recalculateTrackedDuration(issueId: number): Promise<void> {
+    const sessions = await this.workSessions.find({ where: { issueId } });
+    const total = sessions.reduce((sum, s) => sum + (s.duration ?? 0), 0);
+    await this.issues.update(issueId, { trackedDuration: total });
   }
 
   /** Comment author = who triggered the rule, falling back to the rule's owner. */

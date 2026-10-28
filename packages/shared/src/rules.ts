@@ -125,20 +125,15 @@ export interface RuleDto {
   updatedAt: string;
 }
 
-export type RuleRunStatus = "applied" | "skipped" | "failed";
-
-/** One recorded execution of a rule (history shown on /automation/runs). */
-export interface RuleRunDto {
+/** Who changed a rule and how (audit log behind GET /rules/activity). */
+export interface RuleActivityDto {
   id: number;
+  /** "rule.created" | "rule.updated" | "rule.deleted" */
+  action: string;
   ruleId: number | null;
   ruleName: string | null;
-  triggerKey: string;
-  issueId: number | null;
-  issueTitle: string | null;
-  status: RuleRunStatus;
-  actionKey: string | null;
-  detail: string | null;
-  durationMs: number;
+  actorName: string | null;
+  actorRole: string | null;
   createdAt: string;
 }
 
@@ -166,10 +161,16 @@ export const RULE_TRIGGERS: RuleTriggerDef[] = [
     label: { th: "การ์ดถูกลาก", en: "Card moved" },
     fields: [
       { key: "to_status", type: "status", contextKey: "toStatusId" },
+      // leaving a status — powers "stop the timer when the card leaves a status"
+      { key: "from_status", type: "status", contextKey: "fromStatusId" },
       { key: "actor_role", type: "role", contextKey: "actorRole" },
     ],
     templates: [
       { key: "moved_to", text: { th: "เมื่อการ์ดถูกลากไปยัง {status}", en: "When a card is moved to {status}" }, slots: [{ name: "status", field: "to_status", type: "status" }] },
+      { key: "moved_from", text: { th: "เมื่อการ์ดถูกลากออกจาก {status}", en: "When a card is moved away from {status}" }, slots: [{ name: "status", field: "from_status", type: "status" }] },
+      // slot-less so the "one step at a time" guard can be phrased as a plain
+      // "whenever a card is moved" rule instead of naming a status
+      { key: "moved_any", text: { th: "เมื่อมีการย้ายการ์ด", en: "When a card is moved" }, slots: [] },
     ],
   },
   {
@@ -364,6 +365,20 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     configSchema: { targetStatus: { type: "status", required: true } },
   },
   {
+    // acts as an on/off switch, not a per-event action: while any rule with
+    // this key is active the server refuses a drag that skips a column, and
+    // pausing it brings free dragging back. Its conditions are ignored on
+    // purpose — the board's preview and the server's check share one flag.
+    key: "issue.move_step_only",
+    category: "card",
+    status: "supported",
+    label: { th: "บังคับลากทีละคอลัมน์", en: "Only allow moving one column at a time" },
+    description: {
+      th: "เปิดกฎนี้แล้วลากการ์ดได้เฉพาะคอลัมน์ที่อยู่ติดกัน (ไปข้างหน้า/ถอยหลัง 1 ขั้น ลากข้ามไม่ได้) — ปิดกฎนี้เมื่ออยากให้ลากไปสถานะไหนก็ได้",
+      en: "While this rule is on, cards can only be dragged to the adjacent column (one step forward or back, no skipping) — pause it to drag a card to any status again",
+    },
+  },
+  {
     key: "issue.assign",
     category: "card",
     status: "supported",
@@ -377,6 +392,26 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     status: "supported",
     label: { th: "ถอดมอบหมาย", en: "Unassign card" },
     description: { th: "ลบผู้รับผิดชอบออกจากการ์ด", en: "Remove the assignee from the card" },
+  },
+  {
+    key: "issue.open_analysis",
+    category: "card",
+    status: "supported",
+    label: { th: "เปิดให้กรอก วิเคราะห์/สาเหตุ", en: "Open analysis / cause field" },
+    description: {
+      th: "ปลดล็อกให้กรอกฟิลด์วิเคราะห์/สาเหตุ ตอนที่เหตุการณ์นี้เกิดขึ้น (เช่น ตอนการ์ดถูกกลากไปยังสถานะที่เลือกไว้ในขั้นที่ 1)",
+      en: "Unlock the analysis/cause field when this event happens (e.g. when the card is moved to the status picked in step 1)",
+    },
+  },
+  {
+    key: "issue.open_resolution",
+    category: "card",
+    status: "supported",
+    label: { th: "เปิดให้กรอก การแก้ไข", en: "Open resolution field" },
+    description: {
+      th: "ปลดล็อกให้กรอกฟิลด์การแก้ไข ตอนที่เหตุการณ์นี้เกิดขึ้น (เช่น ตอนการ์ดถูกกลากไปยังสถานะที่เลือกไว้ในขั้นที่ 1)",
+      en: "Unlock the resolution field when this event happens (e.g. when the card is moved to the status picked in step 1)",
+    },
   },
 
   // ── labels, categories & priority ───────────────────────────────
@@ -414,28 +449,46 @@ export const RULE_ACTIONS: RuleActionDef[] = [
   },
 
   // ── time ────────────────────────────────────────────────────────
-  // Parked as `unsupported` until the time model is settled: the engine has no
-  // implementation for them yet (they would only be recorded as `skipped`).
-  // Flipping them back to `supported` is a one-line change here — the picker
-  // greys out whatever this field says.
+  // Time tracking is rule-driven: these actions are what turns a drag into a
+  // start/stop/reset of the card's timer (the card itself has no buttons).
   {
     key: "work_session.start",
     category: "time",
-    status: "unsupported",
+    status: "supported",
     label: { th: "เริ่มจับเวลา", en: "Start timer" },
     description: {
-      th: "เริ่มจับเวลาให้ผู้รับผิดชอบ — ยังไม่เปิดใช้ระหว่างที่ยังไม่กำหนดรูปแบบการจับเวลา",
-      en: "Start the timer for the assignee — parked until the time model is settled",
+      th: "เริ่มจับเวลาให้การ์ด (ข้ามไปถ้ามีช่วงเวลาที่กำลังวิ่งอยู่แล้ว) — มักใช้คู่กับเงื่อนไข “ลากเข้าสถานะ …”",
+      en: "Start timing the card (skipped when a session is already running) — usually paired with a “moved into status …” condition",
     },
   },
   {
     key: "work_session.stop",
     category: "time",
-    status: "unsupported",
+    status: "supported",
     label: { th: "หยุดจับเวลา", en: "Stop timer" },
     description: {
-      th: "หยุดจับเวลาของการ์ด — ยังไม่เปิดใช้ระหว่างที่ยังไม่กำหนดรูปแบบการจับเวลา",
-      en: "Stop the timer of the card — parked until the time model is settled",
+      th: "หยุดจับเวลาของการ์ดและบวกรวมเข้ายอดสะสม (ข้ามถ้ายังไม่ได้เริ่ม) — มักใช้คู่กับเงื่อนไข “ลากออกจากสถานะ …”",
+      en: "Stop the card's timer and add it to the accumulated total (skipped when nothing is running) — usually paired with a “moved away from status …” condition",
+    },
+  },
+  {
+    key: "work_session.reset",
+    category: "time",
+    status: "supported",
+    label: { th: "รีเซ็ตเวลา", en: "Reset time" },
+    description: {
+      th: "ล้างเวลาทั้งหมดของการ์ด — ลบช่วงเวลาที่เคยจับทั้งยอดสะสมเป็น 0 (เช่น เมื่อออกจากสถานะ “เสร็จสิ้น” แล้วงานถูกตีกลับ)",
+      en: "Wipe the card's time — deletes every recorded session and resets the total to 0 (e.g. when leaving the “done” status after a rejected fix)",
+    },
+  },
+  {
+    key: "issue.allow_time_entry",
+    category: "time",
+    status: "supported",
+    label: { th: "อนุญาตกรอกเวลาจริง", en: "Allow actual time entry" },
+    description: {
+      th: "เปิดช่องกรอก “เวลาแก้ไขจริง” ให้การ์ดตามเงื่อนไขที่กำหนด (การย้าย/สร้างการ์ดจะล็อกกลับอัตโนมัติ)",
+      en: "Unlock the “actual fix time” field for the card where the conditions match (moving/creating the card re-locks it automatically)",
     },
   },
   {
@@ -447,13 +500,6 @@ export const RULE_ACTIONS: RuleActionDef[] = [
       th: "บันทึกเวลาที่ใช้แก้ไขจริงจากนาฬิกาจับเวลา — ยังไม่เปิดใช้",
       en: "Record the actual fix time from the timer — parked until the time model is settled",
     },
-  },
-  {
-    key: "issue.set_due_date",
-    category: "time",
-    status: "unsupported",
-    label: { th: "ตั้งวันครบกำหนด", en: "Set due date" },
-    description: { th: "กำหนดวันที่ครบกำหนด — ระบบยังไม่มีฟิลด์วันครบกำหนด", en: "Set a deadline — the system has no due date field yet" },
   },
 
   // ── content ─────────────────────────────────────────────────────
@@ -528,6 +574,29 @@ export const INVALID_ACTION_COMBOS: Array<{ trigger: string; action: string }> =
   { trigger: "issue.restored", action: "issue.restore" },
   { trigger: "issue.moved", action: "issue.move_status" },
   { trigger: "comment.created", action: "issue.comment" },
+  // echoes: the action only redoes what the trigger just did
+  { trigger: "issue.assigned", action: "issue.assign" },
+  { trigger: "issue.priority_changed", action: "issue.set_priority" },
+  { trigger: "issue.category_changed", action: "issue.set_category" },
+  // a brand-new card has nobody to unassign
+  { trigger: "issue.created", action: "issue.unassign" },
+  // a brand-new card has no timer to stop/reset yet
+  { trigger: "issue.created", action: "work_session.stop" },
+  { trigger: "issue.created", action: "work_session.reset" },
+  // the move guard is only consulted on the way into a move — for every other
+  // trigger it would silently act as a global switch nobody meant to create
+  { trigger: "issue.assigned", action: "issue.move_step_only" },
+  { trigger: "issue.created", action: "issue.move_step_only" },
+  { trigger: "comment.created", action: "issue.move_step_only" },
+  { trigger: "attachment.created", action: "issue.move_step_only" },
+  { trigger: "issue.title_changed", action: "issue.move_step_only" },
+  { trigger: "issue.description_changed", action: "issue.move_step_only" },
+  { trigger: "issue.priority_changed", action: "issue.move_step_only" },
+  { trigger: "issue.category_changed", action: "issue.move_step_only" },
+  { trigger: "issue.deleted", action: "issue.move_step_only" },
+  { trigger: "issue.restored", action: "issue.move_step_only" },
+  { trigger: "work_session.started", action: "issue.move_step_only" },
+  { trigger: "work_session.stopped", action: "issue.move_step_only" },
 ];
 
 export function isActionCompatible(triggerKey: string | null, actionKey: string): boolean {
@@ -535,20 +604,43 @@ export function isActionCompatible(triggerKey: string | null, actionKey: string)
   return !INVALID_ACTION_COMBOS.some((c) => c.trigger === triggerKey && c.action === actionKey);
 }
 
-/** Actions that make sense for a trigger — surfaced first with a "recommended" badge. */
+/** Actions that make sense for a trigger — listed first in the picker. */
 export const RULE_ACTION_RECOMMENDATIONS: Record<string, string[]> = {
-  "issue.moved": ["work_session.start", "work_session.stop", "issue.lock", "issue.set_priority"],
-  "issue.created": ["issue.move_status", "issue.assign", "issue.add_label", "issue.set_priority"],
+  "issue.moved": [
+    "issue.move_step_only",
+    "work_session.start",
+    "work_session.stop",
+    "work_session.reset",
+    "issue.allow_time_entry",
+    "issue.lock",
+    "issue.set_priority",
+    "issue.open_analysis",
+    "issue.open_resolution",
+  ],
+  "issue.created": [
+    "issue.move_status",
+    "issue.assign",
+    "issue.add_label",
+    "issue.set_priority",
+    // a card created straight into a timed / time-entry status can start there
+    "work_session.start",
+    "issue.allow_time_entry",
+  ],
   "issue.assigned": ["issue.comment"],
-  "comment.created": [],
-  "attachment.created": [],
+  // a fresh comment / attachment is a good moment to tag the card
+  // (e.g. a "รอคำตอบ" / "มีเอกสารแนบ" label)
+  "comment.created": ["issue.add_label"],
+  "attachment.created": ["issue.add_label"],
   "issue.title_changed": ["issue.add_label"],
   "issue.description_changed": ["issue.add_label"],
-  "issue.priority_changed": [],
-  "issue.category_changed": ["issue.set_category"],
+  // e.g. priority jumps to urgent → tag the card "เร่งด่วน"
+  "issue.priority_changed": ["issue.add_label"],
+  // no set_category here: category_changed → set_category is an echo combo
+  // and is hidden from the picker (see INVALID_ACTION_COMBOS)
+  "issue.category_changed": [],
   "issue.deleted": [],
   "issue.restored": ["issue.move_status"],
-  "work_session.started": ["issue.set_time"],
+  "work_session.started": ["issue.set_time", "issue.add_label"],
   "work_session.stopped": ["issue.set_time"],
 };
 
@@ -562,8 +654,17 @@ export function getRecommendedActions(triggerKey: string | null): string[] {
   return recommended.filter((key) => supported.has(key));
 }
 
-export function isRecommendedAction(triggerKey: string | null, actionKey: string): boolean {
-  return getRecommendedActions(triggerKey).includes(actionKey);
+/**
+ * What the step-② action picker offers for a trigger: only the actions the
+ * engine can actually run (`supported`) and that make sense with the trigger
+ * (compatible), with the sensible ones listed first. Parked / unsupported
+ * actions are hidden entirely — the picker never offers what cannot work.
+ */
+export function getPickerActions(triggerKey: string | null, category: string): RuleActionDef[] {
+  const recommended = new Set(getRecommendedActions(triggerKey));
+  return getActionsByCategory(category)
+    .filter((action) => action.status === "supported" && isActionCompatible(triggerKey, action.key))
+    .sort((a, b) => Number(recommended.has(b.key)) - Number(recommended.has(a.key)));
 }
 
 /** Tokens every message can use — the card it happened on and who did it. */
@@ -672,7 +773,7 @@ function valuesEqual(actual: unknown, expected: unknown, numeric: boolean): bool
 
 /**
  * Pure condition matcher — lives in shared so API & web use the same semantics.
- * Conditions within one rule are AND-ed (conditionGroup defaults to "AND").
+ * Conditions within one rule are always AND-ed together.
  */
 export function evaluateCondition(
   cond: RuleCondition,

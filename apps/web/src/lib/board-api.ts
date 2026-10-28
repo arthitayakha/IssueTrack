@@ -10,8 +10,6 @@ export interface IssueStatus {
   description: string | null;
   isActive: boolean;
   sortOrder: number;
-  timerEnabled: boolean;
-  timeEntryEnabled: boolean;
   customName?: string | null;
   issueCount: number;
   createdAt: string;
@@ -51,6 +49,10 @@ export interface BoardIssue {
   issueNumber: string | null;
   title: string;
   description: string;
+  analysisCause: string | null;
+  resolution: string | null;
+  isAnalysisOpen?: boolean;
+  isResolutionOpen?: boolean;
   statusId: number | null;
   statusName: string | null;
   priorityId: number | null;
@@ -73,10 +75,13 @@ export interface BoardIssue {
   attachmentCount: number;
   trackedDuration?: number;
   actualFixDuration?: number | null;
+  /** An active start-timer rule covers this card's status (computed). */
+  timerRuleApplies?: boolean;
+  /** "Actual fix time" field states: editable now / shown at least once. */
+  timeEntryUnlocked?: boolean;
+  timeEntryEverGranted?: boolean;
   createdAt: string;
   updatedAt: string;
-  statusTimerEnabled?: boolean;
-  statusTimeEntryEnabled?: boolean;
   isLocked?: boolean;
 }
 
@@ -130,7 +135,7 @@ export async function createStatus(name: string, description?: string): Promise<
 
 export async function updateStatus(
   id: number,
-  data: { name?: string; description?: string; customName?: string; timerEnabled?: boolean; timeEntryEnabled?: boolean },
+  data: { name?: string; description?: string; customName?: string },
 ): Promise<IssueStatus> {
   return apiFetch<IssueStatus>(`/issue-statuses/${id}`, {
     method: "PATCH",
@@ -227,12 +232,19 @@ export async function updateIssue(
     categoryId?: number;
     labelId?: number;
     labelIds?: number[];
+    analysisCause?: string | null;
+    resolution?: string | null;
   },
 ): Promise<BoardIssue> {
   return apiFetch<BoardIssue>(`/issues/${id}`, {
     method: "PUT",
     body: JSON.stringify(data),
   }, getToken());
+}
+
+/** One card, fetched straight by id — used when a notification deep-links in. */
+export async function fetchIssue(id: number): Promise<BoardIssue> {
+  return apiFetch<BoardIssue>(`/issues/${id}`, {}, getToken());
 }
 
 export async function moveIssue(id: number, statusId: number): Promise<BoardIssue> {
@@ -370,6 +382,11 @@ export async function fetchStatuses(
   );
 }
 
+/** Whether the "one column at a time" drag guard is on (drives the board's drop preview). */
+export async function fetchMovePolicy(): Promise<{ stepOnly: boolean }> {
+  return apiFetch<{ stepOnly: boolean }>("/issues/move-policy", {}, getToken());
+}
+
 export async function fetchPriorities(): Promise<PaginatedResponse<IssuePriority>> {
   return apiFetch<PaginatedResponse<IssuePriority>>("/issue-priorities?page=1&limit=100", {}, getToken());
 }
@@ -457,6 +474,11 @@ export async function stopTimer(issueId: number): Promise<WorkSession> {
 
 export async function getOpenTimer(issueId: number): Promise<WorkSession | null> {
   return apiFetch<WorkSession | null>(`/work-sessions/issue/${issueId}/open`, {}, getToken());
+}
+
+/** Every card with a running timer — one request feeds all board chips. */
+export async function fetchOpenTimers(): Promise<WorkSession[]> {
+  return apiFetch<WorkSession[]>(`/work-sessions/open`, {}, getToken());
 }
 
 export async function getWorkSessions(issueId: number): Promise<WorkSession[]> {

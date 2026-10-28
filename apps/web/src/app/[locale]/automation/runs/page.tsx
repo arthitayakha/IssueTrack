@@ -12,11 +12,6 @@ import {
   Link as MuiLink,
   MenuItem,
   Select,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -26,31 +21,42 @@ import { useLocale, useTranslations } from "next-intl";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import { Link } from "@/i18n/navigation";
-import { fetchRuleRuns, fetchRules } from "@/lib/rules-api";
-import type { PaginatedRuns } from "@/lib/rules-api";
-import type { RuleDto, RuleRunDto, RuleRunStatus } from "@kanban/shared";
-import { getActionByKey, getTriggerByKey } from "@kanban/shared";
+import { fetchRuleActivity, fetchRules } from "@/lib/rules-api";
+import type { PaginatedActivity } from "@/lib/rules-api";
+import { Pagination } from "@/components/pagination";
+import DataTable, {
+  DataTableHead,
+  DataTableBody,
+  DataTableRow,
+  DataTableCell,
+} from "@/components/data-table";
+import type { RuleActivityDto, RuleDto } from "@kanban/shared";
 import { timeAgo } from "@/lib/time-ago";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 10;
 
-const STATUS_COLOR: Record<RuleRunStatus, "success" | "warning" | "error"> = {
-  applied: "success",
-  skipped: "warning",
-  failed: "error",
+/** Audit actions written by RulesService → label key + chip colour. */
+const ACTION_STYLE: Record<
+  string,
+  { key: "actionCreated" | "actionUpdated" | "actionDeleted"; color: "success" | "info" | "error" }
+> = {
+  "rule.created": { key: "actionCreated", color: "success" },
+  "rule.updated": { key: "actionUpdated", color: "info" },
+  "rule.deleted": { key: "actionDeleted", color: "error" },
 };
 
 /**
- * Rule run history — reads GET /rules/runs. The engine writes a row whenever a
- * rule's conditions pass, so this page shows what actually happened.
+ * Rule change history — reads GET /rules/activity (RulesService writes these
+ * rows into activity_logs on create/update/delete). Who did what to which
+ * rule, like a log — no engine runs and no durations here.
  */
-export default function RuleRunsPage() {
+export default function RuleHistoryPage() {
   const t = useTranslations("Automation");
   const tRuns = useTranslations("Automation.runs");
   const theme = useTheme();
   const locale = useLocale();
 
-  const [runs, setRuns] = useState<PaginatedRuns | null>(null);
+  const [activity, setActivity] = useState<PaginatedActivity | null>(null);
   const [rules, setRules] = useState<RuleDto[]>([]);
   const [ruleFilter, setRuleFilter] = useState<string>("all");
   const [page, setPage] = useState(1);
@@ -77,12 +83,12 @@ export default function RuleRunsPage() {
       setLoading(true);
       setError(null);
       try {
-        const data = await fetchRuleRuns({
+        const data = await fetchRuleActivity({
           page,
           limit: PAGE_SIZE,
           ...(ruleFilter === "all" ? {} : { ruleId: Number(ruleFilter) }),
         });
-        if (!cancelled) setRuns(data);
+        if (!cancelled) setActivity(data);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : tRuns("loadError"));
       } finally {
@@ -96,10 +102,9 @@ export default function RuleRunsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ruleFilter, page, reloadKey]);
 
-  function statusLabel(status: RuleRunStatus): string {
-    if (status === "applied") return tRuns("statusApplied");
-    if (status === "skipped") return tRuns("statusSkipped");
-    return tRuns("statusFailed");
+  function actionLabel(action: string): string {
+    const style = ACTION_STYLE[action];
+    return style ? tRuns(style.key) : action;
   }
 
   const header = (
@@ -150,9 +155,9 @@ export default function RuleRunsPage() {
           >
             {tRuns("refresh")}
           </Button>
-          {runs && (
+          {activity && (
             <Typography variant="body2" color="text.secondary">
-              {tRuns("total", { count: runs.total })}
+              {tRuns("total", { count: activity.total })}
             </Typography>
           )}
         </Box>
@@ -172,7 +177,7 @@ export default function RuleRunsPage() {
           >
             <Typography>{error}</Typography>
           </Alert>
-        ) : !runs || runs.data.length === 0 ? (
+        ) : !activity || activity.data.length === 0 ? (
           <Box sx={{ py: 8, textAlign: "center" }}>
             <HistoryIcon sx={{ fontSize: 48, color: "text.disabled" }} />
             <Typography
@@ -187,90 +192,62 @@ export default function RuleRunsPage() {
             </Typography>
           </Box>
         ) : (
-          <Box
-            sx={{
-              border: "1px solid",
-              borderColor: "divider",
-              borderRadius: 2,
-              overflow: "hidden",
-              bgcolor: "background.paper",
-            }}
-          >
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>{tRuns("columnTime")}</TableCell>
-                  <TableCell>{tRuns("columnRule")}</TableCell>
-                  <TableCell>{tRuns("columnTrigger")}</TableCell>
-                  <TableCell>{tRuns("columnAction")}</TableCell>
-                  <TableCell>{tRuns("columnIssue")}</TableCell>
-                  <TableCell>{tRuns("columnStatus")}</TableCell>
-                  <TableCell align="right">{tRuns("columnDuration")}</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {runs.data.map((run: RuleRunDto) => (
-                  <TableRow key={run.id} hover>
-                    <TableCell sx={{ whiteSpace: "nowrap" }}>
-                      <Tooltip title={new Date(run.createdAt).toLocaleString(locale)} placement="top">
-                        <span>{timeAgo(run.createdAt, locale)}</span>
+          <DataTable>
+            <DataTableHead>
+              <DataTableRow>
+                <DataTableCell>{tRuns("columnTime")}</DataTableCell>
+                <DataTableCell>{tRuns("columnActor")}</DataTableCell>
+                <DataTableCell>{tRuns("columnAction")}</DataTableCell>
+                <DataTableCell>{tRuns("columnRule")}</DataTableCell>
+              </DataTableRow>
+            </DataTableHead>
+            <DataTableBody>
+              {activity.data.map((row: RuleActivityDto) => {
+                const style = ACTION_STYLE[row.action];
+                return (
+                  <DataTableRow key={row.id}>
+                    <DataTableCell sx={{ whiteSpace: "nowrap" }}>
+                      <Tooltip title={new Date(row.createdAt).toLocaleString(locale)} placement="top">
+                        <span>{timeAgo(row.createdAt, locale)}</span>
                       </Tooltip>
-                    </TableCell>
-                    <TableCell sx={{ maxWidth: 220 }}>
-                      <Typography variant="body2" noWrap fontWeight={600}>
-                        {run.ruleName ?? `#${run.ruleId ?? "?"}`}
+                    </DataTableCell>
+                    <DataTableCell>
+                      <Typography variant="body2" fontWeight={600}>
+                        {row.actorName ?? "—"}
                       </Typography>
-                    </TableCell>
-                    <TableCell>{getTriggerByKey(run.triggerKey)?.label.th ?? run.triggerKey}</TableCell>
-                    <TableCell>{getActionByKey(run.actionKey ?? "")?.label.th ?? run.actionKey ?? "—"}</TableCell>
-                    <TableCell sx={{ maxWidth: 200 }}>
-                      <Typography variant="body2" noWrap>
-                        {run.issueTitle ?? "—"}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        size="small"
-                        label={statusLabel(run.status)}
-                        color={STATUS_COLOR[run.status]}
-                        variant="outlined"
-                      />
-                      {run.detail && (
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ display: "block", mt: 0.25, maxWidth: 260 }}
-                        >
-                          {run.detail}
+                      {row.actorRole && (
+                        <Typography variant="caption" color="text.secondary">
+                          {row.actorRole}
                         </Typography>
                       )}
-                    </TableCell>
-                    <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                      {run.durationMs} ms
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </Box>
+                    </DataTableCell>
+                    <DataTableCell>
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={style?.color ?? "default"}
+                        label={actionLabel(row.action)}
+                        sx={{ fontWeight: 600 }}
+                      />
+                    </DataTableCell>
+                    <DataTableCell>
+                      {row.ruleName ?? (row.ruleId != null ? `#${row.ruleId}` : "—")}
+                    </DataTableCell>
+                  </DataTableRow>
+                );
+              })}
+            </DataTableBody>
+          </DataTable>
         )}
 
-        {runs && runs.totalPages > 1 && (
-          <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1.5, mt: 2 }}>
-            <Button size="small" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-              {tRuns("prev")}
-            </Button>
-            <Typography variant="body2" color="text.secondary">
-              {tRuns("pageOf", { page: runs.page, total: runs.totalPages })}
-            </Typography>
-            <Button
-              size="small"
-              disabled={page >= runs.totalPages}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              {tRuns("next")}
-            </Button>
-          </Box>
+        {activity && (
+          <Pagination
+            page={page}
+            totalPages={activity.totalPages}
+            total={activity.total}
+            limit={PAGE_SIZE}
+            onPageChange={setPage}
+          />
         )}
       </DashboardLayout>
     </RequirePermission>

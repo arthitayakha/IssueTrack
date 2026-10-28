@@ -4,16 +4,14 @@
  *
  * Prerequisites: a running API (`npm run dev --workspace=@kanban/api`, port
  * 3002) and the local Postgres (used to assert what the API does not expose).
- * Cards and `rule_runs` rows produced here are removed at the end — the API
- * only soft-deletes, which would pile invisible test rows into `issues`.
+ * Cards produced here are removed at the end — the API only soft-deletes,
+ * which would pile invisible test rows into `issues`.
  * Run via: npm run test:e2e --workspace=@kanban/api
  */
 const BASE = process.env.API_URL ?? "http://localhost:3002";
 const fs = require("fs");
 const path = require("path");
 const {
-  captureRunWatermark,
-  cleanupRunRows,
   connectDb,
   countTestCards,
   hardDeleteIssues,
@@ -23,7 +21,6 @@ let token = null;
 let failures = 0;
 const ruleIds = [];
 const issueIds = [];
-let watermark = 0;
 let cardsBefore = 0;
 /** Put back the active flags of rules that existed before this suite ran. */
 let restoreRules = async () => {};
@@ -58,7 +55,6 @@ const db = connectDb();
 
 (async () => {
   await db.connect();
-  watermark = await captureRunWatermark(db);
   cardsBefore = await countTestCards(db);
   const login = await call("/auth/login", {
     method: "POST",
@@ -242,16 +238,13 @@ const db = connectDb();
     fs.rmSync(file, { force: true });
   }
 
-  // cards for real: DELETE /issues/:id only marks them deleted, and the run
-  // rows they produced must not outlive the test either
+  // cards for real: DELETE /issues/:id only marks them deleted
   const removedCards = await hardDeleteIssues(db, issueIds);
-  const removedRuns = await cleanupRunRows(db, watermark);
   const leftovers = await countTestCards(db);
   check("cleanup: test cards removed for real", removedCards === issueIds.length,
     `removed=${removedCards} created=${issueIds.length}`);
   check("cleanup: card count back to where it started", leftovers === cardsBefore,
     `left=${leftovers} before=${cardsBefore}`);
-  console.log(`       run rows removed: ${removedRuns}`);
 
   const after = list((await call("/rules")).body);
   check("cleanup: only pre-existing rules remain", after.length === existing.length,
@@ -264,9 +257,6 @@ const db = connectDb();
 })().catch(async (e) => {
   console.error("ERR", e.message);
   await restoreRules();
-  try {
-    await cleanupRunRows(db, watermark);
-  } catch {}
   try {
     await db.end();
   } catch {}

@@ -10,10 +10,8 @@ import { useTranslations } from "next-intl";
 import {
   RULE_ACTION_CATEGORIES,
   getActionByKey,
-  getActionsByCategory,
   getMessageTokens,
-  isActionCompatible,
-  isRecommendedAction,
+  getPickerActions,
 } from "@kanban/shared";
 import type { ReferenceData } from "./reference-data";
 import { getParamLabel } from "./param-labels";
@@ -41,16 +39,29 @@ export default function ActionPicker({
 }: ActionPickerProps) {
   const t = useTranslations("Automation.wizard");
   const theme = useTheme();
+
+  // a category is only offered when at least one action works for this trigger
+  // (e.g. the time tab disappears while its actions are still parked)
+  const categories = RULE_ACTION_CATEGORIES.filter(
+    (cat) => getPickerActions(triggerKey, cat.key).length > 0,
+  );
+
   // reopening step ② must land on the tab holding the picked action, not tab 1
   const [category, setCategory] = useState<string>(() => {
     const selected = actionKey ? getActionByKey(actionKey) : undefined;
-    return selected?.category ?? RULE_ACTION_CATEGORIES[0].key;
+    if (selected && categories.some((cat) => cat.key === selected.category)) {
+      return selected.category;
+    }
+    // nothing picked (or its tab is hidden) → start on the first usable tab
+    return categories[0]?.key ?? RULE_ACTION_CATEGORIES[0].key;
   });
 
-  // every action compatible with the trigger is offered; ⭐ marks the sensible ones
-  const actions = getActionsByCategory(category)
-    .filter((a) => isActionCompatible(triggerKey, a.key))
-    .sort((a, b) => Number(isRecommendedAction(triggerKey, b.key)) - Number(isRecommendedAction(triggerKey, a.key)));
+  // guard: the stored tab can go stale if its category stops offering actions
+  const activeCategory = categories.some((cat) => cat.key === category)
+    ? category
+    : (categories[0]?.key ?? "");
+  // only what the engine can actually run for this trigger; sensible ones first
+  const actions = getPickerActions(triggerKey, activeCategory);
 
   function iconFor(key: string) {
     const color = theme.palette.primary.main;
@@ -220,8 +231,9 @@ export default function ActionPicker({
         {t("step2Intro")}
       </Typography>
 
-      <Tabs value={category} onChange={(_e, v) => setCategory(v as string)}>
-        {RULE_ACTION_CATEGORIES.map((cat) => (
+      {/* a tab with no working action for this trigger is not offered */}
+      <Tabs value={activeCategory} onChange={(_e, v) => setCategory(v as string)}>
+        {categories.map((cat) => (
           <Tab key={cat.key} value={cat.key} label={cat.label.th} />
         ))}
       </Tabs>
@@ -230,29 +242,19 @@ export default function ActionPicker({
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1, mt: 1.5 }}>
         {actions.map((action) => {
           const isSelected = action.key === actionKey;
-          // `unsupported` = the registry knows the engine cannot run it yet
-          // (timer actions). Shown, but not selectable.
-          const unavailable = action.status === "unsupported";
           return (
             <Box
               key={action.key}
-              aria-disabled={unavailable}
-              onClick={() => {
-                if (!unavailable) onActionChange(action.key);
-              }}
+              onClick={() => onActionChange(action.key)}
               sx={{
                 p: 1.5,
                 borderRadius: 1.5,
-                cursor: unavailable ? "not-allowed" : "pointer",
+                cursor: "pointer",
                 border: "1px solid",
                 borderColor: isSelected ? "primary.main" : "divider",
                 // selected = white card + blue border (no tint), like the trigger rows
                 bgcolor: "background.paper",
-                // parked actions read as inert: no hover feedback, washed out
-                opacity: unavailable ? 0.55 : 1,
-                "&:hover": unavailable
-                  ? {}
-                  : { bgcolor: isSelected ? "background.paper" : "action.hover" },
+                "&:hover": { bgcolor: isSelected ? "background.paper" : "action.hover" },
               }}
             >
               <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
@@ -260,9 +262,6 @@ export default function ActionPicker({
                 <Typography variant="body2" fontWeight={600} sx={{ color: theme.palette.navy.main }}>
                   {actionTitle(action.key, action.label.th)}
                 </Typography>
-                {unavailable && (
-                  <Chip size="small" variant="outlined" label={t("badgeUnsupported")} />
-                )}
               </Box>
               <Typography variant="caption" color="text.secondary">
                 {actionDescription(action)}

@@ -3,10 +3,12 @@ import { join } from "path";
 import {
   INVALID_ACTION_COMBOS,
   RULE_ACTIONS,
+  RULE_ACTION_CATEGORIES,
   RULE_ACTION_RECOMMENDATIONS,
   RULE_TRIGGERS,
   RULE_TRIGGER_CATEGORIES,
   getMessageTokens,
+  getPickerActions,
   getRecommendedActions,
   isActionCompatible,
 } from "@kanban/shared";
@@ -23,12 +25,12 @@ const ENGINE_SOURCE = readFileSync(
 );
 
 /**
- * Timer actions parked as `unsupported`: the registry must not offer them and
+ * Actions still parked as `unsupported`: the registry must not offer them and
  * the engine has no `case` for them (they would only be recorded as `skipped`).
- * Tracked on purpose — drop an entry once the time model is settled and the
- * engine handles it again.
+ * Tracked on purpose — `issue.set_time` waits for its semantics while the rest
+ * of the time model (start/stop/reset, allow entry, due date) is live.
  */
-const ENGINE_PENDING_ACTIONS = ["work_session.start", "work_session.stop", "issue.set_time"];
+const ENGINE_PENDING_ACTIONS = ["issue.set_time"];
 
 describe("rules registry integrity", () => {
   it("has unique trigger and action keys", () => {
@@ -103,6 +105,24 @@ describe("rules registry integrity", () => {
     }
   });
 
+  it("hides the echo combos (the action only redoes what the trigger did)", () => {
+    const echoCombos: Array<[string, string]> = [
+      ["issue.assigned", "issue.assign"],
+      ["issue.priority_changed", "issue.set_priority"],
+      ["issue.category_changed", "issue.set_category"],
+      ["issue.created", "issue.unassign"],
+    ];
+    for (const [triggerKey, actionKey] of echoCombos) {
+      expect(isActionCompatible(triggerKey, actionKey)).toBe(false);
+      const offered = RULE_ACTION_CATEGORIES.flatMap((cat) =>
+        getPickerActions(triggerKey, cat.key).map((a) => a.key),
+      );
+      expect(offered).not.toContain(actionKey);
+      // a hidden combo must never be recommended either
+      expect(getRecommendedActions(triggerKey)).not.toContain(actionKey);
+    }
+  });
+
   it("gives every message token a bilingual label", () => {
     for (const trigger of RULE_TRIGGERS) {
       for (const placeholder of getMessageTokens(trigger.key)) {
@@ -149,6 +169,47 @@ describe("rules registry integrity", () => {
       expect(action?.status).toBe("unsupported");
       expect(ENGINE_SOURCE).not.toContain(`case "${key}":`);
     }
+  });
+});
+
+describe("getPickerActions — wizard step ② list", () => {
+  it("offers only actions the engine can run for the trigger", () => {
+    const unsupported = RULE_ACTIONS.filter((a) => a.status === "unsupported").map((a) => a.key);
+    expect(unsupported.length).toBeGreaterThan(0); // the parked timer actions
+
+    for (const trigger of RULE_TRIGGERS) {
+      for (const cat of RULE_ACTION_CATEGORIES) {
+        for (const action of getPickerActions(trigger.key, cat.key)) {
+          expect(action.status).toBe("supported");
+          expect(isActionCompatible(trigger.key, action.key)).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("never lists an action the picker hides as an invalid combination", () => {
+    // comment.created → issue.comment just echoes the trigger, so it is hidden
+    const all = getPickerActions("comment.created", "content").map((a) => a.key);
+    expect(all).not.toContain("issue.comment");
+    expect(all).toContain("issue.delete");
+    expect(all).toContain("issue.restore");
+  });
+
+  it("puts the sensible actions first", () => {
+    const all = getPickerActions("issue.created", "card");
+    const recommended = new Set(getRecommendedActions("issue.created"));
+    const flags = all.map((a) => recommended.has(a.key));
+    expect(flags).toEqual([...flags].sort((x, y) => Number(y) - Number(x)));
+  });
+
+  it("keeps the whole supported list minus parked / incompatible entries", () => {
+    const offered = RULE_ACTION_CATEGORIES.flatMap((cat) =>
+      getPickerActions("issue.moved", cat.key).map((a) => a.key),
+    );
+    const expected = RULE_ACTIONS.filter(
+      (a) => a.status === "supported" && isActionCompatible("issue.moved", a.key),
+    ).map((a) => a.key);
+    expect(offered.sort()).toEqual(expected.sort());
   });
 });
 

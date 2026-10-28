@@ -4,14 +4,24 @@ import {
   Entity,
   JoinColumn,
   ManyToOne,
-  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from "typeorm";
 import { User } from "../../auth/entities/user.entity";
-import { RuleCondition } from "./rule-condition.entity";
 
-/** One automation rule — mirrors the `rules` table (migrations 0028 / 0030). */
+/**
+ * One "if" clause of a rule — stored inside the rule's JSONB `conditions`
+ * array (migration 0036 merged `rule_conditions` into `rules`). All clauses
+ * are AND-combined by the engine; `position` is the display/eval order.
+ */
+export interface RuleConditionEntry {
+  field: string;
+  operator: string;
+  value: string | null;
+  position: number;
+}
+
+/** One automation rule — mirrors the `rules` table (migrations 0028 / 0030 / 0036). */
 @Entity("rules")
 export class Rule {
   @PrimaryGeneratedColumn()
@@ -35,8 +45,9 @@ export class Rule {
   @Column({ name: "action_config", type: "jsonb", default: "{}" })
   actionConfig!: Record<string, unknown>;
 
-  @Column({ name: "condition_group", type: "varchar", length: 4, default: "AND" })
-  conditionGroup!: string;
+  /** The rule's "if" clauses, e.g. `[{ field: "category", operator: "=", value: "1", position: 0 }]`. */
+  @Column({ type: "jsonb", default: "[]" })
+  conditions!: RuleConditionEntry[];
 
   @Column({ name: "is_active", default: false })
   isActive!: boolean;
@@ -50,9 +61,6 @@ export class Rule {
   @ManyToOne(() => User, { nullable: true, onDelete: "SET NULL" })
   @JoinColumn({ name: "created_by" })
   creator?: User | null;
-
-  @OneToMany(() => RuleCondition, (condition) => condition.rule, { cascade: ["insert"] })
-  conditions!: RuleCondition[];
 
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;

@@ -8,8 +8,8 @@
  * it creates itself, and hands the original active flags back afterwards.
  *
  * The suites also leave no trace behind: they hard-delete the cards they made
- * (the API only soft-deletes) and drop the `rule_runs` rows they produced, so
- * the run-history page keeps describing real rules instead of test runs.
+ * (the API only soft-deletes), so the board keeps describing real rules
+ * instead of test litter.
  */
 
 /** Shape of `GET /rules` — plain array today, `{ data }` if it ever paginates. */
@@ -29,25 +29,6 @@ function connectDb() {
   });
 }
 
-/**
- * Highest `rule_runs` id right now. Everything above it was produced by the
- * suite that asked, which is what makes the end-of-run cleanup exact.
- */
-async function captureRunWatermark(db) {
-  const res = await db.query("SELECT COALESCE(MAX(id), 0) AS n FROM rule_runs");
-  return res.rows[0].n;
-}
-
-/**
- * Deletes the run rows the suite created. History is meant to describe real
- * rules on real cards, so test runs must not outlive the test that made them.
- * Returns how many rows went away.
- */
-async function cleanupRunRows(db, watermark) {
-  const res = await db.query("DELETE FROM rule_runs WHERE id > $1 RETURNING id", [watermark]);
-  return res.rows.length;
-}
-
 /** Child tables that point at `issues` and must go first (missing ones are skipped). */
 const ISSUE_CHILD_TABLES = [
   ["attachments", "issue_id"],
@@ -56,7 +37,6 @@ const ISSUE_CHILD_TABLES = [
   ["work_sessions", "issue_id"],
   ["issue_labels", "issue_id"],
   ["activity_logs", "entity_id"],
-  ["rule_runs", "issue_id"],
 ];
 
 /**
@@ -127,8 +107,6 @@ async function countTestCards(db) {
 }
 
 module.exports = {
-  captureRunWatermark,
-  cleanupRunRows,
   connectDb,
   countTestCards,
   hardDeleteIssues,

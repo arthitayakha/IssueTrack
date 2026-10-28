@@ -17,6 +17,14 @@ export class WorkSessionsController {
     return this.workSessions.getByIssue(issueId);
   }
 
+  // all running timers across cards — feeds the board chips in one request
+  // (must stay a literal path, before any ":param" routes)
+  @Get("open")
+  @Permissions("time.system.view")
+  findOpen() {
+    return this.workSessions.findOpen();
+  }
+
   @Get("issue/:issueId/open")
   @Permissions("time.system.view")
   getOpen(@Param("issueId", ParseIntPipe) issueId: number) {

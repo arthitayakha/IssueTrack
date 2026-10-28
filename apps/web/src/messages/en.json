@@ -36,6 +36,7 @@
   "Boards": {
     "title": "Boards",
     "comingSoon": "This page is under development",
+    "invalidTransition": "Cards can only move one column at a time (to an adjacent column) — pause the step-by-step rule in Automation to drag across columns",
     "reportIssue": "Report Issue",
     "reportIssueTitle": "Report New Issue",
     "reportIssueSubtitle": "Fill in the details to report a new issue for the team to review",
@@ -146,6 +147,11 @@
       "labels": "Labels",
       "description": "Description",
       "descriptionPlaceholder": "Add a detailed description...",
+      "analysisCause": "Analysis / Cause",
+      "analysisPlaceholder": "Describe what the user reported and the root cause...",
+      "resolution": "Resolution",
+      "resolutionPlaceholder": "Explain how it was fixed...",
+      "lockedHint": "These fields unlock once the card reaches the status configured by a rule",
       "attachments": "Attachments",
       "createdAt": "Created",
       "updatedAt": "Updated",
@@ -161,7 +167,21 @@
       "noLabelsFound": "No labels found",
       "createLabel": "Create new label",
       "newLabelName": "New label name",
-      "createAndApplyLabel": "Create & apply"
+      "createAndApplyLabel": "Create & apply",
+      "time": {
+        "title": "Time",
+        "running": "Running",
+        "stopped": "Stopped",
+        "never": "Never timed — drag the card into a status that has a timer rule to start",
+        "actualLabel": "Actual fix time",
+        "actualReadonlyHint": "Editable while the card is in a status allowed by a rule",
+        "hours": "h",
+        "minutes": "m",
+        "due": "Due date",
+        "duePlaceholder": "Pick a date…",
+        "dueTarget": "Must reach {status} by {due}",
+        "overdue": "past due"
+      }
     }
   },
   "Labels": {
@@ -414,6 +434,7 @@
     "markReadTooltip": "Backend not connected yet",
     "refresh": "Refresh",
     "loadError": "Failed to load notifications",
+    "loading": "Loading...",
     "tabs": {
       "inbox": "Inbox",
       "general": "General",
@@ -429,7 +450,9 @@
       "moved": "moved",
       "edited": "edited",
       "deleted": "deleted",
-      "restored": "restored"
+      "restored": "restored",
+      "rule_created": "created rule",
+      "rule_updated": "updated rule"
     },
     "emptyInbox": {
       "title": "No new notifications",
@@ -504,6 +527,7 @@
     "deleteConfirm": "Delete",
     "cancel": "Cancel",
     "deleted": "Rule deleted successfully",
+    "ruleGone": "This rule no longer exists (deleted elsewhere) — the list has been refreshed",
     "genericError": "Something went wrong. Please try again.",
     "loadError": "Failed to load rules",
     "retry": "Try again",
@@ -512,23 +536,27 @@
     "delete": "Delete",
     "edit": "Edit",
     "runs": {
-      "title": "Rule runs",
-      "subtitle": "Execution history of your automation rules",
+      "title": "Work history",
+      "subtitle": "Rule creation, edit and deletion history",
       "backendNote": "Backend not connected yet — runs will show up here once it is ready",
-      "emptyTitle": "No runs yet",
-      "emptyDescription": "Every time the system executes a rule, the result will appear here",
+      "emptyTitle": "No history yet",
+      "emptyDescription": "Whenever a rule is created, edited or deleted, it will appear here",
       "refresh": "Refresh",
       "refreshTooltip": "Backend not connected yet",
       "filterAll": "All rules",
-      "loadError": "Failed to load runs",
+      "loadError": "Failed to load history",
       "total": "Total {count}",
       "columnTime": "Time",
+      "columnActor": "Performed by",
       "columnRule": "Rule",
       "columnTrigger": "Trigger",
       "columnAction": "Action",
       "columnIssue": "Card",
       "columnStatus": "Result",
       "columnDuration": "Duration",
+      "actionCreated": "Rule created",
+      "actionUpdated": "Rule edited",
+      "actionDeleted": "Rule deleted",
       "statusApplied": "Applied",
       "statusSkipped": "Skipped",
       "statusFailed": "Failed",
@@ -545,6 +573,9 @@
       "step3": "Review and save",
       "step1Intro": "Choose the event to detect — one event per rule",
       "step2Intro": "When the conditions pass, the system performs this",
+      "step2FilteredHint": "Showing only the actions recommended for this trigger",
+      "showAllActions": "Show all actions",
+      "noRecommendedActions": "No recommended actions for this trigger — turn on Show all actions to see everything available",
       "step3Intro": "Review the details before saving",
       "back": "Back",
       "next": "Next",
@@ -585,6 +616,7 @@
       "payload": "Payload to save (JSON)",
       "save": "Save",
       "saveEdit": "Save changes",
+      "saved": "Rule saved",
       "saveTooltip": "Backend not connected yet",
       "saveError": "Failed to save. Please try again.",
       "insertToken": "Insert variable",
@@ -610,7 +642,12 @@
       "paramCategory": "New category",
       "paramLabel": "Label",
       "paramMinutes": "Minutes",
-      "paramComment": "Comment text"
+      "paramDays": "Days",
+      "paramDueTargetStatus": "Must reach status (by the deadline)",
+      "paramComment": "Comment text",
+      "paramAnalysis": "Analysis / Cause",
+      "paramResolution": "Resolution",
+      "paramOpenAtStatus": "Open the fields when the card is in status"
     }
   }
 }

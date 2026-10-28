@@ -91,9 +91,6 @@ interface IssueStatus {
   isActive: boolean;
   sortOrder: number;
   issueCount: number;
-  timerEnabled: boolean;
-  timeEntryEnabled: boolean;
-
 }
 
 interface IssuePriority {
@@ -333,9 +330,6 @@ export default function SettingsPage() {
   const [statusForm, setStatusForm] = useState({
     name: "",
     description: "",
-    timerEnabled: false,
-    timeEntryEnabled: false,
-
   });
 
   const [priorityDialogOpen, setPriorityDialogOpen] = useState(false);
@@ -620,9 +614,6 @@ export default function SettingsPage() {
     setStatusForm({
       name: status.name,
       description: status.description ?? "",
-      timerEnabled: status.timerEnabled,
-      timeEntryEnabled: status.timeEntryEnabled,
-
     });
     setStatusDialogOpen(true);
   }
@@ -632,9 +623,6 @@ export default function SettingsPage() {
       const payload = {
         name: statusForm.name,
         description: statusForm.description || undefined,
-        timerEnabled: statusForm.timerEnabled,
-        timeEntryEnabled: statusForm.timeEntryEnabled,
-
       };
       if (editingStatus) {
         await apiFetch(`/issue-statuses/${editingStatus.id}`, {

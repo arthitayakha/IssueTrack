@@ -12,6 +12,7 @@ import { Link, useRouter } from "@/i18n/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { useNotification } from "@/components/notification";
 import { fetchRules, deleteRule, toggleRule } from "@/lib/rules-api";
+import { isApiError } from "@/lib/api";
 import type { RuleDto } from "@kanban/shared";
 import RuleList from "@/components/rules/rule-list";
 
@@ -53,11 +54,24 @@ export default function AutomationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, reloadKey]);
 
+  /**
+   * A 404 means the rule is already gone from the DB (deleted from another
+   * tab / session). Drop the stale row by refetching instead of leaving a
+   * ghost that keeps failing every action.
+   */
+  function handleRuleGone(err: unknown): boolean {
+    if (!isApiError(err, 404)) return false;
+    notify(t("ruleGone"), "warning");
+    setReloadKey((k) => k + 1);
+    return true;
+  }
+
   async function handleToggle(rule: RuleDto, isActive: boolean) {
     try {
       const updated = await toggleRule(rule.id, isActive);
       setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
     } catch (err) {
+      if (handleRuleGone(err)) return;
       notify(err instanceof Error ? err.message : t("genericError"), "error");
     }
   }
@@ -68,6 +82,7 @@ export default function AutomationPage() {
       setRules((prev) => prev.filter((r) => r.id !== id));
       notify(t("deleted"), "success");
     } catch (err) {
+      if (handleRuleGone(err)) return;
       notify(err instanceof Error ? err.message : t("genericError"), "error");
     }
   }

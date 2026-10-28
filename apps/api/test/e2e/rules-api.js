@@ -4,31 +4,26 @@
  * Prerequisites: a running API (`npm run dev --workspace=@kanban/api`, port
  * 3002) and the local Postgres. The suite logs in with the seeded admin,
  * creates rules and cards through the API and deletes them again — cards are
- * hard-deleted (the API only soft-deletes) and the `rule_runs` rows produced
- * here are dropped, so nothing survives the run.
+ * hard-deleted (the API only soft-deletes), so nothing survives the run.
  * Run via: npm run test:e2e --workspace=@kanban/api
  * Override the target with API_URL when the API runs elsewhere.
  */
 const BASE = process.env.API_URL ?? "http://localhost:3002";
 const {
-  captureRunWatermark,
-  cleanupRunRows,
   connectDb,
   countTestCards,
   hardDeleteIssues,
   suspendExistingRules,
 } = require("./helpers");
 const db = connectDb();
-let watermark = 0;
 let cardsBefore = 0;
 let token = null;
 let failures = 0;
 /** Put back the active flags of rules that existed before this suite ran. */
 let restoreRules = async () => {};
 
-/** Everything the suite produced: run rows, then the cards themselves. */
+/** Everything the suite produced: restore the rules it suspended. */
 async function cleanup() {
-  await cleanupRunRows(db, watermark);
   await restoreRules();
 }
 
@@ -72,7 +67,6 @@ const list = (b) => (Array.isArray(b) ? b : (b?.data ?? []));
     process.exit(1);
   }
   await db.connect();
-  watermark = await captureRunWatermark(db);
   cardsBefore = await countTestCards(db);
   // hand-made rules in this DB must not fire while the suite runs
   restoreRules = await suspendExistingRules(call);
@@ -208,15 +202,13 @@ const list = (b) => (Array.isArray(b) ? b : (b?.data ?? []));
   check("GET /rules no longer lists my rules", mine.length === 0,
     `mine=${mine.length} total=${list(after.body).length}`);
 
-  // 10) cleanup — the card for real, plus every run row this suite produced
+  // 10) cleanup — the card for real
   const removedCards = await hardDeleteIssues(db, [issueId]);
   check("cleanup: test card removed for real", !issueId || removedCards === 1,
     `removed=${removedCards}`);
-  const removedRuns = await cleanupRunRows(db, watermark);
   const leftovers = await countTestCards(db);
   check("cleanup: card count back to where it started", leftovers === cardsBefore,
     `left=${leftovers} before=${cardsBefore}`);
-  console.log(`       run rows removed: ${removedRuns}`);
 
   await restoreRules();
   await db.end();

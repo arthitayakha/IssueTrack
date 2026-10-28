@@ -29,8 +29,6 @@ export class IssueStatusesService {
         description: s.description,
         isActive: s.isActive,
         issueCount: await this.issues.count({ where: { statusId: s.id } }),
-        timerEnabled: s.timerEnabled,
-        timeEntryEnabled: s.timeEntryEnabled,
       })),
     );
     return paginate(result, params);
@@ -39,8 +37,6 @@ export class IssueStatusesService {
   async create(data: {
     name: string;
     description?: string;
-    timerEnabled?: boolean;
-    timeEntryEnabled?: boolean;
   }) {
     const existing = await this.issueStatuses.findOne({ where: { name: data.name } });
     if (existing) {
@@ -57,8 +53,6 @@ export class IssueStatusesService {
         description: data.description ?? null,
         isActive: true,
         position: nextPosition,
-        timerEnabled: data.timerEnabled ?? false,
-        timeEntryEnabled: data.timeEntryEnabled ?? false,
       }),
     );
     return {
@@ -66,8 +60,6 @@ export class IssueStatusesService {
       name: status.name,
       description: status.description,
       isActive: status.isActive,
-      timerEnabled: status.timerEnabled,
-      timeEntryEnabled: status.timeEntryEnabled,
     };
   }
 
@@ -76,8 +68,6 @@ export class IssueStatusesService {
     data: {
       name?: string;
       description?: string;
-      timerEnabled?: boolean;
-      timeEntryEnabled?: boolean;
     },
   ) {
     const status = await this.issueStatuses.findOne({ where: { id } });
@@ -92,16 +82,12 @@ export class IssueStatusesService {
       status.name = data.name;
     }
     if (data.description !== undefined) status.description = data.description;
-    if (data.timerEnabled !== undefined) status.timerEnabled = data.timerEnabled;
-    if (data.timeEntryEnabled !== undefined) status.timeEntryEnabled = data.timeEntryEnabled;
     await this.issueStatuses.save(status);
     return {
       id: status.id,
       name: status.name,
       description: status.description,
       isActive: status.isActive,
-      timerEnabled: status.timerEnabled,
-      timeEntryEnabled: status.timeEntryEnabled,
     };
   }
 
@@ -113,26 +99,6 @@ export class IssueStatusesService {
     status.isActive = isActive;
     await this.issueStatuses.save(status);
     return { id: status.id, name: status.name, isActive: status.isActive };
-  }
-
-  async updateTimer(id: number, timerEnabled: boolean) {
-    const status = await this.issueStatuses.findOne({ where: { id } });
-    if (!status) {
-      throw new NotFoundException(`Status with id ${id} not found`);
-    }
-    status.timerEnabled = timerEnabled;
-    await this.issueStatuses.save(status);
-    return { id: status.id, name: status.name, timerEnabled: status.timerEnabled };
-  }
-
-  async updateTimeEntry(id: number, timeEntryEnabled: boolean) {
-    const status = await this.issueStatuses.findOne({ where: { id } });
-    if (!status) {
-      throw new NotFoundException(`Status with id ${id} not found`);
-    }
-    status.timeEntryEnabled = timeEntryEnabled;
-    await this.issueStatuses.save(status);
-    return { id: status.id, name: status.name, timeEntryEnabled: status.timeEntryEnabled };
   }
 
   async check(id: number) {

@@ -2,8 +2,8 @@ import { RulesEngineService, type EngineTrigger } from "../modules/rules/rules-e
 
 /**
  * The engine is the one piece that silently changes data on behalf of a user,
- * so these tests pin down its contract: it records only real executions, it
- * never breaks the request that triggered it, it never re-enters itself and it
+ * so these tests pin down its contract: it applies the right action, it never
+ * breaks the request that triggered it, it never re-enters itself and it
  * renders the Thai message tokens the wizard offers.
  *
  * Everything runs against stub repositories — no database, no Nest testing
@@ -16,6 +16,7 @@ interface Stub {
   save: jest.Mock;
   create: jest.Mock;
   update: jest.Mock;
+  delete: jest.Mock;
 }
 
 function repo(overrides: Partial<Stub> = {}): Stub {
@@ -25,6 +26,7 @@ function repo(overrides: Partial<Stub> = {}): Stub {
     save: jest.fn(async (value: unknown) => value),
     create: jest.fn((value: unknown) => value),
     update: jest.fn().mockResolvedValue({ affected: 1 }),
+    delete: jest.fn().mockResolvedValue({ affected: 0 }),
     ...overrides,
   };
 }
@@ -34,7 +36,6 @@ type EngineArgs = ConstructorParameters<typeof RulesEngineService>;
 /** Builds the engine with one stub per injected repository, in injection order. */
 function makeEngine() {
   const rules = repo();
-  const runs = repo();
   const issues = repo();
   const comments = repo();
   const users = repo();
@@ -44,9 +45,9 @@ function makeEngine() {
   const priorities = repo();
   const categories = repo();
   const activityLogs = repo();
+  const workSessions = repo();
   const repos = [
     rules,
-    runs,
     issues,
     comments,
     users,
@@ -56,9 +57,19 @@ function makeEngine() {
     priorities,
     categories,
     activityLogs,
+    workSessions,
   ];
   const engine = new RulesEngineService(...(repos as unknown as EngineArgs));
-  return { engine, rules, runs, issues, comments, users, statuses, activityLogs };
+  return {
+    engine,
+    rules,
+    issues,
+    comments,
+    users,
+    statuses,
+    activityLogs,
+    workSessions,
+  };
 }
 
 function rule(overrides: Record<string, unknown> = {}) {
@@ -76,17 +87,11 @@ function rule(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** The row the engine created for the first recorded run, if any. */
-function recordedRun(runs: Stub): Record<string, unknown> | null {
-  if (runs.create.mock.calls.length === 0) return null;
-  return runs.create.mock.calls[0][0] as Record<string, unknown>;
-}
-
 const MOVED: EngineTrigger = "issue.moved";
 
 describe("RulesEngineService.evaluate", () => {
-  it("runs the action and records an applied run when conditions pass", async () => {
-    const { engine, rules, runs, issues } = makeEngine();
+  it("runs the action when conditions pass", async () => {
+    const { engine, rules, issues } = makeEngine();
     rules.find.mockResolvedValue([
       rule({ actionKey: "issue.set_priority", actionConfig: { priority: 3 } }),
     ]);
@@ -94,18 +99,10 @@ describe("RulesEngineService.evaluate", () => {
     await engine.evaluate(MOVED, { issueId: 42, toStatusId: 5 });
 
     expect(issues.update).toHaveBeenCalledWith(42, { priorityId: 3 });
-    expect(recordedRun(runs)).toMatchObject({
-      status: "applied",
-      triggerKey: "issue.moved",
-      issueId: 42,
-      actionKey: "issue.set_priority",
-      detail: null,
-    });
-    expect(runs.save).toHaveBeenCalledTimes(1);
   });
 
-  it("records nothing when a condition does not pass", async () => {
-    const { engine, rules, runs, issues } = makeEngine();
+  it("runs nothing when a condition does not pass", async () => {
+    const { engine, rules, issues } = makeEngine();
     rules.find.mockResolvedValue([
       rule({ conditions: [{ field: "to_status", operator: "=", value: "9", position: 0 }] }),
     ]);
@@ -113,11 +110,10 @@ describe("RulesEngineService.evaluate", () => {
     await engine.evaluate(MOVED, { issueId: 42, toStatusId: 5 });
 
     expect(issues.update).not.toHaveBeenCalled();
-    expect(runs.save).not.toHaveBeenCalled();
   });
 
   it("ANDs several conditions and understands list operators", async () => {
-    const { engine, rules, runs } = makeEngine();
+    const { engine, rules, issues } = makeEngine();
     rules.find.mockResolvedValue([
       rule({
         actionKey: "issue.unassign",
@@ -129,45 +125,41 @@ describe("RulesEngineService.evaluate", () => {
     ]);
 
     await engine.evaluate(MOVED, { issueId: 42, toStatusId: 5, actorRole: "admin" });
-    expect(recordedRun(runs)).toMatchObject({ status: "applied" });
+    expect(issues.update).toHaveBeenCalledWith(42, { programmerId: null });
 
     await engine.evaluate(MOVED, { issueId: 42, toStatusId: 5, actorRole: "customer" });
-    expect(runs.create).toHaveBeenCalledTimes(1); // the second round recorded nothing
+    expect(issues.update).toHaveBeenCalledTimes(1); // the second round did nothing
   });
 
-  it("skips, with a reason, an action the engine cannot run yet", async () => {
-    const { engine, rules, runs, issues } = makeEngine();
-    rules.find.mockResolvedValue([rule({ actionKey: "work_session.start" })]);
+  it("skips an action the engine cannot run yet", async () => {
+    const { engine, rules, issues } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "issue.set_time" })]);
 
     await engine.evaluate(MOVED, { issueId: 42 });
 
     expect(issues.update).not.toHaveBeenCalled();
-    expect(recordedRun(runs)).toMatchObject({ status: "skipped" });
-    expect(String(recordedRun(runs)?.detail)).toMatch(/not supported yet/);
   });
 
   it("skips when the context carries no issue", async () => {
-    const { engine, rules, runs } = makeEngine();
+    const { engine, rules, issues } = makeEngine();
     rules.find.mockResolvedValue([rule()]);
 
     await engine.evaluate(MOVED, {});
 
-    expect(recordedRun(runs)).toMatchObject({ status: "skipped", issueId: null });
-    expect(String(recordedRun(runs)?.detail)).toMatch(/no issue in context/);
+    expect(issues.update).not.toHaveBeenCalled();
   });
 
-  it("marks a failed action without rejecting the caller", async () => {
-    const { engine, rules, runs, issues } = makeEngine();
+  it("does not reject the caller when an action fails", async () => {
+    const { engine, rules, issues } = makeEngine();
     rules.find.mockResolvedValue([rule()]);
     issues.update.mockRejectedValue(new Error("deadlock detected"));
 
     await expect(engine.evaluate(MOVED, { issueId: 42 })).resolves.toBeUndefined();
-
-    expect(recordedRun(runs)).toMatchObject({ status: "failed", detail: "deadlock detected" });
+    expect(issues.update).toHaveBeenCalled();
   });
 
   it("stops after a failure when the rule asks for it", async () => {
-    const { engine, rules, runs, issues } = makeEngine();
+    const { engine, rules, issues } = makeEngine();
     rules.find.mockResolvedValue([
       rule({ id: 1, stopOnError: true }),
       rule({ id: 2, actionKey: "issue.unlock" }),
@@ -176,12 +168,11 @@ describe("RulesEngineService.evaluate", () => {
 
     await engine.evaluate(MOVED, { issueId: 42 });
 
-    expect(runs.create).toHaveBeenCalledTimes(1);
-    expect(issues.update).toHaveBeenCalledTimes(1);
+    expect(issues.update).toHaveBeenCalledTimes(1); // the second rule never ran
   });
 
   it("keeps evaluating the other rules after a failure without stopOnError", async () => {
-    const { engine, rules, runs, issues } = makeEngine();
+    const { engine, rules, issues } = makeEngine();
     rules.find.mockResolvedValue([
       rule({ id: 1, actionKey: "issue.set_priority", actionConfig: { priority: 1 } }),
       rule({ id: 2, actionKey: "issue.unlock" }),
@@ -190,12 +181,12 @@ describe("RulesEngineService.evaluate", () => {
 
     await engine.evaluate(MOVED, { issueId: 42 });
 
-    const statuses = runs.create.mock.calls.map(([row]) => (row as { status: string }).status);
-    expect(statuses).toEqual(["failed", "applied"]);
+    expect(issues.update).toHaveBeenCalledTimes(2);
+    expect(issues.update).toHaveBeenLastCalledWith(42, { isLocked: false });
   });
 
   it("ignores a nested evaluation fired from inside an action", async () => {
-    const { engine, rules, runs, issues } = makeEngine();
+    const { engine, rules, issues } = makeEngine();
     rules.find.mockResolvedValue([rule({ actionKey: "issue.unlock" })]);
     issues.update.mockImplementation(async () => {
       // an action must not trigger another round of rules
@@ -207,24 +198,13 @@ describe("RulesEngineService.evaluate", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(rules.find).toHaveBeenCalledTimes(1);
-    expect(runs.create).toHaveBeenCalledTimes(1);
   });
 
   it("swallows a repository error instead of breaking the request", async () => {
-    const { engine, rules, runs } = makeEngine();
+    const { engine, rules } = makeEngine();
     rules.find.mockRejectedValue(new Error("connection refused"));
 
     await expect(engine.evaluate(MOVED, { issueId: 42 })).resolves.toBeUndefined();
-    expect(runs.save).not.toHaveBeenCalled();
-  });
-
-  it("still resolves when storing the run fails", async () => {
-    const { engine, rules, runs, issues } = makeEngine();
-    rules.find.mockResolvedValue([rule()]);
-    runs.save.mockRejectedValue(new Error("disk full"));
-
-    await expect(engine.evaluate(MOVED, { issueId: 42 })).resolves.toBeUndefined();
-    expect(issues.update).toHaveBeenCalled();
   });
 
   it("queries only active rules for the trigger that fired", async () => {
@@ -236,9 +216,50 @@ describe("RulesEngineService.evaluate", () => {
     expect(rules.find).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { triggerKey: "comment.created", isActive: true },
-        relations: { conditions: true },
       }),
     );
+  });
+
+  describe("analysis / resolution actions", () => {
+    it("opens the analysis field as soon as the rule fires", async () => {
+      const { engine, rules, issues } = makeEngine();
+      rules.find.mockResolvedValue([rule({ actionKey: "issue.open_analysis" })]);
+
+      await engine.evaluate(MOVED, { issueId: 42, toStatusId: 5 });
+
+      expect(issues.update).toHaveBeenCalledWith(42, { isAnalysisOpen: true });
+      expect(issues.update).not.toHaveBeenCalledWith(42, { isResolutionOpen: true });
+    });
+
+    it("opens the resolution field as soon as the rule fires", async () => {
+      const { engine, rules, issues } = makeEngine();
+      rules.find.mockResolvedValue([rule({ actionKey: "issue.open_resolution" })]);
+
+      await engine.evaluate(MOVED, { issueId: 42, toStatusId: 5 });
+
+      expect(issues.update).toHaveBeenCalledWith(42, { isResolutionOpen: true });
+      expect(issues.update).not.toHaveBeenCalledWith(42, { isAnalysisOpen: true });
+    });
+
+    it("lets the trigger conditions gate the status (not the action config)", async () => {
+      const { engine, rules, issues } = makeEngine();
+      // the rule only fires when the card moves to status 5 — the action has
+      // no status of its own to check
+      rules.find.mockResolvedValue([
+        rule({
+          actionKey: "issue.open_analysis",
+          conditions: [{ field: "to_status", operator: "=", value: "5", position: 0 }],
+        }),
+      ]);
+
+      await engine.evaluate(MOVED, { issueId: 42, toStatusId: 9 });
+
+      expect(issues.update).not.toHaveBeenCalled();
+
+      await engine.evaluate(MOVED, { issueId: 42, toStatusId: 5 });
+
+      expect(issues.update).toHaveBeenCalledWith(42, { isAnalysisOpen: true });
+    });
   });
 
   describe("auto-comment rendering", () => {
@@ -283,12 +304,297 @@ describe("RulesEngineService.evaluate", () => {
     });
 
     it("skips when the rule has no message to post", async () => {
-      const { engine, comments, runs } = setupCommentRule("   ");
+      const { engine, comments } = setupCommentRule("   ");
 
       await engine.evaluate(MOVED, { issueId: 42 });
 
       expect(comments.save).not.toHaveBeenCalled();
-      expect(recordedRun(runs)).toMatchObject({ status: "skipped" });
     });
+  });
+});
+
+describe("time actions (rule-driven timer)", () => {
+  it("starts a timer owned by the assignee", async () => {
+    const { engine, rules, workSessions, issues, users } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "work_session.start" })]);
+    workSessions.findOne.mockResolvedValue(null);
+    issues.findOne.mockResolvedValue({ id: 42, programmerId: 7 });
+    users.findOne.mockResolvedValue({ id: 7, name: "Dev" });
+
+    await engine.evaluate(MOVED, { issueId: 42 });
+
+    expect(workSessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ issueId: 42, programmerId: 7 }),
+    );
+    expect(workSessions.save).toHaveBeenCalledTimes(1);
+  });
+
+  it("never stacks a second session on a card that is already running", async () => {
+    const { engine, rules, workSessions } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "work_session.start" })]);
+    workSessions.findOne.mockResolvedValue({ id: 1, issueId: 42, endedAt: null });
+
+    await engine.evaluate(MOVED, { issueId: 42 });
+
+    expect(workSessions.save).not.toHaveBeenCalled();
+  });
+
+  it("skips starting when no user can own the timer", async () => {
+    const { engine, rules, workSessions, issues, users } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "work_session.start" })]);
+    workSessions.findOne.mockResolvedValue(null);
+    issues.findOne.mockResolvedValue({ id: 42, programmerId: null });
+    users.findOne.mockResolvedValue(null); // nobody: no assignee, no actor, no author
+
+    await engine.evaluate(MOVED, { issueId: 42, actorId: null });
+
+    expect(workSessions.save).not.toHaveBeenCalled();
+  });
+
+  it("stops the open session and banks it into tracked_duration", async () => {
+    const { engine, rules, workSessions, issues } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "work_session.stop" })]);
+    workSessions.findOne.mockResolvedValue({
+      id: 5,
+      issueId: 42,
+      startedAt: new Date(Date.now() - 60_000),
+      endedAt: null,
+      duration: 0,
+    });
+    workSessions.find.mockResolvedValue([{ duration: 45 }]);
+
+    await engine.evaluate(MOVED, { issueId: 42 });
+
+    const saved = workSessions.save.mock.calls[0][0] as { endedAt: Date; duration: number };
+    expect(saved.endedAt).toBeInstanceOf(Date);
+    expect(saved.duration).toBeGreaterThanOrEqual(59);
+    expect(issues.update).toHaveBeenCalledWith(42, { trackedDuration: 45 });
+  });
+
+  it("skips a stop when nothing is running", async () => {
+    const { engine, rules, workSessions } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "work_session.stop" })]);
+    workSessions.findOne.mockResolvedValue(null);
+
+    await engine.evaluate(MOVED, { issueId: 42 });
+
+    expect(workSessions.save).not.toHaveBeenCalled();
+  });
+
+  it("resets by wiping every session and zeroing the total", async () => {
+    const { engine, rules, workSessions, issues } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "work_session.reset" })]);
+
+    await engine.evaluate(MOVED, { issueId: 42 });
+
+    expect(workSessions.delete).toHaveBeenCalledWith({ issueId: 42 });
+    expect(issues.update).toHaveBeenCalledWith(42, { trackedDuration: 0 });
+  });
+
+  it("opens the actual time entry and remembers it was ever granted", async () => {
+    const { engine, rules, issues } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "issue.allow_time_entry" })]);
+
+    await engine.evaluate(MOVED, { issueId: 42 });
+
+    expect(issues.update).toHaveBeenCalledWith(42, {
+      timeEntryUnlocked: true,
+      timeEntryEverGranted: true,
+    });
+  });
+
+  it("orders one event as reset → stop → everything else → start", async () => {
+    const { engine, rules, issues, workSessions, users } = makeEngine();
+    // deliberately in "wrong" creation order — the engine must fix the sequence
+    rules.find.mockResolvedValue([
+      rule({ id: 1, actionKey: "work_session.start" }),
+      rule({ id: 2, actionKey: "work_session.reset" }),
+      rule({ id: 3, actionKey: "work_session.stop" }),
+      rule({ id: 4, actionKey: "issue.lock" }),
+    ]);
+
+    // Track the real side effects in order: reset wipes sessions, stop closes
+    // the one open session, lock flips isLocked, start opens a fresh session.
+    const order: string[] = [];
+    let openLookups = 0;
+    workSessions.delete.mockImplementation(async () => {
+      order.push("reset");
+      return { affected: 1 };
+    });
+    workSessions.findOne.mockImplementation(async () => {
+      // stop finds the still-open session; start (later) finds none
+      openLookups += 1;
+      return openLookups === 1
+        ? { id: 9, issueId: 42, startedAt: new Date(), endedAt: null, duration: 0 }
+        : null;
+    });
+    workSessions.save.mockImplementation(async (value: { endedAt?: Date }) => {
+      order.push(value.endedAt ? "stop" : "start");
+      return value;
+    });
+    issues.update.mockImplementation(async (_id: number, patch: Record<string, unknown>) => {
+      if (patch && "isLocked" in patch) order.push("lock");
+      return { affected: 1 };
+    });
+    // the start action needs an assignee it can hand the timer to
+    issues.findOne.mockResolvedValue({ id: 42, programmerId: 7 });
+    users.findOne.mockResolvedValue({ id: 7, name: "Dev" });
+
+    await engine.evaluate(MOVED, { issueId: 42 });
+
+    expect(order).toEqual(["reset", "stop", "lock", "start"]);
+  });
+});
+
+describe("startTimerApplies — which statuses the timer rules cover", () => {
+  it("marks only the statuses an active start-timer rule targets", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({
+        actionKey: "work_session.start",
+        conditions: [{ field: "to_status", operator: "=", value: "3", position: 0 }],
+      }),
+    ]);
+
+    const applies = await engine.startTimerApplies([3, 5, 7]);
+
+    expect([...applies]).toEqual([3]);
+  });
+
+  it("treats a rule without a status condition as timing every status", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "work_session.start" })]);
+
+    const applies = await engine.startTimerApplies([3, 5, null]);
+
+    expect([...applies].sort((a, b) => a - b)).toEqual([3, 5]); // null never matches
+  });
+
+  it("understands list conditions and skips cards with no status", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({
+        actionKey: "work_session.start",
+        conditions: [{ field: "to_status", operator: "in", value: "2, 4", position: 0 }],
+      }),
+    ]);
+
+    const applies = await engine.startTimerApplies([2, 4, 6, null]);
+
+    expect([...applies].sort((a, b) => a - b)).toEqual([2, 4]);
+  });
+
+  it("returns nothing when no start-timer rule is active", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([]);
+
+    const applies = await engine.startTimerApplies([3]);
+
+    expect(applies.size).toBe(0);
+  });
+});
+
+describe("statusGates — fields a rule opens without a new event", () => {
+  it("marks the statuses an active open-analysis rule targets", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({
+        actionKey: "issue.open_analysis",
+        conditions: [{ field: "to_status", operator: "=", value: "3", position: 0 }],
+      }),
+    ]);
+
+    const gates = await engine.statusGates([2, 3, 7]);
+
+    expect([...gates.analysis]).toEqual([3]); // card already in status 3 counts
+    expect(gates.timer.size).toBe(0);
+    expect(gates.resolution.size).toBe(0);
+  });
+
+  it("keeps the analysis, resolution and timer buckets apart", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({
+        id: 1,
+        actionKey: "issue.open_analysis",
+        conditions: [{ field: "to_status", operator: "=", value: "3", position: 0 }],
+      }),
+      rule({
+        id: 2,
+        actionKey: "issue.open_resolution",
+        conditions: [{ field: "to_status", operator: "=", value: "7", position: 0 }],
+      }),
+      rule({
+        id: 3,
+        actionKey: "work_session.start",
+        conditions: [{ field: "to_status", operator: "=", value: "3", position: 0 }],
+      }),
+    ]);
+
+    const gates = await engine.statusGates([3, 7]);
+
+    expect([...gates.analysis]).toEqual([3]);
+    expect([...gates.resolution]).toEqual([7]);
+    expect([...gates.timer]).toEqual([3]);
+  });
+
+  it("covers every non-null status when the rule has no status condition", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "issue.open_analysis" })]);
+
+    const gates = await engine.statusGates([2, 4, null]);
+
+    expect([...gates.analysis].sort((a, b) => a - b)).toEqual([2, 4]); // null never matches
+  });
+
+  it("ignores inactive rules and actions that gate no field", async () => {
+    const { engine, rules } = makeEngine();
+    const rows = [
+      rule({
+        id: 1,
+        actionKey: "issue.open_analysis",
+        isActive: false,
+        conditions: [{ field: "to_status", operator: "=", value: "3", position: 0 }],
+      }),
+      rule({
+        id: 2,
+        actionKey: "issue.lock",
+        conditions: [{ field: "to_status", operator: "=", value: "3", position: 0 }],
+      }),
+    ];
+    // the repo honours `where: { isActive: true }` — emulate that in the stub
+    rules.find.mockImplementation((options: { where?: { isActive?: boolean } }) =>
+      Promise.resolve(
+        rows.filter((r) => options?.where?.isActive == null || r.isActive === options.where.isActive),
+      ),
+    );
+
+    const gates = await engine.statusGates([3]);
+
+    expect(gates.analysis.size).toBe(0);
+    expect(gates.timer.size).toBe(0);
+    expect(gates.resolution.size).toBe(0);
+  });
+});
+
+describe("RulesEngineService.isStepOnlyMoveActive — the drag guard switch", () => {
+  it("is off with no rule, on while an active step-only rule exists", async () => {
+    const { engine, rules } = makeEngine();
+
+    expect(await engine.isStepOnlyMoveActive()).toBe(false);
+
+    rules.findOne.mockResolvedValue({ id: 7, actionKey: "issue.move_step_only", isActive: true });
+    expect(await engine.isStepOnlyMoveActive()).toBe(true);
+    // a paused rule never reaches the lookup: the filter carries `isActive`
+    expect(rules.findOne).toHaveBeenCalledWith({
+      where: { actionKey: "issue.move_step_only", isActive: true },
+    });
+  });
+
+  it("fails open when the lookup breaks, so a hiccup never wedges the board", async () => {
+    const { engine, rules } = makeEngine();
+    rules.findOne.mockRejectedValue(new Error("connection lost"));
+
+    expect(await engine.isStepOnlyMoveActive()).toBe(false);
   });
 });

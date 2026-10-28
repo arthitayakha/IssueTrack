@@ -66,6 +66,11 @@ export class WorkSessionsService {
     });
   }
 
+  /** Every card with a running timer — one call feeds the whole board. */
+  async findOpen() {
+    return this.workSessions.find({ where: { endedAt: IsNull() } });
+  }
+
   async getByIssue(issueId: number) {
     return this.workSessions.find({
       where: { issueId },

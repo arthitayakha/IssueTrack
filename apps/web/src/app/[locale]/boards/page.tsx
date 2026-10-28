@@ -1,6 +1,15 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
+import {
+  Suspense,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Box,
   Badge,
@@ -39,6 +48,7 @@ import {
   ListItemButton,
   List,
   ListItem,
+  keyframes,
 } from "@mui/material";
 import {
   DndContext,
@@ -98,15 +108,18 @@ import LinkIcon from "@mui/icons-material/Link";
 import FlagIcon from "@mui/icons-material/Flag";
 import LabelIcon from "@mui/icons-material/Label";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
-import { alpha } from "@mui/material/styles";
+import TimerOutlinedIcon from "@mui/icons-material/TimerOutlined";
 import { useTranslations } from "next-intl";
+import { useRouter } from "@/i18n/navigation";
 import { usePermissions } from "@/lib/permissions";
 import { useAuthStore } from "@/lib/auth-store";
 import { isApiError } from "@/lib/api";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
+import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import {
   fetchIssues,
+  fetchIssue,
   createIssue,
   moveIssue,
   assignIssue,
@@ -116,6 +129,7 @@ import {
   fetchIssueActivity,
   fetchIssueComments,
   fetchStatuses,
+  fetchMovePolicy,
   createStatus,
   updateStatus,
   reorderStatuses,
@@ -141,6 +155,9 @@ import {
   type App,
   fetchTrashedIssues,
   restoreIssue,
+  fetchOpenTimers,
+  getOpenTimer,
+  setActualFixDuration,
 } from "@/lib/board-api";
 import { fetchLabels, createLabel, updateLabel, type Label } from "@/lib/labels-api";
 import { Pagination } from "@/components/pagination";
@@ -188,6 +205,99 @@ function formatDuration(seconds: number | null | undefined): string {
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+/** Clock format used by every time display: "01:23:45". */
+function formatClock(seconds: number | null | undefined): string {
+  if (seconds == null || seconds < 0) return "—";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+/**
+ * Short clock for the card's bottom bar: "HH:MM" (hours:minutes, no seconds —
+ * "00:00" right after a reset), the compact style Trello-ish cards use.
+ */
+function formatShortClock(seconds: number | null | undefined): string {
+  if (seconds == null || seconds < 0) return "00:00";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/** Seconds elapsed since a session started (never negative). */
+function elapsedSince(startedAtIso: string | null | undefined, nowMs: number): number {
+  if (!startedAtIso) return 0;
+  const started = new Date(startedAtIso).getTime();
+  if (Number.isNaN(started)) return 0;
+  return Math.max(0, Math.floor((nowMs - started) / 1000));
+}
+
+/** Total time on a card: everything already banked + the running session. */
+function totalTimeSeconds(issue: BoardIssue, runningSince: string | null | undefined, nowMs: number): number {
+  const banked = issue.trackedDuration ?? 0;
+  return banked + (runningSince ? elapsedSince(runningSince, nowMs) : 0);
+}
+
+const timerPulse = keyframes`
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+`;
+
+/**
+ * Running timers shared by every view: `running` maps issueId → ISO start,
+ * `now` is one shared clock (ticks once a second while anything runs) and
+ * `refresh` reloads the map (a drag can start/stop/reset timers via rules).
+ */
+interface BoardTimers {
+  running: Record<number, string>;
+  now: number;
+  refresh: () => void;
+}
+
+/** "เวลาที่จับได้" cell — live clock while running, banked total otherwise. */
+function TrackedTimeCell({ issue, timers }: { issue: BoardIssue; timers: BoardTimers }) {
+  const runningSince = timers.running[issue.id] ?? null;
+  const total = totalTimeSeconds(issue, runningSince, timers.now);
+  if (!runningSince && total <= 0) return <>—</>;
+  return (
+    <Box component="span" sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}>
+      {runningSince && (
+        <Box
+          sx={{
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            bgcolor: "success.main",
+            animation: `${timerPulse} 1.5s ease-in-out infinite`,
+          }}
+        />
+      )}
+      <Typography
+        component="span"
+        variant="caption"
+        sx={{
+          fontFamily: "monospace",
+          fontWeight: 600,
+          color: runningSince ? "success.main" : "text.primary",
+        }}
+      >
+        {formatClock(total)}
+      </Typography>
+    </Box>
+  );
+}
+
+/** "เวลาแก้ไขจริง" cell — the manually recorded value. */
+function ActualTimeCell({ issue }: { issue: BoardIssue }) {
+  if (issue.actualFixDuration == null || issue.actualFixDuration <= 0) return <>—</>;
+  return (
+    <Box component="span" sx={{ fontFamily: "monospace", fontWeight: 600 }}>
+      {formatClock(issue.actualFixDuration)}
+    </Box>
+  );
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -272,7 +382,28 @@ function getCategoryLabel(issue: BoardIssue): string {
   return "—";
 }
 
-function TrelloCardContent({ issue, actions }: { issue: BoardIssue; actions?: ReactNode }) {
+function TrelloCardContent({
+  issue,
+  actions,
+  runningSince,
+  nowMs,
+  showTime = true,
+  canUnlockIssue = false,
+  onUnlock,
+}: {
+  issue: BoardIssue;
+  actions?: ReactNode;
+  /** ISO start of this card's running session, when there is one. */
+  runningSince?: string | null;
+  /** Shared clock so every chip ticks from the same second. */
+  nowMs?: number;
+  /** Gate for the timer (`time.system.view`). */
+  showTime?: boolean;
+  /** May the viewer unlock a rule-locked card from the bottom bar? */
+  canUnlockIssue?: boolean;
+  onUnlock?: (issue: BoardIssue) => void;
+}) {
+  const t = useTranslations("Boards");
   const theme = useTheme();
   const priorityColor = issue.priorityName
     ? PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"
@@ -281,8 +412,35 @@ function TrelloCardContent({ issue, actions }: { issue: BoardIssue; actions?: Re
     ? issue.programmerName.charAt(0).toUpperCase()
     : null;
 
+  const isRunning = Boolean(runningSince);
+  const totalSeconds = totalTimeSeconds(issue, runningSince, nowMs ?? Date.now());
+  // bottom bar: lock + tracked time — hidden when the card has neither
+  const timeVisible = showTime && (isRunning || totalSeconds > 0);
+  const showBottomBar = Boolean(issue.isLocked || timeVisible);
+  // Trello-style label strips on top of the card (they replaced the chips)
+  const labelBars = (issue.labels ?? []).slice(0, 4);
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
+      {/* label colour strips — Trello style, they replace the old label chips */}
+      {labelBars.length > 0 && (
+        <Box sx={{ display: "flex", gap: 0.5, mb: 0.75 }}>
+          {labelBars.map((lbl) => (
+            <Box
+              key={lbl.id}
+              title={lbl.name}
+              sx={{
+                // small fixed stub — not a full-width bar
+                width: 28,
+                flex: "0 0 auto",
+                height: 8,
+                borderRadius: "4px",
+                bgcolor: labelColorValue(lbl.color, theme),
+              }}
+            />
+          ))}
+        </Box>
+      )}
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.25 }}>
         <Typography variant="subtitle2" fontWeight={700} sx={{ lineHeight: 1.4, flex: 1, minWidth: 0, mr: 0.5 }}>
           {issue.title}
@@ -304,33 +462,18 @@ function TrelloCardContent({ issue, actions }: { issue: BoardIssue; actions?: Re
         )}
         {actions}
       </Box>
-      {(issue.priorityName || (issue.labels && issue.labels.length > 0)) && (
+      {issue.priorityName && (
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mt: 0.25, flexWrap: "wrap" }}>
-          {issue.priorityName && (
-            <Chip
-              label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
-              size="small"
-              variant="outlined"
-              color={priorityColor}
-              sx={{ height: 18, fontSize: "0.65rem", fontWeight: 600 }}
-            />
-          )}
-          {issue.labels?.slice(0, 2).map((lbl) => (
-            <Chip
-              key={lbl.id}
-              label={lbl.name}
-              size="small"
-              sx={{
-                ...labelChipSx(lbl.color, theme),
-                height: 20,
-                fontSize: "0.75rem",
-                fontWeight: 600,
-              }}
-            />
-          ))}
+          <Chip
+            label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
+            size="small"
+            variant="outlined"
+            color={priorityColor}
+            sx={{ height: 18, fontSize: "0.65rem", fontWeight: 600 }}
+          />
         </Box>
       )}
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mt: 0.75 }}>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mt: 0.75, gap: 0.5 }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.35 }}>
           <CalendarTodayIcon sx={{ fontSize: 14, color: "text.secondary" }} />
           <Typography variant="caption" color="text.secondary">
@@ -378,6 +521,59 @@ function TrelloCardContent({ issue, actions }: { issue: BoardIssue; actions?: Re
           )}
         </Box>
       </Box>
+      {/* bottom bar — lock + tracked time on the left, deadline on the right.
+          Hidden entirely when the card has none of the three. */}
+      {showBottomBar && (
+        <>
+          <Divider sx={{ borderStyle: "dashed", mt: 0.75, mb: 0.5 }} />
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 0.5,
+              minHeight: 22,
+            }}
+          >
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
+              {issue.isLocked &&
+                (canUnlockIssue ? (
+                  <Tooltip title={t("unlock")}>
+                    <IconButton
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onUnlock?.(issue);
+                      }}
+                      sx={{ p: 0.25, cursor: "pointer" }}
+                    >
+                      <LockIcon sx={{ fontSize: 15, color: "warning.main" }} />
+                    </IconButton>
+                  </Tooltip>
+                ) : (
+                  <LockIcon sx={{ fontSize: 15, color: "text.disabled" }} />
+                ))}
+              {timeVisible && (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.4 }}>
+                  <AccessTimeIcon
+                    sx={{
+                      fontSize: 14,
+                      color: "warning.main",
+                      animation: isRunning ? `${timerPulse} 1.5s ease-in-out infinite` : "none",
+                    }}
+                  />
+                  <Typography
+                    variant="caption"
+                    sx={{ fontFamily: "monospace", fontWeight: 700, fontSize: "0.7rem" }}
+                  >
+                    {formatShortClock(totalSeconds)}
+                  </Typography>
+                </Box>
+              )}
+            </Box>
+          </Box>
+        </>
+      )}
     </Box>
   );
 }
@@ -388,6 +584,9 @@ function TrelloCard({
   canEdit = false,
   canDelete = false,
   canUnlockIssue = false,
+  runningSince,
+  nowMs,
+  showTime = true,
   onOpen,
   onEdit,
   onDelete,
@@ -399,6 +598,9 @@ function TrelloCard({
   canEdit?: boolean;
   canDelete?: boolean;
   canUnlockIssue?: boolean;
+  runningSince?: string | null;
+  nowMs?: number;
+  showTime?: boolean;
   onOpen?: (issue: BoardIssue) => void;
   onEdit?: (issue: BoardIssue) => void;
   onDelete?: (issue: BoardIssue) => void;
@@ -452,6 +654,11 @@ function TrelloCard({
     >
       <TrelloCardContent
         issue={issue}
+        runningSince={runningSince}
+        nowMs={nowMs}
+        showTime={showTime}
+        canUnlockIssue={canUnlockIssue}
+        onUnlock={onUnlock}
         actions={
           (canEdit || canDelete || canUnlockIssue) ? (
             <IconButton
@@ -525,6 +732,8 @@ function KanbanColumn({
   canUnlockIssue,
   isDropTarget,
   roleName,
+  timers,
+  showTime,
   onOpenIssue,
   onEditIssue,
   onDeleteIssue,
@@ -543,6 +752,8 @@ function KanbanColumn({
   canUnlockIssue: boolean;
   isDropTarget: boolean;
   roleName: string;
+  timers: BoardTimers;
+  showTime: boolean;
   onOpenIssue: (issue: BoardIssue) => void;
   onEditIssue: (issue: BoardIssue) => void;
   onDeleteIssue: (issue: BoardIssue) => void;
@@ -627,6 +838,9 @@ function KanbanColumn({
               canEdit={canEdit}
               canDelete={canDelete && (roleName !== "customer" || status.name.toLowerCase() === "backlog")}
               canUnlockIssue={canUnlockIssue}
+              runningSince={timers.running[issue.id] ?? null}
+              nowMs={timers.now}
+              showTime={showTime}
               onOpen={onOpenIssue}
               onEdit={onEditIssue}
               onDelete={onDeleteIssue}
@@ -940,6 +1154,118 @@ function IssueDialog({
   );
 }
 
+/**
+ * A click-to-edit text block (same pattern as the description editor):
+ * read-only text until clicked, then a multiline field with cancel/save.
+ * Used for the analysis/cause and resolution fields on the issue card.
+ */
+function EditableTextField({
+  label,
+  value,
+  placeholder,
+  canEdit,
+  saving,
+  onSave,
+}: {
+  label: string;
+  value: string | null;
+  placeholder: string;
+  canEdit: boolean;
+  saving: boolean;
+  onSave: (next: string) => Promise<void>;
+}) {
+  const t = useTranslations("Boards");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? "");
+  const [savingField, setSavingField] = useState(false);
+
+  useEffect(() => {
+    if (!editing) setDraft(value ?? "");
+  }, [value, editing]);
+
+  const busy = saving || savingField;
+
+  const handleSave = async () => {
+    if (busy) return;
+    setSavingField(true);
+    try {
+      await onSave(draft);
+      setEditing(false);
+    } finally {
+      setSavingField(false);
+    }
+  };
+
+  return (
+    <Box>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
+        <Typography variant="caption" color="text.secondary">{label}</Typography>
+        {canEdit && !editing && (
+          <IconButton
+            size="small"
+            onClick={() => {
+              setDraft(value ?? "");
+              setEditing(true);
+            }}
+            sx={{ p: 0.25 }}
+          >
+            <EditIcon sx={{ fontSize: 14 }} />
+          </IconButton>
+        )}
+      </Box>
+      {editing ? (
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          <TextField
+            fullWidth
+            multiline
+            rows={3}
+            size="small"
+            placeholder={placeholder}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            disabled={busy}
+            autoFocus
+          />
+          <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end" }}>
+            <Button size="small" onClick={() => setEditing(false)} disabled={busy}>
+              {t("cancel")}
+            </Button>
+            <Button
+              size="small"
+              variant="contained"
+              disabled={busy}
+              startIcon={<SaveIcon sx={{ fontSize: 16 }} />}
+              onClick={handleSave}
+            >
+              {t("save")}
+            </Button>
+          </Box>
+        </Box>
+      ) : (
+        <Box
+          onClick={canEdit ? () => { setDraft(value ?? ""); setEditing(true); } : undefined}
+          sx={{
+            p: 1.5,
+            border: "1px solid",
+            borderColor: "divider",
+            borderRadius: 2,
+            minHeight: 56,
+            cursor: canEdit ? "pointer" : "default",
+            "&:hover": canEdit ? { borderColor: "primary.main", bgcolor: "action.hover" } : {},
+          }}
+        >
+          <Typography
+            variant="body2"
+            sx={{ whiteSpace: "pre-wrap", color: value ? "text.primary" : "text.secondary" }}
+          >
+            {value || placeholder}
+          </Typography>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 function IssueDetailDialog({
   issue,
   open,
@@ -1005,6 +1331,19 @@ function IssueDetailDialog({
   const currentUserId = currentUser?.id ?? null;
   const t = useTranslations("Boards");
 
+  // ── time section: running session + manual entry ──
+  const canSeeTime = can("time.system.view");
+  const canSeeActual = can("time.actual.view");
+  const canEditActual = can("time.actual.edit");
+  const [openSession, setOpenSession] = useState<{ startedAt: string } | null>(null);
+  const [tickNow, setTickNow] = useState(() => Date.now());
+  const [actualHours, setActualHours] = useState("0");
+  const [actualMinutes, setActualMinutes] = useState("0");
+  const [savingActual, setSavingActual] = useState(false);
+  // the card as the dialog currently shows it (fresher than the `issue` prop
+  // after any in-dialog save) — declared early so every helper can read it
+  const current = localIssue;
+
   const canViewComments = can("comment.view");
   const canPostComment = can("comment.create");
   const canEditComment = can("comment.own.update");
@@ -1032,6 +1371,77 @@ function IssueDetailDialog({
   useEffect(() => {
     if (open) setTab(initialTab);
   }, [open, initialTab]);
+
+  // is there a timer running on this card right now? (+ tick every second)
+  useEffect(() => {
+    if (!open || !issue?.id) {
+      setOpenSession(null);
+      return;
+    }
+    let cancelled = false;
+    getOpenTimer(issue.id)
+      .then((session) => {
+        if (!cancelled) setOpenSession(session ? { startedAt: session.startedAt } : null);
+      })
+      .catch(() => {
+        if (!cancelled) setOpenSession(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, issue?.id]);
+
+  useEffect(() => {
+    if (!openSession) return;
+    const interval = setInterval(() => setTickNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [openSession]);
+
+  // keep the manual-entry inputs in sync with the stored value
+  useEffect(() => {
+    if (!open) return;
+    const total = current?.actualFixDuration ?? 0;
+    setActualHours(String(Math.floor(total / 3600)));
+    setActualMinutes(String(Math.floor((total % 3600) / 60)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, current?.actualFixDuration]);
+
+  const saveActualTime = async () => {
+    if (!current) return;
+    const hours = Math.max(0, Math.floor(Number(actualHours) || 0));
+    const minutes = Math.min(59, Math.max(0, Math.floor(Number(actualMinutes) || 0)));
+    setSavingActual(true);
+    try {
+      const updated = await setActualFixDuration(current.id, hours * 3600 + minutes * 60);
+      setLocalIssue(updated);
+      onRefresh();
+    } finally {
+      setSavingActual(false);
+    }
+  };
+
+  // derived values for the time section
+  const runningSince = openSession?.startedAt ?? null;
+  const liveSeconds = runningSince ? elapsedSince(runningSince, tickNow) : 0;
+  const trackedTotal = (current?.trackedDuration ?? 0) + liveSeconds;
+  const neverTimed = !runningSince && trackedTotal <= 0;
+  const actualRowVisible =
+    canSeeActual && Boolean(current?.timeEntryUnlocked || current?.timeEntryEverGranted);
+  const actualEditable =
+    actualRowVisible && Boolean(current?.timeEntryUnlocked) && canEditActual && !readOnly;
+  // ⏱ box: only for cards an active start-timer rule actually covers, or cards
+  // that were/are being timed — a card the rules never time hides it entirely
+  const timeBoxVisible = canSeeTime && (Boolean(current?.timerRuleApplies) || !neverTimed);
+  const sectionVisible = timeBoxVisible || actualRowVisible;
+  // manual-entry inputs: narrow fields with the browser's ↑↓ spinners hidden
+  const actualInputSx = {
+    width: 44,
+    "& input[type=number]": { MozAppearance: "textfield" },
+    "& input[type=number]::-webkit-inner-spin-button, & input[type=number]::-webkit-outer-spin-button": {
+      WebkitAppearance: "none",
+      margin: 0,
+    },
+  };
 
   useEffect(() => {
     if (!issue || !open) return;
@@ -1240,7 +1650,6 @@ function IssueDetailDialog({
 
   const theme = useTheme();
   const isNarrow = useMediaQuery(theme.breakpoints.down("md"));
-  const current = localIssue;
   const status = current?.statusId ? statuses.find((s) => s.id === current.statusId) : null;
   const statusName = status ? (status.customName ?? status.name) : null;
   const categoryName = current ? getCategoryLabel(current) : "—";
@@ -1566,6 +1975,109 @@ function IssueDetailDialog({
               <Typography variant="body2">—</Typography>
             )}
           </Box>
+          {/* ⏱ เวลา + 📅 วันกำหนดส่ง — the card itself has no buttons; timers run via rules */}
+          {sectionVisible && (
+            <Box>
+              <Box sx={{ display: "flex", gap: 3, flexWrap: "wrap", alignItems: "flex-start" }}>
+                {(timeBoxVisible || actualRowVisible) && (
+                  <Box sx={{ flex: "1 1 260px", minWidth: 0 }}>
+                    {timeBoxVisible && (
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                        {t("detail.time.title")}
+                      </Typography>
+                    )}
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                      {timeBoxVisible &&
+                        (neverTimed ? (
+                          <Typography variant="body2" color="text.secondary">
+                            {t("detail.time.never")}
+                          </Typography>
+                        ) : (
+                          <>
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              color={runningSince ? "success" : "default"}
+                              icon={
+                                <TimerOutlinedIcon
+                                  sx={{
+                                    fontSize: 14,
+                                    animation: runningSince ? `${timerPulse} 1.5s ease-in-out infinite` : "none",
+                                  }}
+                                />
+                              }
+                              label={
+                                <Box component="span" sx={{ fontFamily: "monospace", fontWeight: 700 }}>
+                                  {formatClock(trackedTotal)}
+                                </Box>
+                              }
+                            />
+                            <Typography variant="caption" color="text.secondary">
+                              {runningSince ? t("detail.time.running") : t("detail.time.stopped")}
+                            </Typography>
+                          </>
+                        ))}
+                    </Box>
+                    {actualRowVisible && (
+                      <Box sx={{ mt: timeBoxVisible ? 1.5 : 0 }}>
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                          {t("detail.time.actualLabel")}
+                        </Typography>
+                        {actualEditable ? (
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                            <TextField
+                              size="small"
+                              type="number"
+                              value={actualHours}
+                              onChange={(e) => setActualHours(e.target.value)}
+                              disabled={savingActual}
+                              sx={actualInputSx}
+                              inputProps={{ min: 0, style: { textAlign: "right" } }}
+                            />
+                            <Typography variant="caption" color="text.secondary">
+                              {t("detail.time.hours")}
+                            </Typography>
+                            <TextField
+                              size="small"
+                              type="number"
+                              value={actualMinutes}
+                              onChange={(e) => setActualMinutes(e.target.value)}
+                              disabled={savingActual}
+                              sx={actualInputSx}
+                              inputProps={{ min: 0, max: 59, style: { textAlign: "right" } }}
+                            />
+                            <Typography variant="caption" color="text.secondary">
+                              {t("detail.time.minutes")}
+                            </Typography>
+                            <Button
+                              size="small"
+                              disabled={savingActual}
+                              startIcon={<SaveIcon sx={{ fontSize: 16 }} />}
+                              onClick={saveActualTime}
+                            >
+                              {t("save")}
+                            </Button>
+                          </Box>
+                        ) : (
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                            <LockIcon sx={{ fontSize: 14, color: "text.disabled" }} />
+                            <Typography variant="body2" sx={{ fontFamily: "monospace", fontWeight: 600 }}>
+                              {(current?.actualFixDuration ?? 0) > 0
+                                ? formatClock(current?.actualFixDuration ?? 0)
+                                : "—"}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {t("detail.time.actualReadonlyHint")}
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    )}
+                  </Box>
+                )}
+              </Box>
+            </Box>
+          )}
           <Box>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
               <Typography variant="caption" color="text.secondary">{t("detail.description")}</Typography>
@@ -1648,6 +2160,48 @@ function IssueDetailDialog({
                   {current?.description || t("detail.descriptionPlaceholder")}
                 </Typography>
               </Box>
+            )}
+          </Box>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {/* hidden until a rule opens them; once filled they stay visible
+                but read-only (the flag alone only gates the first fill) */}
+            {(current?.isAnalysisOpen || current?.analysisCause) && (
+              <EditableTextField
+                label={t("detail.analysisCause")}
+                value={current?.analysisCause ?? null}
+                placeholder={
+                  current?.isAnalysisOpen ? t("detail.analysisPlaceholder") : t("detail.lockedHint")
+                }
+                canEdit={
+                  canEditIssue && Boolean(current?.isAnalysisOpen) && !current?.analysisCause
+                }
+                saving={saving}
+                onSave={async (next) => {
+                  if (!current) return;
+                  const updated = await updateIssue(current.id, { analysisCause: next });
+                  setLocalIssue(updated);
+                  onRefresh();
+                }}
+              />
+            )}
+            {(current?.isResolutionOpen || current?.resolution) && (
+              <EditableTextField
+                label={t("detail.resolution")}
+                value={current?.resolution ?? null}
+                placeholder={
+                  current?.isResolutionOpen ? t("detail.resolutionPlaceholder") : t("detail.lockedHint")
+                }
+                canEdit={
+                  canEditIssue && Boolean(current?.isResolutionOpen) && !current?.resolution
+                }
+                saving={saving}
+                onSave={async (next) => {
+                  if (!current) return;
+                  const updated = await updateIssue(current.id, { resolution: next });
+                  setLocalIssue(updated);
+                  onRefresh();
+                }}
+              />
             )}
           </Box>
           {canViewAttachments && attachments.length > 0 && (
@@ -2799,9 +3353,12 @@ function KanbanView({
   canEdit,
   canDelete,
   canUnlockIssue,
+  timers,
+  showTime,
   onRefresh,
   toolbar,
   roleName,
+  stepOnlyMoves,
 }: {
   statuses: IssueStatus[];
   labels: Label[];
@@ -2819,9 +3376,13 @@ function KanbanView({
   canEdit: boolean;
   canDelete: boolean;
   canUnlockIssue: boolean;
+  timers: BoardTimers;
+  showTime: boolean;
   onRefresh: () => void;
   toolbar: React.ReactNode;
   roleName: string;
+  /** The step-only drag rule is on — columns must refuse a jump-over drop. */
+  stepOnlyMoves: boolean;
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
@@ -2838,6 +3399,8 @@ function KanbanView({
   const [dragStartStatusId, setDragStartStatusId] = useState<number | null>(null);
   const [hoverStatusId, setHoverStatusId] = useState<number | null>(null);
   const dragTargetStatusId = useRef<number | null>(null);
+  /** Last column the step-only rule refused during this drag (drop feedback). */
+  const blockedTargetStatusId = useRef<number | null>(null);
   const isDraggingRef = useRef(false);
   const requestSeqRef = useRef<Record<number, number>>({});
 
@@ -2949,10 +3512,25 @@ function KanbanView({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  /**
+   * Adjacent = the column directly before or after in `localStatuses` — the
+   * same `position` order the API serves and the backend guard checks. An
+   * unmeasurable pair (no source status yet, unknown ids) is allowed here;
+   * `IssuesService.move()` is the authority and its 400 is handled on drop.
+   */
+  const isAdjacentStatus = (fromStatusId: number | null, toStatusId: number): boolean => {
+    if (fromStatusId === null || fromStatusId === toStatusId) return true;
+    const from = localStatuses.findIndex((s) => s.id === fromStatusId);
+    const to = localStatuses.findIndex((s) => s.id === toStatusId);
+    if (from === -1 || to === -1) return true;
+    return Math.abs(from - to) === 1;
+  };
+
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
     isDraggingRef.current = true;
     dragTargetStatusId.current = null;
+    blockedTargetStatusId.current = null;
     if (active.data.current?.type === "status") {
       const statusId = Number(String(active.id).replace("status-", ""));
       const status = localStatuses.find((s) => s.id === statusId);
@@ -3010,6 +3588,15 @@ function KanbanView({
       return;
     }
 
+    // "one column at a time": a jump-over column gets no preview — the card
+    // stays put and handleDragEnd explains it on release
+    if (stepOnlyMoves && !isAdjacentStatus(activeIssue.statusId, targetStatusId)) {
+      blockedTargetStatusId.current = targetStatusId;
+      dragTargetStatusId.current = null;
+      setHoverStatusId(null);
+      return;
+    }
+    blockedTargetStatusId.current = null;
     dragTargetStatusId.current = targetStatusId;
     setHoverStatusId(targetStatusId);
     setColumns((prev) => {
@@ -3033,6 +3620,7 @@ function KanbanView({
     isDraggingRef.current = false;
 
     if (!over) {
+      blockedTargetStatusId.current = null;
       if (dragStartStatusId !== null) reloadColumns([dragStartStatusId]);
       setDragStartStatusId(null);
       return;
@@ -3079,6 +3667,12 @@ function KanbanView({
     dragTargetStatusId.current = null;
 
     if (targetStatusId === null) {
+      const blockedId = blockedTargetStatusId.current;
+      blockedTargetStatusId.current = null;
+      if (blockedId !== null) {
+        // released over a column the step-only rule refuses — say why
+        setError(t("invalidTransition"));
+      }
       if (sourceStatusId !== null) reloadColumns([sourceStatusId]);
       setDragStartStatusId(null);
       return;
@@ -3091,9 +3685,13 @@ function KanbanView({
 
     try {
       await moveIssue(issueId, targetStatusId);
+      // the rules may have started/stopped/reset a timer on this drag
+      timers.refresh();
       reloadColumns(sourceStatusId !== null ? [sourceStatusId, targetStatusId] : [targetStatusId]);
     } catch (e) {
-      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      // 400 = the server's step-only guard rejected the jump (policy lookup
+      // had failed open, so the preview slipped through to the API)
+      setError(isApiError(e, 400) ? t("invalidTransition") : getErrorMessage(e, "เกิดข้อผิดพลาด"));
       onRefresh();
     } finally {
       setDragStartStatusId(null);
@@ -3108,6 +3706,7 @@ function KanbanView({
     setHoverStatusId(null);
     isDraggingRef.current = false;
     dragTargetStatusId.current = null;
+    blockedTargetStatusId.current = null;
   };
 
   const handleSaveIssue = async (data: { title: string; description: string; statusId: number; labelId?: number | null; priorityId?: number | null }) => {
@@ -3203,6 +3802,8 @@ function KanbanView({
                 canUnlockIssue={canUnlockIssue}
                 isDropTarget={hoverStatusId === status.id && !!activeIssue}
                 roleName={roleName}
+                timers={timers}
+                showTime={showTime}
                 onOpenIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
                 onEditIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
                 onDeleteIssue={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
@@ -3224,7 +3825,12 @@ function KanbanView({
                   borderColor: "primary.main",
                 }}
               >
-                <TrelloCardContent issue={activeIssue} />
+                <TrelloCardContent
+                  issue={activeIssue}
+                  runningSince={timers.running[activeIssue.id] ?? null}
+                  nowMs={timers.now}
+                  showTime={showTime}
+                />
               </Box>
             ) : activeStatus ? (
               <Box
@@ -3321,6 +3927,9 @@ function TableView({
   canManage,
   canSeeReporter,
   canViewOwnHistory,
+  timers,
+  canSeeTrackedTime,
+  canSeeActualTime,
   currentUserId,
   onRefresh,
   toolbar,
@@ -3340,6 +3949,9 @@ function TableView({
   canManage: boolean;
   canSeeReporter: boolean;
   canViewOwnHistory: boolean;
+  timers: BoardTimers;
+  canSeeTrackedTime: boolean;
+  canSeeActualTime: boolean;
   currentUserId: string | null;
   onRefresh: () => void;
   toolbar?: React.ReactNode;
@@ -3459,56 +4071,47 @@ function TableView({
           {toolbar}
         </Box>
       )}
-      <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden", border: "1px solid", borderColor: "divider", minWidth: 0 }}>
-        <Box sx={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ backgroundColor: theme.custom.tableStripe }}>
-                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ID</th>
-                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>หัวข้อ</th>
-                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>แอป</th>
-                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>หมวดหมู่</th>
-                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ความสำคัญ</th>
-                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>สถานะ</th>
-                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ผู้รับผิดชอบ</th>
-                {canSeeReporter && (
-                  <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>ผู้แจ้ง</th>
-                )}
-                <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, fontSize: "0.8rem" }}>สร้างเมื่อ</th>
-                {(canManage || canViewOwnHistory) && (
-                  <th style={{ padding: "12px", textAlign: "right", fontWeight: 600, fontSize: "0.8rem", width: "1%", whiteSpace: "nowrap" }}>จัดการ</th>
-                )}
-              </tr>
-            </thead>
-            <tbody>
+      <DataTable>
+        <DataTableHead>
+          <DataTableRow>
+            <DataTableCell>ID</DataTableCell>
+            <DataTableCell>หัวข้อ</DataTableCell>
+            <DataTableCell>แอป</DataTableCell>
+            <DataTableCell>หมวดหมู่</DataTableCell>
+            <DataTableCell>ความสำคัญ</DataTableCell>
+            <DataTableCell>สถานะ</DataTableCell>
+            <DataTableCell>ผู้รับผิดชอบ</DataTableCell>
+            {canSeeReporter && <DataTableCell>ผู้แจ้ง</DataTableCell>}
+            <DataTableCell>สร้างเมื่อ</DataTableCell>
+            {canSeeTrackedTime && <DataTableCell>เวลาที่จับได้</DataTableCell>}
+            {canSeeActualTime && <DataTableCell>เวลาแก้ไขจริง</DataTableCell>}
+            {(canManage || canViewOwnHistory) && (
+              <DataTableCell align="right" sx={{ width: "1%", whiteSpace: "nowrap" }}>
+                จัดการ
+              </DataTableCell>
+            )}
+          </DataTableRow>
+        </DataTableHead>
+            <DataTableBody>
               {pageIssues.map((issue) => (
-                <tr
+                <DataTableRow
                   key={issue.id}
                   onClick={() => { setDetailIssue(issue); setDetailTab("comments"); }}
-                  style={{
-                    borderBottom: `1px solid ${theme.custom.tableBorder}`,
-                    cursor: "pointer",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = theme.palette.action.hover;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = "";
-                  }}
+                  sx={{ cursor: "pointer" }}
                 >
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>
+                  <DataTableCell>
                     <Typography variant="caption" color="common.black" fontWeight={700}>{issue.issueNumber}</Typography>
-                  </td>
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>
+                  </DataTableCell>
+                  <DataTableCell>
                     <Typography variant="body2" fontWeight={600}>
                       {issue.title}
                     </Typography>
-                  </td>
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>
+                  </DataTableCell>
+                  <DataTableCell>
                     {issue.appName ?? "—"}
-                  </td>
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>{getCategoryLabel(issue)}</td>
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>
+                  </DataTableCell>
+                  <DataTableCell>{getCategoryLabel(issue)}</DataTableCell>
+                  <DataTableCell>
                     {issue.priorityName ? (
                       <Chip
                         label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
@@ -3518,8 +4121,8 @@ function TableView({
                         sx={{ fontSize: "0.7rem", fontWeight: 600 }}
                       />
                     ) : "—"}
-                  </td>
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>
+                  </DataTableCell>
+                  <DataTableCell>
                     <Chip
                       label={getStatusName(issue.statusId)}
                       size="small"
@@ -3531,16 +4134,26 @@ function TableView({
                         fontSize: "0.7rem",
                       }}
                     />
-                  </td>
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>{issue.programmerName ?? "รอมอบหมาย"}</td>
+                  </DataTableCell>
+                  <DataTableCell>{issue.programmerName ?? "รอมอบหมาย"}</DataTableCell>
                   {canSeeReporter && (
-                    <td style={{ padding: "12px", fontSize: "0.8rem" }}>{issue.customerName ?? "—"}</td>
+                    <DataTableCell>{issue.customerName ?? "—"}</DataTableCell>
                   )}
-                  <td style={{ padding: "12px", fontSize: "0.8rem" }}>
+                  <DataTableCell>
                     {new Date(issue.createdAt).toLocaleDateString("th-TH")}
-                  </td>
+                  </DataTableCell>
+                  {canSeeTrackedTime && (
+                    <DataTableCell>
+                      <TrackedTimeCell issue={issue} timers={timers} />
+                    </DataTableCell>
+                  )}
+                  {canSeeActualTime && (
+                    <DataTableCell>
+                      <ActualTimeCell issue={issue} />
+                    </DataTableCell>
+                  )}
                   {(canManage || canViewOwnHistory) && (
-                    <td style={{ padding: "12px", fontSize: "0.8rem", textAlign: "right", width: "1%", whiteSpace: "nowrap" }}>
+                    <DataTableCell align="right" sx={{ width: "1%", whiteSpace: "nowrap" }}>
                       <IconButton
                         size="small"
                         aria-label={t("actions")}
@@ -3611,14 +4224,12 @@ function TableView({
                           </MenuItem>
                         )}
                       </Menu>
-                    </td>
+                    </DataTableCell>
                   )}
-                </tr>
+                </DataTableRow>
               ))}
-            </tbody>
-          </table>
-        </Box>
-      </Paper>
+            </DataTableBody>
+      </DataTable>
       <Pagination
         page={page}
         totalPages={Math.max(1, Math.ceil(filteredIssues.length / 10))}
@@ -3665,10 +4276,12 @@ function TableView({
   );
 }
 
-export default function BoardsPage() {
+function BoardsPageInner() {
   const t = useTranslations("Boards");
   const { can, roleName } = usePermissions();
   const theme = useTheme();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const currentUserId = useAuthStore((s) => s.user?.id) ?? null;
   const isCustomer = roleName === "customer";
   const [view, setView] = useState<"board" | "table">("table");
@@ -3677,6 +4290,9 @@ export default function BoardsPage() {
   const [issues, setIssues] = useState<BoardIssue[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
+  // the "one column at a time" rule — false also while the lookup fails, so
+  // the board degrades to free dragging and the server's 400 stays the backstop
+  const [stepOnlyMoves, setStepOnlyMoves] = useState(false);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [apps, setApps] = useState<App[]>([]);
@@ -3694,6 +4310,42 @@ export default function BoardsPage() {
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // `?issue=<id>` comes from a notification deep link and opens one card's
+  // detail dialog directly, whichever view (table/kanban) is active
+  const issueParamRaw = searchParams.get("issue");
+  const issueParam =
+    issueParamRaw && Number.isInteger(Number(issueParamRaw)) && Number(issueParamRaw) > 0
+      ? Number(issueParamRaw)
+      : null;
+  const [deepLinkIssue, setDeepLinkIssue] = useState<BoardIssue | null>(null);
+
+  // running timers — one fetch for the whole board + one shared ticking clock
+  const [openTimers, setOpenTimers] = useState<Record<number, string>>({});
+  const [timerNow, setTimerNow] = useState(() => Date.now());
+  const refreshTimers = useCallback(async () => {
+    try {
+      const sessions = await fetchOpenTimers();
+      const map: Record<number, string> = {};
+      for (const session of sessions) map[session.issueId] = session.startedAt;
+      setOpenTimers(map);
+    } catch {
+      // no permission or offline — chips just keep showing the banked totals
+      setOpenTimers({});
+    }
+    setTimerNow(Date.now());
+  }, []);
+  useEffect(() => {
+    refreshTimers();
+  }, [refreshTimers]);
+  useEffect(() => {
+    if (Object.keys(openTimers).length === 0) return;
+    const interval = setInterval(() => setTimerNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [openTimers]);
+  const timers: BoardTimers = useMemo(
+    () => ({ running: openTimers, now: timerNow, refresh: refreshTimers }),
+    [openTimers, timerNow, refreshTimers],
+  );
 
   const canEdit = can("issue.all.update");
   const canDelete = can("issue.delete");
@@ -3702,6 +4354,9 @@ export default function BoardsPage() {
   const canManage = canEdit || canDelete || canAssign;
   const canSeeReporter = can("issue.all.view");
   const canViewOwnHistory = can("issue.own.view");
+  // time columns/chips are permission-driven, never role-driven
+  const canSeeTime = can("time.system.view");
+  const canSeeActualTime = can("time.actual.view");
 
   const handleToggleStatusFilter = (statusId: number) => {
     setSelectedStatusIds((prev) =>
@@ -3772,8 +4427,11 @@ export default function BoardsPage() {
         fetchCategories(),
         fetchApps(),
         fetchMembers(),
+        // fail-open: a rejected policy lookup must not raise the load error
+        fetchMovePolicy().catch(() => ({ stepOnly: false })),
+        refreshTimers(),
       ]);
-      const [iss, lbls, sts, pri, cats, aps, usr] = results;
+      const [iss, lbls, sts, pri, cats, aps, usr, policy] = results;
       if (iss.status === "fulfilled") setIssues(iss.value.data);
       if (lbls.status === "fulfilled") setLabels(lbls.value.data);
       if (sts.status === "fulfilled") setStatuses(sts.value.data);
@@ -3781,6 +4439,7 @@ export default function BoardsPage() {
       if (cats.status === "fulfilled") setCategories(cats.value.data);
       if (aps.status === "fulfilled") setApps(aps.value.data);
       if (usr.status === "fulfilled") setUsers(usr.value);
+      if (policy.status === "fulfilled") setStepOnlyMoves(policy.value.stepOnly);
       const firstError = results.find((r) => r.status === "rejected");
       if (firstError && firstError.status === "rejected") {
         setError(getErrorMessage(firstError.reason, "โหลดข้อมูลไม่สำเร็จ"));
@@ -3792,11 +4451,29 @@ export default function BoardsPage() {
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [roleName]);
+  }, [roleName, refreshTimers]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Notification deep link: fetch that one card and open its detail dialog.
+  // A card that is gone (trashed meanwhile, wrong permissions) just leaves the
+  // user on the board — no error banner for a link that no longer resolves.
+  useEffect(() => {
+    if (!issueParam) return;
+    let cancelled = false;
+    fetchIssue(issueParam)
+      .then((issue) => {
+        if (!cancelled) setDeepLinkIssue(issue);
+      })
+      .catch(() => {
+        if (!cancelled) setDeepLinkIssue(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [issueParam]);
 
   const activeFilterChips = useMemo(() => {
     type FilterChipEntry = {
@@ -4060,8 +4737,11 @@ export default function BoardsPage() {
                 canEdit={canEdit}
                 canDelete={canDelete}
                 canUnlockIssue={canUnlockIssue}
+                timers={timers}
+                showTime={canSeeTime}
                 onRefresh={() => loadData(false)}
                 roleName={roleName}
+                stepOnlyMoves={stepOnlyMoves}
                 toolbar={toolbar}
               />
             ) : (
@@ -4081,6 +4761,9 @@ export default function BoardsPage() {
                 canManage={canManage}
                 canSeeReporter={canSeeReporter}
                 canViewOwnHistory={canViewOwnHistory}
+                timers={timers}
+                canSeeTrackedTime={canSeeTime}
+                canSeeActualTime={canSeeActualTime}
                 currentUserId={currentUserId}
                 onRefresh={() => loadData(false)}
                 toolbar={toolbar}
@@ -4139,9 +4822,31 @@ export default function BoardsPage() {
               }
             }}
           />
+          <IssueDetailDialog
+            issue={deepLinkIssue}
+            open={!!deepLinkIssue}
+            onClose={() => {
+              setDeepLinkIssue(null);
+              // drop ?issue= so refreshing the page doesn't reopen the dialog
+              if (issueParam) router.replace("/boards");
+            }}
+            statuses={statuses}
+            labels={labels}
+            onRefresh={() => loadData(false)}
+          />
         </Box>
 
       </DashboardLayout>
     </RequirePermission>
+  );
+}
+
+export default function BoardsPage() {
+  // `useSearchParams` must sit under a Suspense boundary on statically
+  // rendered pages — the same pattern the login page uses.
+  return (
+    <Suspense fallback={null}>
+      <BoardsPageInner />
+    </Suspense>
   );
 }

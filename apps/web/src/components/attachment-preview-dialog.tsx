@@ -65,8 +65,13 @@ export default function AttachmentPreviewDialog({
     };
   }, [open, attachment]);
 
-  const isImage = attachment?.fileType?.startsWith("image/") ?? false;
-  const isPdf = attachment?.fileType === "application/pdf";
+  // file_type used to be stored space-padded (char(100) column) — trim before
+  // comparing, and fall back to the file extension for rows with no type
+  const fileType = attachment?.fileType?.trim() ?? "";
+  const fileName = attachment?.fileName ?? "";
+  const isImage = fileType.startsWith("image/");
+  const isPdf =
+    fileType === "application/pdf" || fileName.toLowerCase().endsWith(".pdf");
 
   return (
     <Dialog

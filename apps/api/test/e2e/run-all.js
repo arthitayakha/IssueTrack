@@ -17,7 +17,6 @@ const { spawnSync } = require("child_process");
 const SUITES = [
   ["rules-api.js", "rules API + engine phase 1"],
   ["engine-actions.js", "engine phase 2 (labels, tokens, chains)"],
-  ["run-history.js", "rule_runs history API"],
   ["notifications.js", "notification system"],
 ];
 

@@ -286,6 +286,7 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
       const payload = buildPayload();
       if (initialRule) await updateRule(initialRule.id, payload);
       else await createRule(payload);
+      notify(t("saved"), "success");
       router.push("/automation");
     } catch (err) {
       notify(err instanceof Error ? err.message : t("saveError"), "error");

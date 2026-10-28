@@ -85,7 +85,10 @@ export class AttachmentsService {
     if (!existsSync(fullPath)) {
       throw new NotFoundException(`File not found on disk`);
     }
-    res.setHeader("Content-Type", attachment.fileType ?? "application/octet-stream");
+    // file_type historically came back space-padded from a char(100) column;
+    // a padded MIME type breaks the preview dialog's blob, so normalize it
+    const mimeType = attachment.fileType?.trim() || "application/octet-stream";
+    res.setHeader("Content-Type", mimeType);
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${encodeURIComponent(attachment.fileName)}"`,

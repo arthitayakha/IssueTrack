@@ -33,8 +33,6 @@ import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import type { RuleDto } from "@kanban/shared";
 import { RULE_ACTIONS, RULE_TRIGGER_CATEGORIES, buildRuleSentence, getActionByKey } from "@kanban/shared";
-import { useNotification } from "@/components/notification";
-import { deleteRule, toggleRule } from "@/lib/rules-api";
 import {
   fetchCategories,
   fetchPositions,
@@ -59,7 +57,6 @@ type StatusFilter = "all" | "active" | "inactive";
 export default function RuleList({ rules, onToggle, onDelete }: RuleListProps) {
   const t = useTranslations("Automation");
   const theme = useTheme();
-  const { notify } = useNotification();
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -110,7 +107,9 @@ export default function RuleList({ rules, onToggle, onDelete }: RuleListProps) {
     const keyword = search.trim().toLowerCase();
     return [...rules]
       .filter((rule) => {
-        if (statusFilter !== "all" && String(rule.isActive) !== statusFilter) return false;
+        // statusFilter is "active"/"inactive" — compare against the boolean,
+        // not String(rule.isActive) which would never equal either value
+        if (statusFilter !== "all" && rule.isActive !== (statusFilter === "active")) return false;
         if (categoryFilter !== "all" && rule.category !== categoryFilter) return false;
         if (actionFilter !== "all" && rule.actionKey !== actionFilter) return false;
         if (keyword) {
@@ -128,15 +127,11 @@ export default function RuleList({ rules, onToggle, onDelete }: RuleListProps) {
 
   async function handleDelete() {
     if (!deleteTarget) return;
-    const targetId = deleteTarget.id;
-    try {
-      await deleteRule(targetId);
-      onDelete(targetId);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : t("genericError"), "error");
-    } finally {
-      setDeleteTarget(null);
-    }
+    // the parent owns the API call + state update + toast — calling the API
+    // here too made every delete run twice (the 2nd call 404s and the row
+    // stays on screen as a ghost)
+    onDelete(deleteTarget.id);
+    setDeleteTarget(null);
   }
 
   function resolveValue(field: string, value: unknown): string {

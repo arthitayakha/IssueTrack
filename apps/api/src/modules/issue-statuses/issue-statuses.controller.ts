@@ -66,24 +66,6 @@ export class IssueStatusesController {
     return this.issueStatuses.updateActive(id, body.isActive);
   }
 
-  @Patch(":id/timer")
-  @Permissions("status.update")
-  updateTimer(
-    @Param("id", ParseIntPipe) id: number,
-    @Body() body: { timerEnabled: boolean },
-  ) {
-    return this.issueStatuses.updateTimer(id, body.timerEnabled);
-  }
-
-  @Patch(":id/time-entry")
-  @Permissions("status.update")
-  updateTimeEntry(
-    @Param("id", ParseIntPipe) id: number,
-    @Body() body: { timeEntryEnabled: boolean },
-  ) {
-    return this.issueStatuses.updateTimeEntry(id, body.timeEntryEnabled);
-  }
-
   @Get(":id/check")
   @Permissions("status.delete")
   check(@Param("id", ParseIntPipe) id: number) {

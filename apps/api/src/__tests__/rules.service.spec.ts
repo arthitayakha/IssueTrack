@@ -1,11 +1,10 @@
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { RulesService, type RuleInput } from "../modules/rules/rules.service";
-import { RuleCondition } from "../modules/rules/entities/rule-condition.entity";
 
 /**
  * RulesService is tested with stub repositories: no database, no Nest testing
  * module. Only the behaviour callers rely on is asserted — validation, DTO
- * mapping, condition replacement and run pagination.
+ * mapping, condition replacement and audit pagination.
  */
 
 interface RepoStub {
@@ -40,19 +39,23 @@ function repoStub(overrides: Partial<RepoStub> = {}): RepoStub {
 function makeService(): {
   service: RulesService;
   rules: RepoStub;
-  conditions: RepoStub;
-  runs: RepoStub;
+  activityLogs: RepoStub;
+  notifications: { notifyAdmins: jest.Mock };
 } {
   const rules = repoStub();
-  const conditions = repoStub();
-  const runs = repoStub();
+  const activityLogs = repoStub();
+  // board-wide rule-change alerts — assert they fire, never let them throw
+  const notifications = { notifyAdmins: jest.fn().mockResolvedValue(undefined) };
   const service = new RulesService(
     rules as unknown as never,
-    conditions as unknown as never,
-    runs as unknown as never,
+    activityLogs as unknown as never,
+    notifications as unknown as never,
   );
-  return { service, rules, conditions, runs };
+  return { service, rules, activityLogs, notifications };
 }
+
+/** The actor every CRUD call now carries (controller builds it from the JWT). */
+const ACTOR = { actorId: 1, actorName: "aom", actorRole: "admin" };
 
 function ruleRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -63,13 +66,12 @@ function ruleRecord(overrides: Record<string, unknown> = {}): Record<string, unk
     category: null,
     actionKey: "issue.set_priority",
     actionConfig: { priority: 3 },
-    conditionGroup: "AND",
+    conditions: [],
     isActive: true,
     stopOnError: false,
     createdBy: 1,
     createdAt: new Date("2026-01-02T03:04:05.000Z"),
     updatedAt: new Date("2026-01-03T03:04:05.000Z"),
-    conditions: [],
     ...overrides,
   };
 }
@@ -95,8 +97,12 @@ describe("RulesService", () => {
       expect(dto.category).toBe("");
       expect(dto.actionConfig).toEqual({ priority: 3 });
       expect(dto.createdAt).toBe("2026-01-02T03:04:05.000Z");
+      // conditions ride on the rule row itself (JSONB) — no relation to load
       expect(rules.find).toHaveBeenCalledWith(
-        expect.objectContaining({ relations: { conditions: true } }),
+        expect.objectContaining({ order: { createdAt: "DESC" } }),
+      );
+      expect(rules.find).toHaveBeenCalledWith(
+        expect.not.objectContaining({ relations: expect.anything() }),
       );
     });
 
@@ -116,10 +122,10 @@ describe("RulesService", () => {
 
     it("rejects a rule without a trigger or an action", async () => {
       const { service } = makeService();
-      await expect(service.create({ actionKey: "issue.lock" }, 1)).rejects.toBeInstanceOf(
+      await expect(service.create({ actionKey: "issue.lock" }, ACTOR)).rejects.toBeInstanceOf(
         BadRequestException,
       );
-      await expect(service.create({ triggerKey: "issue.moved" }, 1)).rejects.toBeInstanceOf(
+      await expect(service.create({ triggerKey: "issue.moved" }, ACTOR)).rejects.toBeInstanceOf(
         BadRequestException,
       );
     });
@@ -140,10 +146,10 @@ describe("RulesService", () => {
       });
       rules.findOne.mockImplementation(async () => stored);
 
-      const long = await service.create({ ...valid, name: "x".repeat(400) }, 1);
+      const long = await service.create({ ...valid, name: "x".repeat(400) }, ACTOR);
       expect(long.name).toHaveLength(150);
 
-      const blank = await service.create({ ...valid, name: "   " }, 1);
+      const blank = await service.create({ ...valid, name: "   " }, ACTOR);
       expect(blank.name).toBe("Untitled rule");
     });
 
@@ -152,38 +158,50 @@ describe("RulesService", () => {
       rules.save.mockImplementation(async (value: Record<string, unknown>) => ({ ...value, id: 2 }));
       rules.findOne.mockResolvedValue(ruleRecord({ id: 2 }));
 
-      await service.create(valid, 1);
+      await service.create(valid, ACTOR);
 
       const created = rules.create.mock.calls[0][0] as {
         isActive: boolean;
         stopOnError: boolean;
         createdBy: number;
-        conditions: Array<{ position: number; ruleId: number }>;
+        conditions: Array<{ field: string; operator: string; position: number }>;
       };
       expect(created.isActive).toBe(true);
       expect(created.stopOnError).toBe(false);
       expect(created.createdBy).toBe(1);
-      expect(created.conditions[0].position).toBe(0);
-      expect(created.conditions[0].ruleId).toBe(0);
+      // conditions land on the rule row itself as a plain JSON array
+      expect(created.conditions).toEqual([
+        { field: "to_status", operator: "=", value: "4", position: 0 },
+      ]);
     });
   });
 
   describe("update", () => {
-    it("replaces the condition set inside a transaction", async () => {
+    it("replaces the condition set stored on the rule", async () => {
       const { service, rules } = makeService();
-      const existing = ruleRecord({ id: 5, name: "Old" });
+      const existing = ruleRecord({
+        id: 5,
+        name: "Old",
+        conditions: [{ field: "category", operator: "=", value: "9", position: 0 }],
+      });
       rules.findOne.mockResolvedValue(existing);
 
-      const em = { save: jest.fn().mockResolvedValue(undefined), delete: jest.fn().mockResolvedValue(undefined) };
-      rules.manager.transaction.mockImplementation(async (cb: (manager: typeof em) => Promise<void>) =>
-        cb(em),
-      );
+      await service.update(5, { name: "Renamed", conditions: [] }, ACTOR);
 
-      await service.update(5, { name: "Renamed", conditions: [] });
-
-      expect(rules.manager.transaction).toHaveBeenCalledTimes(1);
-      expect(em.delete).toHaveBeenCalledWith(RuleCondition, { ruleId: 5 });
       expect(existing.name).toBe("Renamed");
+      expect(existing.conditions).toEqual([]);
+      expect(rules.save).toHaveBeenCalledWith(existing);
+    });
+
+    it("keeps the stored conditions when the input omits them", async () => {
+      const { service, rules } = makeService();
+      const stored = [{ field: "category", operator: "=", value: "1", position: 0 }];
+      const existing = ruleRecord({ id: 6, conditions: stored });
+      rules.findOne.mockResolvedValue(existing);
+
+      await service.update(6, { name: "Renamed only" }, ACTOR);
+
+      expect(existing.conditions).toEqual(stored);
     });
 
     it("rejects an empty trigger or action when one is supplied", async () => {
@@ -194,13 +212,15 @@ describe("RulesService", () => {
           (where.id === 404 ? null : ruleRecord({ id: where.id })) as never,
       );
 
-      await expect(service.update(5, { triggerKey: " " })).rejects.toBeInstanceOf(
+      await expect(service.update(5, { triggerKey: " " }, ACTOR)).rejects.toBeInstanceOf(
         BadRequestException,
       );
-      await expect(service.update(5, { actionKey: "" })).rejects.toBeInstanceOf(
+      await expect(service.update(5, { actionKey: "" }, ACTOR)).rejects.toBeInstanceOf(
         BadRequestException,
       );
-      await expect(service.update(404, { name: "x" })).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.update(404, { name: "x" }, ACTOR)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
   });
 
@@ -209,101 +229,181 @@ describe("RulesService", () => {
       const { service, rules } = makeService();
       rules.findOne.mockResolvedValue(ruleRecord({ id: 3 }));
 
-      await service.toggle(3, false);
+      await service.toggle(3, false, ACTOR);
 
       expect(rules.update).toHaveBeenCalledWith(3, { isActive: false });
     });
 
     it("reports a missing rule on toggle and on delete", async () => {
       const { service } = makeService();
-      await expect(service.toggle(404, true)).rejects.toBeInstanceOf(NotFoundException);
-      await expect(service.remove(404)).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.toggle(404, true, ACTOR)).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.remove(404, ACTOR)).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it("returns deleted: true when the row went away", async () => {
       const { service, rules } = makeService();
+      rules.findOne.mockResolvedValue(ruleRecord({ id: 8 }));
       rules.delete.mockResolvedValue({ affected: 1 });
-      await expect(service.remove(8)).resolves.toEqual({ deleted: true });
+      await expect(service.remove(8, ACTOR)).resolves.toEqual({ deleted: true });
     });
   });
 
-  describe("findRuns", () => {
-    it("normalises pagination and caps the page size", async () => {
-      const { service, runs } = makeService();
-      runs.findAndCount.mockResolvedValue([[], 0]);
+  describe("audit log (activity_logs)", () => {
+    it("records create / update / toggle / delete with the actor and rule name", async () => {
+      const { service, rules, activityLogs } = makeService();
+      rules.save.mockImplementation(async (value: Record<string, unknown>) => ({ ...value, id: 9 }));
+      rules.findOne.mockResolvedValue(ruleRecord({ id: 9 }));
+      rules.delete.mockResolvedValue({ affected: 1 });
 
-      const first = await service.findRuns({});
-      expect(first).toMatchObject({ page: 1, limit: 10, total: 0, totalPages: 1 });
-
-      const capped = await service.findRuns({ page: "0", limit: "5000" });
-      expect(capped).toMatchObject({ page: 1, limit: 100 });
-
-      const second = await service.findRuns({ page: "2", limit: "5" });
-      expect(runs.findAndCount).toHaveBeenLastCalledWith(
-        expect.objectContaining({ skip: 5, take: 5 }),
+      await service.create(
+        { name: "New rule", triggerKey: "issue.moved", actionKey: "issue.lock" },
+        ACTOR,
       );
-      expect(second.page).toBe(2);
-    });
+      await service.update(9, { name: "Renamed" }, ACTOR);
+      await service.toggle(9, false, ACTOR);
+      await service.remove(9, ACTOR);
 
-    it("filters by rule and maps rows to DTOs", async () => {
-      const { service, runs } = makeService();
-      runs.findAndCount.mockResolvedValue([
-        [
-          {
-            id: 11,
-            ruleId: 4,
-            ruleName: "Auto triage",
-            triggerKey: "issue.created",
-            issueId: 12,
-            issue: { title: "Login broken" },
-            status: "applied",
-            actionKey: "issue.set_priority",
-            detail: null,
-            durationMs: 12,
-            createdAt: new Date("2026-02-03T04:05:06.000Z"),
-          },
-          {
-            id: 12,
-            ruleId: 4,
-            ruleName: "Auto triage",
-            triggerKey: "issue.created",
-            issueId: null,
-            issue: null,
-            status: "failed",
-            actionKey: "issue.lock",
-            detail: "boom",
-            durationMs: 3,
-            createdAt: new Date("2026-02-03T04:05:07.000Z"),
-          },
-        ],
-        2,
+      const rows = activityLogs.create.mock.calls.map((c) => c[0] as Record<string, unknown>);
+      expect(rows.map((r) => r.action)).toEqual([
+        "rule.created",
+        "rule.updated",
+        "rule.updated",
+        "rule.deleted",
       ]);
-
-      const page = await service.findRuns({ ruleId: "4", limit: "1" });
-
-      expect(runs.findAndCount).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { ruleId: 4 }, take: 1 }),
-      );
-      expect(page.total).toBe(2);
-      expect(page.totalPages).toBe(2);
-      expect(page.data[0]).toMatchObject({
-        issueTitle: "Login broken",
-        status: "applied",
-        createdAt: "2026-02-03T04:05:06.000Z",
+      expect(rows[0]).toMatchObject({
+        entityId: 9,
+        detail: JSON.stringify({ ruleName: "New rule" }),
+        actorId: 1,
+        actorName: "aom",
+        actorRole: "admin",
       });
-      // a deleted card keeps its history with no title
-      expect(page.data[1]).toMatchObject({ issueTitle: null, status: "failed", detail: "boom" });
+      // update / toggle / delete all see the renamed rule (the delete captures
+      // the name before the row goes away)
+      expect(rows[1].detail).toBe(JSON.stringify({ ruleName: "Renamed" }));
+      expect(rows[2].detail).toBe(JSON.stringify({ ruleName: "Renamed" }));
+      expect(rows[3].detail).toBe(JSON.stringify({ ruleName: "Renamed" }));
+      expect(activityLogs.save).toHaveBeenCalledTimes(4);
     });
 
-    it("ignores a non-numeric rule filter", async () => {
-      const { service, runs } = makeService();
-      runs.findAndCount.mockResolvedValue([[], 0]);
+    it("writes no log when the rule does not exist", async () => {
+      const { service, activityLogs } = makeService();
+      await expect(service.remove(404, ACTOR)).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.toggle(404, true, ACTOR)).rejects.toBeInstanceOf(NotFoundException);
+      expect(activityLogs.create).not.toHaveBeenCalled();
+    });
 
-      await service.findRuns({ ruleId: "abc" });
+    it("keeps the CRUD call working even when the log write fails", async () => {
+      const { service, rules, activityLogs } = makeService();
+      rules.findOne.mockResolvedValue(ruleRecord({ id: 3 }));
+      activityLogs.save.mockRejectedValue(new Error("db down"));
 
-      expect(runs.findAndCount).toHaveBeenCalledWith(
-        expect.objectContaining({ where: {} }),
+      await expect(service.toggle(3, false, ACTOR)).resolves.toMatchObject({ id: 3 });
+      expect(activityLogs.save).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("rule-change notifications (notifyAdmins)", () => {
+    it("notifies admins on create / update / toggle — but not on delete", async () => {
+      const { service, rules, notifications } = makeService();
+      rules.save.mockImplementation(async (value: Record<string, unknown>) => ({ ...value, id: 9 }));
+      rules.findOne.mockResolvedValue(ruleRecord({ id: 9 }));
+      rules.delete.mockResolvedValue({ affected: 1 });
+
+      await service.create(
+        { name: "New rule", triggerKey: "issue.moved", actionKey: "issue.lock" },
+        ACTOR,
       );
+      await service.update(9, { name: "Renamed" }, ACTOR);
+      await service.toggle(9, false, ACTOR);
+      await service.remove(9, ACTOR);
+
+      const calls = notifications.notifyAdmins.mock.calls.map((c) => c[0] as Record<string, unknown>);
+      expect(calls.map((c) => c.action)).toEqual(["rule_created", "rule_updated", "rule_updated"]);
+      // deep-links to the wizard's edit page, carries the rule name and actor
+      expect(calls[0]).toMatchObject({
+        title: "New rule",
+        link: "/automation/9",
+        actor: { actorId: 1, actorName: "aom" },
+      });
+      expect(calls[1].title).toBe("Renamed");
+    });
+
+    it("keeps the CRUD call working even when the notification fails", async () => {
+      const { service, rules, notifications } = makeService();
+      rules.findOne.mockResolvedValue(ruleRecord({ id: 3 }));
+      notifications.notifyAdmins.mockRejectedValue(new Error("db down"));
+
+      // notifyAdmins itself never throws (best-effort), but even a rejection
+      // bubbling up must not break the toggle
+      await expect(service.toggle(3, false, ACTOR)).resolves.toMatchObject({ id: 3 });
+    });
+  });
+
+  describe("findActivity", () => {
+    it("normalises pagination and only reads rule.* rows", async () => {
+      const { service, activityLogs } = makeService();
+      activityLogs.findAndCount.mockResolvedValue([[], 0]);
+
+      const first = await service.findActivity({ page: "0", limit: "5000" });
+      expect(first).toMatchObject({ page: 1, limit: 100, total: 0, totalPages: 1 });
+
+      const where = activityLogs.findAndCount.mock.calls[0][0].where as {
+        action: { type: string; value: string };
+      };
+      expect(where.action.type).toBe("like");
+      expect(where.action.value).toBe("rule.%");
+
+      await service.findActivity({ ruleId: "7" });
+      const filtered = activityLogs.findAndCount.mock.calls[1][0].where as {
+        action: { type: string };
+        entityId?: number;
+      };
+      expect(filtered.action.type).toBe("like");
+      expect(filtered.entityId).toBe(7);
+    });
+
+    it("maps rows and pulls the rule name out of detail", async () => {
+      const { service, activityLogs } = makeService();
+      activityLogs.findAndCount.mockResolvedValue(
+        [
+          [
+            {
+              id: 1,
+              action: "rule.deleted",
+              entityId: 7,
+              detail: JSON.stringify({ ruleName: "Auto" }),
+              actorName: "aom",
+              actorRole: "admin",
+              createdAt: new Date("2026-03-04T05:06:07.000Z"),
+            },
+            {
+              id: 2,
+              action: "rule.updated",
+              entityId: null,
+              detail: null,
+              actorName: null,
+              actorRole: null,
+              createdAt: new Date("2026-03-04T05:06:08.000Z"),
+            },
+          ],
+          2,
+        ],
+      );
+
+      const page = await service.findActivity({});
+
+      expect(page.total).toBe(2);
+      expect(page.data[0]).toEqual({
+        id: 1,
+        action: "rule.deleted",
+        ruleId: 7,
+        ruleName: "Auto",
+        actorName: "aom",
+        actorRole: "admin",
+        createdAt: "2026-03-04T05:06:07.000Z",
+      });
+      // a row with no usable detail still reaches the page
+      expect(page.data[1]).toMatchObject({ ruleId: null, ruleName: null, actorName: null });
     });
   });
 });

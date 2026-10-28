@@ -9,6 +9,12 @@ interface DataTableProps {
   rounded?: boolean;
 }
 
+/**
+ * The one table of the system — every page with a table renders through this
+ * component, so changing its style (or the table tokens in the theme) updates
+ * all of them at once. The look mirrors the board issue table: striped header,
+ * compact cells, light row borders.
+ */
 export default function DataTable({ children, rounded = true }: DataTableProps) {
   const theme = useTheme();
   return (
@@ -16,30 +22,29 @@ export default function DataTable({ children, rounded = true }: DataTableProps) 
       component={Paper}
       variant="outlined"
       sx={{
-        borderRadius: rounded ? 3 : 1,
+        borderRadius: rounded ? 2 : 1,
         border: "1px solid",
         borderColor: "divider",
-        boxShadow: theme.custom.tableShadow,
         overflow: "hidden",
+        minWidth: 0,
         "& .MuiTableCell-head": {
-          bgcolor: "grey.50",
+          bgcolor: theme.custom.tableStripe,
           color: "text.primary",
-          fontWeight: 500,
-          fontSize: "0.875rem",
-          borderBottom: "2px solid",
-          borderColor: "divider",
+          fontWeight: 600,
+          fontSize: "0.8rem",
           py: 1.5,
         },
         "& .MuiTableCell-body": {
-          borderBottom: "1px solid",
-          borderColor: "grey.100",
+          fontSize: "0.8rem",
           py: 1.5,
+          borderBottom: "1px solid",
+          borderColor: theme.custom.tableBorder,
         },
         "& .MuiTableRow-root:last-child .MuiTableCell-body": {
           borderBottom: "none",
         },
         "& .MuiTableRow-root:hover .MuiTableCell-body": {
-          bgcolor: "sky.dark",
+          bgcolor: theme.palette.action.hover,
         },
       }}
     >
@@ -62,10 +67,15 @@ export function DataTableRow({ children, hover = true, ...props }: {
   children: ReactNode;
   hover?: boolean;
   ref?: React.Ref<HTMLTableRowElement>;
+  onClick?: React.MouseEventHandler<HTMLTableRowElement>;
   style?: React.CSSProperties;
   sx?: SxProps;
 }) {
-  return <TableRow hover={hover} ref={props.ref} style={props.style} sx={props.sx}>{children}</TableRow>;
+  return (
+    <TableRow hover={hover} ref={props.ref} style={props.style} onClick={props.onClick} sx={props.sx}>
+      {children}
+    </TableRow>
+  );
 }
 
 export function DataTableCell({ children, align, colSpan, sx }: {

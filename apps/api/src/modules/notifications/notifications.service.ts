@@ -1,7 +1,8 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { FindOptionsWhere, Repository } from "typeorm";
 import { Notification } from "./entities/notification.entity";
+import { User } from "../auth/entities/user.entity";
 
 export type NotificationAction =
   | "created"
@@ -10,7 +11,13 @@ export type NotificationAction =
   | "moved"
   | "edited"
   | "deleted"
-  | "restored";
+  | "restored"
+  // automation-rule changes — shown as "created rule X" / "updated rule X"
+  | "rule_created"
+  | "rule_updated";
+
+/** Popover tabs — inbox = unread, general = read, archived = archived. */
+export type NotificationTab = "inbox" | "general" | "archived";
 
 /** Structural subset of ActivityLogsService's ActorInfo (avoids a circular import). */
 export interface NotificationActor {
@@ -43,7 +50,42 @@ export class NotificationsService {
   constructor(
     @InjectRepository(Notification)
     private readonly notifications: Repository<Notification>,
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
   ) {}
+
+  /** Deep link straight to the card's detail dialog; the plain board when there is no issue. */
+  private issueLink(issueId?: number | null): string {
+    return issueId ? `/boards?issue=${issueId}` : "/boards";
+  }
+
+  /**
+   * Ids of every active admin — the fan-out target for board-wide events
+   * (new card, card moved, rule changed). Empty when nobody holds the role.
+   */
+  private async adminIds(): Promise<number[]> {
+    const admins = await this.users.find({
+      where: { isActive: true, role: { name: "admin" } },
+      relations: ["role"],
+    });
+    return admins.map((u) => u.id);
+  }
+
+  /**
+   * One notification per active admin, skipping the actor (never notify
+   * yourself). Best-effort like `notify()` — a failure never breaks the
+   * request that triggered it.
+   */
+  async notifyAdmins(input: Omit<NotifyInput, "userId">): Promise<void> {
+    try {
+      const ids = await this.adminIds();
+      for (const userId of ids) {
+        await this.notify({ ...input, userId });
+      }
+    } catch (error) {
+      this.logger.warn(`failed to notify admins: ${(error as Error).message}`);
+    }
+  }
 
   /**
    * Best-effort create — never throws, so a notification bug can never break
@@ -59,7 +101,7 @@ export class NotificationsService {
           actorId: input.actor?.actorId ?? null,
           actorName: input.actor?.actorName ?? null,
           context: input.context ?? null,
-          link: input.link ?? "/issues",
+          link: input.link ?? this.issueLink(input.issueId),
           type: input.action,
           title: input.title.slice(0, 200),
           message: `${input.actor?.actorName ?? "System"}: ${input.action} ${input.title}`,
@@ -75,17 +117,30 @@ export class NotificationsService {
   /**
    * Shared rule for issue events: notify the given recipients (assignee /
    * reporter), deduplicated, skipping the actor (never notify yourself).
+   * `alsoAdmins: true` fans the same event out to every active admin —
+   * used for new cards and moves so the team sees board traffic.
    */
   async notifyIssueEvent(params: {
     issue: NotificationIssueTarget;
     action: NotificationAction;
     recipients: Array<number | null | undefined>;
     actor?: NotificationActor | null;
+    alsoAdmins?: boolean;
   }): Promise<void> {
-    const { issue, action, recipients, actor } = params;
+    const { issue, action, recipients, actor, alsoAdmins } = params;
+    const ids = new Set<number>(recipients.filter((id): id is number => typeof id === "number" && id > 0));
+    if (alsoAdmins) {
+      // fan-out is a bonus — if the admin list cannot be read, still notify
+      // the regular recipients rather than failing the whole event
+      try {
+        for (const id of await this.adminIds()) ids.add(id);
+      } catch (error) {
+        this.logger.warn(`could not load admins for fan-out: ${(error as Error).message}`);
+      }
+    }
     const userIds = new Set<number>();
-    for (const id of recipients) {
-      if (typeof id === "number" && id > 0 && id !== actor?.actorId) {
+    for (const id of ids) {
+      if (id !== actor?.actorId) {
         userIds.add(id);
       }
     }
@@ -96,25 +151,55 @@ export class NotificationsService {
         title: issue.title,
         context: issue.category?.name ?? null,
         issueId: issue.id,
-        link: "/issues",
+        // a deleted card lives in the recycle bin — nothing to open, so it
+        // only points at the board
+        link: action === "deleted" ? "/boards" : this.issueLink(issue.id),
         actor,
       });
     }
   }
 
-  /** Recent notifications for one user + unread badge count, in one call. */
-  async list(userId: number, limit = 50) {
-    const [data, unreadCount] = await Promise.all([
+  /** Rows for one tab (or every row when `tab` is omitted — the legacy shape). */
+  private tabWhere(userId: number, tab?: NotificationTab): FindOptionsWhere<Notification> {
+    const base: FindOptionsWhere<Notification> = { userId };
+    if (tab === "inbox") return { ...base, isRead: false, isArchived: false };
+    if (tab === "general") return { ...base, isRead: true, isArchived: false };
+    if (tab === "archived") return { ...base, isArchived: true };
+    return base;
+  }
+
+  /**
+   * One page of notifications for one user, filtered on the server per tab so
+   * the popover can scroll-load 5 rows at a time (like the board columns).
+   * `unreadCount` / `counts` are always totals over the whole account — never
+   * derived from the loaded rows — so the badges stay correct while paginating.
+   */
+  async list(
+    userId: number,
+    options: { limit?: number; offset?: number; tab?: NotificationTab } = {},
+  ) {
+    const limit = Math.min(Math.max(options.limit ?? 5, 1), 200);
+    const offset = Math.max(options.offset ?? 0, 0);
+    const [data, total, inboxCount, generalCount, archivedCount] = await Promise.all([
       this.notifications.find({
-        where: { userId },
+        where: this.tabWhere(userId, options.tab),
         order: { createdAt: "DESC", id: "DESC" },
-        take: Math.min(Math.max(limit, 1), 200),
+        take: limit,
+        skip: offset,
       }),
-      this.notifications.count({
-        where: { userId, isRead: false, isArchived: false },
-      }),
+      this.notifications.count({ where: this.tabWhere(userId, options.tab) }),
+      this.notifications.count({ where: this.tabWhere(userId, "inbox") }),
+      this.notifications.count({ where: this.tabWhere(userId, "general") }),
+      this.notifications.count({ where: this.tabWhere(userId, "archived") }),
     ]);
-    return { data: data.map((n) => this.toResponse(n)), unreadCount };
+    return {
+      data: data.map((n) => this.toResponse(n)),
+      page: Math.floor(offset / limit) + 1,
+      limit,
+      total,
+      unreadCount: inboxCount,
+      counts: { inbox: inboxCount, general: generalCount, archived: archivedCount },
+    };
   }
 
   async markRead(userId: number, id: number) {
@@ -148,6 +233,9 @@ export class NotificationsService {
       target: n.title,
       context: n.context,
       link: n.link,
+      // lets the popover rebuild a deep link for old rows whose stored link
+      // still points at the removed "/issues" page
+      issueId: n.issueId,
       createdAt: n.createdAt,
       isRead: n.isRead,
       isArchived: n.isArchived,

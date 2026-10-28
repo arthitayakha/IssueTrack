@@ -72,6 +72,13 @@ export class IssuesController {
     return this.issues.findAllDeleted();
   }
 
+  // before `issues/:id` — otherwise `move-policy` would be parsed as an id
+  @Get("issues/move-policy")
+  @Permissions("issue.own.view")
+  movePolicy() {
+    return this.issues.movePolicy();
+  }
+
   @Get("issues/:id")
   @Permissions("issue.detail.view")
   findOne(@Param("id", ParseIntPipe) id: number) {
@@ -110,6 +117,8 @@ export class IssuesController {
       categoryId?: number | null;
       labelId?: number | null;
       labelIds?: number[];
+      analysisCause?: string | null;
+      resolution?: string | null;
     },
     @CurrentUser() user: AuthUser,
   ) {

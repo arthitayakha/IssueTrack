@@ -1,11 +1,17 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
-import type { RuleCondition as RuleConditionDto, RuleDto, RuleOperator, RuleRunDto } from "@kanban/shared";
+import { FindOptionsWhere, Like, Repository } from "typeorm";
+import type {
+  RuleActivityDto,
+  RuleCondition as RuleConditionDto,
+  RuleDto,
+  RuleOperator,
+} from "@kanban/shared";
 import { normalizePagination, type Paginated } from "../../common/pagination";
-import { Rule } from "./entities/rule.entity";
-import { RuleCondition } from "./entities/rule-condition.entity";
-import { RuleRun } from "./entities/rule-run.entity";
+import { Rule, type RuleConditionEntry } from "./entities/rule.entity";
+import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
+import type { ActorInfo } from "../activity-logs/activity-logs.service";
+import { NotificationsService } from "../notifications/notifications.service";
 
 /** Shape of the body the wizard sends (create and update share it). */
 export interface RuleInput {
@@ -22,13 +28,14 @@ export interface RuleInput {
 
 @Injectable()
 export class RulesService {
+  private readonly logger = new Logger(RulesService.name);
+
   constructor(
     @InjectRepository(Rule)
     private readonly rules: Repository<Rule>,
-    @InjectRepository(RuleCondition)
-    private readonly conditions: Repository<RuleCondition>,
-    @InjectRepository(RuleRun)
-    private readonly runs: Repository<RuleRun>,
+    @InjectRepository(ActivityLog)
+    private readonly activityLogs: Repository<ActivityLog>,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private toDto(rule: Rule): RuleDto {
@@ -58,35 +65,80 @@ export class RulesService {
   }
 
   async findAll(): Promise<RuleDto[]> {
-    const rules = await this.rules.find({
-      relations: { conditions: true },
-      order: { createdAt: "DESC" },
-    });
+    const rules = await this.rules.find({ order: { createdAt: "DESC" } });
     return rules.map((rule) => this.toDto(rule));
   }
 
   async findOne(id: number): Promise<RuleDto> {
-    const rule = await this.rules.findOne({ where: { id }, relations: { conditions: true } });
+    const rule = await this.rules.findOne({ where: { id } });
     if (!rule) throw new NotFoundException(`Rule ${id} not found`);
     return this.toDto(rule);
   }
 
-  private buildConditionRows(
-    ruleId: number,
-    input: RuleInput,
-  ): Partial<RuleCondition>[] {
+  /**
+   * The wizard's condition rows, normalised for the JSONB column — the full
+   * set is stored on the rule itself (no separate table since migration 0036).
+   */
+  private buildConditions(input: RuleInput): RuleConditionEntry[] {
     return (input.conditions ?? []).map((c, index) => ({
-      ruleId,
       field: c.field ?? "",
       operator: c.operator ?? "=",
       value: c.value ?? null,
-      valueType: "text",
-      conditionGroup: "AND",
       position: c.position ?? index,
     }));
   }
 
-  async create(input: RuleInput, userId: number): Promise<RuleDto> {
+  /**
+   * Audit trail for the history page — who created/edited/deleted a rule.
+   * Written to the shared `activity_logs` table (`rule.*` actions) and never
+   * allowed to break the CRUD call itself.
+   */
+  private async logRuleAction(
+    action: "rule.created" | "rule.updated" | "rule.deleted",
+    ruleId: number,
+    ruleName: string,
+    actor: ActorInfo,
+  ): Promise<void> {
+    try {
+      await this.activityLogs.save(
+        this.activityLogs.create({
+          action,
+          entityId: ruleId,
+          detail: JSON.stringify({ ruleName }),
+          actorId: actor.actorId,
+          actorName: actor.actorName,
+          actorRole: actor.actorRole,
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(`could not record ${action} for rule ${ruleId}: ${String(err)}`);
+    }
+  }
+
+  /**
+   * Board-wide heads-up for automation changes — every active admin sees who
+   * created/edited a rule. Deep-links to the wizard edit page. Best-effort:
+   * wrapped in try/catch so a notification bug never breaks the CRUD call.
+   */
+  private async notifyRuleChange(
+    action: "rule_created" | "rule_updated",
+    ruleId: number,
+    ruleName: string,
+    actor: ActorInfo,
+  ): Promise<void> {
+    try {
+      await this.notifications.notifyAdmins({
+        action,
+        title: ruleName,
+        link: `/automation/${ruleId}`,
+        actor: { actorId: actor.actorId, actorName: actor.actorName },
+      });
+    } catch (err) {
+      this.logger.warn(`could not send ${action} notification for rule ${ruleId}: ${String(err)}`);
+    }
+  }
+
+  async create(input: RuleInput, actor: ActorInfo): Promise<RuleDto> {
     if (!input.triggerKey?.trim()) throw new BadRequestException("triggerKey is required");
     if (!input.actionKey?.trim()) throw new BadRequestException("actionKey is required");
 
@@ -97,17 +149,18 @@ export class RulesService {
       category: input.category ?? null,
       actionKey: input.actionKey.trim(),
       actionConfig: input.actionConfig ?? {},
-      conditionGroup: "AND",
+      conditions: this.buildConditions(input),
       isActive: input.isActive ?? true,
       stopOnError: input.stopOnError ?? false,
-      createdBy: userId,
-      conditions: this.buildConditionRows(0, input) as never,
+      createdBy: actor.actorId,
     });
     const saved = await this.rules.save(rule);
+    await this.logRuleAction("rule.created", saved.id, saved.name, actor);
+    await this.notifyRuleChange("rule_created", saved.id, saved.name, actor);
     return this.findOne(saved.id);
   }
 
-  async update(id: number, input: RuleInput): Promise<RuleDto> {
+  async update(id: number, input: RuleInput, actor: ActorInfo): Promise<RuleDto> {
     const existing = await this.rules.findOne({ where: { id } });
     if (!existing) throw new NotFoundException(`Rule ${id} not found`);
     if (input.triggerKey !== undefined && !input.triggerKey.trim()) {
@@ -117,74 +170,82 @@ export class RulesService {
       throw new BadRequestException("actionKey is required");
     }
 
-    await this.rules.manager.transaction(async (em) => {
-      existing.name = (input.name ?? existing.name).slice(0, 150);
-      existing.triggerKey = input.triggerKey?.trim() ?? existing.triggerKey;
-      existing.templateKey = input.templateKey !== undefined ? input.templateKey : existing.templateKey;
-      existing.category = input.category !== undefined ? input.category : existing.category;
-      existing.actionKey = input.actionKey?.trim() ?? existing.actionKey;
-      existing.actionConfig = input.actionConfig ?? existing.actionConfig;
-      existing.conditionGroup = "AND";
-      existing.isActive = input.isActive ?? existing.isActive;
-      existing.stopOnError = input.stopOnError ?? existing.stopOnError;
-      await em.save(Rule, existing);
+    existing.name = (input.name ?? existing.name).slice(0, 150);
+    existing.triggerKey = input.triggerKey?.trim() ?? existing.triggerKey;
+    existing.templateKey = input.templateKey !== undefined ? input.templateKey : existing.templateKey;
+    existing.category = input.category !== undefined ? input.category : existing.category;
+    existing.actionKey = input.actionKey?.trim() ?? existing.actionKey;
+    existing.actionConfig = input.actionConfig ?? existing.actionConfig;
+    // conditions are replaced wholesale — the wizard always sends the full set
+    if (input.conditions !== undefined) existing.conditions = this.buildConditions(input);
+    existing.isActive = input.isActive ?? existing.isActive;
+    existing.stopOnError = input.stopOnError ?? existing.stopOnError;
+    await this.rules.save(existing);
 
-      // conditions are replaced wholesale — the wizard always sends the full set
-      if (input.conditions !== undefined) {
-        await em.delete(RuleCondition, { ruleId: id });
-        const rows = this.buildConditionRows(id, input);
-        if (rows.length > 0) await em.save(RuleCondition, rows);
-      }
-    });
-
+    await this.logRuleAction("rule.updated", id, existing.name, actor);
+    await this.notifyRuleChange("rule_updated", id, existing.name, actor);
     return this.findOne(id);
   }
 
-  async toggle(id: number, isActive: boolean): Promise<RuleDto> {
+  async toggle(id: number, isActive: boolean, actor: ActorInfo): Promise<RuleDto> {
     const existing = await this.rules.findOne({ where: { id } });
     if (!existing) throw new NotFoundException(`Rule ${id} not found`);
     await this.rules.update(id, { isActive });
+    await this.logRuleAction("rule.updated", id, existing.name, actor);
+    await this.notifyRuleChange("rule_updated", id, existing.name, actor);
     return this.findOne(id);
   }
 
-  async remove(id: number): Promise<{ deleted: boolean }> {
-    const result = await this.rules.delete(id); // rule_conditions drop via FK CASCADE
+  async remove(id: number, actor: ActorInfo): Promise<{ deleted: boolean }> {
+    // capture the name first — the row is gone after the delete
+    const existing = await this.rules.findOne({ where: { id } });
+    if (!existing) throw new NotFoundException(`Rule ${id} not found`);
+    const result = await this.rules.delete(id); // conditions live on the row itself
     if (!result.affected) throw new NotFoundException(`Rule ${id} not found`);
+    await this.logRuleAction("rule.deleted", id, existing.name, actor);
     return { deleted: true };
   }
 
-  /** Run history — newest first, optionally filtered to one rule. */
-  async findRuns(query: {
+  /**
+   * Rule audit trail for /automation/runs — who created/edited/deleted a rule,
+   * newest first, optionally filtered to one rule. Reads the shared
+   * `activity_logs` table; only `rule.*` rows (card activity lives there too).
+   */
+  async findActivity(query: {
     ruleId?: string;
     page?: string;
     limit?: string;
-  }): Promise<Paginated<RuleRunDto>> {
+  }): Promise<Paginated<RuleActivityDto>> {
     const params = normalizePagination(query);
     const ruleId = Number(query.ruleId);
-    const where: { ruleId?: number } =
-      query.ruleId !== undefined && Number.isFinite(ruleId) ? { ruleId } : {};
+    const where: FindOptionsWhere<ActivityLog> = { action: Like("rule.%") };
+    if (query.ruleId !== undefined && Number.isFinite(ruleId)) where.entityId = ruleId;
 
-    const [rows, total] = await this.runs.findAndCount({
+    const [rows, total] = await this.activityLogs.findAndCount({
       where,
-      relations: { issue: true },
       order: { createdAt: "DESC", id: "DESC" },
       skip: (params.page - 1) * params.limit,
       take: params.limit,
     });
 
-    const data: RuleRunDto[] = rows.map((run) => ({
-      id: run.id,
-      ruleId: run.ruleId,
-      ruleName: run.ruleName,
-      triggerKey: run.triggerKey,
-      issueId: run.issueId,
-      issueTitle: run.issue?.title ?? null,
-      status: run.status,
-      actionKey: run.actionKey,
-      detail: run.detail,
-      durationMs: run.durationMs,
-      createdAt: new Date(run.createdAt).toISOString(),
-    }));
+    const data: RuleActivityDto[] = rows.map((log) => {
+      let ruleName: string | null = null;
+      try {
+        const parsed = JSON.parse(log.detail ?? "{}") as { ruleName?: string };
+        ruleName = parsed.ruleName ?? null;
+      } catch {
+        // detail is free text — leave the name empty
+      }
+      return {
+        id: log.id,
+        action: log.action,
+        ruleId: log.entityId,
+        ruleName,
+        actorName: log.actorName,
+        actorRole: log.actorRole,
+        createdAt: new Date(log.createdAt).toISOString(),
+      };
+    });
 
     return {
       data,

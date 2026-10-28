@@ -58,6 +58,30 @@ export class Issue {
   @Column({ type: "text" })
   description!: string;
 
+  /** วิเคราะห์ / สาเหตุ — filled in once a rule unlocks the fields. */
+  @Column({ name: "analysis_cause", type: "text", nullable: true })
+  analysisCause!: string | null;
+
+  /** การแก้ไข — the fix applied for this issue. */
+  @Column({ type: "text", nullable: true })
+  resolution!: string | null;
+
+  /**
+   * Set by the `issue.open_analysis` rule action when its rule fires (the
+   * status gate lives in the rule's conditions); clients cannot flip it
+   * through the update endpoint.
+   */
+  @Column({ name: "is_analysis_open", default: false })
+  isAnalysisOpen!: boolean;
+
+  /**
+   * Set by the `issue.open_resolution` rule action when its rule fires (the
+   * status gate lives in the rule's conditions); clients cannot flip it
+   * through the update endpoint.
+   */
+  @Column({ name: "is_resolution_open", default: false })
+  isResolutionOpen!: boolean;
+
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
 
@@ -66,6 +90,21 @@ export class Issue {
 
   @Column({ name: "actual_fix_duration", type: "int", nullable: true })
   actualFixDuration!: number | null;
+
+  /**
+   * The three states of the "actual fix time" field:
+   * - `timeEntryUnlocked` — an `issue.allow_time_entry` rule granted it for
+   *   the card's current status (moving/creating the card clears it again, so
+   *   the rules re-grant it per status).
+   * - `timeEntryEverGranted` — the field has been shown at least once; cards
+   *   that never passed the gate keep the field hidden, cards that did stay
+   *   visible read-only once the grant lapses.
+   */
+  @Column({ name: "time_entry_unlocked", default: false })
+  timeEntryUnlocked!: boolean;
+
+  @Column({ name: "time_entry_ever_granted", default: false })
+  timeEntryEverGranted!: boolean;
 
   @UpdateDateColumn({ name: "updated_at" })
   updatedAt!: Date;

@@ -124,6 +124,8 @@ export default function NotificationsPage() {
     edited: t("actions.edited"),
     deleted: t("actions.deleted"),
     restored: t("actions.restored"),
+    rule_created: t("actions.rule_created"),
+    rule_updated: t("actions.rule_updated"),
   };
 
   const emptyContent: Record<NotificationTab, { title: string; description: string }> = {

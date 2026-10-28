@@ -21,12 +21,22 @@ export class NotificationsController {
   constructor(private readonly notifications: NotificationsService) {}
 
   @Get()
-  list(@CurrentUser() user: AuthUser, @Query("limit") limit?: string) {
-    const parsed = limit ? parseInt(limit, 10) : NaN;
-    return this.notifications.list(
-      Number(user.id),
-      Number.isInteger(parsed) && parsed > 0 ? parsed : 50,
-    );
+  list(
+    @CurrentUser() user: AuthUser,
+    @Query("limit") limit?: string,
+    @Query("page") page?: string,
+    @Query("tab") tab?: string,
+  ) {
+    const parsedLimit = limit ? parseInt(limit, 10) : NaN;
+    const parsedPage = page ? parseInt(page, 10) : NaN;
+    const size = Number.isInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : 5;
+    const pageNum = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+    return this.notifications.list(Number(user.id), {
+      limit: size,
+      offset: (pageNum - 1) * size,
+      // anything unknown falls back to the full (unfiltered) list
+      tab: tab === "inbox" || tab === "general" || tab === "archived" ? tab : undefined,
+    });
   }
 
   @Patch(":id/read")

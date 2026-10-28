@@ -5,13 +5,11 @@
  * Prerequisites: a running API (`npm run dev --workspace=@kanban/api`, port
  * 3002) and the local Postgres. Cleanup is done with SQL: the API only
  * soft-deletes issues, so the card is removed for real at the end together
- * with the notifications it produced and the `rule_runs` rows it caused.
+ * with the notifications it produced.
  * Run via: npm run test:e2e --workspace=@kanban/api
  */
 const BASE = process.env.API_URL ?? "http://localhost:3002";
 const {
-  captureRunWatermark,
-  cleanupRunRows,
   connectDb,
   countTestCards,
   hardDeleteIssues,
@@ -62,12 +60,12 @@ async function login(email) {
 
   const db = connectDb();
   await db.connect();
-  const watermark = await captureRunWatermark(db);
   // purge leftovers from earlier runs so assertions only see this run's data
-  await db.query("DELETE FROM issues WHERE title = $1 AND deleted_at IS NOT NULL", [
-    "E2E notif card",
+  const TITLES = ["E2E notif card", "E2E unassigned card"];
+  await db.query("DELETE FROM issues WHERE title = ANY($1::text[]) AND deleted_at IS NOT NULL", [
+    TITLES,
   ]);
-  await db.query("DELETE FROM notifications WHERE title = $1", ["E2E notif card"]);
+  await db.query("DELETE FROM notifications WHERE title = ANY($1::text[])", [TITLES]);
   const cardsBefore = await countTestCards(db);
 
   const statuses = (await call("/issue-statuses?limit=100", { token: adminToken })).body;
@@ -195,22 +193,55 @@ async function login(email) {
   const afterDelete = await listFor(assigneeToken);
   check("deleted event notified assignee", !!find(afterDelete, "deleted"));
 
-  // cleanup: the notifications, then the card itself — DELETE /issues/:id only
-  // marks it deleted, and its run rows must not outlive the test either
-  await db.query("DELETE FROM notifications WHERE title = $1", ["E2E notif card"]);
+  // ── admin fan-out (alsoAdmins): every active admin sees new cards and moves.
+  // The actor is never notified, so these use a NON-admin actor (the reporter)
+  // to prove the admin (aom, id 1) actually receives the row. ──
+
+  // a customer's brand-new UNASSIGNED card still reaches the admins
+  const unassignedRes = await call("/issues", {
+    method: "POST",
+    token: reporterToken,
+    body: { title: "E2E unassigned card", description: "fanout test", statusId: st1.id },
+  });
+  const unassignedId = unassignedRes.body?.id;
+  check("unassigned card created", unassignedRes.status < 300 && !!unassignedId,
+    `id=${unassignedId}`);
+  const adminAfterCreate = await listFor(adminToken);
+  const fanoutCreated = (adminAfterCreate?.data ?? []).find(
+    (n) => n.action === "created" && n.target === "E2E unassigned card",
+  );
+  check("create notifies the admin (fan-out, even unassigned)", !!fanoutCreated,
+    `actor=${fanoutCreated?.actorName}`);
+
+  // a non-admin move (the assignee drags the card) notifies the admins too —
+  // the actor (assignee) is skipped for themselves but the admins still get it
+  const secondStatus = st[1] ?? st[0];
+  const moveRes = await call(`/issues/${unassignedId}/move`, {
+    method: "PUT",
+    token: assigneeToken,
+    body: { statusId: secondStatus.id },
+  });
+  check("non-admin move succeeds", moveRes.status < 300, `status=${moveRes.status}`);
+  const adminAfterMove = await listFor(adminToken);
+  const fanoutMoved = (adminAfterMove?.data ?? []).find(
+    (n) => n.action === "moved" && n.target === "E2E unassigned card",
+  );
+  check("move notifies the admin (fan-out)", !!fanoutMoved, `actor=${fanoutMoved?.actorName}`);
+
+  // cleanup: the notifications, then the cards themselves — DELETE /issues/:id
+  // only marks them deleted
+  await db.query("DELETE FROM notifications WHERE title = ANY($1::text[])", [TITLES]);
   const left = await db.query(
-    "SELECT count(*)::int AS n FROM notifications WHERE title = $1",
-    ["E2E notif card"],
+    "SELECT count(*)::int AS n FROM notifications WHERE title = ANY($1::text[])",
+    [TITLES],
   );
   check("cleanup: test notifications removed", left.rows[0].n === 0, `left=${left.rows[0].n}`);
 
-  const removedCards = await hardDeleteIssues(db, [issueId]);
-  const removedRuns = await cleanupRunRows(db, watermark);
+  const removedCards = await hardDeleteIssues(db, [issueId, unassignedId]);
   const leftovers = await countTestCards(db);
-  check("cleanup: test card removed for real", removedCards === 1, `removed=${removedCards}`);
+  check("cleanup: test cards removed for real", removedCards === 2, `removed=${removedCards}`);
   check("cleanup: card count back to where it started", leftovers === cardsBefore,
     `left=${leftovers} before=${cardsBefore}`);
-  console.log(`       run rows removed: ${removedRuns}`);
 
   await db.end();
 

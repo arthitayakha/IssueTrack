@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useTheme } from "@mui/material/styles";
 import {
   Avatar,
   Box,
+  CircularProgress,
   Divider,
   IconButton,
   ListItemButton,
@@ -18,12 +19,22 @@ import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { useRouter } from "@/i18n/navigation";
 import { timeAgo } from "@/lib/time-ago";
-import type { AppNotification, NotificationTab } from "@/lib/notifications-api";
+import type {
+  AppNotification,
+  NotificationCounts,
+  NotificationPage,
+  NotificationTab,
+} from "@/lib/notifications-api";
 
 interface NotificationPopoverProps {
   open: boolean;
   anchorEl: HTMLElement | null;
-  items: AppNotification[];
+  /** One page per tab — the server already filtered by tab. */
+  data: Record<NotificationTab, NotificationPage>;
+  /** True per-tab totals, so the badges stay correct while paginating. */
+  counts: NotificationCounts;
+  loadingMore: boolean;
+  onLoadMore: (tab: NotificationTab) => void;
   onClose: () => void;
   onMarkRead: (id: number) => void;
   onMarkAllRead: () => void;
@@ -31,6 +42,25 @@ interface NotificationPopoverProps {
 }
 
 const TAB_ORDER: NotificationTab[] = ["inbox", "general", "archived"];
+
+/**
+ * Where a row opens: issue events deep-link straight to that card's detail
+ * dialog (`/boards?issue=N`) — including old rows stored as "/issues", since
+ * the API now sends `issueId` alongside the link. A deleted card sits in the
+ * recycle bin, so it only opens the board (nothing to fetch).
+ */
+const FALLBACK_LINK = "/boards";
+
+function resolveLink(item: AppNotification): string {
+  if (item.action === "deleted") return FALLBACK_LINK;
+  if (item.issueId) return `${FALLBACK_LINK}?issue=${item.issueId}`;
+  const link = item.link;
+  if (!link) return FALLBACK_LINK;
+  if (link === "/issues" || link.startsWith("/issues?") || link.startsWith("/issues#")) {
+    return FALLBACK_LINK;
+  }
+  return link;
+}
 
 const AVATAR_COLORS = [
   "primary.main",
@@ -50,16 +80,13 @@ function getInitials(name: string): string {
     .toUpperCase();
 }
 
-function matchesTab(item: AppNotification, tab: NotificationTab): boolean {
-  if (tab === "archived") return item.isArchived;
-  if (item.isArchived) return false;
-  return tab === "inbox" ? !item.isRead : item.isRead;
-}
-
 export default function NotificationPopover({
   open,
   anchorEl,
-  items,
+  data,
+  counts,
+  loadingMore,
+  onLoadMore,
   onClose,
   onMarkRead,
   onMarkAllRead,
@@ -71,11 +98,10 @@ export default function NotificationPopover({
   const router = useRouter();
   const [tab, setTab] = useState<NotificationTab>("inbox");
 
-  const counts: Record<NotificationTab, number> = {
-    inbox: items.filter((item) => matchesTab(item, "inbox")).length,
-    general: items.filter((item) => matchesTab(item, "general")).length,
-    archived: items.filter((item) => matchesTab(item, "archived")).length,
-  };
+  const active = data[tab];
+  // the server filtered this tab, so the loaded rows are the visible rows
+  const visibleItems = active.items;
+  const hasMore = visibleItems.length < active.total;
 
   const tabLabels: Record<NotificationTab, string> = {
     inbox: t("tabs.inbox"),
@@ -97,15 +123,30 @@ export default function NotificationPopover({
     edited: t("actions.edited"),
     deleted: t("actions.deleted"),
     restored: t("actions.restored"),
+    rule_created: t("actions.rule_created"),
+    rule_updated: t("actions.rule_updated"),
   };
-
-  const visibleItems = items.filter((item) => matchesTab(item, tab));
 
   function handleItemClick(item: AppNotification) {
     onMarkRead(item.id);
     onClose();
-    router.push(item.link ?? "/boards");
+    router.push(resolveLink(item));
   }
+
+  // Keep pulling pages until the list fills the box or the tab runs out.
+  // A scroll heuristic never fires when a short batch leaves no scrollbar,
+  // so watch a sentinel at the end of the list instead.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open || !hasMore || loadingMore) return;
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) onLoadMore(tab);
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [open, hasMore, loadingMore, tab, visibleItems.length, onLoadMore]);
 
   return (
     <Popover
@@ -119,7 +160,8 @@ export default function NotificationPopover({
           sx: {
             width: 380,
             maxWidth: "calc(100vw - 24px)",
-            maxHeight: "72vh",
+            // fixed height so every tab (list or empty state) looks identical
+            height: { xs: "70vh", sm: "72vh" },
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
@@ -236,7 +278,17 @@ export default function NotificationPopover({
       </Box>
 
       {/* List */}
-      <Box sx={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+      <Box
+        sx={{
+          flex: 1,
+          overflowY: "auto",
+          overflowX: "hidden",
+          // the empty state fills the same box, so every tab looks the same
+          ...(visibleItems.length === 0
+            ? { display: "flex", flexDirection: "column", justifyContent: "center" }
+            : {}),
+        }}
+      >
         {visibleItems.length === 0 ? (
           <Box sx={{ px: 3, py: 5, textAlign: "center" }}>
             <NotificationsNoneIcon sx={{ fontSize: 36, color: "text.disabled", mb: 1 }} />
@@ -355,6 +407,16 @@ export default function NotificationPopover({
               </Box>
             );
           })
+        )}
+        {/* Sentinel: while it stays visible the next page keeps loading */}
+        {hasMore && <Box ref={sentinelRef} aria-hidden sx={{ height: 1 }} />}
+        {loadingMore && (
+          <Box
+            aria-label={t("loading")}
+            sx={{ display: "flex", justifyContent: "center", py: 1.5 }}
+          >
+            <CircularProgress size={20} />
+          </Box>
         )}
       </Box>
     </Popover>
