@@ -45,6 +45,7 @@ import DashboardIcon from "@mui/icons-material/Dashboard";
 import AssessmentIcon from "@mui/icons-material/Assessment";
 import LockIcon from "@mui/icons-material/Lock";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import HistoryIcon from "@mui/icons-material/History";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
@@ -137,6 +138,13 @@ const PERMISSION_GROUPS = [
     icon: AssessmentIcon,
     children: [
       { key: "report", permissions: ["report.view", "report.export"] },
+    ],
+  },
+  {
+    key: "logs",
+    icon: HistoryIcon,
+    children: [
+      { key: "logs", permissions: ["log.view", "log.export"] },
     ],
   },
 ] as const;

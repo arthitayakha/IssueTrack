@@ -59,7 +59,15 @@ function makeEngine() {
     activityLogs,
     workSessions,
   ];
-  const engine = new RulesEngineService(...(repos as unknown as EngineArgs));
+  // rule-driven moves/assigns notify through the shared recipient policy
+  const notifications = {
+    notifyIssueEvent: jest.fn().mockResolvedValue(undefined),
+    notifyStatusChange: jest.fn().mockResolvedValue(undefined),
+    notifyAssignmentChange: jest.fn().mockResolvedValue(undefined),
+  };
+  const engine = new RulesEngineService(
+    ...( [...repos, notifications] as unknown as EngineArgs ),
+  );
   return {
     engine,
     rules,
@@ -69,6 +77,7 @@ function makeEngine() {
     statuses,
     activityLogs,
     workSessions,
+    notifications,
   };
 }
 
@@ -182,7 +191,8 @@ describe("RulesEngineService.evaluate", () => {
     await engine.evaluate(MOVED, { issueId: 42 });
 
     expect(issues.update).toHaveBeenCalledTimes(2);
-    expect(issues.update).toHaveBeenLastCalledWith(42, { isLocked: false });
+    // unlock clears the per-card flag and grants the one-shot release
+    expect(issues.update).toHaveBeenLastCalledWith(42, { isLocked: false, lockExempted: true });
   });
 
   it("ignores a nested evaluation fired from inside an action", async () => {
@@ -558,7 +568,7 @@ describe("statusGates — fields a rule opens without a new event", () => {
       }),
       rule({
         id: 2,
-        actionKey: "issue.lock",
+        actionKey: "issue.set_priority",
         conditions: [{ field: "to_status", operator: "=", value: "3", position: 0 }],
       }),
     ];
@@ -574,6 +584,7 @@ describe("statusGates — fields a rule opens without a new event", () => {
     expect(gates.analysis.size).toBe(0);
     expect(gates.timer.size).toBe(0);
     expect(gates.resolution.size).toBe(0);
+    expect(gates.locked.size).toBe(0);
   });
 });
 
@@ -596,5 +607,189 @@ describe("RulesEngineService.isStepOnlyMoveActive — the drag guard switch", ()
     rules.findOne.mockRejectedValue(new Error("connection lost"));
 
     expect(await engine.isStepOnlyMoveActive()).toBe(false);
+  });
+});
+
+describe("RulesEngineService.statusGates — the locked set (status locks)", () => {
+  it("locks only the statuses a lock rule names", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({
+        actionKey: "issue.lock",
+        conditions: [{ field: "to_status", operator: "=", value: "4", position: 0 }],
+      }),
+    ]);
+
+    const gates = await engine.statusGates([2, 4, 6]);
+
+    expect([...gates.locked]).toEqual([4]);
+  });
+
+  it("never freezes every column for a condition-less lock rule (per-card only)", async () => {
+    // "created → lock this card" writes the per-card flag when it fires; it
+    // must not read back as "all statuses are locked"
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "issue.lock" })]);
+
+    const gates = await engine.statusGates([2, 4]);
+
+    expect(gates.locked.size).toBe(0);
+  });
+
+  it("frees every status the moment the lock rule is paused", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([]);
+
+    const gates = await engine.statusGates([4]);
+
+    expect(gates.locked.size).toBe(0);
+  });
+});
+
+describe("RulesEngineService.runAction — lock and unlock", () => {
+  it("writes no per-card flag for a status-named lock rule (the gate does it)", async () => {
+    const { engine, rules, issues } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({
+        actionKey: "issue.lock",
+        conditions: [{ field: "to_status", operator: "=", value: "4", position: 0 }],
+      }),
+    ]);
+
+    await engine.evaluate(MOVED, { issueId: 42, toStatusId: 4 });
+
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("still writes the per-card flag for a condition-less lock rule", async () => {
+    const { engine, rules, issues } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "issue.lock" })]);
+
+    await engine.evaluate(MOVED, { issueId: 42, toStatusId: 4 });
+
+    expect(issues.update).toHaveBeenCalledWith(42, { isLocked: true });
+  });
+
+  it("unlock clears the flag and grants the one-shot release", async () => {
+    const { engine, rules, issues } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "issue.unlock" })]);
+
+    await engine.evaluate(MOVED, { issueId: 42, toStatusId: 4 });
+
+    expect(issues.update).toHaveBeenCalledWith(42, { isLocked: false, lockExempted: true });
+  });
+});
+
+/**
+ * A rule that moves/assigns a card used to write silently — a card finished
+ * by automation never reached the customer. These actions now go through the
+ * SAME recipient policy as the manual endpoints (notifyStatusChange /
+ * notifyAssignmentChange on NotificationsService).
+ */
+describe("RulesEngineService.runAction — rule-driven notifications", () => {
+  it("move_status notifies through the shared policy with the target status", async () => {
+    const { engine, rules, issues, statuses, notifications } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({ actionKey: "issue.move_status", actionConfig: { targetStatus: 4 } }),
+    ]);
+    statuses.findOne.mockResolvedValue({ id: 4, name: "เสร็จสิ้น" });
+    issues.findOne.mockResolvedValue({
+      id: 42,
+      statusId: 3,
+      title: "POS error",
+      programmerId: 7,
+      customerId: 9,
+    });
+
+    await engine.evaluate(MOVED, { issueId: 42, toStatusId: 3, actorId: 1 });
+
+    expect(issues.update).toHaveBeenCalledWith(42, { statusId: 4 });
+    expect(notifications.notifyStatusChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue: expect.objectContaining({ id: 42 }),
+        statusId: 4,
+        actor: { actorId: 1 },
+      }),
+    );
+  });
+
+  it("move_status stays silent when the card already sits in the target column", async () => {
+    const { engine, rules, issues, statuses, notifications } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({ actionKey: "issue.move_status", actionConfig: { targetStatus: 4 } }),
+    ]);
+    statuses.findOne.mockResolvedValue({ id: 4, name: "เสร็จสิ้น" });
+    issues.findOne.mockResolvedValue({ id: 42, statusId: 4, title: "already done" });
+
+    await engine.evaluate(MOVED, { issueId: 42, toStatusId: 3 });
+
+    expect(issues.update).toHaveBeenCalledWith(42, { statusId: 4 });
+    expect(notifications.notifyStatusChange).not.toHaveBeenCalled();
+  });
+
+  it("assign notifies the shared policy with the previous assignee", async () => {
+    const { engine, rules, issues, users, notifications } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({ actionKey: "issue.assign", actionConfig: { position: 2 } }),
+    ]);
+    users.findOne.mockResolvedValue({ id: 7, name: "Ploy", positionId: 2 });
+    issues.findOne.mockResolvedValue({
+      id: 42,
+      title: "POS error",
+      programmerId: 3,
+      customerId: 9,
+    });
+
+    await engine.evaluate(MOVED, { issueId: 42, actorId: 1 });
+
+    expect(issues.update).toHaveBeenCalledWith(42, { programmerId: 7 });
+    expect(notifications.notifyAssignmentChange).toHaveBeenCalledWith(
+      expect.objectContaining({ assigneeId: 7, previousAssigneeId: 3, actor: { actorId: 1 } }),
+    );
+  });
+
+  it("unassign tells the previous assignee's removal through the shared policy", async () => {
+    const { engine, rules, issues, notifications } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "issue.unassign" })]);
+    issues.findOne.mockResolvedValue({ id: 42, title: "POS error", programmerId: 3 });
+
+    await engine.evaluate(MOVED, { issueId: 42 });
+
+    expect(issues.update).toHaveBeenCalledWith(42, { programmerId: null });
+    expect(notifications.notifyAssignmentChange).toHaveBeenCalledWith(
+      expect.objectContaining({ assigneeId: null, previousAssigneeId: 3 }),
+    );
+  });
+
+  it("keeps working (and writing) when the issue row is gone — no notification", async () => {
+    const { engine, rules, issues, notifications } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "issue.unassign" })]);
+    issues.findOne.mockResolvedValue(null);
+
+    await engine.evaluate(MOVED, { issueId: 42 });
+
+    expect(issues.update).toHaveBeenCalledWith(42, { programmerId: null });
+    expect(notifications.notifyAssignmentChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("RulesEngineService.isUnlockRuleActive — the unlock button switch", () => {
+  it("is off with no rule, on while an active unlock rule exists", async () => {
+    const { engine, rules } = makeEngine();
+
+    expect(await engine.isUnlockRuleActive()).toBe(false);
+
+    rules.findOne.mockResolvedValue({ id: 8, actionKey: "issue.unlock", isActive: true });
+    expect(await engine.isUnlockRuleActive()).toBe(true);
+    expect(rules.findOne).toHaveBeenCalledWith({
+      where: { actionKey: "issue.unlock", isActive: true },
+    });
+  });
+
+  it("fails closed when the lookup breaks — no unlock offered without a rule", async () => {
+    const { engine, rules } = makeEngine();
+    rules.findOne.mockRejectedValue(new Error("connection lost"));
+
+    expect(await engine.isUnlockRuleActive()).toBe(false);
   });
 });

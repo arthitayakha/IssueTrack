@@ -1,6 +1,6 @@
 /**
  * E2E: the notification system — who gets notified, ownership of a row,
- * read / read-all / archive and the 401 gate.
+ * reading (which deletes the row), clear-all and the 401 gate.
  *
  * Prerequisites: a running API (`npm run dev --workspace=@kanban/api`, port
  * 3002) and the local Postgres. Cleanup is done with SQL: the API only
@@ -80,6 +80,18 @@ async function login(email) {
     `rows=${before.body?.data?.length} unread=${before.body?.unreadCount}`);
   const baseUnread = before.body.unreadCount;
 
+  // ── the badge endpoint: a bare number, matching the list's own total ──
+  const badge = await call("/notifications/count", { token: assigneeToken });
+  check("GET /notifications/count shape",
+    badge.status < 300 && typeof badge.body?.count === "number",
+    `count=${badge.body?.count}`);
+  check("count matches the list total",
+    badge.body?.count === before.body?.unreadCount,
+    `count=${badge.body?.count} unread=${before.body?.unreadCount}`);
+  const anonBadge = await call("/notifications/count");
+  check("GET /notifications/count without token => 401",
+    anonBadge.status === 401, `status=${anonBadge.status}`);
+
   // ── create an issue with a category: assignee (13) + reporter (2), actor = aom ──
   const issueRes = await call("/issues", {
     method: "POST",
@@ -141,46 +153,43 @@ async function login(email) {
     `context=${assignedItem?.context}`);
   check("assign does not notify the actor", !find(await listFor(adminToken), "assigned"));
 
-  // ── ownership: another user cannot mutate my notification ──
+  // ── ownership: another user cannot delete my notification ──
   const targetId = forAssignee?.id;
-  const foreign = await call(`/notifications/${targetId}/read`, {
-    method: "PATCH",
+  const foreign = await call(`/notifications/${targetId}`, {
+    method: "DELETE",
     token: adminToken,
   });
-  const stillUnread = !(await listFor(assigneeToken)).data.find((n) => n.id === targetId)?.isRead;
-  // Nest returns an empty body when the service answers null (nothing updated)
-  check("foreign user cannot mark mine as read",
-    foreign.status < 300 && (foreign.body === null || foreign.body === "") && stillUnread,
-    `status=${foreign.status} stillUnread=${stillUnread}`);
+  const stillThere = !!(await listFor(assigneeToken)).data.find((n) => n.id === targetId);
+  // Nest returns an empty body when the service answers null (nothing matched)
+  check("foreign user cannot delete mine",
+    foreign.status < 300 && (foreign.body === null || foreign.body === "") && stillThere,
+    `status=${foreign.status} stillThere=${stillThere}`);
 
-  // ── mark read / archive / read-all ──
-  const markRead = await call(`/notifications/${targetId}/read`, {
-    method: "PATCH",
+  // ── reading one deletes it; clearing all empties the inbox ──
+  const markRead = await call(`/notifications/${targetId}`, {
+    method: "DELETE",
     token: assigneeToken,
   });
-  check("owner markRead works", markRead.status < 300 && markRead.body?.isRead === true,
-    `isRead=${markRead.body?.isRead}`);
+  check("owner read = deleted", markRead.status < 300 && markRead.body?.deleted === true,
+    `deleted=${markRead.body?.deleted}`);
 
   const afterRead = await listFor(assigneeToken);
-  check("unreadCount drops after read",
-    (afterRead.unreadCount ?? 99) < (assigneeAfter.unreadCount ?? 0),
-    `now=${afterRead.unreadCount} was=${assigneeAfter.unreadCount}`);
+  const goneAfterRead = !afterRead.data.find((n) => n.id === targetId);
+  check("read row is gone and the badge dropped",
+    goneAfterRead && (afterRead.unreadCount ?? 99) < (assigneeAfter.unreadCount ?? 0),
+    `gone=${goneAfterRead} now=${afterRead.unreadCount} was=${assigneeAfter.unreadCount}`);
 
-  const archive = await call(`/notifications/${targetId}/archive`, {
-    method: "PATCH",
-    token: assigneeToken,
-  });
-  check("archive works", archive.status < 300 && archive.body?.isArchived === true,
-    `isArchived=${archive.body?.isArchived}`);
-
-  const readAll = await call("/notifications/read-all", {
-    method: "POST",
+  const readAll = await call("/notifications", {
+    method: "DELETE",
     token: assigneeToken,
   });
   const finalList = await listFor(assigneeToken);
-  check("read-all works and clears the badge",
-    readAll.status < 300 && finalList.unreadCount === 0,
-    `status=${readAll.status} updated=${readAll.body?.updated} unread=${finalList.unreadCount}`);
+  check("clear-all empties the inbox and the badge",
+    readAll.status < 300 && finalList.unreadCount === 0 && finalList.data.length === 0,
+    `status=${readAll.status} deleted=${readAll.body?.deleted} unread=${finalList.unreadCount}`);
+  const finalBadge = await call("/notifications/count", { token: assigneeToken });
+  check("count follows clear-all to 0", finalBadge.body?.count === 0,
+    `count=${finalBadge.body?.count}`);
 
   // ── auth gate ──
   const anon = await call("/notifications");

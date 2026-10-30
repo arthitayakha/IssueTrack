@@ -29,10 +29,13 @@ export class RulesController {
     return this.rules.findAll();
   }
 
-  // audit trail (who created/edited/deleted rules)
+  // audit trail (who created/edited/deleted rules) — optional date range for /reports
   @Get("activity")
   @Permissions("automation.view")
-  findActivity(@Query() query: { ruleId?: string; page?: string; limit?: string }) {
+  findActivity(
+    @Query()
+    query: { ruleId?: string; page?: string; limit?: string; createdFrom?: string; createdTo?: string },
+  ) {
     return this.rules.findActivity(query);
   }
 

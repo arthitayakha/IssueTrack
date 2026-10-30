@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { FindOptionsWhere, Like, Repository } from "typeorm";
+import { Between, FindOptionsWhere, LessThanOrEqual, Like, MoreThanOrEqual, Repository } from "typeorm";
 import type {
   RuleActivityDto,
   RuleCondition as RuleConditionDto,
@@ -105,9 +105,8 @@ export class RulesService {
           action,
           entityId: ruleId,
           detail: JSON.stringify({ ruleName }),
+          // only the id is stored — name/role come off `users` at read time
           actorId: actor.actorId,
-          actorName: actor.actorName,
-          actorRole: actor.actorRole,
         }),
       );
     } catch (err) {
@@ -117,11 +116,12 @@ export class RulesService {
 
   /**
    * Board-wide heads-up for automation changes — every active admin sees who
-   * created/edited a rule. Deep-links to the wizard edit page. Best-effort:
-   * wrapped in try/catch so a notification bug never breaks the CRUD call.
+   * created/edited/deleted a rule. Deep-links to the wizard edit page.
+   * Best-effort: wrapped in try/catch so a notification bug never breaks the
+   * CRUD call.
    */
   private async notifyRuleChange(
-    action: "rule_created" | "rule_updated",
+    action: "rule_created" | "rule_updated" | "rule_deleted",
     ruleId: number,
     ruleName: string,
     actor: ActorInfo,
@@ -131,7 +131,7 @@ export class RulesService {
         action,
         title: ruleName,
         link: `/automation/${ruleId}`,
-        actor: { actorId: actor.actorId, actorName: actor.actorName },
+        actor: { actorId: actor.actorId },
       });
     } catch (err) {
       this.logger.warn(`could not send ${action} notification for rule ${ruleId}: ${String(err)}`);
@@ -203,29 +203,53 @@ export class RulesService {
     const result = await this.rules.delete(id); // conditions live on the row itself
     if (!result.affected) throw new NotFoundException(`Rule ${id} not found`);
     await this.logRuleAction("rule.deleted", id, existing.name, actor);
+    // same admin fan-out as create/update — a missing rule is board news too
+    await this.notifyRuleChange("rule_deleted", id, existing.name, actor);
     return { deleted: true };
   }
 
   /**
-   * Rule audit trail for /automation/runs — who created/edited/deleted a rule,
-   * newest first, optionally filtered to one rule. Reads the shared
-   * `activity_logs` table; only `rule.*` rows (card activity lives there too).
+   * Rule audit trail for /automation/runs and the reports page — who
+   * created/edited/deleted a rule, newest first, optionally filtered to one
+   * rule and/or a date range (createdFrom/createdTo, yyyy-mm-dd). Reads the
+   * shared `activity_logs` table; only `rule.*` rows (card activity lives
+   * there too).
    */
   async findActivity(query: {
     ruleId?: string;
     page?: string;
     limit?: string;
+    createdFrom?: string;
+    createdTo?: string;
   }): Promise<Paginated<RuleActivityDto>> {
     const params = normalizePagination(query);
     const ruleId = Number(query.ruleId);
     const where: FindOptionsWhere<ActivityLog> = { action: Like("rule.%") };
     if (query.ruleId !== undefined && Number.isFinite(ruleId)) where.entityId = ruleId;
 
+    const dayStart = (v?: string): Date | null => {
+      if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+      const d = new Date(`${v}T00:00:00`);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+    const dayEnd = (v?: string): Date | null => {
+      if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+      const d = new Date(`${v}T23:59:59.999`);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+    const from = dayStart(query.createdFrom);
+    const to = dayEnd(query.createdTo);
+    if (from && to) where.createdAt = Between(from, to);
+    else if (from) where.createdAt = MoreThanOrEqual(from);
+    else if (to) where.createdAt = LessThanOrEqual(to);
+
     const [rows, total] = await this.activityLogs.findAndCount({
       where,
       order: { createdAt: "DESC", id: "DESC" },
       skip: (params.page - 1) * params.limit,
       take: params.limit,
+      // name/role are read off `users` (+`roles`) — nothing is stored per row
+      relations: ["actor", "actor.role"],
     });
 
     const data: RuleActivityDto[] = rows.map((log) => {
@@ -241,8 +265,8 @@ export class RulesService {
         action: log.action,
         ruleId: log.entityId,
         ruleName,
-        actorName: log.actorName,
-        actorRole: log.actorRole,
+        actorName: log.actor?.name ?? null,
+        actorRole: log.actor?.role?.name ?? null,
         createdAt: new Date(log.createdAt).toISOString(),
       };
     });

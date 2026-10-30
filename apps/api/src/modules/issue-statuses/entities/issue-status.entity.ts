@@ -19,6 +19,14 @@ export class IssueStatus {
   @Column({ type: "text", nullable: true })
   description!: string | null;
 
+  /**
+   * Column color ("#rrggbb" or a palette name such as "yellow"). Kept separate
+   * from `name` so renaming a status (e.g. to Thai) never loses its color —
+   * the UI resolves this value instead of guessing from the English name.
+   */
+  @Column({ type: "varchar", length: 32, nullable: true })
+  color!: string | null;
+
   @Column({ name: "is_active", default: true })
   isActive!: boolean;
 

@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useTheme } from "@mui/material/styles";
 import {
   Avatar,
   Box,
+  Button,
   CircularProgress,
   Divider,
   IconButton,
@@ -14,34 +15,30 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import ArchiveOutlinedIcon from "@mui/icons-material/ArchiveOutlined";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { useRouter } from "@/i18n/navigation";
 import { timeAgo } from "@/lib/time-ago";
-import type {
-  AppNotification,
-  NotificationCounts,
-  NotificationPage,
-  NotificationTab,
-} from "@/lib/notifications-api";
+import type { AppNotification, NotificationPage } from "@/lib/notifications-api";
+
+/** The list's lifecycle as tracked by the navbar (idle until the bell opens). */
+export type NotificationListStatus = "idle" | "loading" | "ready" | "error";
 
 interface NotificationPopoverProps {
   open: boolean;
   anchorEl: HTMLElement | null;
-  /** One page per tab — the server already filtered by tab. */
-  data: Record<NotificationTab, NotificationPage>;
-  /** True per-tab totals, so the badges stay correct while paginating. */
-  counts: NotificationCounts;
+  /** One page of the single inbox — every row is unread; clicking one deletes it. */
+  data: NotificationPage;
+  /** First-open state: `loading` shows a spinner, `error` offers a retry. */
+  status: NotificationListStatus;
   loadingMore: boolean;
-  onLoadMore: (tab: NotificationTab) => void;
+  onLoadMore: () => void;
+  /** Retry after a failed first load. */
+  onRetry: () => void;
   onClose: () => void;
   onMarkRead: (id: number) => void;
   onMarkAllRead: () => void;
-  onArchive: (id: number) => void;
 }
-
-const TAB_ORDER: NotificationTab[] = ["inbox", "general", "archived"];
 
 /**
  * Where a row opens: issue events deep-link straight to that card's detail
@@ -84,47 +81,43 @@ export default function NotificationPopover({
   open,
   anchorEl,
   data,
-  counts,
+  status,
   loadingMore,
   onLoadMore,
+  onRetry,
   onClose,
   onMarkRead,
   onMarkAllRead,
-  onArchive,
 }: NotificationPopoverProps) {
   const t = useTranslations("Notifications");
   const locale = useLocale();
   const theme = useTheme();
   const router = useRouter();
-  const [tab, setTab] = useState<NotificationTab>("inbox");
 
-  const active = data[tab];
-  // the server filtered this tab, so the loaded rows are the visible rows
-  const visibleItems = active.items;
-  const hasMore = visibleItems.length < active.total;
-
-  const tabLabels: Record<NotificationTab, string> = {
-    inbox: t("tabs.inbox"),
-    general: t("tabs.general"),
-    archived: t("tabs.archived"),
-  };
-
-  const emptyContent: Record<NotificationTab, { title: string; description: string }> = {
-    inbox: { title: t("emptyInbox.title"), description: t("emptyInbox.description") },
-    general: { title: t("emptyGeneral.title"), description: t("emptyGeneral.description") },
-    archived: { title: t("emptyArchived.title"), description: t("emptyArchived.description") },
-  };
+  // one inbox, one list — a row disappears the moment it is read
+  const visibleItems = data.items;
+  const hasMore = status === "ready" && visibleItems.length < data.total;
+  const inboxLabel = t("tabs.inbox");
+  const emptyTitle = t("emptyInbox.title");
+  const emptyDescription = t("emptyInbox.description");
 
   const actionLabels: Record<string, string> = {
     created: t("actions.created"),
     assigned: t("actions.assigned"),
+    unassigned: t("actions.unassigned"),
     commented: t("actions.commented"),
     moved: t("actions.moved"),
+    // milestone columns speak for themselves instead of the plain "moved"
+    needs_assignment: t("actions.needs_assignment"),
+    status_pending: t("actions.status_pending"),
+    in_progress: t("actions.in_progress"),
+    completed: t("actions.completed"),
     edited: t("actions.edited"),
     deleted: t("actions.deleted"),
     restored: t("actions.restored"),
     rule_created: t("actions.rule_created"),
     rule_updated: t("actions.rule_updated"),
+    rule_deleted: t("actions.rule_deleted"),
   };
 
   function handleItemClick(item: AppNotification) {
@@ -133,7 +126,7 @@ export default function NotificationPopover({
     router.push(resolveLink(item));
   }
 
-  // Keep pulling pages until the list fills the box or the tab runs out.
+  // Keep pulling pages until the list fills the box or runs out of rows.
   // A scroll heuristic never fires when a short batch leaves no scrollbar,
   // so watch a sentinel at the end of the list instead.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -142,11 +135,11 @@ export default function NotificationPopover({
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) onLoadMore(tab);
+      if (entries.some((entry) => entry.isIntersecting)) onLoadMore();
     });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [open, hasMore, loadingMore, tab, visibleItems.length, onLoadMore]);
+  }, [open, hasMore, loadingMore, visibleItems.length, onLoadMore]);
 
   return (
     <Popover
@@ -191,24 +184,24 @@ export default function NotificationPopover({
           component="button"
           type="button"
           onClick={onMarkAllRead}
-          disabled={counts.inbox === 0}
+          disabled={data.total === 0}
           sx={{
             p: 0,
             border: "none",
             bgcolor: "transparent",
-            cursor: counts.inbox > 0 ? "pointer" : "default",
+            cursor: data.total > 0 ? "pointer" : "default",
             fontFamily: "inherit",
             fontSize: "0.8125rem",
             fontWeight: 600,
-            color: counts.inbox > 0 ? "primary.main" : "text.disabled",
-            "&:hover": counts.inbox > 0 ? { textDecoration: "underline" } : {},
+            color: data.total > 0 ? "primary.main" : "text.disabled",
+            "&:hover": data.total > 0 ? { textDecoration: "underline" } : {},
           }}
         >
           {t("markRead")}
         </Box>
       </Box>
 
-      {/* Tabs */}
+      {/* The only tab left: the inbox (read rows are gone, so there is nothing else to show) */}
       <Box
         sx={{
           display: "flex",
@@ -219,56 +212,43 @@ export default function NotificationPopover({
           borderColor: "divider",
         }}
       >
-        {TAB_ORDER.map((key) => {
-          const active = tab === key;
-          return (
-            <Box
-              key={key}
-              component="button"
-              type="button"
-              onClick={() => setTab(key)}
-              aria-current={active}
-              sx={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 0.75,
-                p: 0,
-                pt: 1,
-                pb: 0.75,
-                border: "none",
-                borderBottom: "2px solid",
-                borderColor: active ? "primary.main" : "transparent",
-                bgcolor: "transparent",
-                cursor: "pointer",
-                fontFamily: "inherit",
-                fontSize: "0.8125rem",
-                fontWeight: active ? 700 : 500,
-                color: active ? "text.primary" : "text.secondary",
-                "&:hover": { color: active ? "text.primary" : "text.primary" },
-              }}
-            >
-              {tabLabels[key]}
-              <Box
-                component="span"
-                sx={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  minWidth: 18,
-                  height: 18,
-                  px: 0.5,
-                  borderRadius: "999px",
-                  fontSize: "0.6875rem",
-                  fontWeight: 700,
-                  bgcolor: active ? "primary.main" : "action.hover",
-                  color: active ? "primary.contrastText" : "text.secondary",
-                }}
-              >
-                {counts[key]}
-              </Box>
-            </Box>
-          );
-        })}
+        <Box
+          component="span"
+          aria-current="page"
+          sx={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 0.75,
+            p: 0,
+            pt: 1,
+            pb: 0.75,
+            borderBottom: "2px solid",
+            borderColor: "primary.main",
+            fontSize: "0.8125rem",
+            fontWeight: 700,
+            color: "text.primary",
+          }}
+        >
+          {inboxLabel}
+          <Box
+            component="span"
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              minWidth: 18,
+              height: 18,
+              px: 0.5,
+              borderRadius: "999px",
+              fontSize: "0.6875rem",
+              fontWeight: 700,
+              bgcolor: "primary.main",
+              color: "primary.contrastText",
+            }}
+          >
+            {status === "loading" ? "\u2026" : data.total}
+          </Box>
+        </Box>
         <Box sx={{ flex: 1 }} />
         <Tooltip title={t("settings")}>
           <IconButton size="small" onClick={() => router.push("/settings")} sx={{ mb: 0.5 }}>
@@ -277,37 +257,49 @@ export default function NotificationPopover({
         </Tooltip>
       </Box>
 
-      {/* List */}
+      {/* List — first open shows a spinner, a failed load offers a retry */}
       <Box
         sx={{
           flex: 1,
           overflowY: "auto",
           overflowX: "hidden",
-          // the empty state fills the same box, so every tab looks the same
+          // spinner / error / empty state all fill the same box as the list
           ...(visibleItems.length === 0
             ? { display: "flex", flexDirection: "column", justifyContent: "center" }
             : {}),
         }}
       >
-        {visibleItems.length === 0 ? (
+        {status === "loading" ? (
+          <Box aria-label={t("loading")} sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+            <CircularProgress size={24} />
+          </Box>
+        ) : status === "error" ? (
+          <Box sx={{ px: 3, py: 5, textAlign: "center" }}>
+            <NotificationsNoneIcon sx={{ fontSize: 36, color: "text.disabled", mb: 1 }} />
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+              {t("loadError")}
+            </Typography>
+            <Button size="small" onClick={onRetry} sx={{ mt: 1.5 }}>
+              {t("retry")}
+            </Button>
+          </Box>
+        ) : visibleItems.length === 0 ? (
           <Box sx={{ px: 3, py: 5, textAlign: "center" }}>
             <NotificationsNoneIcon sx={{ fontSize: 36, color: "text.disabled", mb: 1 }} />
             <Typography variant="subtitle2" color="text.primary" fontWeight={600}>
-              {emptyContent[tab].title}
+              {emptyTitle}
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              {emptyContent[tab].description}
+              {emptyDescription}
             </Typography>
           </Box>
         ) : (
           visibleItems.map((item, index) => {
-            const unread = !item.isRead && !item.isArchived;
             return (
               <Box key={item.id}>
                 {index > 0 && <Divider />}
                 <ListItemButton
                   onClick={() => handleItemClick(item)}
-                  selected={unread}
                   sx={{
                     alignItems: "flex-start",
                     gap: 1.5,
@@ -369,39 +361,6 @@ export default function NotificationPopover({
                       {timeAgo(item.createdAt, locale)}
                       {item.context ? ` • ${item.context}` : ""}
                     </Typography>
-                  </Box>
-
-                  <Box
-                    sx={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "flex-end",
-                      gap: 0.75,
-                      flexShrink: 0,
-                      pt: 0.25,
-                    }}
-                  >
-                    {unread && (
-                      <Box
-                        aria-label={t("unread")}
-                        sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.main" }}
-                      />
-                    )}
-                    {!item.isArchived && (
-                      <Tooltip title={t("archive")}>
-                        <IconButton
-                          size="small"
-                          aria-label={t("archive")}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onArchive(item.id);
-                          }}
-                          sx={{ opacity: 0.4, "&:hover": { opacity: 1 } }}
-                        >
-                          <ArchiveOutlinedIcon sx={{ fontSize: 16 }} />
-                        </IconButton>
-                      </Tooltip>
-                    )}
                   </Box>
                 </ListItemButton>
               </Box>

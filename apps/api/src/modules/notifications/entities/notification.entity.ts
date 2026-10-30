@@ -9,6 +9,11 @@ import {
 import { Issue } from "../../issues/entities/issue.entity";
 import { User } from "../../auth/entities/user.entity";
 
+/**
+ * The bell inbox — every row here is *unread* (reading one deletes it), so the
+ * table carries no read/archived state. The actor's name is read off `users`
+ * through `actor` instead of being copied into a column.
+ */
 @Entity("notifications")
 export class Notification {
   @PrimaryGeneratedColumn()
@@ -28,11 +33,13 @@ export class Notification {
   @JoinColumn({ name: "issue_id" })
   issue?: Issue | null;
 
+  /** Who caused it (nullable — system/automation rows have no user behind them). */
   @Column({ name: "actor_id", type: "int", nullable: true })
   actorId!: number | null;
 
-  @Column({ name: "actor_name", type: "varchar", length: 100, nullable: true })
-  actorName!: string | null;
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: "actor_id" })
+  actor?: User | null;
 
   /** Denormalised label shown next to the relative time (e.g. category name). */
   @Column({ type: "varchar", length: 100, nullable: true })
@@ -42,23 +49,11 @@ export class Notification {
   @Column({ type: "varchar", length: 255, nullable: true })
   link!: string | null;
 
-  @Column({ type: "varchar", length: 200 })
+  @Column({ type: "varchar", length: 255 })
   title!: string;
-
-  @Column({ type: "text" })
-  message!: string;
 
   @Column({ type: "varchar", length: 50 })
   type!: string;
-
-  @Column({ name: "is_read", default: false })
-  isRead!: boolean;
-
-  @Column({ name: "read_at", type: "timestamptz", nullable: true })
-  readAt!: Date | null;
-
-  @Column({ name: "is_archived", default: false })
-  isArchived!: boolean;
 
   @CreateDateColumn({ name: "created_at", type: "timestamptz" })
   createdAt!: Date;

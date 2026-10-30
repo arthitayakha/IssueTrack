@@ -101,8 +101,8 @@ category.view, board.view
 | `work_sessions` | id, issue_id, programmer_id, started_at, ended_at, duration | module ยังเป็น stub |
 | `comments` | id, issue_id, user_id, comment | module stub |
 | `attachments` | id, issue_id, uploaded_by, file_name, file_path, file_type, file_size | module stub |
-| `notifications` | id, user_id, issue_id, title, message, type, is_read | module stub |
-| `activity_logs` | id, actor_id, actor_name, actor_role, action, board_id, entity_id, detail | |
+| `notifications` | id, user_id, issue_id, actor_id, context, link, title, type | อ่าน = ลบ (ไม่มี `message` / `is_read` / `is_archived` / `actor_name`) |
+| `activity_logs` | id, actor_id, action, board_id, entity_id, detail | ชื่อ/บทบาท join จาก `users`+`roles` ตอนอ่าน |
 
 ### ความสัมพันธ์
 - `users` N:1 `roles`, `users` N:1 `positions`
@@ -289,6 +289,30 @@ category.view, board.view
 - ทดสอบ API ด้วย `npm run dev --workspace=@kanban/api`
 - ทดสอบ frontend ด้วย `npm run dev --workspace=@kanban/web`
 - หน้า `/roles` ต้องมี `export const dynamic = "force-dynamic"` (แก้แล้ว)
+
+---
+
+## 11. ระบบแจ้งเตือน (Notifications — อัปเดต 2026-10-30)
+
+นโยบาย "ใครได้ยินอะไร" อยู่ที่ `NotificationsService` (`notifyStatusChange()` / `notifyAssignmentChange()`) — จุดเดียวที่ `IssuesService.move/assign` (ลากมือ) กับ rules engine (`issue.move_status`/`issue.assign`/`issue.unassign`) เรียกร่วมกัน การ์ดที่กฎย้ายไป "เสร็จสิ้น" จึงถึงลูกค้าเหมือนการลากมือ
+
+| เหตุการณ์ | ผู้รับ | type |
+|---|---|---|
+| การ์ดใหม่ | ผู้รับ (ถ้ามี) + แอดมินทุกคน | `created` |
+| ย้ายเข้า รอรับเรื่อง (id 1) ยังไม่มีคนรับ | แอดมินทุกคน + ผู้แจ้ง | `needs_assignment` |
+| ย้ายเข้า รอดำเนินการ (id 2) | ผู้รับ + ผู้แจ้ง | `status_pending` |
+| ย้ายเข้า กำลังดำเนินการ (id 3) | ผู้รับ + ผู้แจ้ง | `in_progress` |
+| ย้ายเข้า เสร็จสิ้น (id 4) | ผู้รับ + ผู้แจ้ง + แอดมินทุกคน | `completed` |
+| ย้ายคอลัมน์อื่น (Review/กำหนดเอง/การ์ดมีคนรับกลับเข้า รอรับเรื่อง) | ผู้รับ + ผู้แจ้ง **เท่านั้น** | `moved` |
+| มอบหมาย | ผู้รับใหม่ + ผู้แจ้ง | `assigned` |
+| ยกเลิกมอบหมาย | คนที่ถูกปลด + แอดมินทุกคน | `unassigned` |
+| คอมเมนต์ใหม่ (การ์ดยังไม่มีคนรับ) | ผู้รับ + ผู้แจ้ง + แอดมิน | `commented` |
+| คอมเมนต์ใหม่ (การ์ดมีคนรับแล้ว) | ผู้รับ + ผู้แจ้ง | `commented` |
+| ลบ/แก้/ปิด-เปิด rule | แอดมินทุกคน | `rule_created`/`rule_updated`/`rule_deleted` |
+
+- คอลัมน์สำคัญอ้าง **status id** (1/2/3/4) แบบเดียวกับ `RECEIVED_STATUS_ID` — ชื่อสถานะเปลี่ยนได้ id ไม่ขยับ
+- การลากทั่วไปไม่แจ้งแอดมินอีกแล้ว (เดิมทุกการลาก spam กล่องแอดมิน ~58 แถว)
+- ทุก type ต้องมี label ใน `src/messages/th.json` + `en.json` (key `Notifications.actions.*`) และ `actionLabels` ใน `notification-popover.tsx` + `[locale]/notifications/page.tsx` — test key-parity ใน `rules-registry.spec.ts` บังคับว่าสองไฟล์ต้องตรงกัน
 
 ---
 

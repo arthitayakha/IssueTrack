@@ -237,7 +237,7 @@ describe("i18n parity for the shipped features", () => {
     leaves(readMessages(locale)[namespace] ?? {}, `${namespace}.`);
 
   // only the namespaces this feature owns — other pages have pre-existing drift
-  const NAMESPACES = ["Automation", "Notifications", "Labels"];
+  const NAMESPACES = ["Automation", "Notifications", "Labels", "Logs"];
 
   it.each(NAMESPACES)("%s has identical keys in th and en", (namespace) => {
     const thKeys = namespaceLeaves("th", namespace).map(([key]) => key).sort();

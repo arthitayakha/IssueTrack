@@ -25,7 +25,9 @@ export default function DataTable({ children, rounded = true }: DataTableProps) 
         borderRadius: rounded ? 2 : 1,
         border: "1px solid",
         borderColor: "divider",
-        overflow: "hidden",
+        // horizontal scrollbar lives inside the table box (MUI Data Grid style)
+        // instead of clipping wide tables — the page itself never scrolls sideways
+        overflowX: "auto",
         minWidth: 0,
         "& .MuiTableCell-head": {
           bgcolor: theme.custom.tableStripe,

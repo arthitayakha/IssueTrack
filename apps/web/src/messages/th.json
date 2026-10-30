@@ -38,6 +38,10 @@
     "title": "บอร์ด",
     "comingSoon": "หน้านี้กำลังอยู่ระหว่างการพัฒนา",
     "invalidTransition": "ย้ายได้เฉพาะคอลัมน์ที่อยู่ติดกันเท่านั้น (1 ขั้น) — ปิดกฎบังคับลากทีละคอลัมน์ในหน้าระบบอัตโนมัติเพื่อลากข้ามคอลัมน์ได้",
+    "lockedCard": "การ์ดนี้ถูกล็อกไว้ในสถานะนี้โดยกฎระบบอัตโนมัติ — กดปลดล็อกที่การ์ดก่อนจึงจะย้ายได้",
+    "errorTitle": "เปิดบอร์ดไม่สำเร็จ",
+    "errorDesc": "เกิดข้อผิดพลาดที่ไม่คาดคิด — กดลองใหม่ หรือรีเฟรชหน้านี้",
+    "errorRetry": "ลองอีกครั้ง",
     "reportIssue": "แจ้งปัญหา",
     "reportIssueTitle": "แจ้งปัญหาใหม่",
     "reportIssueSubtitle": "กรอกข้อมูลเพื่อแจ้งปัญหาใหม่ให้ทีมงานตรวจสอบ",
@@ -249,7 +253,8 @@
       "priority": "จัดการความสำคัญ",
       "role": "จัดการบทบาท",
       "position": "จัดการตำแหน่ง",
-      "report": "จัดการรายงาน"
+      "report": "จัดการรายงาน",
+      "logs": "ประวัติกิจกรรม"
     },
     "tabUsers": "ผู้ใช้",
     "tabRoles": "บทบาท",
@@ -356,6 +361,11 @@
     "statusUpdated": "แก้ไขสถานะสำเร็จ",
     "statusDeleted": "ลบสถานะสำเร็จ",
     "statusToggled": "อัปเดตสถานะสำเร็จ",
+    "statusNameRequired": "กรุณากรอกชื่อสถานะ",
+    "statusNameTooLong": "ชื่อสถานะต้องไม่เกิน 100 ตัวอักษร",
+    "statusNameExists": "มีสถานะชื่อนี้อยู่แล้ว",
+    "statusInvalidName": "ชื่อสถานะไม่ถูกต้อง (1-100 อักขระ)",
+    "statusInvalidColor": "สีไม่ถูกต้อง",
     "priorityCreated": "เพิ่มความสำคัญสำเร็จ",
     "priorityUpdated": "แก้ไขความสำคัญสำเร็จ",
     "priorityDeleted": "ลบความสำคัญสำเร็จ",
@@ -411,6 +421,7 @@
     "refresh": "รีเฟรช",
     "loadError": "โหลดการแจ้งเตือนไม่สำเร็จ",
     "loading": "กำลังโหลด...",
+    "retry": "ลองใหม่อีกครั้ง",
     "tabs": {
       "inbox": "กล่องเข้า",
       "general": "ทั่วไป",
@@ -422,13 +433,19 @@
     "actions": {
       "created": "สร้าง",
       "assigned": "มอบหมายให้",
+      "unassigned": "เลิกมอบหมาย",
       "commented": "แสดงความคิดเห็นใน",
       "moved": "ย้ายสถานะของ",
+      "needs_assignment": "รอมอบหมาย",
+      "status_pending": "อยู่ในคิว",
+      "in_progress": "กำลังดำเนินการ",
+      "completed": "เสร็จสิ้น",
       "edited": "แก้ไข",
       "deleted": "ลบ",
       "restored": "กู้คืน",
       "rule_created": "สร้างกฎ",
-      "rule_updated": "แก้ไขกฎ"
+      "rule_updated": "แก้ไขกฎ",
+      "rule_deleted": "ลบกฎ"
     },
     "emptyInbox": {
       "title": "ไม่มีแจ้งเตือนใหม่",
@@ -443,6 +460,88 @@
       "description": "รายการที่คุณเก็บถาวรจะอยู่ที่นี่"
     }
   },
+  "Logs": {
+    "title": "ประวัติกิจกรรม",
+    "subtitle": "กิจกรรมทั้งหมดในระบบ — การ์ด ความคิดเห็น และกฎอัตโนมัติ",
+    "refresh": "รีเฟรช",
+    "retry": "ลองใหม่อีกครั้ง",
+    "loadError": "โหลดประวัติกิจกรรมไม่สำเร็จ",
+    "total": "ทั้งหมด {count} รายการ",
+    "exportCsv": "ส่งออก CSV",
+    "exporting": "กำลังส่งออก...",
+    "exportDone": "ส่งออก {count} รายการแล้ว",
+    "exportFailed": "ส่งออกไม่สำเร็จ",
+    "filters": {
+      "actor": "ผู้กระทำ",
+      "actorAll": "ผู้กระทำทุกคน",
+      "type": "ประเภท",
+      "typeAll": "ทุกประเภท",
+      "from": "จากวันที่",
+      "to": "ถึงวันที่",
+      "searchPlaceholder": "ค้นหารายละเอียด...",
+      "reset": "ล้างตัวกรอง"
+    },
+    "columns": {
+      "time": "เวลา",
+      "actor": "ผู้กระทำ",
+      "role": "บทบาท",
+      "type": "ประเภท",
+      "action": "การกระทำ",
+      "detail": "รายละเอียด",
+      "entity": "อ้างอิง"
+    },
+    "type": {
+      "card": "การ์ด",
+      "comment": "ความคิดเห็น",
+      "rule": "กฎอัตโนมัติ"
+    },
+    "entity": {
+      "viewCard": "ไปที่การ์ด",
+      "viewRule": "ไปที่กฎ"
+    },
+    "empty": {
+      "title": "ยังไม่มีกิจกรรม",
+      "description": "กิจกรรมใหม่จะแสดงที่นี่เมื่อมีผู้ใช้ทำงานในระบบ"
+    },
+    "detail": {
+      "system": "ระบบ",
+      "noStatus": "ยังไม่มีสถานะ",
+      "title": "หัวข้อ: {title}",
+      "move": "{from} → {to}",
+      "fields": "แก้ไข: {fields}",
+      "status": "สถานะ: {status}",
+      "assignedTo": "มอบหมายให้ผู้ใช้ #{id}",
+      "assignChanged": "เปลี่ยนผู้รับผิดชอบ #{from} → #{to}",
+      "unassigned": "เลิกมอบหมาย",
+      "comment": "ความคิดเห็น #{id}",
+      "ruleName": "กฎ: {name}"
+    },
+    "fields": {
+      "title": "หัวข้อ",
+      "description": "คำอธิบาย",
+      "analysisCause": "สาเหตุ",
+      "resolution": "วิธีแก้ไข",
+      "priority": "ความสำคัญ",
+      "category": "หมวดหมู่",
+      "label": "ป้าย",
+      "labels": "ป้าย"
+    },
+    "actions": {
+      "card_created": "สร้างการ์ด",
+      "card_edited": "แก้ไขการ์ด",
+      "card_moved": "ย้ายการ์ด",
+      "card_assigned": "มอบหมายการ์ด",
+      "card_unlocked": "ปลดล็อกการ์ด",
+      "card_deleted": "ลบการ์ด",
+      "card_restored": "กู้คืนการ์ด",
+      "comment_created": "แสดงความคิดเห็น",
+      "comment_updated": "แก้ไขความคิดเห็น",
+      "comment_deleted": "ลบความคิดเห็น",
+      "rule_created": "สร้างกฎ",
+      "rule_updated": "แก้ไขกฎ",
+      "rule_deleted": "ลบกฎ"
+    }
+  },
   "Nav": {
     "dashboard": "แดชบอร์ด",
     "boards": "บอร์ด",
@@ -454,10 +553,12 @@
     "permissions": "สิทธิ์การเข้าถึง",
     "settings": "จัดการข้อมูลหลัก",
     "reports": "รายงาน",
+    "logs": "ประวัติกิจกรรม",
     "signOut": "ออกจากระบบ",
     "switchLanguage": "เปลี่ยนภาษา",
     "automation": "กฎอัตโนมัติ",
-    "notifications": "การแจ้งเตือน"
+    "notifications": "การแจ้งเตือน",
+    "menu": "เมนู"
   },
   "pagination": {
     "showing": "แสดง {start}-{end} จาก {total}"
@@ -614,6 +715,138 @@
       "paramAnalysis": "วิเคราะห์ / สาเหตุ",
       "paramResolution": "การแก้ไข",
       "paramOpenAtStatus": "เปิดให้กรอกเมื่อการ์ดอยู่ที่สถานะ"
+    }
+  },
+  "Reports": {
+    "title": "รายงาน",
+    "subtitle": "เลือกมุมมอง + กรองข้อมูล แล้วส่งออกเป็น PDF หรือ CSV ได้จากแถบเครื่องมือ",
+    "views": {
+      "issues": "รายการปัญหา",
+      "assignee": "ตามผู้รับผิดชอบ",
+      "category": "ตามหมวดหมู่",
+      "app": "ตามแอป",
+      "activity": "ความเคลื่อนไหวล่าสุด",
+      "rules": "ประวัติระบบอัตโนมัติ"
+    },
+    "summary": {
+      "actual": "ชั่วโมงจริงรวม",
+      "entered": "รวมเวลาที่กรอก",
+      "diff": "ต่าง",
+      "hours": "ชม."
+    },
+    "toolbar": {
+      "view": "มุมมองรายงาน",
+      "range": "ช่วงเวลา",
+      "rangeAll": "ทั้งหมด",
+      "rangeToday": "วันนี้",
+      "rangeWeek": "สัปดาห์นี้",
+      "rangeThisMonth": "เดือนนี้",
+      "rangeLastMonth": "เดือนที่แล้ว",
+      "range90": "90 วันล่าสุด",
+      "rangeCustom": "กำหนดเอง",
+      "pickRangeTitle": "เลือกช่วงวันที่",
+      "pickRangeHint": "เลือกวันที่เริ่มต้นและวันสิ้นสุด",
+      "apply": "ตกลง",
+      "clearRange": "ล้าง",
+      "filtersBtn": "ตัวกรอง",
+      "columns": "เลือกคอลัมน์",
+      "sectionSummary": "ตารางสรุป",
+      "sectionDetail": "ตารางงานย่อย (กางแถว)",
+      "dragHint": "ลากเพื่อจัดลำดับคอลัมน์ (ลำดับอยู่บนสุดตลอด)",
+      "search": "ค้นหา...",
+      "refresh": "รีเฟรช",
+      "exportPdf": "Export PDF",
+      "exportCsv": "Export CSV"
+    },
+    "filters": {
+      "heading": "ตัวกรอง",
+      "from": "จากวันที่",
+      "to": "ถึงวันที่",
+      "category": "หมวดหมู่",
+      "status": "สถานะ",
+      "priority": "ความสำคัญ",
+      "app": "แอป",
+      "sectionAssignee": "โปรแกรมเมอร์",
+      "sectionReporter": "ผู้แจ้ง",
+      "searchPlaceholder": "ค้นหา...",
+      "noResults": "ไม่พบรายการ",
+      "showMore": "ดูทั้งหมด…",
+      "showLess": "ย่อลง",
+      "clear": "ล้างทั้งหมด",
+      "selectedCount": "เลือก {count} รายการ"
+    },
+    "columns": {
+      "issueNumber": "เลขที่",
+      "index": "ลำดับ",
+      "receivedAt": "วันที่เริ่มรับเรื่อง",
+      "title": "หัวข้อ",
+      "description": "รายละเอียด",
+      "assignee": "ผู้รับเรื่อง",
+      "reporter": "ผู้แจ้ง",
+      "category": "หมวดหมู่",
+      "app": "แอป",
+      "status": "สถานะ",
+      "priority": "ความสำคัญ",
+      "analysisCause": "วิเคราะห์ / สาเหตุ",
+      "resolution": "การแก้ไข",
+      "workStarted": "เริ่มดำเนินการ",
+      "workEnded": "เสร็จการดำเนินการ",
+      "duration": "ระยะเวลา",
+      "enteredTime": "เวลาที่กรอก",
+      "operators": "ผู้ดำเนินการ",
+      "hoursActual": "ชั่วโมงจริง",
+      "hoursEntered": "ชั่วโมงกรอก",
+      "diff": "ต่าง",
+      "person": "โปรแกรมเมอร์",
+      "issueCount": "งานทั้งหมด",
+      "openCount": "ยังเปิดอยู่",
+      "lastAt": "งานล่าสุด",
+      "topAssignee": "ผู้ที่ใช้เวลามากสุด",
+      "sessionIssue": "งาน",
+      "type": "ประเภท",
+      "actor": "ใคร",
+      "content": "เนื้อหา / ชื่อไฟล์",
+      "time": "เวลา",
+      "rule": "กฎ",
+      "action": "การกระทำ",
+      "comment": "คอมเมนต์",
+      "attachment": "ไฟล์แนบ",
+      "unassigned": "ยังไม่มอบหมาย",
+      "total": "รวมทั้งหมด",
+      "noCategory": "ไม่มีหมวดหมู่",
+      "noApp": "ไม่มีแอป",
+      "medianActual": "ค่ากลางจับเวลา (นาที)",
+      "medianEntered": "ค่ากลางกรอก (นาที)"
+    },
+    "duration": {
+      "hours": "{h} ชั่วโมง",
+      "minutes": "{m} นาที"
+    },
+    "states": {
+      "loading": "กำลังโหลด...",
+      "emptyTitle": "ไม่พบข้อมูล",
+      "emptyDesc": "ลองปรับ filter หรือช่วงวันที่ แล้วดูใหม่อีกครั้ง",
+      "error": "โหลดข้อมูลไม่สำเร็จ",
+      "retry": "ลองใหม่",
+      "exportFailed": "ส่งออกไฟล์ไม่สำเร็จ"
+    },
+    "detail": {
+      "tasksOf": "งานของ {name}",
+      "note": "ชั่วโมงจริง = จับเวลาจาก work sessions · ชั่วโมงกรอก = กรอกเองในหน้างาน",
+      "noTasks": "ไม่พบงานของคนนี้ตาม filter ปัจจุบัน"
+    },
+    "table": {
+      "count": "ทั้งหมด {count} รายการ"
+    },
+    "ruleActions": {
+      "created": "สร้างกฎ",
+      "updated": "แก้ไขกฎ",
+      "deleted": "ลบกฎ"
+    },
+    "print": {
+      "range": "ช่วงวันที่: {range}",
+      "generated": "สร้างเมื่อ: {date} · โดย: {user}",
+      "allRange": "ทั้งหมด"
     }
   }
 }

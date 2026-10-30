@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
 import { IssueStatusesService } from "./issue-statuses.service";
+import { CreateIssueStatusDto, UpdateIssueStatusDto } from "./dto/issue-status.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -28,13 +29,7 @@ export class IssueStatusesController {
 
   @Post()
   @Permissions("status.create")
-  create(
-    @Body()
-    body: {
-      name: string;
-      description?: string;
-    },
-  ) {
+  create(@Body() body: CreateIssueStatusDto) {
     return this.issueStatuses.create(body);
   }
 
@@ -48,11 +43,7 @@ export class IssueStatusesController {
   @Permissions("status.update")
   update(
     @Param("id", ParseIntPipe) id: number,
-    @Body()
-    body: {
-      name?: string;
-      description?: string;
-    },
+    @Body() body: UpdateIssueStatusDto,
   ) {
     return this.issueStatuses.update(id, body);
   }

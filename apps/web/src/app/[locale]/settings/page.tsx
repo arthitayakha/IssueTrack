@@ -41,6 +41,7 @@ import { useAuthStore } from "@/lib/auth-store";
 import BoltIcon from "@mui/icons-material/Bolt";
 import { usePermissions } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
+import { resolveStatusColor } from "@/lib/status-color";
 import { useNotification } from "@/components/notification";
 import {
   DndContext,
@@ -70,6 +71,14 @@ import {
 } from "@/lib/labels-api";
 import ColorPicker from "@/components/color-picker";
 
+/**
+ * Mirror of the API's color rule (`issue-status.dto.ts`): a palette name the
+ * theme resolves, or a raw hex value. Kept here so a typo in the picker's text
+ * field is caught in Thai before the request is sent.
+ */
+const STATUS_COLOR_PATTERN =
+  /^(green|red|yellow|blue|purple|orange|pink|gray|default|#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}))$/;
+
 interface App {
   id: number;
   name: string;
@@ -88,6 +97,8 @@ interface IssueStatus {
   id: number;
   name: string;
   description: string | null;
+  /** Column color from `issue_statuses.color` ("#rrggbb" or a palette name). */
+  color?: string | null;
   isActive: boolean;
   sortOrder: number;
   issueCount: number;
@@ -101,9 +112,8 @@ interface IssuePriority {
   issueCount: number;
 }
 
-function getStatusColor(statusName: string, theme: any): string {
-  const key = statusName.toLowerCase();
-  return theme.custom.columnColors[key] ?? theme.custom.columnColors.default;
+function getStatusColor(status: IssueStatus, theme: any): string {
+  return resolveStatusColor(theme, status.color, status.name);
 }
 
 function SortableStatusRow({
@@ -135,7 +145,7 @@ function SortableStatusRow({
     isDragging,
   } = useSortable({ id: status.id });
 
-  const statusColor = getStatusColor(status.name, theme);
+  const statusColor = getStatusColor(status, theme);
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -330,6 +340,7 @@ export default function SettingsPage() {
   const [statusForm, setStatusForm] = useState({
     name: "",
     description: "",
+    color: "default",
   });
 
   const [priorityDialogOpen, setPriorityDialogOpen] = useState(false);
@@ -605,7 +616,7 @@ export default function SettingsPage() {
 
   function openAddStatus() {
     setEditingStatus(null);
-
+    setStatusForm({ name: "", description: "", color: "default" });
     setStatusDialogOpen(true);
   }
 
@@ -614,15 +625,41 @@ export default function SettingsPage() {
     setStatusForm({
       name: status.name,
       description: status.description ?? "",
+      color: status.color ?? "default",
     });
     setStatusDialogOpen(true);
   }
 
   async function handleSaveStatus() {
+    const name = statusForm.name.trim();
+    if (!name) {
+      notify(t("statusNameRequired"), "error");
+      return;
+    }
+    if (name.length > 100) {
+      notify(t("statusNameTooLong"), "error");
+      return;
+    }
+    // Same check the API does — surface it in Thai before spending a request.
+    const duplicate = statuses.some(
+      (s) => s.id !== editingStatus?.id && s.name.trim().toLowerCase() === name.toLowerCase(),
+    );
+    if (duplicate) {
+      notify(t("statusNameExists"), "error");
+      return;
+    }
+    // The color picker's text field accepts anything; mirror the API's rule
+    // (palette name or hex) so a typo never turns into a raw server 400.
+    const color = statusForm.color.trim() || "default";
+    if (!STATUS_COLOR_PATTERN.test(color)) {
+      notify(t("statusInvalidColor"), "error");
+      return;
+    }
     try {
       const payload = {
-        name: statusForm.name,
-        description: statusForm.description || undefined,
+        name,
+        description: statusForm.description.trim() || undefined,
+        color,
       };
       if (editingStatus) {
         await apiFetch(`/issue-statuses/${editingStatus.id}`, {
@@ -643,7 +680,16 @@ export default function SettingsPage() {
       router.refresh();
     } catch (err) {
       if (err instanceof ApiError) {
-        notify(err.message, "error");
+        // Validation/ conflict answers are English server text — show Thai.
+        if (err.status === 409) notify(t("statusNameExists"), "error");
+        else if (err.status === 400)
+          notify(
+            err.message.toLowerCase().includes("color")
+              ? t("statusInvalidColor")
+              : t("statusInvalidName"),
+            "error",
+          );
+        else notify(err.message, "error");
       } else {
         notify(t("genericError"), "error");
       }
@@ -1341,6 +1387,8 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   value={statusForm.name}
                   onChange={(e) => setStatusForm({ ...statusForm, name: e.target.value })}
                   fullWidth
+                  required
+                  inputProps={{ maxLength: 100 }}
                 />
                 <TextField
                   label={t("columnDescription")}
@@ -1350,14 +1398,20 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   multiline
                   rows={2}
                 />
-
-
+                <ColorPicker
+                  value={statusForm.color}
+                  onChange={(color) => setStatusForm({ ...statusForm, color })}
+                />
 
               </Box>
             </DialogContent>
             <DialogActions>
               <Button onClick={() => setStatusDialogOpen(false)}>{t("cancel")}</Button>
-              <Button variant="contained" onClick={handleSaveStatus}>
+              <Button
+                variant="contained"
+                onClick={handleSaveStatus}
+                disabled={!statusForm.name.trim()}
+              >
                 {t("save")}
               </Button>
             </DialogActions>

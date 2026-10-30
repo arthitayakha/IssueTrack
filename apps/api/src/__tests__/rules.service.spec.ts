@@ -273,9 +273,8 @@ describe("RulesService", () => {
       expect(rows[0]).toMatchObject({
         entityId: 9,
         detail: JSON.stringify({ ruleName: "New rule" }),
+        // the row keeps only the id — name/role are joined off `users` at read
         actorId: 1,
-        actorName: "aom",
-        actorRole: "admin",
       });
       // update / toggle / delete all see the renamed rule (the delete captures
       // the name before the row goes away)
@@ -303,7 +302,7 @@ describe("RulesService", () => {
   });
 
   describe("rule-change notifications (notifyAdmins)", () => {
-    it("notifies admins on create / update / toggle — but not on delete", async () => {
+    it("notifies admins on create / update / toggle / delete", async () => {
       const { service, rules, notifications } = makeService();
       rules.save.mockImplementation(async (value: Record<string, unknown>) => ({ ...value, id: 9 }));
       rules.findOne.mockResolvedValue(ruleRecord({ id: 9 }));
@@ -318,14 +317,21 @@ describe("RulesService", () => {
       await service.remove(9, ACTOR);
 
       const calls = notifications.notifyAdmins.mock.calls.map((c) => c[0] as Record<string, unknown>);
-      expect(calls.map((c) => c.action)).toEqual(["rule_created", "rule_updated", "rule_updated"]);
-      // deep-links to the wizard's edit page, carries the rule name and actor
+      expect(calls.map((c) => c.action)).toEqual([
+        "rule_created",
+        "rule_updated",
+        "rule_updated",
+        "rule_deleted",
+      ]);
+      // deep-links to the wizard's edit page, carries the rule name and actor id
       expect(calls[0]).toMatchObject({
         title: "New rule",
         link: "/automation/9",
-        actor: { actorId: 1, actorName: "aom" },
+        actor: { actorId: 1 },
       });
       expect(calls[1].title).toBe("Renamed");
+      // the delete row deep-links too — a vanished rule is board news
+      expect(calls[3]).toMatchObject({ title: "Renamed", link: "/automation/9" });
     });
 
     it("keeps the CRUD call working even when the notification fails", async () => {
@@ -372,8 +378,8 @@ describe("RulesService", () => {
               action: "rule.deleted",
               entityId: 7,
               detail: JSON.stringify({ ruleName: "Auto" }),
-              actorName: "aom",
-              actorRole: "admin",
+              // name/role arrive through the `actor` join, not as columns
+              actor: { name: "aom", role: { name: "admin" } },
               createdAt: new Date("2026-03-04T05:06:07.000Z"),
             },
             {
@@ -381,8 +387,7 @@ describe("RulesService", () => {
               action: "rule.updated",
               entityId: null,
               detail: null,
-              actorName: null,
-              actorRole: null,
+              actor: null,
               createdAt: new Date("2026-03-04T05:06:08.000Z"),
             },
           ],

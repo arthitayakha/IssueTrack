@@ -80,3 +80,32 @@ export interface WorkSession {
   duration: number;
   createdAt: string;
 }
+
+/** Group a log row belongs to — drives the type filter and the chip colour. */
+export type ActivityLogType = "card" | "comment" | "rule";
+
+/**
+ * One row of the system-wide activity feed (GET /activity-logs). `payload` is
+ * the row's `detail` column parsed as JSON (null when it is missing or not an
+ * object) — e.g. `{ from, to }` for card.moved, `{ title }` for card.created.
+ */
+export interface ActivityLogDto {
+  id: number;
+  /** "card.created" | "card.moved" | ... | "comment.created" | "rule.updated" */
+  action: string;
+  type: ActivityLogType;
+  actorId: number | null;
+  actorName: string | null;
+  actorRole: string | null;
+  /** Issue id for card/comment rows, rule id for rule.* rows. */
+  entityId: number | null;
+  payload: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+/** Distinct actor for the feed's actor filter dropdown. */
+export interface ActivityActorDto {
+  id: number;
+  name: string;
+  role: string | null;
+}

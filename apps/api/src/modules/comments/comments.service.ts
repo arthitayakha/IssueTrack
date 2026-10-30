@@ -53,13 +53,16 @@ export class CommentsService {
     });
     // automation rules — status comes from the issue, text from the comment
     const issue = await this.issues.findOne({ where: { id: issueId }, relations: ["category"] });
-    // notify assignee + reporter about the new comment (never the commenter)
+    // notify assignee + reporter about the new comment (never the commenter);
+    // on a card nobody has picked up yet the admins hear it too, or a customer
+    // question would land in front of no one
     if (issue) {
       await this.notifications.notifyIssueEvent({
         issue,
         action: "commented",
         recipients: [issue.programmerId, issue.customerId],
         actor,
+        alsoAdmins: !issue.programmerId,
       });
     }
     await this.rulesEngine.evaluate("comment.created", {
@@ -133,9 +136,8 @@ export class CommentsService {
         action: data.action,
         entityId: data.entityId,
         detail: data.detail,
+        // only the id is stored — name/role come off `users` at read time
         actorId: data.actor?.actorId ?? null,
-        actorName: data.actor?.actorName ?? null,
-        actorRole: data.actor?.actorRole ?? null,
       }),
     );
   }

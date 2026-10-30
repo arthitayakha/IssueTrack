@@ -126,16 +126,19 @@ UNIQUE (role_id, permission)
 ### 2.4 ตาราง `notifications` (มีอยู่แล้ว)
 
 ```
-id, user_id (NOT NULL), issue_id (NOT NULL), title, message, type, is_read, created_at
+id, user_id, issue_id, actor_id, context, link, title, type, created_at
 ```
 ทุก trigger เป็น issue-scoped อยู่แล้ว → `issue_id` ใส่ได้เสมอ
+— ไม่เก็บ `actor_name` (join จาก `users` ตอนอ่าน) และไม่มี `message` / `is_read` / `is_archived`
+ เพราะ **อ่าน = ลบ** (เหลือกล่องขาเข้าเดียว)
 
 ### 2.5 ตาราง `activity_logs` (reuse ได้)
 
 ```
-id, actor_id, actor_name, actor_role, action, board_id, entity_id, detail, created_at
+id, actor_id, action, board_id, entity_id, detail, created_at
 ```
 → ใช้เขียน log `rule.fired` / `rule.error` ได้
+(`actor_name` / `actor_role` ถูกตัดออก — ชื่อ/บทบาท join จาก `users`+`roles` ตอนอ่าน)
 
 ---
 

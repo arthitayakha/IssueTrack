@@ -8,6 +8,8 @@ export interface IssueStatus {
   id: number;
   name: string;
   description: string | null;
+  /** Column color from `issue_statuses.color` ("#rrggbb" or a palette name). */
+  color?: string | null;
   isActive: boolean;
   sortOrder: number;
   customName?: string | null;
@@ -51,8 +53,12 @@ export interface BoardIssue {
   description: string;
   analysisCause: string | null;
   resolution: string | null;
+  /** Visible: a rule opens the field in this column or an earlier one, or a value sits here. */
   isAnalysisOpen?: boolean;
   isResolutionOpen?: boolean;
+  /** Editable: this column is exactly one the rule opens the field for. */
+  canEditAnalysis?: boolean;
+  canEditResolution?: boolean;
   statusId: number | null;
   statusName: string | null;
   priorityId: number | null;
@@ -82,6 +88,11 @@ export interface BoardIssue {
   timeEntryEverGranted?: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Locked by a per-card `issue.lock` rule or by an active status lock rule
+   * covering its status — the board refuses to start a drag; a one-shot
+   * unlock (`lock_exempted`) already released it for the next move.
+   */
   isLocked?: boolean;
 }
 
@@ -264,12 +275,6 @@ export async function assignIssue(
   }, getToken());
 }
 
-export async function lockIssue(id: number): Promise<BoardIssue> {
-  return apiFetch<BoardIssue>(`/issues/${id}/lock`, {
-    method: "PUT",
-  }, getToken());
-}
-
 export async function unlockIssue(id: number): Promise<BoardIssue> {
   return apiFetch<BoardIssue>(`/issues/${id}/unlock`, {
     method: "PUT",
@@ -382,9 +387,17 @@ export async function fetchStatuses(
   );
 }
 
-/** Whether the "one column at a time" drag guard is on (drives the board's drop preview). */
-export async function fetchMovePolicy(): Promise<{ stepOnly: boolean }> {
-  return apiFetch<{ stepOnly: boolean }>("/issues/move-policy", {}, getToken());
+/**
+ * Board drag policy: the "one column at a time" guard (drives the drop
+ * preview) and whether any `issue.unlock` rule is on (a locked card only
+ * offers its unlock button while the rules allow a release).
+ */
+export async function fetchMovePolicy(): Promise<{ stepOnly: boolean; unlockAvailable: boolean }> {
+  return apiFetch<{ stepOnly: boolean; unlockAvailable: boolean }>(
+    "/issues/move-policy",
+    {},
+    getToken(),
+  );
 }
 
 export async function fetchPriorities(): Promise<PaginatedResponse<IssuePriority>> {

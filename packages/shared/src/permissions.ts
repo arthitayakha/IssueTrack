@@ -73,7 +73,9 @@ export type Permission =
   | "role.delete"
   | "role.permission.update"
   | "automation.view"
-  | "automation.update";
+  | "automation.update"
+  | "log.view"
+  | "log.export";
 
 export const ALL_PERMISSIONS: readonly Permission[] = [
   "auth.login",
@@ -149,6 +151,8 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   "role.permission.update",
   "automation.view",
   "automation.update",
+  "log.view",
+  "log.export",
 ];
 
 export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
@@ -346,6 +350,8 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "role.permission.update": "แก้ไขสิทธิ์บทบาท",
   "automation.view": "ดูกฎอัตโนมัติ",
   "automation.update": "จัดการกฎอัตโนมัติ",
+  "log.view": "ดูประวัติกิจกรรม",
+  "log.export": "ส่งออกประวัติกิจกรรม",
 };
 
 export const POSITION_TEMPLATES: Record<string, readonly Permission[]> = {
@@ -400,6 +406,7 @@ export const PERMISSION_DEPENDENCIES: Record<string, string[]> = {
   "role.permission.update": ["role.view"],
   "permission.update": ["permission.view"],
   "automation.update": ["automation.view"],
+  "log.export": ["log.view"],
 };
 
 export const ROUTE_ACCESS: Record<string, string> = {
@@ -410,6 +417,7 @@ export const ROUTE_ACCESS: Record<string, string> = {
   "permission.update": "/settings",
   "automation.view": "/automation",
   "report.view": "/reports",
+  "log.view": "/logs",
 };
 
 export function permissionsForRole(role: string): readonly Permission[] {

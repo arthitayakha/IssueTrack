@@ -27,6 +27,7 @@ export class IssueStatusesService {
         id: s.id,
         name: s.name,
         description: s.description,
+        color: s.color,
         isActive: s.isActive,
         issueCount: await this.issues.count({ where: { statusId: s.id } }),
       })),
@@ -37,6 +38,7 @@ export class IssueStatusesService {
   async create(data: {
     name: string;
     description?: string;
+    color?: string;
   }) {
     const existing = await this.issueStatuses.findOne({ where: { name: data.name } });
     if (existing) {
@@ -51,6 +53,8 @@ export class IssueStatusesService {
       this.issueStatuses.create({
         name: data.name,
         description: data.description ?? null,
+        // No color chosen → let the column's DB default ("default") apply.
+        color: data.color || null,
         isActive: true,
         position: nextPosition,
       }),
@@ -59,6 +63,7 @@ export class IssueStatusesService {
       id: status.id,
       name: status.name,
       description: status.description,
+      color: status.color,
       isActive: status.isActive,
     };
   }
@@ -68,6 +73,7 @@ export class IssueStatusesService {
     data: {
       name?: string;
       description?: string;
+      color?: string;
     },
   ) {
     const status = await this.issueStatuses.findOne({ where: { id } });
@@ -82,11 +88,13 @@ export class IssueStatusesService {
       status.name = data.name;
     }
     if (data.description !== undefined) status.description = data.description;
+    if (data.color !== undefined) status.color = data.color;
     await this.issueStatuses.save(status);
     return {
       id: status.id,
       name: status.name,
       description: status.description,
+      color: status.color,
       isActive: status.isActive,
     };
   }

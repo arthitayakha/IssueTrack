@@ -1,4 +1,4 @@
-﻿{
+{
   "Metadata": {
     "title": "Issue Tracker",
     "description": "A Kanban-style issue tracking application"
@@ -37,6 +37,10 @@
     "title": "Boards",
     "comingSoon": "This page is under development",
     "invalidTransition": "Cards can only move one column at a time (to an adjacent column) — pause the step-by-step rule in Automation to drag across columns",
+    "lockedCard": "This card is locked in its status by an automation rule — use Unlock on the card first",
+    "errorTitle": "The board could not be opened",
+    "errorDesc": "Something unexpected went wrong — try again, or refresh this page.",
+    "errorRetry": "Try again",
     "reportIssue": "Report Issue",
     "reportIssueTitle": "Report New Issue",
     "reportIssueSubtitle": "Fill in the details to report a new issue for the team to review",
@@ -326,7 +330,8 @@
       "category": "Category Management",
       "status": "Status Management",
       "priority": "Priority Management",
-      "report": "Report Management"
+      "report": "Report Management",
+      "logs": "Activity Log"
     },
     "columnPermission": "Permission",
     "categories": {
@@ -395,6 +400,11 @@
     "statusUpdated": "Status updated successfully",
     "statusDeleted": "Status deleted successfully",
     "statusToggled": "Status updated successfully",
+    "statusNameRequired": "Enter a status name",
+    "statusNameTooLong": "Status name must be 100 characters or fewer",
+    "statusNameExists": "A status with this name already exists",
+    "statusInvalidName": "Invalid status name (1-100 characters)",
+    "statusInvalidColor": "Invalid color",
     "priorityCreated": "Priority created successfully",
     "priorityUpdated": "Priority updated successfully",
     "priorityDeleted": "Priority deleted successfully",
@@ -435,6 +445,7 @@
     "refresh": "Refresh",
     "loadError": "Failed to load notifications",
     "loading": "Loading...",
+    "retry": "Try again",
     "tabs": {
       "inbox": "Inbox",
       "general": "General",
@@ -446,13 +457,19 @@
     "actions": {
       "created": "created",
       "assigned": "assigned",
+      "unassigned": "unassigned",
       "commented": "commented on",
       "moved": "moved",
+      "needs_assignment": "awaiting assignment",
+      "status_pending": "queued",
+      "in_progress": "in progress",
+      "completed": "completed",
       "edited": "edited",
       "deleted": "deleted",
       "restored": "restored",
       "rule_created": "created rule",
-      "rule_updated": "updated rule"
+      "rule_updated": "updated rule",
+      "rule_deleted": "deleted rule"
     },
     "emptyInbox": {
       "title": "No new notifications",
@@ -467,6 +484,88 @@
       "description": "Notifications you archive will live here"
     }
   },
+  "Logs": {
+    "title": "Activity Log",
+    "subtitle": "Every activity in the system — cards, comments and automation rules",
+    "refresh": "Refresh",
+    "retry": "Try again",
+    "loadError": "Failed to load the activity log",
+    "total": "{count} entries",
+    "exportCsv": "Export CSV",
+    "exporting": "Exporting...",
+    "exportDone": "Exported {count} entries",
+    "exportFailed": "Export failed",
+    "filters": {
+      "actor": "Actor",
+      "actorAll": "Everyone",
+      "type": "Type",
+      "typeAll": "All types",
+      "from": "From",
+      "to": "To",
+      "searchPlaceholder": "Search details...",
+      "reset": "Clear filters"
+    },
+    "columns": {
+      "time": "Time",
+      "actor": "Actor",
+      "role": "Role",
+      "type": "Type",
+      "action": "Action",
+      "detail": "Details",
+      "entity": "Reference"
+    },
+    "type": {
+      "card": "Card",
+      "comment": "Comment",
+      "rule": "Rule"
+    },
+    "entity": {
+      "viewCard": "Go to card",
+      "viewRule": "Go to rule"
+    },
+    "empty": {
+      "title": "No activity yet",
+      "description": "New activity will appear here as people work in the system"
+    },
+    "detail": {
+      "system": "System",
+      "noStatus": "no status",
+      "title": "Title: {title}",
+      "move": "{from} → {to}",
+      "fields": "Edited: {fields}",
+      "status": "Status: {status}",
+      "assignedTo": "Assigned to user #{id}",
+      "assignChanged": "Assignee changed #{from} → #{to}",
+      "unassigned": "Unassigned",
+      "comment": "Comment #{id}",
+      "ruleName": "Rule: {name}"
+    },
+    "fields": {
+      "title": "Title",
+      "description": "Description",
+      "analysisCause": "Cause",
+      "resolution": "Resolution",
+      "priority": "Priority",
+      "category": "Category",
+      "label": "Label",
+      "labels": "Labels"
+    },
+    "actions": {
+      "card_created": "Card created",
+      "card_edited": "Card edited",
+      "card_moved": "Card moved",
+      "card_assigned": "Card assigned",
+      "card_unlocked": "Card unlocked",
+      "card_deleted": "Card deleted",
+      "card_restored": "Card restored",
+      "comment_created": "Comment created",
+      "comment_updated": "Comment edited",
+      "comment_deleted": "Comment deleted",
+      "rule_created": "Rule created",
+      "rule_updated": "Rule edited",
+      "rule_deleted": "Rule deleted"
+    }
+  },
   "Nav": {
     "dashboard": "Dashboard",
     "boards": "Boards",
@@ -477,6 +576,7 @@
     "permissions": "Permissions",
     "settings": "Master Data",
     "reports": "Reports",
+    "logs": "Activity Log",
     "signOut": "Sign out",
     "switchLanguage": "Switch language",
     "auth": "Authentication",
@@ -491,7 +591,8 @@
     "report": "Reports",
     "selectAll": "Select All",
     "automation": "Automation",
-    "notifications": "Notifications"
+    "notifications": "Notifications",
+    "menu": "Menu"
   },
   "pagination": {
     "showing": "Showing {start}-{end} of {total}"
@@ -648,6 +749,138 @@
       "paramAnalysis": "Analysis / Cause",
       "paramResolution": "Resolution",
       "paramOpenAtStatus": "Open the fields when the card is in status"
+    }
+  },
+  "Reports": {
+    "title": "Reports",
+    "subtitle": "Pick a view + filter the data, then export to PDF or CSV from the toolbar",
+    "views": {
+      "issues": "All issues",
+      "assignee": "By assignee",
+      "category": "By category",
+      "app": "By app",
+      "activity": "Recent activity",
+      "rules": "Automation history"
+    },
+    "summary": {
+      "actual": "Total actual hours",
+      "entered": "Total hours entered",
+      "diff": "Diff",
+      "hours": "h"
+    },
+    "toolbar": {
+      "view": "Report view",
+      "range": "Date range",
+      "rangeAll": "All time",
+      "rangeToday": "Today",
+      "rangeWeek": "This week",
+      "rangeThisMonth": "This month",
+      "rangeLastMonth": "Last month",
+      "range90": "Last 90 days",
+      "rangeCustom": "Custom",
+      "pickRangeTitle": "Pick a date range",
+      "pickRangeHint": "Choose the start and end dates",
+      "apply": "OK",
+      "clearRange": "Clear",
+      "filtersBtn": "Filters",
+      "columns": "Columns",
+      "sectionSummary": "Summary table",
+      "sectionDetail": "Task detail table (expanded rows)",
+      "dragHint": "Drag to reorder columns (the number column stays on top)",
+      "search": "Search...",
+      "refresh": "Refresh",
+      "exportPdf": "Export PDF",
+      "exportCsv": "Export CSV"
+    },
+    "filters": {
+      "heading": "Filters",
+      "from": "From date",
+      "to": "To date",
+      "category": "Category",
+      "status": "Status",
+      "priority": "Priority",
+      "app": "App",
+      "sectionAssignee": "Programmer",
+      "sectionReporter": "Reporter",
+      "searchPlaceholder": "Search...",
+      "noResults": "No results",
+      "showMore": "Show all…",
+      "showLess": "Show less",
+      "clear": "Clear all",
+      "selectedCount": "{count} selected"
+    },
+    "columns": {
+      "issueNumber": "Issue #",
+      "index": "No.",
+      "receivedAt": "Received at",
+      "title": "Title",
+      "description": "Description",
+      "assignee": "Assignee",
+      "reporter": "Reporter",
+      "category": "Category",
+      "app": "App",
+      "status": "Status",
+      "priority": "Priority",
+      "analysisCause": "Analysis / Cause",
+      "resolution": "Resolution",
+      "workStarted": "Started",
+      "workEnded": "Completed",
+      "duration": "Duration",
+      "enteredTime": "Entered time",
+      "operators": "Operators",
+      "hoursActual": "Actual hours",
+      "hoursEntered": "Entered hours",
+      "diff": "Diff",
+      "person": "Programmer",
+      "issueCount": "Issues",
+      "openCount": "Still open",
+      "lastAt": "Latest issue",
+      "topAssignee": "Most time spent",
+      "sessionIssue": "Issue",
+      "type": "Type",
+      "actor": "Who",
+      "content": "Content / file name",
+      "time": "Time",
+      "rule": "Rule",
+      "action": "Action",
+      "comment": "Comment",
+      "attachment": "Attachment",
+      "unassigned": "Unassigned",
+      "total": "Total",
+      "noCategory": "No category",
+      "noApp": "No app",
+      "medianActual": "Median timer (min)",
+      "medianEntered": "Median entered (min)"
+    },
+    "duration": {
+      "hours": "{h} hours",
+      "minutes": "{m} minutes"
+    },
+    "states": {
+      "loading": "Loading...",
+      "emptyTitle": "No data found",
+      "emptyDesc": "Try adjusting the filters or the date range",
+      "error": "Failed to load data",
+      "retry": "Retry",
+      "exportFailed": "Export failed"
+    },
+    "detail": {
+      "tasksOf": "Tasks of {name}",
+      "note": "Actual hours = recorded work sessions · Entered hours = typed on the issue",
+      "noTasks": "No tasks found for this person with the current filters"
+    },
+    "table": {
+      "count": "{count} items total"
+    },
+    "ruleActions": {
+      "created": "Created",
+      "updated": "Updated",
+      "deleted": "Deleted"
+    },
+    "print": {
+      "range": "Date range: {range}",
+      "generated": "Generated: {date} · By: {user}",
+      "allRange": "All time"
     }
   }
 }

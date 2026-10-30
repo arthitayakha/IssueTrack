@@ -53,6 +53,11 @@ export class IssuesController {
       appIds?: string;
       assigneeIds?: string;
       reporterIds?: string;
+      createdFrom?: string;
+      createdTo?: string;
+      sortBy?: string;
+      sortOrder?: string;
+      withTimeline?: string;
     },
     @CurrentUser() user: AuthUser,
   ) {
@@ -63,7 +68,12 @@ export class IssuesController {
       appIds: parseIdList(query.appIds),
       assigneeIds: parseIdList(query.assigneeIds),
       reporterIds: parseIdList(query.reporterIds),
-    });
+      createdFrom: query.createdFrom,
+      createdTo: query.createdTo,
+      sortBy: query.sortBy,
+      sortOrder: query.sortOrder,
+    },
+    query.withTimeline === "1" || query.withTimeline === "true");
   }
 
   @Get("issues/trash")
@@ -77,6 +87,13 @@ export class IssuesController {
   @Permissions("issue.own.view")
   movePolicy() {
     return this.issues.movePolicy();
+  }
+
+  // one-shot release from a status lock (the lock icon on a locked card)
+  @Put("issues/:id/unlock")
+  @Permissions("issue.all.update")
+  unlock(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
+    return this.issues.unlock(id, this.actor(user));
   }
 
   @Get("issues/:id")

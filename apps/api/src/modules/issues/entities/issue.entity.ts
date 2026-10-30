@@ -148,6 +148,21 @@ export class Issue {
   @Column({ name: "is_locked", default: false })
   isLocked!: boolean;
 
+  /**
+   * One-shot release from a status lock (an active `issue.lock` rule covers
+   * the card's status): while set the card may leave it once — the move
+   * itself clears the flag, so landing in another locked status locks again.
+   */
+  @Column({ name: "lock_exempted", default: false })
+  lockExempted!: boolean;
+
+  /**
+   * วันที่เริ่มรับเรื่อง — stamped when the card first lands in the receiving
+   * status ("รอดำเนินการ", id 2) or is created directly there; NULL until then.
+   */
+  @Column({ name: "received_at", type: "timestamptz", nullable: true })
+  receivedAt!: Date | null;
+
   @Column({ name: "deleted_at", type: "timestamptz", nullable: true })
   deletedAt!: Date | null;
 

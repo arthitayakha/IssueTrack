@@ -12,6 +12,7 @@ import { IssuePriority } from "../issue-priorities/entities/issue-priority.entit
 import { Category } from "../categories/entities/category.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
 import { WorkSession } from "../work-sessions/entities/work-session.entity";
+import { NotificationsService } from "../notifications/notifications.service";
 import { Rule } from "./entities/rule.entity";
 
 /** Triggers the engine listens for — one per hook placed in the services. */
@@ -41,6 +42,8 @@ export interface StatusGates {
   timer: Set<number>;
   analysis: Set<number>;
   resolution: Set<number>;
+  /** statuses frozen by an active `issue.lock` rule — cards there can't move */
+  locked: Set<number>;
 }
 
 /**
@@ -71,6 +74,9 @@ export class RulesEngineService {
     @InjectRepository(Category) private readonly categories: Repository<Category>,
     @InjectRepository(ActivityLog) private readonly activityLogs: Repository<ActivityLog>,
     @InjectRepository(WorkSession) private readonly workSessions: Repository<WorkSession>,
+    // rule-driven moves/assigns notify through the SAME policy as manual ones,
+    // so a card finished by automation still reaches the customer
+    private readonly notifications: NotificationsService,
   ) {}
 
   async evaluate(triggerKey: EngineTrigger, ctx: RuleContext): Promise<void> {
@@ -128,14 +134,21 @@ export class RulesEngineService {
    * without a status condition covers every status.
    *
    * `timer` feeds the card's ⏱ box, `analysis` / `resolution` the two
-   * fill-in fields — those persist an `is_*_open` flag when the rule fires,
-   * which never sees cards that were *already* sitting in the status.
+   * fill-in fields — the card detail shows them from an opening column
+   * onward (board order) and lets the value change only inside exactly an
+   * opening status (`IssuesService.toResponse()` / `assertFieldEditable()`).
+   * The engine still stamps the legacy `is_*_open` flags when it fires,
+   * but those no longer drive the display.
+   * `locked` freezes a whole status: an active `issue.lock` rule that names
+   * its statuses locks every card there (see `IssuesService.move()`), while
+   * a lock rule *without* a status condition stays a per-card event lock.
    */
   async statusGates(statusIds: Array<number | null>): Promise<StatusGates> {
     const gates: StatusGates = {
       timer: new Set<number>(),
       analysis: new Set<number>(),
       resolution: new Set<number>(),
+      locked: new Set<number>(),
     };
     const candidates = [...new Set(statusIds.filter((id): id is number => id != null))];
     if (candidates.length === 0) return gates;
@@ -144,6 +157,7 @@ export class RulesEngineService {
       "work_session.start": gates.timer,
       "issue.open_analysis": gates.analysis,
       "issue.open_resolution": gates.resolution,
+      "issue.lock": gates.locked,
     };
     const rules = await this.rules.find({ where: { isActive: true } });
     for (const rule of rules) {
@@ -151,8 +165,10 @@ export class RulesEngineService {
       if (!target) continue; // actions without a status gate drive no field
       const statusConditions = (rule.conditions ?? []).filter((c) => c.field === "to_status");
       if (statusConditions.length === 0) {
-        // no status filter → the rule covers any status the card sits in
-        candidates.forEach((id) => target.add(id));
+        // a lock rule with no status filter is a per-card event lock
+        // ("created → lock" freezes that one card) — it must never freeze
+        // every column on the board; every other gate covers any status
+        if (rule.actionKey !== "issue.lock") candidates.forEach((id) => target.add(id));
         continue;
       }
       for (const id of candidates) {
@@ -167,6 +183,27 @@ export class RulesEngineService {
   /** Statuses an active "start timer" rule would time (see `statusGates`). */
   async startTimerApplies(statusIds: Array<number | null>): Promise<Set<number>> {
     return (await this.statusGates(statusIds)).timer;
+  }
+
+  /**
+   * Is any "unlock card" rule active? The board only offers the one-shot
+   * release button on a locked card while at least one `issue.unlock` rule
+   * is switched on — without it a locked status stays sealed and admins
+   * release cards by pausing the lock rule in /automation instead.
+   * Lookup errors fail closed (no button) so a hiccup never hands out
+   * unlocks the rules do not allow.
+   */
+  async isUnlockRuleActive(): Promise<boolean> {
+    try {
+      const rule = await this.rules.findOne({
+        where: { actionKey: "issue.unlock", isActive: true },
+      });
+      return Boolean(rule);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`unlock rule lookup failed: ${message}`);
+      return false;
+    }
   }
 
   /**
@@ -280,7 +317,18 @@ export class RulesEngineService {
         if (!Number.isFinite(statusId)) return { applied: false, reason: "no target status configured" };
         const status = await this.statuses.findOne({ where: { id: statusId } });
         if (!status) return { applied: false, reason: `status ${statusId} not found` };
+        const issue = await this.issues.findOne({ where: { id: issueId }, relations: ["category"] });
+        if (!issue) return { applied: false, reason: `issue ${issueId} not found` };
         await this.issues.update(issueId, { statusId });
+        // same recipient policy as a manual drag — a card finished by a rule
+        // still reaches the customer + admins; a no-op move stays silent
+        if (issue.statusId !== statusId) {
+          await this.notifications.notifyStatusChange({
+            issue,
+            statusId,
+            actor: this.actorFrom(ctx),
+          });
+        }
         return applied(`moved #${issueId} to status "${status.name}"`);
       }
       case "issue.assign": {
@@ -293,11 +341,33 @@ export class RulesEngineService {
         if (!user) {
           return { applied: false, reason: `no active user holds position ${positionId}` };
         }
+        const issue = await this.issues.findOne({ where: { id: issueId }, relations: ["category"] });
+        const previousAssigneeId = issue?.programmerId ?? null;
         await this.issues.update(issueId, { programmerId: user.id });
+        // the assignee hears about a rule-driven assign exactly like a manual one
+        if (issue) {
+          await this.notifications.notifyAssignmentChange({
+            issue,
+            assigneeId: user.id,
+            previousAssigneeId,
+            actor: this.actorFrom(ctx),
+          });
+        }
         return applied(`assigned #${issueId} to ${user.name} (position ${positionId})`);
       }
       case "issue.unassign": {
+        const issue = await this.issues.findOne({ where: { id: issueId }, relations: ["category"] });
+        const previousAssigneeId = issue?.programmerId ?? null;
         await this.issues.update(issueId, { programmerId: null });
+        // the person who lost the card + the admins get told to reassign
+        if (issue) {
+          await this.notifications.notifyAssignmentChange({
+            issue,
+            assigneeId: null,
+            previousAssigneeId,
+            actor: this.actorFrom(ctx),
+          });
+        }
         return applied(`unassigned #${issueId}`);
       }
       case "issue.add_label":
@@ -325,10 +395,20 @@ export class RulesEngineService {
         return applied(`removed label ${labelId} from #${issueId}`);
       }
       case "issue.lock":
+        // a lock rule that *names statuses* is a status lock: the gate in
+        // `statusGates()` freezes those columns at read/move time, and a
+        // per-card flag would outlive pausing the rule — only condition-less
+        // rules ("created → lock this card") write the flag.
+        if ((rule.conditions ?? []).some((c) => c.field === "to_status")) {
+          return { applied: false, reason: "status lock is enforced at read time, not per card" };
+        }
         await this.issues.update(issueId, { isLocked: true });
         return applied(`locked #${issueId}`);
       case "issue.unlock":
-        await this.issues.update(issueId, { isLocked: false });
+        // clears the per-card flag and grants the one-shot release, so a
+        // rule can free a card from a status lock the same way the unlock
+        // button on the board does (the next move consumes the exemption)
+        await this.issues.update(issueId, { isLocked: false, lockExempted: true });
         return applied(`unlocked #${issueId}`);
       // The status gate for these two lives in the trigger's conditions
       // (e.g. "card moved to สถานะ X" picked in step ①), so the action itself
@@ -368,9 +448,8 @@ export class RulesEngineService {
             action: "comment.created",
             entityId: issueId,
             detail: JSON.stringify({ commentId: saved.id, automated: true }),
+            // only the id is stored — name/role come off `users` at read time
             actorId: author.id,
-            actorName: author.name,
-            actorRole: author.role?.name ?? null,
           }),
         );
         return applied(`commented on #${issueId}`);
@@ -429,6 +508,16 @@ export class RulesEngineService {
           reason: `action ${rule.actionKey} is not supported yet`,
         };
     }
+  }
+
+  /**
+   * `RuleContext.actorId` arrives as `unknown` — only a real id may become an
+   * actor, so a missing / zero / garbage value yields `null` instead of a
+   * bogus one. Same shape `NotificationActor` expects.
+   */
+  private actorFrom(ctx: RuleContext): { actorId: number } | null {
+    const actorId = Number(ctx.actorId);
+    return Number.isFinite(actorId) && actorId > 0 ? { actorId } : null;
   }
 
   /**

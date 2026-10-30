@@ -160,6 +160,7 @@ import {
   setActualFixDuration,
 } from "@/lib/board-api";
 import { fetchLabels, createLabel, updateLabel, type Label } from "@/lib/labels-api";
+import { resolveStatusColor } from "@/lib/status-color";
 import { Pagination } from "@/components/pagination";
 import AttachmentPreviewDialog from "@/components/attachment-preview-dialog";
 
@@ -181,11 +182,6 @@ const PRIORITY_LABELS: Record<string, string> = {
   medium: "Medium",
   low: "Low",
 };
-
-function getColumnColor(status: string, theme: any): string {
-  const key = status.toLowerCase();
-  return theme.custom.columnColors[key] ?? theme.custom.columnColors.default;
-}
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr);
@@ -731,6 +727,7 @@ function KanbanColumn({
   canDelete,
   canUnlockIssue,
   isDropTarget,
+  isFirstColumn,
   roleName,
   timers,
   showTime,
@@ -751,6 +748,8 @@ function KanbanColumn({
   canDelete: boolean;
   canUnlockIssue: boolean;
   isDropTarget: boolean;
+  /** This column is the board's entry column — where customers may delete. */
+  isFirstColumn: boolean;
   roleName: string;
   timers: BoardTimers;
   showTime: boolean;
@@ -767,12 +766,20 @@ function KanbanColumn({
 
   const theme = useTheme();
 
-  const color = getColumnColor(status.name, theme);
+  const color = resolveStatusColor(theme, status.color, status.name);
   // Match the API ordering (created_at DESC, id DESC) so the newest card is
   // always first and "load more" appends older cards underneath.
   const visibleIssues = [...items].sort((a, b) => {
     const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     return diff !== 0 ? diff : b.id - a.id;
+  });
+  // A transient duplicate (a preview racing a reload) must never render twice:
+  // two components sharing one `issue-<id>` sortable id confuse the drag layer.
+  const seenIds = new Set<number>();
+  const uniqueIssues = visibleIssues.filter((issue) => {
+    if (seenIds.has(issue.id)) return false;
+    seenIds.add(issue.id);
+    return true;
   });
 
   const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
@@ -814,7 +821,7 @@ function KanbanColumn({
           </Typography>
         </Box>
       </Box>
-      <SortableContext items={visibleIssues.map((i) => `issue-${i.id}`)} strategy={verticalListSortingStrategy}>
+      <SortableContext items={uniqueIssues.map((i) => `issue-${i.id}`)} strategy={verticalListSortingStrategy}>
         <Box
           ref={setDroppableNodeRef}
           data-status-drop-id={status.id}
@@ -830,13 +837,13 @@ function KanbanColumn({
             "&::-webkit-scrollbar": { display: "none" },
           }}
         >
-          {visibleIssues.map((issue) => (
+          {uniqueIssues.map((issue) => (
             <TrelloCard
               key={issue.id}
               issue={issue}
               canManage={canManage}
               canEdit={canEdit}
-              canDelete={canDelete && (roleName !== "customer" || status.name.toLowerCase() === "backlog")}
+              canDelete={canDelete && (roleName !== "customer" || isFirstColumn)}
               canUnlockIssue={canUnlockIssue}
               runningSince={timers.running[issue.id] ?? null}
               nowMs={timers.now}
@@ -1670,6 +1677,11 @@ function IssueDetailDialog({
 
   const issueKey = current ? (current.issueNumber ?? "") : "";
 
+  // the two rule-driven fill-ins: editable only inside exactly the status an
+  // active rule opens them for (the API sends that answer as canEdit*)
+  const canFillAnalysis = canEditIssue && Boolean(current?.canEditAnalysis);
+  const canFillResolution = canEditIssue && Boolean(current?.canEditResolution);
+
   return (
     <Dialog
       open={open}
@@ -2163,24 +2175,28 @@ function IssueDetailDialog({
             )}
           </Box>
           <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {/* hidden until a rule opens them; once filled they stay visible
-                but read-only (the flag alone only gates the first fill) */}
+            {/* visible from the status the rule opens them for onward (board
+                order), or wherever a value already sits; editing only inside
+                exactly that status — canEditAnalysis/canEditResolution */}
             {(current?.isAnalysisOpen || current?.analysisCause) && (
               <EditableTextField
                 label={t("detail.analysisCause")}
                 value={current?.analysisCause ?? null}
                 placeholder={
-                  current?.isAnalysisOpen ? t("detail.analysisPlaceholder") : t("detail.lockedHint")
+                  canFillAnalysis ? t("detail.analysisPlaceholder") : t("detail.lockedHint")
                 }
-                canEdit={
-                  canEditIssue && Boolean(current?.isAnalysisOpen) && !current?.analysisCause
-                }
+                canEdit={canFillAnalysis}
                 saving={saving}
                 onSave={async (next) => {
                   if (!current) return;
-                  const updated = await updateIssue(current.id, { analysisCause: next });
-                  setLocalIssue(updated);
-                  onRefresh();
+                  try {
+                    const updated = await updateIssue(current.id, { analysisCause: next });
+                    setLocalIssue(updated);
+                    onRefresh();
+                  } catch (e) {
+                    setError(getErrorMessage(e, "บันทึกวิเคราะห์/สาเหตุไม่สำเร็จ"));
+                    throw e;
+                  }
                 }}
               />
             )}
@@ -2189,17 +2205,22 @@ function IssueDetailDialog({
                 label={t("detail.resolution")}
                 value={current?.resolution ?? null}
                 placeholder={
-                  current?.isResolutionOpen ? t("detail.resolutionPlaceholder") : t("detail.lockedHint")
+                  canFillResolution
+                    ? t("detail.resolutionPlaceholder")
+                    : t("detail.lockedHint")
                 }
-                canEdit={
-                  canEditIssue && Boolean(current?.isResolutionOpen) && !current?.resolution
-                }
+                canEdit={canFillResolution}
                 saving={saving}
                 onSave={async (next) => {
                   if (!current) return;
-                  const updated = await updateIssue(current.id, { resolution: next });
-                  setLocalIssue(updated);
-                  onRefresh();
+                  try {
+                    const updated = await updateIssue(current.id, { resolution: next });
+                    setLocalIssue(updated);
+                    onRefresh();
+                  } catch (e) {
+                    setError(getErrorMessage(e, "บันทึกการแก้ไขไม่สำเร็จ"));
+                    throw e;
+                  }
                 }}
               />
             )}
@@ -2843,16 +2864,6 @@ function LabelEditDialog({
   );
 }
 
-function getStatusColor(theme: Theme, name: string): string {
-  const key = name.toLowerCase();
-  if (key.includes("backlog")) return theme.custom.columnColors.backlog;
-  if (key.includes("todo")) return theme.custom.columnColors.todo;
-  if (key.includes("doing")) return theme.custom.columnColors.doing;
-  if (key.includes("done")) return theme.custom.columnColors.done;
-  if (key.includes("review")) return theme.custom.columnColors.review;
-  return theme.custom.columnColors.default;
-}
-
 function getPriorityColor(theme: Theme, name: string): string {
   const key = name.toLowerCase();
   if (key.includes("urgent")) return theme.palette.error.main;
@@ -3130,7 +3141,7 @@ function FilterPanel({
           height: 8,
           flexShrink: 0,
           borderRadius: "50%",
-          bgcolor: getStatusColor(theme, status.name),
+          bgcolor: resolveStatusColor(theme, status.color, status.name),
         }}
       />
     ),
@@ -3401,6 +3412,14 @@ function KanbanView({
   const dragTargetStatusId = useRef<number | null>(null);
   /** Last column the step-only rule refused during this drag (drop feedback). */
   const blockedTargetStatusId = useRef<number | null>(null);
+  /**
+   * The column the dragged card currently sits in *during the preview*.
+   * `issueMap` is a render-time snapshot — a fast second `dragOver` reads the
+   * original column out of it and would leave a copy of the card behind.
+   */
+  const previewSourceStatusId = useRef<number | null>(null);
+  /** Drop writes run one at a time through this chain (see enqueueDrop). */
+  const dropChainRef = useRef<Promise<void>>(Promise.resolve());
   const isDraggingRef = useRef(false);
   const requestSeqRef = useRef<Record<number, number>>({});
 
@@ -3413,6 +3432,12 @@ function KanbanView({
         : localStatuses.filter((s) => selectedStatusIds.includes(s.id)),
     [localStatuses, selectedStatusIds],
   );
+
+  /**
+   * The board's entry column — `localStatuses` keeps the API's position order,
+   * so index 0 is the first column. Customers may only delete cards there.
+   */
+  const firstStatusId = localStatuses[0]?.id ?? null;
 
   const loadColumn = useCallback(
     async (statusId: number, pageNum: number, append: boolean) => {
@@ -3526,6 +3551,22 @@ function KanbanView({
     return Math.abs(from - to) === 1;
   };
 
+  /**
+   * Serializes drop writes: a drop is `moveIssue` + its column reload as one
+   * job, so a drop fired while the previous one is still settling waits its
+   * turn instead of interleaving writes and reloads — exactly what fast
+   * dragging produces (cards resyncing out of order, stale targets).
+   */
+  const enqueueDrop = (job: () => Promise<void>): Promise<void> => {
+    const run = dropChainRef.current.then(job, job);
+    // the chain must never stay rejected or later jobs would never run
+    dropChainRef.current = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
     isDraggingRef.current = true;
@@ -3544,8 +3585,14 @@ function KanbanView({
     if (issue) {
       setActiveIssue(issue);
       setDragStartStatusId(issue.statusId);
+      previewSourceStatusId.current = issue.statusId;
       return;
     }
+    // the card isn't on screen (a reload is mid-flight) — start from a clean
+    // drag state instead of inheriting whatever the last drag left behind
+    setActiveIssue(null);
+    setDragStartStatusId(null);
+    previewSourceStatusId.current = null;
   };
 
   const handleDragOver = (event: DragOverEvent) => {
@@ -3584,13 +3631,19 @@ function KanbanView({
       }
     }
 
-    if (!targetStatusId || activeIssue.statusId === targetStatusId) {
+    if (!targetStatusId) {
+      return;
+    }
+    // Where the card sits *right now*: `issueMap` is a render-time snapshot,
+    // so two fast `dragOver`s would both read the original column out of it.
+    const sourceStatusId = previewSourceStatusId.current ?? activeIssue.statusId;
+    if (sourceStatusId === targetStatusId) {
       return;
     }
 
     // "one column at a time": a jump-over column gets no preview — the card
     // stays put and handleDragEnd explains it on release
-    if (stepOnlyMoves && !isAdjacentStatus(activeIssue.statusId, targetStatusId)) {
+    if (stepOnlyMoves && !isAdjacentStatus(sourceStatusId, targetStatusId)) {
       blockedTargetStatusId.current = targetStatusId;
       dragTargetStatusId.current = null;
       setHoverStatusId(null);
@@ -3598,16 +3651,29 @@ function KanbanView({
     }
     blockedTargetStatusId.current = null;
     dragTargetStatusId.current = targetStatusId;
+    previewSourceStatusId.current = targetStatusId;
     setHoverStatusId(targetStatusId);
     setColumns((prev) => {
-      const sourceId = activeIssue.statusId ?? 0;
-      const source = prev[sourceId];
-      if (!source) return prev;
-      const moved = { ...activeIssue, statusId: targetStatusId };
-      const next = { ...prev };
-      next[sourceId] = { ...source, items: source.items.filter((i) => i.id !== activeId) };
+      // Pull the card out of *every* column before inserting it: a stale
+      // source would leave a copy behind, and two copies render two components
+      // sharing one `issue-<id>` sortable id. The freshest card object wins.
+      let moved: BoardIssue | null = null;
+      const next: Record<number, KanbanColumnState> = {};
+      for (const [key, col] of Object.entries(prev)) {
+        const statusId = Number(key);
+        const hit = col.items.find((i) => i.id === activeId);
+        if (hit) moved = hit;
+        next[statusId] = hit
+          ? { ...col, items: col.items.filter((i) => i.id !== activeId) }
+          : col;
+      }
       const target = next[targetStatusId] ?? { items: [], page: 1, total: 0, loading: false };
-      next[targetStatusId] = { ...target, items: [...target.items, moved] };
+      next[targetStatusId] = {
+        ...target,
+        items: target.items.some((i) => i.id === activeId)
+          ? target.items
+          : [...target.items, { ...(moved ?? activeIssue), statusId: targetStatusId }],
+      };
       return next;
     });
   };
@@ -3618,6 +3684,7 @@ function KanbanView({
     setActiveStatus(null);
     setHoverStatusId(null);
     isDraggingRef.current = false;
+    previewSourceStatusId.current = null;
 
     if (!over) {
       blockedTargetStatusId.current = null;
@@ -3684,14 +3751,24 @@ function KanbanView({
     }
 
     try {
-      await moveIssue(issueId, targetStatusId);
-      // the rules may have started/stopped/reset a timer on this drag
-      timers.refresh();
-      reloadColumns(sourceStatusId !== null ? [sourceStatusId, targetStatusId] : [targetStatusId]);
+      await enqueueDrop(async () => {
+        await moveIssue(issueId, targetStatusId);
+        // the rules may have started/stopped/reset a timer on this drag
+        timers.refresh();
+        reloadColumns(sourceStatusId !== null ? [sourceStatusId, targetStatusId] : [targetStatusId]);
+      });
     } catch (e) {
-      // 400 = the server's step-only guard rejected the jump (policy lookup
-      // had failed open, so the preview slipped through to the API)
-      setError(isApiError(e, 400) ? t("invalidTransition") : getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      // 409 = the server's status lock refused the drag (client state was
+      // stale — a locked card's handle is disabled, so this is the backstop);
+      // 400 = the step-only guard rejected the jump (policy lookup had failed
+      // open, so the preview slipped through to the API)
+      setError(
+        isApiError(e, 409)
+          ? t("lockedCard")
+          : isApiError(e, 400)
+            ? t("invalidTransition")
+            : getErrorMessage(e, "เกิดข้อผิดพลาด"),
+      );
       onRefresh();
     } finally {
       setDragStartStatusId(null);
@@ -3707,6 +3784,7 @@ function KanbanView({
     isDraggingRef.current = false;
     dragTargetStatusId.current = null;
     blockedTargetStatusId.current = null;
+    previewSourceStatusId.current = null;
   };
 
   const handleSaveIssue = async (data: { title: string; description: string; statusId: number; labelId?: number | null; priorityId?: number | null }) => {
@@ -3801,6 +3879,7 @@ function KanbanView({
                 canDelete={canDelete}
                 canUnlockIssue={canUnlockIssue}
                 isDropTarget={hoverStatusId === status.id && !!activeIssue}
+                isFirstColumn={status.id === firstStatusId}
                 roleName={roleName}
                 timers={timers}
                 showTime={showTime}
@@ -4039,6 +4118,12 @@ function TableView({
     return s ? (s.customName ?? s.name) : "—";
   };
 
+  /** Color by id, straight from `issue_statuses.color` — not the status name. */
+  const getStatusColorById = (statusId: number | null): string => {
+    const s = statusId ? statuses.find((st) => st.id === statusId) : null;
+    return resolveStatusColor(theme, s?.color, s?.name);
+  };
+
   const canViewHistory = (issue: BoardIssue) =>
     canManage ||
     (canViewOwnHistory &&
@@ -4076,12 +4161,14 @@ function TableView({
           <DataTableRow>
             <DataTableCell>ID</DataTableCell>
             <DataTableCell>หัวข้อ</DataTableCell>
-            <DataTableCell>แอป</DataTableCell>
-            <DataTableCell>หมวดหมู่</DataTableCell>
-            <DataTableCell>ความสำคัญ</DataTableCell>
+            <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>แอป</DataTableCell>
+            <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>หมวดหมู่</DataTableCell>
+            <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>ความสำคัญ</DataTableCell>
             <DataTableCell>สถานะ</DataTableCell>
             <DataTableCell>ผู้รับผิดชอบ</DataTableCell>
-            {canSeeReporter && <DataTableCell>ผู้แจ้ง</DataTableCell>}
+            {canSeeReporter && (
+              <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>ผู้แจ้ง</DataTableCell>
+            )}
             <DataTableCell>สร้างเมื่อ</DataTableCell>
             {canSeeTrackedTime && <DataTableCell>เวลาที่จับได้</DataTableCell>}
             {canSeeActualTime && <DataTableCell>เวลาแก้ไขจริง</DataTableCell>}
@@ -4107,11 +4194,11 @@ function TableView({
                       {issue.title}
                     </Typography>
                   </DataTableCell>
-                  <DataTableCell>
+                  <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>
                     {issue.appName ?? "—"}
                   </DataTableCell>
-                  <DataTableCell>{getCategoryLabel(issue)}</DataTableCell>
-                  <DataTableCell>
+                  <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>{getCategoryLabel(issue)}</DataTableCell>
+                  <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>
                     {issue.priorityName ? (
                       <Chip
                         label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
@@ -4127,9 +4214,9 @@ function TableView({
                       label={getStatusName(issue.statusId)}
                       size="small"
                       sx={{
-                        bgcolor: `${getColumnColor(getStatusName(issue.statusId), theme)}20`,
-                        color: getColumnColor(getStatusName(issue.statusId), theme),
-                        border: `1px solid ${getColumnColor(getStatusName(issue.statusId), theme)}`,
+                        bgcolor: `${getStatusColorById(issue.statusId)}20`,
+                        color: getStatusColorById(issue.statusId),
+                        border: `1px solid ${getStatusColorById(issue.statusId)}`,
                         fontWeight: 600,
                         fontSize: "0.7rem",
                       }}
@@ -4137,7 +4224,7 @@ function TableView({
                   </DataTableCell>
                   <DataTableCell>{issue.programmerName ?? "รอมอบหมาย"}</DataTableCell>
                   {canSeeReporter && (
-                    <DataTableCell>{issue.customerName ?? "—"}</DataTableCell>
+                    <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>{issue.customerName ?? "—"}</DataTableCell>
                   )}
                   <DataTableCell>
                     {new Date(issue.createdAt).toLocaleDateString("th-TH")}
@@ -4293,6 +4380,9 @@ function BoardsPageInner() {
   // the "one column at a time" rule — false also while the lookup fails, so
   // the board degrades to free dragging and the server's 400 stays the backstop
   const [stepOnlyMoves, setStepOnlyMoves] = useState(false);
+  // any active `issue.unlock` rule — a locked card only offers its unlock
+  // button while the rules allow a release (false while the lookup fails)
+  const [unlockAvailable, setUnlockAvailable] = useState(false);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [apps, setApps] = useState<App[]>([]);
@@ -4350,7 +4440,10 @@ function BoardsPageInner() {
   const canEdit = can("issue.all.update");
   const canDelete = can("issue.delete");
   const canAssign = can("issue.assign");
-  const canUnlockIssue = can("issue.all.update");
+  // unlocking a card needs the permission *and* an active `issue.unlock`
+  // rule: without one, a locked status stays sealed and admins release
+  // cards by pausing the lock rule in /automation
+  const canUnlockIssue = can("issue.all.update") && unlockAvailable;
   const canManage = canEdit || canDelete || canAssign;
   const canSeeReporter = can("issue.all.view");
   const canViewOwnHistory = can("issue.own.view");
@@ -4428,7 +4521,7 @@ function BoardsPageInner() {
         fetchApps(),
         fetchMembers(),
         // fail-open: a rejected policy lookup must not raise the load error
-        fetchMovePolicy().catch(() => ({ stepOnly: false })),
+        fetchMovePolicy().catch(() => ({ stepOnly: false, unlockAvailable: false })),
         refreshTimers(),
       ]);
       const [iss, lbls, sts, pri, cats, aps, usr, policy] = results;
@@ -4439,7 +4532,10 @@ function BoardsPageInner() {
       if (cats.status === "fulfilled") setCategories(cats.value.data);
       if (aps.status === "fulfilled") setApps(aps.value.data);
       if (usr.status === "fulfilled") setUsers(usr.value);
-      if (policy.status === "fulfilled") setStepOnlyMoves(policy.value.stepOnly);
+      if (policy.status === "fulfilled") {
+        setStepOnlyMoves(policy.value.stepOnly);
+        setUnlockAvailable(Boolean(policy.value.unlockAvailable));
+      }
       const firstError = results.find((r) => r.status === "rejected");
       if (firstError && firstError.status === "rejected") {
         setError(getErrorMessage(firstError.reason, "โหลดข้อมูลไม่สำเร็จ"));
@@ -4488,7 +4584,7 @@ function BoardsPageInner() {
 
     for (const status of statuses) {
       if (!selectedStatusIds.includes(status.id)) continue;
-      const color = getStatusColor(theme, status.name);
+      const color = resolveStatusColor(theme, status.color, status.name);
       chips.push({
         key: `status-${status.id}`,
         label: status.customName ?? status.name,

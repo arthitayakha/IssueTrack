@@ -1,4 +1,4 @@
-import { BadRequestException } from "@nestjs/common";
+import { ConflictException, BadRequestException, NotFoundException } from "@nestjs/common";
 import { IssuesService } from "../modules/issues/issues.service";
 
 /**
@@ -65,12 +65,20 @@ function makeService() {
       timer: new Set<number>(),
       analysis: new Set<number>(),
       resolution: new Set<number>(),
+      locked: new Set<number>(),
     }),
     startTimerApplies: jest.fn().mockResolvedValue(new Set<number>()),
     // the step-only drag guard: off by default so every test opts in
     isStepOnlyMoveActive: jest.fn().mockResolvedValue(false),
+    // the unlock-button switch: off by default so every test opts in
+    isUnlockRuleActive: jest.fn().mockResolvedValue(false),
   };
-  const notifications = { notifyIssueEvent: jest.fn().mockResolvedValue(undefined) };
+  const notifications = {
+    notifyIssueEvent: jest.fn().mockResolvedValue(undefined),
+    // the shared recipient policies (milestone columns / assignment changes)
+    notifyStatusChange: jest.fn().mockResolvedValue(undefined),
+    notifyAssignmentChange: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new IssuesService(
     ...( [
       issues,
@@ -85,7 +93,7 @@ function makeService() {
       notifications,
     ] as unknown as ServiceArgs ),
   );
-  return { service, issues, issueStatuses, rulesEngine, activityLogs, workSessions, notifications };
+  return { service, issues, users, issueStatuses, rulesEngine, activityLogs, workSessions, notifications };
 }
 
 /** A fully-shaped issue row — `update()` re-reads it before responding. */
@@ -105,6 +113,8 @@ function issueRow(overrides: Record<string, unknown> = {}) {
     actualFixDuration: null,
     timeEntryUnlocked: false,
     timeEntryEverGranted: false,
+    isLocked: false,
+    lockExempted: false,
     createdAt: new Date("2026-10-01T00:00:00Z"),
     updatedAt: new Date("2026-10-01T00:00:00Z"),
     ...overrides,
@@ -116,6 +126,16 @@ const ACTOR = { actorId: 1, actorName: "aom", actorRole: "admin" };
 /** The context each `evaluate` call received, keyed by trigger. */
 function evaluateCalls(rulesEngine: { evaluate: jest.Mock }) {
   return rulesEngine.evaluate.mock.calls.map(([trigger, ctx]) => ({ trigger, ctx }));
+}
+
+/** A `statusGates` answer opening `analysis`/`resolution` at the given columns. */
+function fieldGates(analysis: number[], resolution: number[] = []) {
+  return {
+    timer: new Set<number>(),
+    analysis: new Set<number>(analysis),
+    resolution: new Set<number>(resolution),
+    locked: new Set<number>(),
+  };
 }
 
 describe("IssuesService.create — automation triggers", () => {
@@ -161,15 +181,63 @@ describe("IssuesService.create — admin fan-out (alsoAdmins)", () => {
   });
 });
 
-describe("IssuesService.move — admin fan-out (alsoAdmins)", () => {
-  it("passes alsoAdmins: true so every admin sees card moves", async () => {
+describe("IssuesService.move — shared recipient policy (notifyStatusChange)", () => {
+  it("delegates the status change to the shared policy with the target status", async () => {
     const { service, issues, notifications } = makeService();
     issues.findOne.mockResolvedValue(issueRow({ statusId: 1 }));
 
     await service.move(5, 2, ACTOR);
 
-    expect(notifications.notifyIssueEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "moved", alsoAdmins: true }),
+    expect(notifications.notifyStatusChange).toHaveBeenCalledWith(
+      expect.objectContaining({ statusId: 2, actor: ACTOR }),
+    );
+    // the policy (not the service) decides who hears about which column
+    expect(notifications.notifyIssueEvent).not.toHaveBeenCalled();
+  });
+
+  it("passes the issue along so the policy sees assignee / reporter / category", async () => {
+    const { service, issues, notifications } = makeService();
+    issues.findOne.mockResolvedValue(
+      issueRow({ statusId: 1, programmerId: 7, customerId: 9, category: { name: "Backend" } }),
+    );
+
+    await service.move(5, 4, ACTOR);
+
+    expect(notifications.notifyStatusChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue: expect.objectContaining({
+          id: 5,
+          programmerId: 7,
+          customerId: 9,
+          category: { name: "Backend" },
+        }),
+        statusId: 4,
+      }),
+    );
+  });
+});
+
+describe("IssuesService.assign — shared recipient policy (notifyAssignmentChange)", () => {
+  it("routes an assign through the shared policy with old and new assignee", async () => {
+    const { service, issues, users, notifications } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ programmerId: 3 }));
+    users.findOne.mockResolvedValue({ id: 7, name: "Ploy" });
+
+    await service.assign(5, 7, ACTOR);
+
+    expect(notifications.notifyAssignmentChange).toHaveBeenCalledWith(
+      expect.objectContaining({ assigneeId: 7, previousAssigneeId: 3, actor: ACTOR }),
+    );
+  });
+
+  it("clearing the assignee goes through the same policy (unassign path)", async () => {
+    const { service, issues, notifications } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ programmerId: 3 }));
+
+    await service.assign(5, null, ACTOR);
+
+    expect(notifications.notifyAssignmentChange).toHaveBeenCalledWith(
+      expect.objectContaining({ assigneeId: null, previousAssigneeId: 3 }),
     );
   });
 });
@@ -184,6 +252,7 @@ describe("IssuesService.move — time entry gate", () => {
     expect(issues.update).toHaveBeenCalledWith(5, {
       statusId: 1,
       timeEntryUnlocked: false,
+      lockExempted: false,
     });
   });
 });
@@ -215,7 +284,7 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
 
     await service.move(5, 2, ACTOR);
 
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 2, timeEntryUnlocked: false });
+    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 2, timeEntryUnlocked: false, lockExempted: false });
   });
 
   it("allows one step backward (3 → 2)", async () => {
@@ -224,7 +293,7 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
 
     await service.move(5, 2, ACTOR);
 
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 2, timeEntryUnlocked: false });
+    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 2, timeEntryUnlocked: false, lockExempted: false });
   });
 
   it("allows every jump again while the rule is paused", async () => {
@@ -233,7 +302,7 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
 
     await service.move(5, 3, ACTOR);
 
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false });
+    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false, lockExempted: false });
   });
 
   it("lets a card with no status land in any column", async () => {
@@ -242,7 +311,7 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
 
     await service.move(5, 3, ACTOR);
 
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false });
+    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false, lockExempted: false });
   });
 
   it("fails open when the status order cannot be read", async () => {
@@ -252,7 +321,128 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
     issueStatuses.find.mockResolvedValue([]);
 
     await expect(service.move(5, 3, ACTOR)).resolves.toBeDefined();
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false });
+    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false, lockExempted: false });
+  });
+});
+
+describe("IssuesService.move — status lock (issue.lock rule)", () => {
+  it("rejects leaving a locked status before writing (409, not 400)", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 4 }));
+    rulesEngine.statusGates.mockResolvedValue({
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+      locked: new Set<number>([4]),
+    });
+
+    await expect(service.move(5, 3, ACTOR)).rejects.toThrow(ConflictException);
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("lets a one-shot unlock release the card and consumes the flag", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 4, lockExempted: true }));
+    rulesEngine.statusGates.mockResolvedValue({
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+      locked: new Set<number>([4]),
+    });
+
+    await service.move(5, 3, ACTOR);
+
+    // the move itself clears the exemption — re-entering a locked status later locks again
+    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false, lockExempted: false });
+  });
+
+  it("blocks a card the engine locked per-card, even outside a locked status", async () => {
+    const { service, issues } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 2, isLocked: true }));
+
+    await expect(service.move(5, 3, ACTOR)).rejects.toThrow(ConflictException);
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("fails open when the lock lookup breaks, so a hiccup never traps a card", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 4 }));
+    // only the guard's own lookup fails — the response build still answers
+    rulesEngine.statusGates.mockRejectedValueOnce(new Error("connection lost"));
+
+    await expect(service.move(5, 3, ACTOR)).resolves.toBeDefined();
+    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false, lockExempted: false });
+  });
+});
+
+describe("IssuesService.unlock — the one-shot release", () => {
+  it("clears the per-card flag, grants the exemption and logs the release", async () => {
+    const { service, issues, activityLogs } = makeService();
+    // unlock re-reads the card for its response — second read sees the write
+    issues.findOne
+      .mockResolvedValueOnce(
+        issueRow({ statusId: 4, isLocked: true, status: { id: 4, name: "Done" } }),
+      )
+      .mockResolvedValueOnce(
+        issueRow({ statusId: 4, isLocked: false, lockExempted: true, status: { id: 4, name: "Done" } }),
+      );
+
+    const result = await service.unlock(5, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, { isLocked: false, lockExempted: true });
+    expect(activityLogs.save).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "card.unlocked", entityId: 5 }),
+    );
+    expect(result.isLocked).toBe(false);
+  });
+
+  it("404s for a card that no longer exists", async () => {
+    const { service, issues } = makeService();
+    issues.findOne.mockResolvedValue(null);
+
+    await expect(service.unlock(999, ACTOR)).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe("IssuesService.findOne — the lock the board renders", () => {
+  it("reports a card as locked while an active lock rule covers its status", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 4 }));
+    rulesEngine.statusGates.mockResolvedValue({
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+      locked: new Set<number>([4]),
+    });
+
+    const result = await service.findOne(5);
+
+    expect(result.isLocked).toBe(true);
+  });
+
+  it("shows a one-shot-unlocked card as free until its next move", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 4, lockExempted: true }));
+    rulesEngine.statusGates.mockResolvedValue({
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+      locked: new Set<number>([4]),
+    });
+
+    const result = await service.findOne(5);
+
+    expect(result.isLocked).toBe(false);
+  });
+});
+
+describe("IssuesService.movePolicy — what the card menu keys off", () => {
+  it("reports both the step-only guard and the unlock availability", async () => {
+    const { service, rulesEngine } = makeService();
+    rulesEngine.isStepOnlyMoveActive.mockResolvedValue(true);
+    rulesEngine.isUnlockRuleActive.mockResolvedValue(true);
+
+    await expect(service.movePolicy()).resolves.toEqual({ stepOnly: true, unlockAvailable: true });
   });
 });
 
@@ -270,34 +460,194 @@ describe("IssuesService.remove — running timer", () => {
   });
 });
 
-describe("IssuesService.findOne — analysis/resolution field gate", () => {
-  it("opens the analysis field for a card already sitting in the rule's status", async () => {
-    // the card never moved after the rule was created, so its flag is still false
-    const { service, issues, rulesEngine } = makeService();
-    issues.findOne.mockResolvedValue(issueRow({ statusId: 9, isAnalysisOpen: false }));
-    rulesEngine.statusGates.mockResolvedValue({
-      timer: new Set<number>(),
-      analysis: new Set<number>([9]),
-      resolution: new Set<number>(),
-    });
+describe("IssuesService.remove — customer delete rule (first column, not the name)", () => {
+  const CUSTOMER = { actorId: 2, actorName: "arthitaya", actorRole: "customer" };
+
+  it("lets a customer clear a card out of the first column — renamed to Thai or not", async () => {
+    const { service, issues, issueStatuses, workSessions } = makeService();
+    // column order is the rule; the name shown here is already Thai
+    issueStatuses.find.mockResolvedValue([{ id: 1 }]);
+    issues.findOne.mockResolvedValue(
+      issueRow({ statusId: 1, status: { name: "รอรับเรื่อง" } }),
+    );
+
+    await service.remove(5, CUSTOMER);
+
+    expect(workSessions.stop).toHaveBeenCalledWith(5);
+    expect(issues.save).toHaveBeenCalled();
+  });
+
+  it("refuses a card outside the first column even when its name still reads Backlog", async () => {
+    const { service, issues, issueStatuses, workSessions } = makeService();
+    issueStatuses.find.mockResolvedValue([{ id: 1 }]);
+    issues.findOne.mockResolvedValue(
+      issueRow({ statusId: 9, status: { name: "Backlog" } }),
+    );
+
+    await expect(service.remove(5, CUSTOMER)).rejects.toThrow("first column");
+
+    expect(workSessions.stop).not.toHaveBeenCalled();
+    expect(issues.save).not.toHaveBeenCalled();
+  });
+});
+
+describe("IssuesService.findOne — analysis/resolution visibility & editability", () => {
+  // Board columns 7 → 8 → 9 → 10; the rules open analysis at column 8 and
+  // resolution at column 10. Nothing in the service knows either id: both
+  // answers come from the rules plus this board order.
+  const FIELD_BOARD = [
+    { id: 7, position: 1 },
+    { id: 8, position: 2 },
+    { id: 9, position: 3 },
+    { id: 10, position: 4 },
+  ];
+
+  it("lets the opening column see AND edit the field", async () => {
+    const { service, issues, issueStatuses, rulesEngine } = makeService();
+    issueStatuses.find.mockResolvedValue(FIELD_BOARD);
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 8 }));
+    rulesEngine.statusGates.mockResolvedValue(fieldGates([8], [10]));
 
     const result = await service.findOne(5);
 
-    expect(rulesEngine.statusGates).toHaveBeenCalledWith([9]);
+    expect(rulesEngine.statusGates).toHaveBeenCalledWith([8]);
     expect(result.isAnalysisOpen).toBe(true);
+    expect(result.canEditAnalysis).toBe(true);
     expect(result.isResolutionOpen).toBe(false);
+    expect(result.canEditResolution).toBe(false);
     expect(result.timerRuleApplies).toBe(false);
   });
 
-  it("keeps the persisted flag when no active rule covers the status", async () => {
-    const { service, issues } = makeService();
+  it("shows the field read-only in a later column (visible is not editable)", async () => {
+    const { service, issues, issueStatuses, rulesEngine } = makeService();
+    issueStatuses.find.mockResolvedValue(FIELD_BOARD);
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 9 }));
+    rulesEngine.statusGates.mockResolvedValue(fieldGates([8]));
+
+    const result = await service.findOne(5);
+
+    expect(result.isAnalysisOpen).toBe(true);
+    expect(result.canEditAnalysis).toBe(false);
+  });
+
+  it("hides the field in an earlier column no rule opens", async () => {
+    const { service, issues, issueStatuses, rulesEngine } = makeService();
+    issueStatuses.find.mockResolvedValue(FIELD_BOARD);
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 7 }));
+    rulesEngine.statusGates.mockResolvedValue(fieldGates([8]));
+
+    const result = await service.findOne(5);
+
+    expect(result.isAnalysisOpen).toBe(false);
+    expect(result.canEditAnalysis).toBe(false);
+  });
+
+  it("keeps a recorded value visible upstream of the rule, still read-only", async () => {
+    const { service, issues, issueStatuses, rulesEngine } = makeService();
+    issueStatuses.find.mockResolvedValue(FIELD_BOARD);
+    issues.findOne.mockResolvedValue(
+      issueRow({ statusId: 7, analysisCause: "root cause recorded earlier" }),
+    );
+    rulesEngine.statusGates.mockResolvedValue(fieldGates([8]));
+
+    const result = await service.findOne(5);
+
+    expect(result.isAnalysisOpen).toBe(true);
+    expect(result.canEditAnalysis).toBe(false);
+  });
+
+  it("ignores the legacy is_*_open flags — a flag alone shows nothing", async () => {
+    const { service, issues, issueStatuses } = makeService();
+    issueStatuses.find.mockResolvedValue(FIELD_BOARD);
     issues.findOne.mockResolvedValue(
       issueRow({ statusId: 9, isAnalysisOpen: true, isResolutionOpen: true }),
     );
 
     const result = await service.findOne(5);
 
-    expect(result.isAnalysisOpen).toBe(true);
+    expect(result.isAnalysisOpen).toBe(false);
+    expect(result.isResolutionOpen).toBe(false);
+    expect(result.canEditAnalysis).toBe(false);
+    expect(result.canEditResolution).toBe(false);
+  });
+
+  it("applies the same pair at the resolution column (analysis stays read-only)", async () => {
+    const { service, issues, issueStatuses, rulesEngine } = makeService();
+    issueStatuses.find.mockResolvedValue(FIELD_BOARD);
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 10 }));
+    rulesEngine.statusGates.mockResolvedValue(fieldGates([8], [10]));
+
+    const result = await service.findOne(5);
+
     expect(result.isResolutionOpen).toBe(true);
+    expect(result.canEditResolution).toBe(true);
+    expect(result.isAnalysisOpen).toBe(true);
+    expect(result.canEditAnalysis).toBe(false);
+  });
+});
+
+describe("IssuesService.update — fill-ins change only where the rule opens them", () => {
+  it("accepts a new analysis value while an active rule opens the field here", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 9 }));
+    rulesEngine.statusGates.mockResolvedValue(fieldGates([9]));
+
+    await service.update(5, { analysisCause: "root cause" }, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, { analysisCause: "root cause" });
+  });
+
+  it("400s when the card sits outside every status the rule opens", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 9 }));
+    rulesEngine.statusGates.mockResolvedValue(fieldGates([8]));
+
+    await expect(
+      service.update(5, { analysisCause: "root cause" }, ACTOR),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("applies the same guard to the resolution field", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 9 }));
+    rulesEngine.statusGates.mockResolvedValue(fieldGates([9], [10]));
+
+    await expect(service.update(5, { resolution: "fixed in code" }, ACTOR)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("never 400s when the value did not actually change", async () => {
+    const { service, issues } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 9, analysisCause: "same text" }));
+
+    await service.update(5, { analysisCause: "same text" }, ACTOR);
+
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("fails open when the rule list cannot be read (a hiccup must not wedge the field)", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 9 }));
+    rulesEngine.statusGates
+      .mockRejectedValueOnce(new Error("connection lost"))
+      .mockResolvedValue(fieldGates([]));
+
+    await service.update(5, { analysisCause: "root cause" }, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, { analysisCause: "root cause" });
+  });
+
+  it("refuses either field while the card has no status at all", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: null }));
+    rulesEngine.statusGates.mockResolvedValue(fieldGates([9]));
+
+    await expect(service.update(5, { analysisCause: "x" }, ACTOR)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(issues.update).not.toHaveBeenCalled();
   });
 });

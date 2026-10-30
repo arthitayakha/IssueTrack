@@ -1,28 +1,44 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { FindOptionsWhere, Repository } from "typeorm";
+import { Repository } from "typeorm";
 import { Notification } from "./entities/notification.entity";
 import { User } from "../auth/entities/user.entity";
 
 export type NotificationAction =
   | "created"
   | "assigned"
+  // clearing the assignee — the person who lost the card + every admin
+  | "unassigned"
   | "commented"
   | "moved"
+  // milestone columns get their own wording so the inbox says WHY it matters
+  // ("moved" stays for every routine drag)
+  | "needs_assignment" // รอรับเรื่อง + nobody on the card → admins come assign it
+  | "status_pending" // รอดำเนินการ — "your report is in the queue"
+  | "in_progress" // กำลังดำเนินการ — work has started
+  | "completed" // เสร็จสิ้น — done, the whole team sees it
   | "edited"
   | "deleted"
   | "restored"
   // automation-rule changes — shown as "created rule X" / "updated rule X"
   | "rule_created"
-  | "rule_updated";
+  | "rule_updated"
+  | "rule_deleted";
 
-/** Popover tabs — inbox = unread, general = read, archived = archived. */
-export type NotificationTab = "inbox" | "general" | "archived";
+/**
+ * Milestone columns, keyed by id — the names get renamed by hand
+ * (Backlog/Todo → รอรับเรื่อง/รอดำเนินการ) but the ids never move, the same
+ * deal as RECEIVED_STATUS_ID in issues.service.ts. Anything that is not one
+ * of these (Review, custom columns) is a routine drag.
+ */
+const WAITING_ASSIGNMENT_STATUS_ID = 1; // รอรับเรื่อง
+const PENDING_STATUS_ID = 2; // รอดำเนินการ
+const IN_PROGRESS_STATUS_ID = 3; // กำลังดำเนินการ
+const DONE_STATUS_ID = 4; // เสร็จสิ้น
 
 /** Structural subset of ActivityLogsService's ActorInfo (avoids a circular import). */
 export interface NotificationActor {
   actorId?: number | null;
-  actorName?: string | null;
 }
 
 export interface NotifyInput {
@@ -98,15 +114,12 @@ export class NotificationsService {
         this.notifications.create({
           userId: input.userId,
           issueId: input.issueId ?? null,
+          // who caused it — the name is read off `users` when the list is built
           actorId: input.actor?.actorId ?? null,
-          actorName: input.actor?.actorName ?? null,
           context: input.context ?? null,
           link: input.link ?? this.issueLink(input.issueId),
           type: input.action,
           title: input.title.slice(0, 200),
-          message: `${input.actor?.actorName ?? "System"}: ${input.action} ${input.title}`,
-          isRead: false,
-          isArchived: false,
         }),
       );
     } catch (error) {
@@ -159,76 +172,155 @@ export class NotificationsService {
     }
   }
 
-  /** Rows for one tab (or every row when `tab` is omitted — the legacy shape). */
-  private tabWhere(userId: number, tab?: NotificationTab): FindOptionsWhere<Notification> {
-    const base: FindOptionsWhere<Notification> = { userId };
-    if (tab === "inbox") return { ...base, isRead: false, isArchived: false };
-    if (tab === "general") return { ...base, isRead: true, isArchived: false };
-    if (tab === "archived") return { ...base, isArchived: true };
-    return base;
+  /**
+   * The recipient policy for a status change — ONE place, so a manual drag
+   * and a rules-engine `issue.move_status` notify identically:
+   *
+   * - รอรับเรื่อง + nobody on the card → `needs_assignment` to the admins
+   *   (+ the reporter): someone must pick it up
+   * - รอดำเนินการ / กำลังดำเนินการ → `status_pending` / `in_progress` to the
+   *   reporter + the assignee: the customer hears their report is moving
+   * - เสร็จสิ้น → `completed` to the reporter + assignee + every admin
+   * - every other column → plain `moved` to the two people on the card only
+   *   (routine drags no longer flood the admin inbox)
+   */
+  async notifyStatusChange(params: {
+    issue: NotificationIssueTarget;
+    statusId: number | null;
+    actor?: NotificationActor | null;
+  }): Promise<void> {
+    const { issue, statusId, actor } = params;
+    const people: Array<number | null | undefined> = [issue.programmerId, issue.customerId];
+    switch (statusId) {
+      case WAITING_ASSIGNMENT_STATUS_ID:
+        // a card with an assignee back at intake is just a routine drag
+        if (issue.programmerId) {
+          break;
+        }
+        return this.notifyIssueEvent({
+          issue,
+          action: "needs_assignment",
+          recipients: [issue.customerId],
+          actor,
+          alsoAdmins: true,
+        });
+      case PENDING_STATUS_ID:
+        return this.notifyIssueEvent({
+          issue,
+          action: "status_pending",
+          recipients: people,
+          actor,
+        });
+      case IN_PROGRESS_STATUS_ID:
+        return this.notifyIssueEvent({
+          issue,
+          action: "in_progress",
+          recipients: people,
+          actor,
+        });
+      case DONE_STATUS_ID:
+        return this.notifyIssueEvent({
+          issue,
+          action: "completed",
+          recipients: people,
+          actor,
+          alsoAdmins: true,
+        });
+      default:
+        break;
+    }
+    return this.notifyIssueEvent({ issue, action: "moved", recipients: people, actor });
   }
 
   /**
-   * One page of notifications for one user, filtered on the server per tab so
-   * the popover can scroll-load 5 rows at a time (like the board columns).
-   * `unreadCount` / `counts` are always totals over the whole account — never
-   * derived from the loaded rows — so the badges stay correct while paginating.
+   * The recipient policy for an assignment change — `assigned` goes to the
+   * new assignee + the reporter; clearing the field becomes `unassigned`,
+   * which tells the person who lost the card and every admin (someone must
+   * pick it up). Same helper for the manual endpoint and the engine.
    */
-  async list(
-    userId: number,
-    options: { limit?: number; offset?: number; tab?: NotificationTab } = {},
-  ) {
+  async notifyAssignmentChange(params: {
+    issue: NotificationIssueTarget;
+    assigneeId: number | null;
+    previousAssigneeId?: number | null;
+    actor?: NotificationActor | null;
+  }): Promise<void> {
+    const { issue, assigneeId, previousAssigneeId, actor } = params;
+    if (assigneeId !== null) {
+      return this.notifyIssueEvent({
+        issue,
+        action: "assigned",
+        recipients: [assigneeId, issue.customerId],
+        actor,
+      });
+    }
+    if (!previousAssigneeId) return; // was already unassigned — nothing to say
+    return this.notifyIssueEvent({
+      issue,
+      action: "unassigned",
+      recipients: [previousAssigneeId],
+      actor,
+      alsoAdmins: true,
+    });
+  }
+
+  /**
+   * One page of a user's inbox — there are no tabs any more: every stored row
+   * is unread (reading one deletes it), so `unreadCount` is simply the total.
+   * The popover scroll-loads 5 rows at a time (like the board columns) and the
+   * badge keeps counting the whole account, never just the loaded rows.
+   */
+  async list(userId: number, options: { limit?: number; offset?: number } = {}) {
     const limit = Math.min(Math.max(options.limit ?? 5, 1), 200);
     const offset = Math.max(options.offset ?? 0, 0);
-    const [data, total, inboxCount, generalCount, archivedCount] = await Promise.all([
+    const [data, total] = await Promise.all([
       this.notifications.find({
-        where: this.tabWhere(userId, options.tab),
+        where: { userId },
         order: { createdAt: "DESC", id: "DESC" },
         take: limit,
         skip: offset,
+        // the actor's name comes off `users` — nothing is stored per row
+        relations: ["actor"],
       }),
-      this.notifications.count({ where: this.tabWhere(userId, options.tab) }),
-      this.notifications.count({ where: this.tabWhere(userId, "inbox") }),
-      this.notifications.count({ where: this.tabWhere(userId, "general") }),
-      this.notifications.count({ where: this.tabWhere(userId, "archived") }),
+      this.notifications.count({ where: { userId } }),
     ]);
     return {
       data: data.map((n) => this.toResponse(n)),
       page: Math.floor(offset / limit) + 1,
       limit,
       total,
-      unreadCount: inboxCount,
-      counts: { inbox: inboxCount, general: generalCount, archived: archivedCount },
+      unreadCount: total,
     };
   }
 
-  async markRead(userId: number, id: number) {
-    await this.notifications.update(
-      { id, userId },
-      { isRead: true, readAt: new Date() },
-    );
-    const updated = await this.notifications.findOne({ where: { id, userId } });
-    return updated ? this.toResponse(updated) : null;
+  /**
+   * Just the badge number — one COUNT over the caller's own rows, no rows and
+   * no actor join. The navbar polls this every 30s instead of pulling the
+   * inbox list, which is only fetched when the bell is opened.
+   */
+  async count(userId: number): Promise<{ count: number }> {
+    return { count: await this.notifications.count({ where: { userId } }) };
   }
 
-  async markAllRead(userId: number) {
-    const result = await this.notifications.update(
-      { userId, isRead: false },
-      { isRead: true, readAt: new Date() },
-    );
-    return { updated: result.affected ?? 0 };
+  /**
+   * Reading one = it is gone. A non-owner's id matches nothing, so they get
+   * `null` back and the row stays put (the old mark-read shape).
+   */
+  async remove(userId: number, id: number) {
+    const result = await this.notifications.delete({ id, userId });
+    return result.affected ? { deleted: true } : null;
   }
 
-  async archive(userId: number, id: number) {
-    await this.notifications.update({ id, userId }, { isArchived: true });
-    const updated = await this.notifications.findOne({ where: { id, userId } });
-    return updated ? this.toResponse(updated) : null;
+  /** The inbox header button — clears every unread row of this account. */
+  async removeAll(userId: number) {
+    const result = await this.notifications.delete({ userId });
+    return { deleted: result.affected ?? 0 };
   }
 
   private toResponse(n: Notification) {
     return {
       id: n.id,
-      actorName: n.actorName,
+      // the name is joined in at read time (the actor may be gone → null)
+      actorName: n.actor?.name ?? null,
       action: n.type,
       target: n.title,
       context: n.context,
@@ -237,8 +329,6 @@ export class NotificationsService {
       // still points at the removed "/issues" page
       issueId: n.issueId,
       createdAt: n.createdAt,
-      isRead: n.isRead,
-      isArchived: n.isArchived,
     };
   }
 }
