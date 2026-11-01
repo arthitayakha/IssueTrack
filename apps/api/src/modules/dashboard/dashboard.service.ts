@@ -144,7 +144,13 @@ export class DashboardService {
         .getRawMany(),
     ]);
     const byId = new Map(raw.map((r) => [r.id == null ? null : Number(r.id), num(r.count)]));
-    return statuses.map((s) => ({ id: s.id, name: s.name, count: byId.get(s.id) ?? 0 }));
+    return statuses.map((s) => ({
+      id: s.id,
+      name: s.name,
+      // board column color — the cards match the board without name heuristics
+      color: s.color,
+      count: byId.get(s.id) ?? 0,
+    }));
   }
 
   /** Counts per priority — includes an `id: null` group (ไม่ระบุ) when present. */

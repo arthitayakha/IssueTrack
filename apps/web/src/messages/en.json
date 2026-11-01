@@ -31,7 +31,50 @@
   },
   "Dashboard": {
     "welcome": "Welcome",
-    "subtitle": "A Kanban-style issue tracking system"
+    "subtitle": "A Kanban-style issue tracking system",
+    "total": "Total issues",
+    "trend": {
+      "title": "New issues",
+      "empty": "No new issues in this period"
+    },
+    "period": {
+      "day": "Day",
+      "week": "Week",
+      "month": "Month",
+      "year": "Year"
+    },
+    "scope": {
+      "all": "System-wide",
+      "assigned": "Your assigned work",
+      "reported": "Your reported work",
+      "own": "Your work"
+    },
+    "workload": {
+      "title": "The Work",
+      "subtitle": "Programmers only — open work and tracked time",
+      "empty": "No work assigned to programmers yet",
+      "openCount": "{count} open",
+      "noOpen": "No pending work",
+      "hours": "{count} h"
+    },
+    "apps": {
+      "title": "Usage by app",
+      "empty": "No issues with an app yet"
+    },
+    "categories": {
+      "title": "Usage by category",
+      "empty": "No issues with a category yet"
+    },
+    "priority": {
+      "title": "Issues by priority",
+      "empty": "No priority data yet",
+      "none": "Unspecified"
+    },
+    "cards": "cards",
+    "errorTitle": "Could not open the dashboard",
+    "errorDesc": "An unexpected error occurred — try again or refresh the page",
+    "retry": "Retry",
+    "loading": "Loading data..."
   },
   "Boards": {
     "title": "Boards",

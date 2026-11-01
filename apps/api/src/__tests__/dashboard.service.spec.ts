@@ -65,8 +65,12 @@ function makeService(rawQueue: unknown[][] = [], countQueue: number[] = []) {
         groupBy: jest.fn((...a: unknown[]) => { record(a); return b; }),
         addGroupBy: jest.fn((...a: unknown[]) => { record(a); return b; }),
         orderBy: jest.fn((...a: unknown[]) => { record(a); return b; }),
-        getRawMany: jest.fn().mockResolvedValue(rawQueue.shift() ?? []),
-        getCount: jest.fn().mockResolvedValue(countQueue.shift() ?? 0),
+        // lazy: consume the queue only when the query actually runs — the
+        // total builder never calls getRawMany, so eager shift() would skew
+        // every later result by one
+        getRawMany: jest.fn().mockImplementation(() => Promise.resolve(rawQueue.shift() ?? [])),
+        getCount: jest.fn().mockImplementation(() => Promise.resolve(countQueue.shift() ?? 0)),
+        conditions,
       };
       builders.push(b);
       return b;
@@ -195,7 +199,7 @@ describe("DashboardService.summary", () => {
   });
 
   it("coerces raw string counts to numbers and maps the workload rows", async () => {
-    const { service } = makeService(
+    const { service, permissions } = makeService(
       [
         statusesRaw(),
         [{ id: null, name: null, count: "34" }],                 // priorities: ไม่ระบุ group
@@ -206,6 +210,7 @@ describe("DashboardService.summary", () => {
       ],
       [64],
     );
+    permissions.getUserPermissions.mockResolvedValue([OWN, OVERVIEW]);
 
     const result = await service.summary("all", "day", ADMIN_USER);
 
