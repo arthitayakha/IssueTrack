@@ -1,4 +1,5 @@
 import { theme } from "@/lib/theme";
+import { alpha } from "@mui/material/styles";
 import type { ReportView } from "@/lib/reports-api";
 import type {
   CustomTableLayout,
@@ -51,6 +52,11 @@ const CONTENT_WIDTH = 841.89 - PAGE_MARGIN[0] - PAGE_MARGIN[2];
  * (title / description / analysis / resolution, person / app) become star
  * columns and split whatever width the fixed columns leave over — hiding
  * columns on screen therefore widens the free-text columns in the PDF too.
+ *
+ * The assignee view carries the task-detail columns (same registry the
+ * show/hide menu drives) when the export splices each person's tasks under
+ * their summary row, so `index` / `status` / `category` need a preset here too
+ * — `title` deliberately stays free-text.
  */
 const COLUMN_WIDTHS: Record<ReportView, Record<string, number>> = {
   issues: {
@@ -76,6 +82,10 @@ const COLUMN_WIDTHS: Record<ReportView, Record<string, number>> = {
     hoursActual: 56,
     hoursEntered: 56,
     lastAt: 52,
+    // task-detail columns riding under each summary row
+    index: 20,
+    status: 42,
+    category: 44,
   },
   app: {
     issueCount: 44,
@@ -88,27 +98,37 @@ const COLUMN_WIDTHS: Record<ReportView, Record<string, number>> = {
 };
 
 /**
+ * Aggregate-row fill in the table layout — theme token, never a hardcoded hex.
+ */
+const SUMMARY_FILL = alpha(theme.palette.navy.main, 0.06);
+
+/**
  * Navy header row + alternating stripe, hairline borders in the table token —
  * the screen's look, applied through callbacks because pdfmake styles rows,
  * not elements. Colors come from the MUI theme (never hardcoded).
+ *
+ * `isSummary` receives the data-row index (header excluded): those rows are
+ * the aggregates and keep a light navy tint + bold text so they still read as
+ * one line among the task rows spliced underneath them.
  */
-const TABLE_LAYOUT: CustomTableLayout = {
-  hLineWidth: (row, node) =>
-    row === 0 || row === node.table.body.length ? 1 : 0.4,
-  vLineWidth: () => 0.4,
-  hLineColor: () => theme.custom.tableBorder,
-  vLineColor: () => theme.custom.tableBorder,
-  fillColor: (row) =>
-    row === 0
-      ? theme.palette.navy.main
-      : row % 2 === 0
-        ? theme.custom.tableStripe
-        : null,
-  paddingLeft: () => 3,
-  paddingRight: () => 3,
-  paddingTop: () => 2,
-  paddingBottom: () => 2,
-};
+function tableLayout(isSummary: (dataRow: number) => boolean): CustomTableLayout {
+  return {
+    hLineWidth: (row, node) =>
+      row === 0 || row === node.table.body.length ? 1 : 0.4,
+    vLineWidth: () => 0.4,
+    hLineColor: () => theme.custom.tableBorder,
+    vLineColor: () => theme.custom.tableBorder,
+    fillColor: (row) => {
+      if (row === 0) return theme.palette.navy.main;
+      if (row > 0 && isSummary(row - 1)) return SUMMARY_FILL;
+      return row % 2 === 0 ? theme.custom.tableStripe : null;
+    },
+    paddingLeft: () => 3,
+    paddingRight: () => 3,
+    paddingTop: () => 2,
+    paddingBottom: () => 2,
+  };
+}
 
 export interface ReportPdfInput {
   /** Picks the column-width preset — same vocabulary as the view dropdown. */
@@ -117,6 +137,13 @@ export interface ReportPdfInput {
   keys: string[];
   headers: string[];
   data: Array<Array<string | number>>;
+  /**
+   * Data-row indices of the aggregates (assignee view splices each person's
+   * task rows under their summary row). They get the tint + bold weight so a
+   * total line stays readable among the detail rows. Omitted = every row is
+   * its own record (issues / app views, or a detail-less assignee export).
+   */
+  summaryRows?: number[];
   title: string;
   viewLabel: string;
   /** Already-translated header lines, e.g. "ช่วงวันที่: …" / "สร้างเมื่อ: …". */
@@ -132,31 +159,41 @@ export interface ReportPdfInput {
 export function buildReportPdfDoc(input: ReportPdfInput): TDocumentDefinitions {
   const widths = input.keys.map((key) => COLUMN_WIDTHS[input.view][key] ?? "*");
   /**
-   * A column is numeric when every row carries a number in it — mirrors the
-   * screen's right alignment (the CSV keeps the raw String(value), so PDF and
-   * CSV show identical text).
+   * A column is numeric when every **non-empty** cell carries a number —
+   * mirrors the screen's right alignment (the CSV keeps the raw String(value),
+   * so PDF and CSV show identical text). Empty cells are allowed: a task row
+   * leaves the summary-only columns (งานทั้งหมด / ยังเปิดอยู่ / งานล่าสุด)
+   * blank, and one blank must not demote the whole column to left.
    */
-  const numeric = input.keys.map(
-    (_, col) =>
-      input.data.length > 0 &&
-      input.data.every((row) => typeof row[col] === "number"),
-  );
+  const numeric = input.keys.map((_, col) => {
+    const filled = input.data.map((row) => row[col]).filter((v) => v !== "");
+    return filled.length > 0 && filled.every((v) => typeof v === "number");
+  });
   // 18 columns on A4 landscape is the tight case; fewer columns earn space.
   const fontSize =
     input.keys.length >= 16 ? 6.5 : input.keys.length >= 10 ? 7.5 : 9;
+
+  /** Aggregate rows (assignee view) — tinted by the layout, bold in the cell. */
+  const summary = new Set(input.summaryRows ?? []);
+  const cellStyle = (col: number, strong: boolean): string => {
+    const wrap = WRAP_AT_SPACES.has(input.keys[col]);
+    if (strong) return wrap ? "cellWrapStrong" : "cellStrong";
+    return wrap ? "cellWrap" : "cell";
+  };
 
   const head: TableCell[] = input.headers.map((text, col) => ({
     text,
     style: "head",
     alignment: numeric[col] ? "right" : "left",
   }));
-  const body: TableCell[][] = input.data.map((row) =>
-    row.map((value, col) => ({
+  const body: TableCell[][] = input.data.map((row, r) => {
+    const strong = summary.has(r);
+    return row.map((value, col) => ({
       text: String(value),
-      style: WRAP_AT_SPACES.has(input.keys[col]) ? "cellWrap" : "cell",
+      style: cellStyle(col, strong),
       alignment: numeric[col] ? "right" : "left",
-    })),
-  );
+    }));
+  });
 
   return {
     pageSize: "A4",
@@ -186,6 +223,9 @@ export function buildReportPdfDoc(input: ReportPdfInput): TDocumentDefinitions {
       cell: { fontSize, wordBreak: "break-all" },
       // space-preferred wrapping for the date/duration columns
       cellWrap: { fontSize, wordBreak: "normal" },
+      // aggregate rows (assignee summary) — bolder so a total line reads as one
+      cellStrong: { fontSize, bold: true, wordBreak: "break-all" },
+      cellWrapStrong: { fontSize, bold: true, wordBreak: "normal" },
     },
     content: [
       { text: `${input.title} — ${input.viewLabel}`, style: "title" },
@@ -212,7 +252,7 @@ export function buildReportPdfDoc(input: ReportPdfInput): TDocumentDefinitions {
           body: [head, ...body],
           dontBreakRows: true,
         },
-        layout: TABLE_LAYOUT,
+        layout: tableLayout((r) => summary.has(r)),
       },
     ],
     footer: (currentPage, pageCount) => ({

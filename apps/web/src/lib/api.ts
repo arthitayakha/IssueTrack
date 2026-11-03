@@ -16,6 +16,16 @@ export function isApiError(e: unknown, status?: number): e is ApiError {
   return e instanceof ApiError && (status === undefined || e.status === status);
 }
 
+/**
+ * A `fetch` that never reached the server (connection refused / reset / CORS)
+ * throws a bare `TypeError` — unlike `ApiError`, which means the API answered.
+ * The dev API restarts on every server-side edit, so callers use this to tell
+ * "the server is momentarily gone" apart from "the server said no".
+ */
+export function isNetworkError(e: unknown): boolean {
+  return e instanceof TypeError && !isApiError(e);
+}
+
 type UnauthorizedHandler = () => void;
 let unauthorizedHandler: UnauthorizedHandler | null = null;
 

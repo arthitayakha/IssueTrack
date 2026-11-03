@@ -53,6 +53,12 @@ type CsvMatrix = {
   keys: string[];
   headers: string[];
   data: Array<Array<string | number>>;
+  /**
+   * Data-row indices of the summary rows, when task rows were spliced under
+   * them (assignee view). The PDF bolds/strips them so an aggregate still reads
+   * as one line; CSV ignores it.
+   */
+  summaryRows?: number[];
 };
 
 /** One exportable column: key mirrors the show/hide registry. */
@@ -509,51 +515,71 @@ function ReportsScreen() {
     [view, locale, t, hidden, orderKeys],
   );
 
+  /**
+   * The export body — one flat sheet shared by CSV **and** PDF, so the two
+   * files can never drift. In the assignee view each person's task rows ride
+   * under their summary row (name in `person`), and the detail columns the
+   * user showed come along as extra columns at the end — except the shared
+   * ชั่วโมงจริง/ชั่วโมงกรอก, which fill from the task itself so a column never
+   * appears twice. `summaryRows` records which indices are the aggregates
+   * (the PDF styles them; the CSV just writes the rows out).
+   */
+  const buildExportWithDetail = useCallback(
+    async (all: ReportRows[]): Promise<CsvMatrix> => {
+      const summary = buildExport(all);
+      if (view !== "assignee") return summary;
+
+      // display order (as the on-screen table shows), not registry order
+      const detailByKey = new Map(detailExportCols().map((c) => [c.key, c]));
+      const detailCols = detailColumns
+        .filter((c) => !detailHidden.has(c.key))
+        .map((c) => detailByKey.get(c.key))
+        .filter((c): c is ExportCol<IssueRow> => c !== undefined);
+      // every detail column hidden = nothing to splice under the summaries
+      if (detailCols.length === 0) return summary;
+      const summaryKeySet = new Set(summary.keys);
+      const extra = detailCols.filter((c) => !summaryKeySet.has(c.key));
+      const detailKeySet = new Set(detailCols.map((c) => c.key));
+      const personIdx = summary.keys.indexOf("person");
+      const tasksByPerson = await fetchDetailForExport(all);
+
+      const data: CsvMatrix["data"] = [];
+      const summaryRows: number[] = [];
+      summary.data.forEach((sumRow, i) => {
+        summaryRows.push(data.length);
+        data.push([...sumRow, ...extra.map(() => "")]);
+        const r = all[i] as SummaryRow;
+        if (r.isTotal || r.personId == null) return; // unassigned/total rows have no detail
+        const label = r.labelKey ? t(`columns.${r.labelKey}`) : (r.label ?? "");
+        const tasks = tasksByPerson.get(r.personId) ?? [];
+        tasks.forEach((task, ti) => {
+          const row = summary.keys.map((k, ki) => {
+            if (ki === personIdx) return label;
+            // summary-only columns (งานทั้งหมด / ยังเปิดอยู่ / งานล่าสุด) stay empty
+            if (!detailKeySet.has(k)) return "";
+            if (k === "hoursActual") return task.hoursActual;
+            if (k === "hoursEntered") return task.hoursEntered;
+            return "";
+          });
+          data.push([...row, ...extra.map((c) => c.value(task, ti))]);
+        });
+      });
+
+      return {
+        keys: [...summary.keys, ...extra.map((c) => c.key)],
+        headers: [...summary.headers, ...extra.map((c) => c.header)],
+        data,
+        summaryRows,
+      };
+    },
+    [view, buildExport, t, detailHidden, detailColumns, detailExportCols, fetchDetailForExport],
+  );
+
   const handleExportCsv = useCallback(async () => {
     setExporting(true);
     try {
       const all = await fetchAllReportRows(view, { filters, sort });
-      const summary = buildExport(all);
-      let headers = summary.headers;
-      let data = summary.data;
-
-      if (view === "assignee") {
-        /**
-         * One flat sheet: each person's task rows ride under their summary
-         * row, with the name in `person`. The detail columns the user showed
-         * come along as extra columns at the end — except the shared
-         * ชั่วโมงจริง/ชั่วโมงกรอก, which fill from the task itself so a column
-         * never appears twice.
-         */
-        const detailCols = detailExportCols().filter((c) => !detailHidden.has(c.key));
-        const summaryKeySet = new Set(summary.keys);
-        const extra = detailCols.filter((c) => !summaryKeySet.has(c.key));
-        const detailKeySet = new Set(detailCols.map((c) => c.key));
-        const personIdx = summary.keys.indexOf("person");
-        const tasksByPerson = await fetchDetailForExport(all);
-
-        headers = [...summary.headers, ...extra.map((c) => c.header)];
-        data = [];
-        summary.data.forEach((sumRow, i) => {
-          data.push([...sumRow, ...extra.map(() => "")]);
-          const r = all[i] as SummaryRow;
-          if (r.isTotal || r.personId == null) return; // unassigned/total rows have no detail
-          const label = r.labelKey ? t(`columns.${r.labelKey}`) : (r.label ?? "");
-          const tasks = tasksByPerson.get(r.personId) ?? [];
-          tasks.forEach((task, ti) => {
-            const row = summary.keys.map((k, ki) => {
-              if (ki === personIdx) return label;
-              // summary-only columns (งานทั้งหมด / ยังเปิดอยู่ / งานล่าสุด) stay empty
-              if (!detailKeySet.has(k)) return "";
-              if (k === "hoursActual") return task.hoursActual;
-              if (k === "hoursEntered") return task.hoursEntered;
-              return "";
-            });
-            data.push([...row, ...extra.map((c) => c.value(task, ti))]);
-          });
-        });
-      }
-
+      const { headers, data } = await buildExportWithDetail(all);
       const stamp = new Date().toISOString().slice(0, 10);
       downloadCsv(`report-${view}-${stamp}.csv`, buildCsv(headers, data));
     } catch (err) {
@@ -561,16 +587,7 @@ function ReportsScreen() {
     } finally {
       setExporting(false);
     }
-  }, [
-    view,
-    filters,
-    sort,
-    buildExport,
-    t,
-    detailHidden,
-    detailExportCols,
-    fetchDetailForExport,
-  ]);
+  }, [view, filters, sort, buildExportWithDetail, t]);
 
   /* ---------------- export header text (shared by the PDF header) ---------------- */
 
@@ -594,13 +611,14 @@ function ReportsScreen() {
     setExportError(null);
     try {
       const all = await fetchAllReportRows(view, { filters, sort });
-      const { keys, headers, data } = buildExport(all);
+      const { keys, headers, data, summaryRows } = await buildExportWithDetail(all);
       const stamp = new Date().toISOString().slice(0, 10);
       await exportReportPdf({
         view,
         keys,
         headers,
         data,
+        summaryRows,
         title: t("title"),
         viewLabel: t(`views.${view}`),
         rangeLine: t("print.range", { range: rangeText }),
@@ -619,7 +637,7 @@ function ReportsScreen() {
     view,
     filters,
     sort,
-    buildExport,
+    buildExportWithDetail,
     rangeText,
     generatedText,
     userEmail,

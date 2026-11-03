@@ -49,6 +49,8 @@ export function usePermissions() {
   const permissions = useAuthStore((s) => s.permissions);
   const token = useAuthStore((s) => s.token);
   const setPermissions = useAuthStore((s) => s.setPermissions);
+  const positionId = useAuthStore((s) => s.user?.positionId ?? null);
+  const positionPermissions = useAuthStore((s) => s.user?.positionPermissions);
 
   /**
    * Refresh exactly once per page load: the first mount that gets here does
@@ -93,17 +95,26 @@ export function usePermissions() {
     // bound at module level on purpose — it outlives this component
   }, [token]);
 
+  /**
+   * Until `/permissions/my` answers, fall back to whatever the login payload
+   * carried: a member with a position must NOT fall back to their role — the
+   * role would briefly show menus (e.g. "แจ้งปัญหา") the position revoked.
+   * People without a position still fall back to the role defaults.
+   */
+  const fallback = positionId ? positionPermissions ?? [] : permissionsForRole(roleName);
+
   const can = useCallback(
     (permission: Permission) => {
       if (permissions != null) return permissions.includes(permission);
+      if (positionId) return (positionPermissions ?? []).includes(permission);
       return roleHasPermission(roleName, permission);
     },
-    [permissions, roleName],
+    [permissions, roleName, positionId, positionPermissions],
   );
 
   return {
     roleName,
-    permissions: permissions ?? permissionsForRole(roleName),
+    permissions: permissions ?? fallback,
     can,
   };
 }

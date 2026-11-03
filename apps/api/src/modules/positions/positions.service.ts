@@ -59,7 +59,7 @@ export class PositionsService {
       if (role?.name === "admin") {
         defaultPermissions = [...permissionsForRole("admin")];
       } else {
-        defaultPermissions = [...permissionsForRole("customer")];
+        defaultPermissions = [...permissionsForRole(role?.name ?? "customer")];
       }
     } else {
       defaultPermissions = [...permissionsForRole("customer")];
@@ -72,15 +72,29 @@ export class PositionsService {
     return { id: position.id, name: position.name, roleId: position.roleId, permissions: [...defaultPermissions] };
   }
 
+  /**
+   * The position matrix is a whitelist: rows here ARE the permissions its
+   * members get. Only non-denied rows are returned so the dialog never shows
+   * a revoked permission as ticked.
+   */
   async getPermissions(id: number) {
     const position = await this.positions.findOne({ where: { id } });
     if (!position) {
       throw new NotFoundException(`Position ${id} not found`);
     }
     const rows = await this.positionPermissions.find({ where: { positionId: id } });
-    return { id: position.id, name: position.name, permissions: rows.map((r) => r.permission) };
+    return {
+      id: position.id,
+      name: position.name,
+      permissions: rows.filter((r) => !r.denied).map((r) => r.permission),
+    };
   }
 
+  /**
+   * Replaces the position's set with exactly what was ticked. Unticking a box
+   * drops its row, which (with the position now authoritative) revokes it —
+   * previously the role silently kept granting it.
+   */
   async updatePermissions(id: number, permissions: string[]) {
     const position = await this.positions.findOne({ where: { id } });
     if (!position) {

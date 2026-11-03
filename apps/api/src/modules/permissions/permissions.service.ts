@@ -98,6 +98,13 @@ export class PermissionsService implements OnModuleInit {
     return categories;
   }
 
+  /**
+   * A position is the single source of truth for its members. When the user
+   * has one, only `position_permissions` decides — the role is NOT unioned in,
+   * so unticking a box in the position matrix really does revoke it. The role
+   * is consulted only for users without a position (and admin keeps its
+   * always-allow short-circuit).
+   */
   async hasPermission(roleId: number | null, permission: string, positionId?: number | null): Promise<boolean> {
     if (roleId === null || roleId === undefined) return false;
     const adminRole = await this.rolesRepo.findOne({ where: { name: "admin" } });
@@ -105,40 +112,28 @@ export class PermissionsService implements OnModuleInit {
     const role = await this.rolesRepo.findOne({ where: { id: roleId } });
     if (!role || !role.isActive) return false;
 
-    const rolePerm = await this.repo.findOne({ where: { roleId, permission } });
-    const roleGranted = !!rolePerm;
-
     if (positionId) {
       const posPerm = await this.positionPermissions.findOne({ where: { positionId, permission } });
-      if (posPerm) {
-        if (posPerm.denied) return false;
-        return true;
-      }
+      return !!posPerm && !posPerm.denied;
     }
 
-    return roleGranted;
+    const rolePerm = await this.repo.findOne({ where: { roleId, permission } });
+    return !!rolePerm;
   }
 
+  /** Mirror of {@link hasPermission} for the whole set the frontend uses. */
   async getUserPermissions(roleId: number | null, positionId: number | null): Promise<string[]> {
     if (!roleId) return [];
     const adminRole = await this.rolesRepo.findOne({ where: { name: "admin" } });
     if (adminRole && roleId === adminRole.id) return [...ALL_PERMISSIONS];
 
-    const rolePerms = await this.repo.find({ where: { roleId } });
-    const effective = new Set(rolePerms.map((p) => p.permission));
-
     if (positionId) {
       const posPerms = await this.positionPermissions.find({ where: { positionId } });
-      for (const p of posPerms) {
-        if (p.denied) {
-          effective.delete(p.permission);
-        } else {
-          effective.add(p.permission);
-        }
-      }
+      return [...new Set(posPerms.filter((p) => !p.denied).map((p) => p.permission))];
     }
 
-    return [...effective];
+    const rolePerms = await this.repo.find({ where: { roleId } });
+    return [...new Set(rolePerms.map((p) => p.permission))];
   }
 
   async updateMatrix(grants: Record<string, string[]>) {

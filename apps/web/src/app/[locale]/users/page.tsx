@@ -46,6 +46,8 @@ import AssessmentIcon from "@mui/icons-material/Assessment";
 import LockIcon from "@mui/icons-material/Lock";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import HistoryIcon from "@mui/icons-material/History";
+import LabelIcon from "@mui/icons-material/Label";
+import BoltIcon from "@mui/icons-material/Bolt";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
@@ -82,8 +84,9 @@ const PERMISSION_GROUPS = [
           "board.view", "board.column.create", "board.column.update", "board.column.delete",
           "issue.create", "issue.own.view", "issue.all.view", "issue.assigned.view", "issue.detail.view",
           "issue.own.update", "issue.all.update", "issue.assign", "issue.reassign",
-          "issue.status.update", "issue.delete", "issue.category.change", "issue.priority.change",
-          "time.system.view", "time.actual.view",
+          "issue.status.update", "issue.delete", "issue.trash.view", "issue.restore", "issue.lock",
+          "issue.category.change", "issue.priority.change",
+          "time.system.view", "time.system.edit", "time.actual.view", "time.actual.edit",
         ],
       },
     ],
@@ -134,10 +137,34 @@ const PERMISSION_GROUPS = [
     ],
   },
   {
+    key: "labels",
+    icon: LabelIcon,
+    children: [
+      {
+        key: "labels",
+        permissions: ["label.view", "label.create", "label.update", "label.delete"],
+      },
+    ],
+  },
+  {
     key: "report",
     icon: AssessmentIcon,
     children: [
       { key: "report", permissions: ["report.view", "report.export"] },
+    ],
+  },
+  {
+    key: "permissions",
+    icon: SecurityIcon,
+    children: [
+      { key: "permissions", permissions: ["permission.view", "permission.update"] },
+    ],
+  },
+  {
+    key: "automation",
+    icon: BoltIcon,
+    children: [
+      { key: "automation", permissions: ["automation.view", "automation.update"] },
     ],
   },
   {
@@ -248,6 +275,8 @@ export default function UsersPage() {
   const [positionDialogOpen, setPositionDialogOpen] = useState(false);
   const [editingPosition, setEditingPosition] = useState<Position | null>(null);
   const [positionForm, setPositionForm] = useState({ name: "", roleId: null as number | null, permissions: [] as string[] });
+  /** False while an edit dialog is still fetching its real permission set. */
+  const [positionPermsReady, setPositionPermsReady] = useState(true);
   const [roleDialogOpen, setRoleDialogOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
   const [roleForm, setRoleForm] = useState({ name: "" });
@@ -388,6 +417,8 @@ export default function UsersPage() {
   function openAddPosition() {
     setEditingPosition(null);
     setPositionForm({ name: "", roleId: null, permissions: [...permissionsForRole("customer")] });
+    // new position: whatever is ticked from the start IS the set we send
+    setPositionPermsReady(true);
     setPositionDialogOpen(true);
   }
 
@@ -399,6 +430,10 @@ export default function UsersPage() {
       roleId: position.roleId,
       permissions: isAdmin ? [...permissionsForRole("admin")] : [...permissionsForRole("customer")],
     });
+    // Until the real set arrives the boxes below are placeholders — saving now
+    // would overwrite the position's permissions with role defaults, so the
+    // Save button stays disabled until this flips to true.
+    setPositionPermsReady(false);
     setPositionDialogOpen(true);
     try {
       const data = await apiFetch<{ permissions: string[] }>(
@@ -407,12 +442,16 @@ export default function UsersPage() {
         token,
       );
       setPositionForm((prev) => ({ ...prev, permissions: data.permissions }));
+      setPositionPermsReady(true);
     } catch {
-      // keep defaults if fetch fails
+      // leave the save button disabled — a silent fallback would now revoke
+      // everything the position actually had
+      notify(t("positionPermsLoadError"), "error");
     }
   }
 
   async function handleSavePosition() {
+    if (!positionPermsReady) return;
     try {
       if (editingPosition) {
         await apiFetch(
@@ -972,7 +1011,15 @@ export default function UsersPage() {
                     setPositionForm({
                       ...positionForm,
                       roleId: newRoleId,
-                      permissions: isAdmin ? [...permissionsForRole("admin")] : [...permissionsForRole("customer")],
+                      // Editing an existing position: keep the permission set
+                      // already loaded — silently swapping in role defaults
+                      // would wipe what an admin configured. Only a brand-new
+                      // position (nothing to lose yet) seeds from the role.
+                      permissions: editingPosition
+                        ? positionForm.permissions
+                        : isAdmin
+                          ? [...permissionsForRole("admin")]
+                          : [...permissionsForRole(selectedRole?.name ?? "customer")],
                     });
                   }}
                 >
@@ -986,6 +1033,9 @@ export default function UsersPage() {
               <Box sx={{ mt: 2 }}>
                 <Typography variant="subtitle2" gutterBottom>
                   {t("positionPermissions")}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                  {t("positionPermissionsHint")}
                 </Typography>
 
                 <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
@@ -1062,10 +1112,7 @@ export default function UsersPage() {
                                   </Box>
                                 )}
                                 <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, pl: hasMultipleChildren ? 2 : 0 }}>
-                                  {childPerms.map((permission) => {
-                                    const deps = getDependentPermissions(permission);
-                                    const depsMet = deps.every((d) => positionForm.permissions.includes(d));
-                                    return (
+                                  {childPerms.map((permission) => (
                                       <Box
                                         key={permission}
                                         sx={{
@@ -1086,12 +1133,11 @@ export default function UsersPage() {
                                             const next = togglePermission(positionForm.permissions, permission, e.target.checked);
                                             setPositionForm({ ...positionForm, permissions: next });
                                           }}
-                                          disabled={isDisabled || (!positionForm.permissions.includes(permission) && !depsMet)}
+                                          disabled={isDisabled}
                                           size="small"
                                         />
                                       </Box>
-                                    );
-                                  })}
+                                    ))}
                                 </Box>
                               </Box>
                             );
@@ -1106,8 +1152,12 @@ export default function UsersPage() {
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setPositionDialogOpen(false)}>{t("cancel")}</Button>
-            <Button variant="contained" onClick={handleSavePosition}>
-              {t("save")}
+            <Button
+              variant="contained"
+              onClick={handleSavePosition}
+              disabled={!positionPermsReady}
+            >
+              {positionPermsReady ? t("save") : <CircularProgress size={18} />}
             </Button>
           </DialogActions>
         </Dialog>

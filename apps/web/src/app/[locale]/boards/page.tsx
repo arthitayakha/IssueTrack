@@ -76,6 +76,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
 import TableChartIcon from "@mui/icons-material/TableChart";
+import FolderIcon from "@mui/icons-material/Folder";
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import SaveIcon from "@mui/icons-material/Save";
@@ -4707,6 +4708,21 @@ function BoardsPageInner() {
                   }}
                 >
                   <TableChartIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              {/* Placeholder: folder view coming later — icon only for now */}
+              <Tooltip title={t("folderView")}>
+                <IconButton
+                  size="small"
+                  aria-label={t("folderView")}
+                  sx={{
+                    width: 36,
+                    height: 36,
+                    color: "text.secondary",
+                    "&:hover": { bgcolor: "action.hover" },
+                  }}
+                >
+                  <FolderIcon fontSize="small" />
                 </IconButton>
               </Tooltip>
             </>

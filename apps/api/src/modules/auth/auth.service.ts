@@ -35,7 +35,9 @@ export class AuthService {
       throw new UnauthorizedException("Role is deactivated");
     }
     const positionPerms = user.positionId
-      ? (await this.positionPermissions.find({ where: { positionId: user.positionId } })).map((p) => p.permission)
+      ? (await this.positionPermissions.find({ where: { positionId: user.positionId } }))
+          .filter((p) => !p.denied)
+          .map((p) => p.permission)
       : [];
     const accessToken = await this.jwt.signAsync({
       sub: String(user.id),
@@ -52,7 +54,9 @@ export class AuthService {
       ? await this.roles.findOne({ where: { id: user.roleId } })
       : null;
     const positionPerms = user.positionId
-      ? (await this.positionPermissions.find({ where: { positionId: user.positionId } })).map((p) => p.permission)
+      ? (await this.positionPermissions.find({ where: { positionId: user.positionId } }))
+          .filter((p) => !p.denied)
+          .map((p) => p.permission)
       : [];
     return this.toPublicUser(user, role?.name ?? null, positionPerms);
   }

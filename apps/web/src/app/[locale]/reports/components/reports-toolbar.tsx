@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useState, type DragEvent } from "react";
 import {
   Badge,
   Box,
@@ -18,7 +18,6 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { SelectChangeEvent } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import ViewColumnIcon from "@mui/icons-material/ViewColumn";
@@ -26,12 +25,8 @@ import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
-import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
-import { DatePicker } from "@mui/x-date-pickers/DatePicker";
-import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
-import dayjs, { type Dayjs } from "dayjs";
-import "dayjs/locale/th";
-import { useTranslations, useLocale } from "next-intl";
+import { useTranslations } from "next-intl";
+import { DateRangeSelect, type DateRangePreset } from "@/components/date-range-select";
 import { activeFilterCount } from "@/lib/reports-api";
 import type { FilterOptions, ReportFilters, ReportView } from "@/lib/reports-api";
 import { REPORT_VIEW_ORDER } from "./report-views";
@@ -54,23 +49,6 @@ function weekFirst(now: Date): Date {
   const dow = (d.getDay() + 6) % 7; // Mon = 0 … Sun = 6
   d.setDate(d.getDate() - dow);
   return d;
-}
-
-function currentRange(f: ReportFilters): RangeKey {
-  if (!f.from && !f.to) return "all";
-  const now = new Date();
-  const today = isoLocal(now);
-  if (f.from === today && f.to === today) return "today";
-  if (f.from === isoLocal(weekFirst(now)) && f.to === today) return "week";
-  const monthFirst = new Date(now.getFullYear(), now.getMonth(), 1);
-  if (f.from === isoLocal(monthFirst) && f.to === today) return "thisMonth";
-  const prevFirst = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const prevLast = new Date(now.getFullYear(), now.getMonth(), 0);
-  if (f.from === isoLocal(prevFirst) && f.to === isoLocal(prevLast)) return "lastMonth";
-  const d90 = new Date(now);
-  d90.setDate(d90.getDate() - 89);
-  if (f.from === isoLocal(d90) && f.to === today) return "d90";
-  return "custom";
 }
 
 function rangeDates(key: RangeKey): { from: string; to: string } | null {
@@ -96,129 +74,26 @@ function rangeDates(key: RangeKey): { from: string; to: string } | null {
   return null;
 }
 
-/* ---------------- custom range popover (replaces the old date inputs) ------ */
+/* ---------------- date-range presets (the control itself is shared) --------- */
 
-const RANGE_LABEL_KEYS: Record<RangeKey, string> = {
+/** Preset keys in menu order — the shared control appends "custom". */
+const RANGE_PRESET_KEYS: Exclude<RangeKey, "custom">[] = [
+  "all",
+  "today",
+  "week",
+  "thisMonth",
+  "lastMonth",
+  "d90",
+];
+
+const RANGE_LABEL_KEYS: Record<Exclude<RangeKey, "custom">, string> = {
   all: "rangeAll",
   today: "rangeToday",
   week: "rangeWeek",
   thisMonth: "rangeThisMonth",
   lastMonth: "rangeLastMonth",
   d90: "range90",
-  custom: "rangeCustom",
 };
-
-/**
- * Anchored popover (same pattern as the column menu) holding two MUI date
- * pickers instead of the old native `type="date"` inputs — the calendar
- * follows the app locale (dayjs `th`). Dates apply live as they are picked;
- * the footer only clears the pair or dismisses the popover.
- */
-function RangePopover({
-  anchorEl,
-  onClose,
-  filters,
-  onFiltersChange,
-}: {
-  anchorEl: HTMLElement | null;
-  onClose: () => void;
-  filters: ReportFilters;
-  onFiltersChange: (filters: ReportFilters) => void;
-}) {
-  const t = useTranslations("Reports");
-  const locale = useLocale();
-
-  /** The ISO pair stays ordered: moving one side past the other drags it along. */
-  const setFrom = (value: Dayjs | null) => {
-    const from = value ? value.format("YYYY-MM-DD") : "";
-    const to = from && filters.to && from > filters.to ? from : filters.to;
-    onFiltersChange({ ...filters, from, to });
-  };
-  const setTo = (value: Dayjs | null) => {
-    const to = value ? value.format("YYYY-MM-DD") : "";
-    const from = to && filters.from && to < filters.from ? to : filters.from;
-    onFiltersChange({ ...filters, from, to });
-  };
-
-  return (
-    <Popover
-      open={Boolean(anchorEl)}
-      anchorEl={anchorEl}
-      onClose={onClose}
-      anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-      transformOrigin={{ vertical: "top", horizontal: "left" }}
-      slotProps={{
-        paper: {
-          sx: {
-            width: 300,
-            maxWidth: "calc(100vw - 24px)",
-            borderRadius: 2,
-            border: "1px solid",
-            borderColor: "divider",
-          },
-        },
-      }}
-    >
-      <LocalizationProvider
-        dateAdapter={AdapterDayjs}
-        adapterLocale={locale === "th" ? "th" : undefined}
-      >
-        <Box sx={{ px: 2, pt: 1.75 }}>
-          <Typography variant="subtitle2" fontWeight={700}>
-            {t("toolbar.pickRangeTitle")}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
-            {t("toolbar.pickRangeHint")}
-          </Typography>
-          <DatePicker
-            label={t("filters.from")}
-            value={filters.from ? dayjs(filters.from) : null}
-            onChange={setFrom}
-            format="DD/MM/YYYY"
-            slotProps={{ textField: { size: "small", fullWidth: true } }}
-          />
-          <Box sx={{ mt: 1.5 }}>
-            <DatePicker
-              label={t("filters.to")}
-              value={filters.to ? dayjs(filters.to) : null}
-              onChange={setTo}
-              format="DD/MM/YYYY"
-              minDate={filters.from ? dayjs(filters.from) : undefined}
-              slotProps={{ textField: { size: "small", fullWidth: true } }}
-            />
-          </Box>
-        </Box>
-        <Box
-          sx={{
-            display: "flex",
-            justifyContent: "space-between",
-            px: 2,
-            py: 1.25,
-            mt: 1.75,
-            borderTop: "1px solid",
-            borderColor: "divider",
-          }}
-        >
-          <Button
-            size="small"
-            onClick={() => onFiltersChange({ ...filters, from: "", to: "" })}
-            sx={{ textTransform: "none", fontWeight: 600 }}
-          >
-            {t("toolbar.clearRange")}
-          </Button>
-          <Button
-            size="small"
-            variant="contained"
-            onClick={onClose}
-            sx={{ textTransform: "none", fontWeight: 600 }}
-          >
-            {t("toolbar.apply")}
-          </Button>
-        </Box>
-      </LocalizationProvider>
-    </Popover>
-  );
-}
 
 /* ---------------- column list (one menu section) ---------------- */
 
@@ -400,11 +275,13 @@ export function ReportsToolbar({
   const [searchInput, setSearchInput] = useState(filters.search);
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
   const [columnAnchor, setColumnAnchor] = useState<HTMLElement | null>(null);
-  /** Keeps the "custom" range selected until a preset replaces it. */
-  const [customMode, setCustomMode] = useState(false);
-  /** Anchor for the custom-range popover (the preset select itself). */
-  const rangeSelectRef = useRef<HTMLDivElement | null>(null);
-  const [rangeAnchor, setRangeAnchor] = useState<HTMLElement | null>(null);
+
+  /** Preset menu for the shared date-range control (custom comes with it). */
+  const rangePresets: DateRangePreset[] = RANGE_PRESET_KEYS.map((key) => ({
+    key,
+    label: t(`toolbar.${RANGE_LABEL_KEYS[key]}`),
+    dates: rangeDates(key) ?? { from: "", to: "" },
+  }));
 
   useEffect(() => {
     if (!filters.search) setSearchInput("");
@@ -419,26 +296,7 @@ export function ReportsToolbar({
     return () => clearTimeout(id);
   }, [searchInput, filters, onFiltersChange]);
 
-  const detectedRange = currentRange(filters);
-  const rangeKey: RangeKey = customMode || detectedRange === "custom" ? "custom" : detectedRange;
   const activeCount = activeFilterCount(filters);
-
-  function handleRange(e: SelectChangeEvent<RangeKey>) {
-    const key = e.target.value as RangeKey;
-    if (key === "custom") {
-      // keep the current dates and open the range popover under the select
-      setCustomMode(true);
-      setRangeAnchor(rangeSelectRef.current);
-      return;
-    }
-    setCustomMode(false);
-    setRangeAnchor(null);
-    const dates = rangeDates(key);
-    if (dates) onFiltersChange({ ...filters, from: dates.from, to: dates.to });
-  }
-
-  /** Compact "1 ต.ค." piece of the custom renderValue. */
-  const spanLabel = (iso: string) => (iso ? dayjs(iso).format("D MMM") : "—");
 
   /** The detail section only exists in the assignee view (its expandable rows). */
   const showDetailSection = view === "assignee";
@@ -467,29 +325,13 @@ export function ReportsToolbar({
           ))}
         </Select>
 
-        <Select<RangeKey>
-          size="small"
-          ref={rangeSelectRef}
-          value={rangeKey}
-          onChange={handleRange}
-          renderValue={(v) => (
-            <Typography variant="body2" fontWeight={700}>
-              {v === "custom" && (filters.from || filters.to)
-                ? `${t("toolbar.rangeCustom")} · ${spanLabel(filters.from)} – ${spanLabel(filters.to)}`
-                : t(`toolbar.${RANGE_LABEL_KEYS[v]}`)}
-            </Typography>
-          )}
-          sx={{ minWidth: 165 }}
-          inputProps={{ "aria-label": t("toolbar.range") }}
-        >
-          <MenuItem value="all">{t("toolbar.rangeAll")}</MenuItem>
-          <MenuItem value="today">{t("toolbar.rangeToday")}</MenuItem>
-          <MenuItem value="week">{t("toolbar.rangeWeek")}</MenuItem>
-          <MenuItem value="thisMonth">{t("toolbar.rangeThisMonth")}</MenuItem>
-          <MenuItem value="lastMonth">{t("toolbar.rangeLastMonth")}</MenuItem>
-          <MenuItem value="d90">{t("toolbar.range90")}</MenuItem>
-          <MenuItem value="custom">{t("toolbar.rangeCustom")}</MenuItem>
-        </Select>
+        <DateRangeSelect
+          value={filters}
+          onChange={(range) => onFiltersChange({ ...filters, from: range.from, to: range.to })}
+          presets={rangePresets}
+          minWidth={165}
+          ariaLabel={t("toolbar.range")}
+        />
 
         <Tooltip title={t("toolbar.filtersBtn")}>
           <IconButton
@@ -621,13 +463,6 @@ export function ReportsToolbar({
           </>
         )}
       </Stack>
-
-      <RangePopover
-        anchorEl={rangeAnchor}
-        onClose={() => setRangeAnchor(null)}
-        filters={filters}
-        onFiltersChange={onFiltersChange}
-      />
     </Stack>
   );
 }

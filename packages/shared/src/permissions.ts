@@ -281,7 +281,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "auth.logout": "ออกจากระบบ",
   "dashboard.own.view": "ดูแดชบอร์ดส่วนตัว",
   "dashboard.overview.view": "ดูภาพรวมแดชบอร์ด",
-  "issue.create": "สร้างปัญหา",
+  "issue.create": "แจ้งปัญหา",
   "issue.own.view": "ดูปัญหาของตัวเอง",
   "issue.all.view": "ดูปัญหาทั้งหมด",
   "issue.assigned.view": "ดูปัญหาที่ได้รับมอบหมาย",
@@ -393,15 +393,12 @@ export const PERMISSION_DEPENDENCIES: Record<string, string[]> = {
   "comment.own.update": ["comment.view"],
   "comment.own.delete": ["comment.view"],
   "comment.all.delete": ["comment.view"],
-  "issue.create": ["issue.all.view"],
   "issue.own.update": ["issue.own.view"],
-  "issue.all.update": ["issue.all.view"],
-  "issue.delete": ["issue.all.view"],
-  "issue.assign": ["issue.all.view"],
-  "issue.reassign": ["issue.all.view"],
-  "issue.status.update": ["issue.all.view"],
-  "issue.category.change": ["issue.all.view"],
-  "issue.priority.change": ["issue.all.view"],
+  // NOTE: the old `issue.* → issue.all.view` rules (create/delete/assign/
+  // reassign/status.update/category.change/priority.change) are gone on
+  // purpose — no role template ever satisfied them, and auto-ticking the
+  // parent would silently grant "view every issue" (e.g. a customer seeing
+  // other people's cards).
   "report.export": ["report.view"],
   "role.permission.update": ["role.view"],
   "permission.update": ["permission.view"],
