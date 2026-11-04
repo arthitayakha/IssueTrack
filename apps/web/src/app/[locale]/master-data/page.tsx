@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useLocale, useTranslations } from "next-intl";
+import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import {
   Box,
@@ -18,12 +18,7 @@ import {
   Tab,
   Tabs,
   CircularProgress,
-  FormControl,
   FormControlLabel,
-  FormHelperText,
-  InputLabel,
-  Select,
-  MenuItem,
   Switch,
   Card,
   CardContent,
@@ -44,6 +39,9 @@ import { usePermissions } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
 import { resolveStatusColor } from "@/lib/status-color";
 import { useNotification } from "@/components/notification";
+import AppActions from "@/components/app-actions";
+import AppFormDialog from "@/components/app-form-dialog";
+import { type App, type Company } from "@/lib/apps-api";
 import {
   DndContext,
   closestCorners,
@@ -80,50 +78,6 @@ import ColorPicker from "@/components/color-picker";
 const STATUS_COLOR_PATTERN =
   /^(green|red|yellow|blue|purple|orange|pink|gray|default|#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}))$/;
 
-/**
- * คอลัมน์ "บริษัท" ในตารางโชว์สูงสุดกี่ชิป — ที่เหลือยุบเป็น `+N`
- * (hover ดูรายชื่อผ่าน tooltip) กันแถวสูง/ยาวเมื่อผูกบริษัทหลายแห่ง
- */
-const MAX_COMPANY_CHIPS = 3;
-
-/** สถานะอายุทั้ง 5 สถานะ — ต้องตรงกับ `AppExpiryStatus` ฝั่งเซิร์ฟเวอร์ */
-type ExpiryStatus = "none" | "normal" | "expiring_soon" | "critical" | "expired";
-
-/**
- * 1 แถวของ `app_companies` — **คู่ แอป×บริษัท** พร้อมวันที่ของคู่นั้นเอง
- * (migration 1810 ย้ายวันที่ออกจาก `apps` ลงมาที่ตารางเชื่อม เพราะแต่ละ
- * บริษัทต่ออายุคนละช่วงเวลา)
- */
-interface AppCompanyLink {
-  id: number;
-  name: string;
-  /** `YYYY-MM-DD` from `app_companies.started_at`, null = ยังไม่กรอก */
-  startedAt: string | null;
-  /** `YYYY-MM-DD` from `app_companies.expires_at`, null = ไม่กำหนด */
-  expiresAt: string | null;
-  /** stored state **ของคู่นี้** — ปกติ / ใกล้หมดอายุ / วิกฤต / หมดอายุ / ไม่กำหนด */
-  expiryStatus: ExpiryStatus;
-}
-
-interface App {
-  id: number;
-  name: string;
-  isVisible: boolean;
-  /** บริษัทที่ผูกอยู่ พร้อมวันที่ของแต่ละคู่ — many-to-many (`app_companies`) */
-  companies: AppCompanyLink[];
-  /** ISO datetime from `created_at` */
-  createdAt: string;
-  issueCount: number;
-}
-
-interface Company {
-  id: number;
-  name: string;
-  isVisible: boolean;
-  /** จำนวนแอปที่ผูกกับบริษัทนี้ (นับจาก `app_companies`) */
-  appCount: number;
-}
-
 interface Category {
   id: number;
   name: string;
@@ -152,77 +106,6 @@ interface IssuePriority {
 
 function getStatusColor(status: IssueStatus, theme: any): string {
   return resolveStatusColor(theme, status.color, status.name);
-}
-
-/**
- * `2026-12-04` (a DATE column) or an ISO datetime → `4 ธ.ค. 2026`. A bare date
- * is parsed as *local* midnight so it never slides back a day in UTC+7, the
- * same rule the API uses when it formats `apps.expires_at`.
- */
-function formatDay(value: string, locale: string): string {
-  const date = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString(locale, {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-/**
- * ต้องตรงกับ `EXPIRY_WARNING_DAYS` / `EXPIRY_CRITICAL_DAYS` ใน
- * `AppExpiryService` — ค่าสองตัวนี้ถูกจำลองฝั่ง client เพื่อให้ chip ใน
- * ฟอร์มอัปเดตทันทีที่ผู้ใช้เลือกวันที่ (ฝั่งเซิร์ฟเวอร์ยังเป็นคนตัวจริง)
- */
-const EXPIRY_WARNING_DAYS = 30;
-const EXPIRY_CRITICAL_DAYS = 7;
-
-/** วันนี้แบบ local (Y/M/D) — กันไม่ให้เลื่อนวันผิดฝั่งเหมือนฝั่งเซิร์ฟเวอร์ */
-function todayLocalIso(): string {
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${now.getFullYear()}-${month}-${day}`;
-}
-
-/**
- * วันที่เหลือจากวันนี้ (local) ถึง `value` — `null` = ไม่ได้กรอกวันที่
- * ตัวเลขเดียวกับที่เซิร์ฟเวอร์ใช้ตัดสินสถานะและเขียนในข้อความแจ้งเตือน
- */
-function daysLeftIso(value: string): number | null {
-  if (!value) return null;
-  return Math.round(
-    (Date.parse(`${value}T00:00:00Z`) - Date.parse(`${todayLocalIso()}T00:00:00Z`)) /
-      86_400_000,
-  );
-}
-
-/**
- * สถานะอายุจากวันที่ในฟอร์ม — กฎเดียวกับเซิร์ฟเวอร์ (นับวันตามปฏิทิน):
- * ไม่มีวันที่ → ไม่กำหนด · ติดลบ → หมดอายุ · ≤7 → วิกฤต · ≤30 → ใกล้หมดอายุ
- */
-function previewExpiryStatus(expiresAt: string): ExpiryStatus {
-  const left = daysLeftIso(expiresAt);
-  if (left === null) return "none";
-  if (left < 0) return "expired";
-  if (left <= EXPIRY_CRITICAL_DAYS) return "critical";
-  if (left <= EXPIRY_WARNING_DAYS) return "expiring_soon";
-  return "normal";
-}
-
-/**
- * คู่ที่ "ใกล้หมดอายุที่สุด" ของแอป — ตารางแท็บ `ข้อมูลระบบ` มี **1 แถวต่อแอป**
- * แต่วันที่เป็นรายบริษัทแล้ว จึงต้องเลือกมาชุดเดียว: เอาคู่ที่มีวันหมดอายุ
- * และวันเล็กที่สุด (เทียบ `YYYY-MM-DD` ซึ่งเรียงตรงกับลำดับเวลาอยู่แล้ว)
- * ถ้าไม่มีคู่ไหนกรอกวันหมดอายุเลย ก็ใช้คู่แรก (วันที่เริ่มใช้งานอาจยังมีค่า)
- */
-function pickNearest(links: AppCompanyLink[]): AppCompanyLink | null {
-  let nearest: AppCompanyLink | null = null;
-  for (const link of links) {
-    if (!link.expiresAt) continue;
-    if (!nearest?.expiresAt || link.expiresAt < nearest.expiresAt) nearest = link;
-  }
-  return nearest ?? links[0] ?? null;
 }
 
 function SortableStatusRow({
@@ -421,7 +304,6 @@ function SortableStatusRow({
 
 export default function SettingsPage() {
   const t = useTranslations("Settings");
-  const locale = useLocale();
   const router = useRouter();
   const { can } = usePermissions();
   const token = useAuthStore((s) => s.token);
@@ -440,16 +322,6 @@ export default function SettingsPage() {
 
   const [appDialogOpen, setAppDialogOpen] = useState(false);
   const [editingApp, setEditingApp] = useState<App | null>(null);
-  // ฟอร์มแอป = **บริษัทเดียว** (dropdown) + วันที่ 2 ช่องของคู่ แอป×บริษัท นั้น
-  // (`""` = ยังไม่กรอก / ไม่กำหนด, `0` = ยังไม่ได้เลือกบริษัท)
-  const [appForm, setAppForm] = useState({
-    name: "",
-    companyId: 0,
-    startedAt: "",
-    expiresAt: "",
-  });
-  /** inline error under the company picker (one is required) */
-  const [appFormError, setAppFormError] = useState<string | null>(null);
 
   const [companyDialogOpen, setCompanyDialogOpen] = useState(false);
   const [editingCompany, setEditingCompany] = useState<Company | null>(null);
@@ -576,7 +448,6 @@ export default function SettingsPage() {
     if (!tabParam) return;
     const contents = [
       ...(canViewApps ? ["apps"] : []),
-      ...(canViewApps ? ["system"] : []),
       ...(canViewCompanies ? ["companies"] : []),
       ...(canViewCategories ? ["categories"] : []),
       ...(canViewStatuses ? ["statuses"] : []),
@@ -587,71 +458,24 @@ export default function SettingsPage() {
     if (idx >= 0) setTab(idx);
   }, [canViewApps, canViewCompanies, canViewCategories, canViewStatuses, canViewPriorities, canViewLabels]);
 
+  /** ดึงรายการแอปใหม่ — เรียกทั้งตอนบันทึกฟอร์มสำเร็จ (`onSaved`) และตอนลบ */
+  async function loadApps() {
+    try {
+      const updated = await apiFetch<PaginatedResponse<App>>("/apps?page=1&limit=100", {}, token);
+      setApps(updated.data);
+    } catch {
+      // รายการเดิมยังอยู่บนจอ — ห้ามเคลียร์ทิ้งเพราะดึงไม่สำเร็จ
+    }
+  }
+
   function openAddApp() {
     setEditingApp(null);
-    setAppForm({ name: "", companyId: 0, startedAt: "", expiresAt: "" });
-    setAppFormError(null);
     setAppDialogOpen(true);
   }
 
   function openEditApp(app: App) {
     setEditingApp(app);
-    // ฟอร์มถือได้แค่ 1 บริษัท → เอาคู่แรกของแอป (ตอนนี้ทุกแอปมีคู่เดียว)
-    const link = app.companies[0];
-    setAppForm({
-      name: app.name,
-      companyId: link?.id ?? 0,
-      startedAt: link?.startedAt ?? "",
-      expiresAt: link?.expiresAt ?? "",
-    });
-    setAppFormError(null);
     setAppDialogOpen(true);
-  }
-
-  async function handleSaveApp() {
-    // 1 แอป = 1 บริษัท — the API checks this too, but the message belongs in
-    // Thai and underneath the field
-    if (!appForm.companyId) {
-      setAppFormError(t("companyRequired"));
-      return;
-    }
-    setAppFormError(null);
-    try {
-      const payload = {
-        name: appForm.name,
-        // ส่งเป็น array อันเดียว — API ยังรับรูปแบบ many-to-many อยู่
-        // `""` (ช่องวันที่ว่าง) = ยังไม่กรอก / ไม่กำหนด
-        companies: [
-          {
-            id: appForm.companyId,
-            startedAt: appForm.startedAt || null,
-            expiresAt: appForm.expiresAt || null,
-          },
-        ],
-      };
-      if (editingApp) {
-        await apiFetch(`/apps/${editingApp.id}`, {
-          method: "PATCH",
-          body: JSON.stringify(payload),
-        }, token);
-        notify(t("appUpdated"));
-      } else {
-        await apiFetch("/apps", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        }, token);
-        notify(t("appCreated"));
-      }
-      const updated = await apiFetch<PaginatedResponse<App>>("/apps?page=1&limit=100", {}, token);
-      setApps(updated.data);
-      setAppDialogOpen(false);
-    } catch (err) {
-      if (err instanceof ApiError) {
-        notify(err.message, "error");
-      } else {
-        notify(t("genericError"), "error");
-      }
-    }
   }
 
   async function handleToggleAppActive(app: App) {
@@ -1193,158 +1017,8 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
     );
   }
 
-  /** สถานะอายุของแอป/คู่ — chip ที่ 2 ในคอลัมน์ "สถานะอายุ" (เขียว→น้ำเงิน→ส้ม→แดง) */
-  function expiryLabel(status: ExpiryStatus) {
-    switch (status) {
-      case "expiring_soon":
-        return t("expiryExpiringSoon");
-      case "critical":
-        return t("expiryCritical");
-      case "expired":
-        return t("expiryExpired");
-      case "normal":
-        return t("expiryNormal");
-      default:
-        return t("expiryNone");
-    }
-  }
-
-  function expiryColor(
-    status: ExpiryStatus,
-  ): "default" | "info" | "success" | "warning" | "error" {
-    switch (status) {
-      case "expiring_soon":
-        return "info";
-      case "critical":
-        return "warning";
-      case "expired":
-        return "error";
-      case "normal":
-        return "success";
-      default:
-        return "default";
-    }
-  }
-
-  /**
-   * คอลัมน์ "บริษัท" — ชิปสูงสุด `MAX_COMPANY_CHIPS` แล้วยุบเป็น `+N`
-   * (hover ดูรายชื่อที่เหลือผ่าน tooltip) ให้แถวไม่สูง/ไม่ยาว
-   */
-  function companyChips(app: App) {
-    if (app.companies.length === 0) {
-      return (
-        <Typography variant="caption" color="text.disabled">
-          {t("noCompany")}
-        </Typography>
-      );
-    }
-    return (
-      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center" }}>
-        {app.companies.slice(0, MAX_COMPANY_CHIPS).map((company) => (
-          <Chip
-            key={company.id}
-            label={company.name}
-            size="small"
-            variant="outlined"
-            // ชื่อยาวถูกตัดด้วย ellipsis — hover ดูชื่อเต็มผ่าน tooltip
-            sx={{ maxWidth: 180 }}
-          />
-        ))}
-        {app.companies.length > MAX_COMPANY_CHIPS && (
-          <Tooltip
-            title={app.companies
-              .slice(MAX_COMPANY_CHIPS)
-              .map((company) => company.name)
-              .join(", ")}
-          >
-            <Chip
-              label={`+${app.companies.length - MAX_COMPANY_CHIPS}`}
-              size="small"
-              variant="outlined"
-            />
-          </Tooltip>
-        )}
-      </Box>
-    );
-  }
-
-  /**
-   * ใต้ chip "สถานะอายุ" — 1 แถว = 1 แอป แต่สถานะเป็น **รายบริษัท** แล้ว
-   * จึงไล่ทุกคู่ว่าเหลือกี่วัน (ขึ้นบรรทัดใหม่ระหว่างบริษัท)
-   */
-  function expiryBreakdown(app: App) {
-    if (app.companies.length === 0) {
-      return <Typography variant="caption">{t("noCompany")}</Typography>;
-    }
-    return (
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
-        {app.companies.map((link) => {
-          const left = daysLeftIso(link.expiresAt ?? "");
-          const days = left !== null && left >= 0 ? ` · ${t("daysLeft", { n: left })}` : "";
-          return (
-            <Typography key={link.id} variant="caption" component="span">
-              {`${link.name}: ${expiryLabel(link.expiryStatus)}${days}`}
-            </Typography>
-          );
-        })}
-      </Box>
-    );
-  }
-
-  /**
-   * label ของ chip "สถานะอายุ" ในตาราง `ข้อมูลระบบ` — แสดง "จำนวนวัน" เฉพาะตอน
-   * ที่มีความหมาย (≤30 วัน / หมดอายุแล้ว) ส่วน `ปกติ` / `ไม่กำหนด` คงคำเดิมไว้
-   * เพราะ "เหลือ 400 วัน" ไม่ได้บอกอะไรใคร — **สีชิปยังเป็นตัวบอกความรุนแรง**
-   * (เขียว→น้ำเงิน→ส้ม→แดง) ตัวเลขเป็นแค่ความแม่นเพิ่มเติม
-   */
-  function expiryChipLabel(status: ExpiryStatus, expiresAt: string | null): string {
-    const left = daysLeftIso(expiresAt ?? "");
-    if (status === "expiring_soon" || status === "critical") {
-      return left === null ? expiryLabel(status) : t("daysLeft", { n: left });
-    }
-    if (status === "expired") {
-      return left === null ? expiryLabel(status) : t("daysExpired", { n: -left });
-    }
-    return expiryLabel(status);
-  }
-
-  /** คอลัมน์ "การจัดการ" ของแอป — ใช้ร่วมกันทั้งแท็บ `แอป` และ `ข้อมูลระบบ` */
-  function renderAppActions(app: App) {
-    return (
-      <>
-        {can("app.update") && (
-          <FormControlLabel
-            control={
-              <Switch
-                checked={app.isVisible}
-                onChange={() => handleToggleAppActive(app)}
-                size="small"
-              />
-            }
-            label=""
-            sx={{ mr: 1 }}
-          />
-        )}
-        {can("app.update") && (
-          <IconButton size="small" onClick={() => openEditApp(app)}>
-            <EditIcon fontSize="small" />
-          </IconButton>
-        )}
-        {can("app.delete") && (
-          <IconButton size="small" onClick={() => handleDeleteApp(app.id)}>
-            <DeleteIcon fontSize="small" />
-          </IconButton>
-        )}
-      </>
-    );
-  }
-
-  /** สถานะอายุที่ฟอร์มจะโชว์ — คำนวณใหม่ทุกครั้งที่ผู้ใช้แก้วันที่ */
-  const formExpiryStatus = previewExpiryStatus(appForm.expiresAt);
-
   const tabs = [
     ...(canViewApps ? [{ label: t("tabApps"), content: "apps" }] : []),
-    ...(canViewApps ? [{ label: t("tabSystemInfo"), content: "system" }] : []),
     ...(canViewCompanies ? [{ label: t("tabCompanies"), content: "companies" }] : []),
     ...(canViewCategories ? [{ label: t("tabCategories"), content: "categories" }] : []),
     ...(canViewStatuses ? [{ label: t("tabStatuses"), content: "statuses" }] : []),
@@ -1375,7 +1049,7 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   </Button>
                 )}
               </Box>
-              {/* แท็บนี้สั้นเหมือนแท็บอื่น — รายละเอียดแอป+บริษัทอยู่ที่แท็บ "ข้อมูลระบบ" */}
+              {/* แท็บนี้สั้นเหมือนแท็บอื่น — รายละเอียดแอป+บริษัทอยู่ที่หน้า `/systems` */}
               <DataTable>
                 <DataTableHead>
                   <DataTableRow>
@@ -1397,93 +1071,18 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                           variant="outlined"
                         />
                       </DataTableCell>
-                      <DataTableCell align="right">{renderAppActions(app)}</DataTableCell>
+                      <DataTableCell align="right">
+                        <AppActions
+                          app={app}
+                          canUpdate={can("app.update")}
+                          canDelete={can("app.delete")}
+                          onToggle={handleToggleAppActive}
+                          onEdit={openEditApp}
+                          onDelete={handleDeleteApp}
+                        />
+                      </DataTableCell>
                     </DataTableRow>
                   ))}
-                </DataTableBody>
-              </DataTable>
-              <Pagination
-                page={page}
-                totalPages={Math.max(1, Math.ceil(apps.length / 10))}
-                total={apps.length}
-                limit={10}
-                onPageChange={setPage}
-              />
-            </Box>
-          )}
-
-          {/* ตารางละเอียด: 1 แถวต่อแอป · วันที่/สถานะอายุ = คู่ที่ใกล้หมดอายุที่สุด */}
-          {tabs[tab]?.content === "system" && (
-            <Box>
-              <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
-                {can("app.create") && (
-                  <Button variant="contained" startIcon={<AddIcon />} onClick={openAddApp}>
-                    {t("addApp")}
-                  </Button>
-                )}
-              </Box>
-              <DataTable>
-                <DataTableHead>
-                  <DataTableRow>
-                    <DataTableCell>{t("columnName")}</DataTableCell>
-                    <DataTableCell>{t("columnCompany")}</DataTableCell>
-                    <DataTableCell>{t("columnStartedAt")}</DataTableCell>
-                    <DataTableCell>{t("columnExpiresAt")}</DataTableCell>
-                    <DataTableCell align="center">{t("columnExpiryStatus")}</DataTableCell>
-                    <DataTableCell align="center">{t("columnUsage")}</DataTableCell>
-                    <DataTableCell align="right">{t("columnActions")}</DataTableCell>
-                  </DataTableRow>
-                </DataTableHead>
-                <DataTableBody>
-                  {apps.map((app) => {
-                    const nearest = pickNearest(app.companies);
-                    const status = nearest?.expiryStatus ?? "none";
-                    return (
-                      <DataTableRow key={app.id}>
-                        <DataTableCell>{app.name}</DataTableCell>
-                        <DataTableCell>{companyChips(app)}</DataTableCell>
-                        <DataTableCell>
-                          {nearest?.startedAt ? (
-                            formatDay(nearest.startedAt, locale)
-                          ) : (
-                            <Typography variant="caption" color="text.disabled">
-                              {t("notSetYet")}
-                            </Typography>
-                          )}
-                        </DataTableCell>
-                        <DataTableCell>
-                          {nearest?.expiresAt ? (
-                            formatDay(nearest.expiresAt, locale)
-                          ) : (
-                            <Typography variant="caption" color="text.disabled">
-                              {t("expiryNone")}
-                            </Typography>
-                          )}
-                        </DataTableCell>
-                        {/* สถานะอายุของคู่ที่ใกล้หมดที่สุด — hover ดูครบทุกบริษัท */}
-                        <DataTableCell align="center">
-                          <Tooltip title={expiryBreakdown(app)}>
-                            <Chip
-                              label={expiryChipLabel(status, nearest?.expiresAt ?? null)}
-                              color={expiryColor(status)}
-                              size="small"
-                              variant="outlined"
-                            />
-                          </Tooltip>
-                        </DataTableCell>
-                        {/* การใช้งาน = is_visible ตั้งปิดเอง สลับด้วย switch ที่คอลัมน์การจัดการ */}
-                        <DataTableCell align="center">
-                          <Chip
-                            label={app.isVisible ? t("active") : t("inactive")}
-                            color={app.isVisible ? "success" : "error"}
-                            size="small"
-                            variant="outlined"
-                          />
-                        </DataTableCell>
-                        <DataTableCell align="right">{renderAppActions(app)}</DataTableCell>
-                      </DataTableRow>
-                    );
-                  })}
                 </DataTableBody>
               </DataTable>
               <Pagination
@@ -1863,80 +1462,14 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
             </Box>
           )}
 
-          <Dialog open={appDialogOpen} onClose={() => setAppDialogOpen(false)} maxWidth="sm" fullWidth>
-            <DialogTitle>{editingApp ? t("editApp") : t("addApp")}</DialogTitle>
-            {/* เลื่อนเนื้อหาได้เมื่อฟอร์มยาว (ชิปบริษัทหลายอัน) กันปุ่มล่างหาย */}
-            <DialogContent sx={{ overflowY: "auto" }}>
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 1 }}>
-                <TextField
-                  label={t("columnName")}
-                  value={appForm.name}
-                  onChange={(e) => setAppForm({ ...appForm, name: e.target.value })}
-                  fullWidth
-                />
-                {/* บริษัทเดียว — dropdown เลือก 1 รายการ (ไม่ใช่ Autocomplete เลือกหลาย) */}
-                <FormControl fullWidth error={!!appFormError}>
-                  <InputLabel id="app-company-label">{t("columnCompany")}</InputLabel>
-                  <Select
-                    labelId="app-company-label"
-                    value={appForm.companyId}
-                    label={t("columnCompany")}
-                    onChange={(e) => {
-                      setAppForm({ ...appForm, companyId: Number(e.target.value) });
-                      setAppFormError(null);
-                    }}
-                    disabled={companies.length === 0}
-                  >
-                    {companies.map((company) => (
-                      <MenuItem key={company.id} value={company.id}>
-                        {company.name}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                  <FormHelperText>
-                    {appFormError ??
-                      (companies.length === 0 ? t("noCompaniesHint") : t("companyOneHint"))}
-                  </FormHelperText>
-                </FormControl>
-                <TextField
-                  label={t("columnStartedAt")}
-                  type="date"
-                  value={appForm.startedAt}
-                  onChange={(e) => setAppForm({ ...appForm, startedAt: e.target.value })}
-                  fullWidth
-                  InputLabelProps={{ shrink: true }}
-                  helperText={t("startedAtHint")}
-                />
-                <TextField
-                  label={t("columnExpiresAt")}
-                  type="date"
-                  value={appForm.expiresAt}
-                  onChange={(e) => setAppForm({ ...appForm, expiresAt: e.target.value })}
-                  fullWidth
-                  InputLabelProps={{ shrink: true }}
-                  helperText={t("expiresAtHint")}
-                />
-                {/* สถานะอายุที่คำนวณสดจากวันที่ด้านบน — เซิร์ฟเวอร์ยังเป็นคนตัวจริงตอนบันทึก */}
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    {t("columnExpiryStatus")}
-                  </Typography>
-                  <Chip
-                    label={expiryLabel(formExpiryStatus)}
-                    color={expiryColor(formExpiryStatus)}
-                    size="small"
-                    variant="outlined"
-                  />
-                </Box>
-              </Box>
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setAppDialogOpen(false)}>{t("cancel")}</Button>
-              <Button variant="contained" onClick={handleSaveApp}>
-                {t("save")}
-              </Button>
-            </DialogActions>
-          </Dialog>
+          {/* ฟอร์มเพิ่ม/แก้ไขแอป — component แชร์กับหน้า `/systems` */}
+          <AppFormDialog
+            open={appDialogOpen}
+            app={editingApp}
+            companies={companies}
+            onClose={() => setAppDialogOpen(false)}
+            onSaved={loadApps}
+          />
 
           <Dialog open={companyDialogOpen} onClose={() => setCompanyDialogOpen(false)} maxWidth="sm" fullWidth>
             <DialogTitle>{editingCompany ? t("editCompany") : t("addCompany")}</DialogTitle>

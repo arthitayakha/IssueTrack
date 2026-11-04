@@ -191,8 +191,8 @@ export class AppExpiryService {
       action: stage === "expired" ? "app_expired" : "app_expiring",
       title: names.appName,
       context: context.slice(0, 100) || null,
-      // วันที่รายคู่อยู่ที่แท็บ "ข้อมูลระบบ" แล้ว ไม่ใช่ที่แท็บแอป
-      link: "/master-data?tab=system",
+      // วันที่รายคู่อยู่ที่หน้า `/systems` (ข้อมูลระบบ) — ไม่ใช่ที่แท็บแอป
+      link: "/systems",
     });
   }
 }

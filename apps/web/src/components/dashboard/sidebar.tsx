@@ -14,6 +14,7 @@ import {
 } from "@mui/material";
 import BarChartIcon from "@mui/icons-material/BarChart";
 import DashboardIcon from "@mui/icons-material/Dashboard";
+import DnsIcon from "@mui/icons-material/Dns";
 import StorageIcon from "@mui/icons-material/Storage";
 import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
 import PeopleIcon from "@mui/icons-material/People";
@@ -48,6 +49,10 @@ export default function Sidebar({
       : []),
     ...(can("permission.update")
       ? [{ label: t("settings"), href: "/master-data", icon: <StorageIcon /> }]
+      : []),
+    // ตารางละเอียดแอป+บริษัท — แยกเป็นหน้าของตัวเอง (เดิมเป็นแท็บใน /master-data)
+    ...(can("app.view")
+      ? [{ label: t("systems"), href: "/systems", icon: <DnsIcon /> }]
       : []),
     ...(can("report.view")
       ? [{ label: t("reports"), href: "/reports", icon: <BarChartIcon /> }]

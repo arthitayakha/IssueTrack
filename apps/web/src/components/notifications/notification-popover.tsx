@@ -38,8 +38,8 @@ interface NotificationPopoverProps {
   onClose: () => void;
   onMarkRead: (id: number) => void;
   onMarkAllRead: () => void;
-  /** Opens the account popup on its settings tab (was a /settings link). */
-  onOpenSettings: () => void;
+  /** Opens the account popup (the old notification-settings gear). */
+  onOpenProfile: () => void;
 }
 
 /**
@@ -90,9 +90,10 @@ export default function NotificationPopover({
   onClose,
   onMarkRead,
   onMarkAllRead,
-  onOpenSettings,
+  onOpenProfile,
 }: NotificationPopoverProps) {
   const t = useTranslations("Notifications");
+  const navT = useTranslations("Nav");
   const locale = useLocale();
   const theme = useTheme();
   const router = useRouter();
@@ -256,8 +257,8 @@ export default function NotificationPopover({
           </Box>
         </Box>
         <Box sx={{ flex: 1 }} />
-        <Tooltip title={t("settings")}>
-          <IconButton size="small" onClick={onOpenSettings} sx={{ mb: 0.5 }}>
+        <Tooltip title={navT("profile")}>
+          <IconButton size="small" onClick={onOpenProfile} sx={{ mb: 0.5 }}>
             <SettingsOutlinedIcon fontSize="small" />
           </IconButton>
         </Tooltip>

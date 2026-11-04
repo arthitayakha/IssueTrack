@@ -12,7 +12,6 @@ import {
   Popover,
   Typography,
 } from "@mui/material";
-import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import { useAuthStore } from "@/lib/auth-store";
@@ -24,23 +23,21 @@ interface ProfileMenuProps {
   onClose: () => void;
   /** Navbar's `handleLogout` — clears the session and lands on /login. */
   onLogout: () => void;
-  /** Opens the account popup on its settings tab. */
-  onOpenSettings: () => void;
-  /** Opens the account popup on its profile tab. */
+  /** Opens the account popup (its only tab — profile). */
   onOpenProfile: () => void;
 }
 
 /**
  * The navbar's avatar menu: identity header (avatar + name + role) over
- * settings / profile / logout. The first two open the account popup
- * instead of navigating — the old `/settings` page is gone.
+ * profile / logout. The first opens the account popup instead of navigating —
+ * the old `/settings` page is gone, and its empty settings tab with it, so
+ * there is a single entry point now.
  */
 export default function ProfileMenu({
   open,
   anchorEl,
   onClose,
   onLogout,
-  onOpenSettings,
   onOpenProfile,
 }: ProfileMenuProps) {
   const t = useTranslations("Nav");
@@ -113,19 +110,6 @@ export default function ProfileMenu({
       <Divider />
 
       <Box sx={{ py: 0.5 }}>
-        <ListItemButton
-          onClick={() => openDialog(onOpenSettings)}
-          sx={{ px: 2, py: 1, "&:hover": { bgcolor: "action.hover" } }}
-        >
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <SettingsOutlinedIcon fontSize="small" />
-          </ListItemIcon>
-          <ListItemText
-            primary={t("accountSettings")}
-            primaryTypographyProps={{ fontSize: "0.875rem" }}
-          />
-        </ListItemButton>
-
         <ListItemButton
           onClick={() => openDialog(onOpenProfile)}
           sx={{ px: 2, py: 1, "&:hover": { bgcolor: "action.hover" } }}

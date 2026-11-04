@@ -20,6 +20,9 @@ import { existsSync, unlink } from "fs";
 import type { Response } from "express";
 import { AuthService } from "./auth.service";
 import { LoginDto } from "./dto/login.dto";
+import { UpdateProfileDto } from "./dto/update-profile.dto";
+import { ChangeEmailDto } from "./dto/change-email.dto";
+import { ChangePasswordDto } from "./dto/change-password.dto";
 import { RolesGuard } from "./roles.guard";
 import { Permissions } from "./permissions.decorator";
 import { CurrentUser } from "./current-user.decorator";
@@ -46,11 +49,29 @@ export class AuthController {
     return this.auth.me(user);
   }
 
-  /** Self-service: rename yourself — no `user.update` permission required. */
+  /**
+   * Self-service: rename yourself — no `user.update` permission required.
+   * The body is a DTO now, so `whitelist`/`transform` in `main.ts` actually
+   * validate it (a plain object type is skipped by the ValidationPipe).
+   */
   @Patch("profile")
-  updateProfile(@CurrentUser() user: User, @Body() body: { name?: string }) {
-    if (!body?.name) throw new BadRequestException("Name is required");
-    return this.auth.updateProfile(user.id, body.name);
+  updateProfile(@CurrentUser() user: User, @Body() dto: UpdateProfileDto) {
+    return this.auth.updateProfile(user.id, dto.name);
+  }
+
+  /**
+   * Self-service e-mail change; needs the current password (403 when it is
+   * wrong — a 401 would log the user out of the web client).
+   */
+  @Patch("profile/email")
+  changeEmail(@CurrentUser() user: User, @Body() dto: ChangeEmailDto) {
+    return this.auth.changeEmail(user.id, dto.email, dto.currentPassword);
+  }
+
+  /** Self-service password change; same current-password rule as the e-mail. */
+  @Patch("profile/password")
+  changePassword(@CurrentUser() user: User, @Body() dto: ChangePasswordDto) {
+    return this.auth.changePassword(user.id, dto.currentPassword, dto.newPassword);
   }
 
   /** Upload (or replace) your profile picture; the old file is deleted. */

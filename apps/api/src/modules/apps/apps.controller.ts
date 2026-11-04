@@ -35,7 +35,7 @@ export class AppsController {
     @Body()
     body: {
       name: string;
-      /** ตารางย่อยในฟอร์ม — 1 แถวต่อบริษัท พร้อมวันที่ของคู่นั้น */
+      /** ตารางย่อยในฟอร์ม — 1 แถวต่อบริษัท พร้อมวันที่ + ชั่วโมง MA ของคู่นั้น */
       companies: AppCompanyInput[];
     },
   ) {

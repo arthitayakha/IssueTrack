@@ -18,7 +18,7 @@ import { useOwnAvatar } from "@/lib/avatar";
 import { usePathname, useRouter } from "@/i18n/navigation";
 import LanguageSwitcher from "./language-switcher";
 import ProfileMenu from "./profile-menu";
-import ProfileDialog, { type ProfileDialogTab } from "./profile-dialog";
+import ProfileDialog from "./profile-dialog";
 import NotificationPopover, {
   type NotificationListStatus,
 } from "@/components/notifications/notification-popover";
@@ -98,11 +98,8 @@ export default function Navbar({
   const [loadingMore, setLoadingMore] = useState(false);
   const [bellAnchorEl, setBellAnchorEl] = useState<HTMLElement | null>(null);
   const [profileAnchorEl, setProfileAnchorEl] = useState<HTMLElement | null>(null);
-  // account settings popup — opened from the avatar menu or the bell's gear
-  const [profileDialog, setProfileDialog] = useState<{
-    open: boolean;
-    tab: ProfileDialogTab;
-  }>({ open: false, tab: "settings" });
+  // account popup — opened from the avatar menu or the bell's gear
+  const [profileOpen, setProfileOpen] = useState(false);
 
   // polling and scroll-loading both need a fresh view of what is on screen
   const inboxRef = useRef(inbox);
@@ -278,7 +275,7 @@ export default function Navbar({
             }}
             onMarkRead={handleMarkRead}
             onMarkAllRead={handleMarkAllRead}
-            onOpenSettings={() => setProfileDialog({ open: true, tab: "settings" })}
+            onOpenProfile={() => setProfileOpen(true)}
           />
           <LanguageSwitcher />
           <IconButton
@@ -308,15 +305,9 @@ export default function Navbar({
             anchorEl={profileAnchorEl}
             onClose={() => setProfileAnchorEl(null)}
             onLogout={handleLogout}
-            onOpenSettings={() => setProfileDialog({ open: true, tab: "settings" })}
-            onOpenProfile={() => setProfileDialog({ open: true, tab: "profile" })}
+            onOpenProfile={() => setProfileOpen(true)}
           />
-          <ProfileDialog
-            open={profileDialog.open}
-            tab={profileDialog.tab}
-            onTabChange={(tab) => setProfileDialog({ open: true, tab })}
-            onClose={() => setProfileDialog((prev) => ({ ...prev, open: false }))}
-          />
+          <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} />
         </Box>
       </Toolbar>
     </AppBar>

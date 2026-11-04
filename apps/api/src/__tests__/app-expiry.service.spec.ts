@@ -51,6 +51,7 @@ function pair(overrides: Partial<AppCompany> = {}): AppCompany {
     companyId: 3,
     startedAt: null,
     expiresAt: null,
+    maHours: null,
     expiryStatus: "none",
     expiryNotified: "none",
     ...overrides,
@@ -128,7 +129,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       action: "app_expiring",
       title: "POS",
       context: "เหลือ 10 วัน · ACME",
-      link: "/master-data?tab=system",
+      link: "/systems",
     });
   });
 
@@ -186,7 +187,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       action: "app_expired",
       title: "POS",
       context: "ACME",
-      link: "/master-data?tab=system",
+      link: "/systems",
     });
   });
 

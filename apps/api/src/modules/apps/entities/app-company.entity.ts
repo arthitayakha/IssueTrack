@@ -60,6 +60,16 @@ export class AppCompany {
   @Column({ name: "expires_at", type: "date", nullable: true })
   expiresAt!: Date | string | null;
 
+  /**
+   * **ชั่วโมง MA** ที่ตกลงให้คู่นี้ (เช่น "POS ให้ลูกค้า 60 ชม.") — `null` =
+   * ยังไม่กำหนด/ยังไม่ได้กรอก (ตั้งใจแยกจาก `0` ซึ่งหมายถึงตกลงให้ 0 ชม.)
+   *
+   * รอบนี้เก็บไว้เป็น **เพดานที่กรอกได้ก่อน** — การหักเวลาจริง
+   * (`issues.actual_fix_duration` ของงานที่ปิดแล้ว) ยังไม่ทำ รอตัดสินใจรอบถัดไป
+   */
+  @Column({ name: "ma_hours", type: "int", nullable: true })
+  maHours!: number | null;
+
   /** Stored status — refreshed by `AppExpiryService` (read/save/daily cron). */
   @Column({ name: "expiry_status", type: "varchar", length: 16, default: "none" })
   expiryStatus!: AppExpiryStatus;

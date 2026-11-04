@@ -14,7 +14,7 @@ import { AppExpiryService } from "./app-expiry.service";
 import { isIsoDate, toIsoDate } from "../../common/dates";
 import { paginate, PaginationParams } from "../../common/pagination";
 
-/** 1 แถวของตารางย่อยในฟอร์ม — บริษัท 1 แห่ง พร้อมวันที่ของตัวเอง */
+/** 1 แถวของตารางย่อยในฟอร์ม — บริษัท 1 แห่ง พร้อมวันที่ + ชั่วโมง MA ของคู่นั้น */
 export interface AppCompanyInput {
   /** บริษัทที่ผูก — อย่างน้อย 1 รายการต่อการบันทึก */
   id?: number | null;
@@ -22,6 +22,8 @@ export interface AppCompanyInput {
   startedAt?: string | null;
   /** `YYYY-MM-DD` — วันหมดอายุของคู่นี้, `null` = ไม่กำหนด */
   expiresAt?: string | null;
+  /** ชั่วโมง MA ที่ตกลงให้คู่นี้, `null` = ยังไม่กำหนด */
+  maHours?: number | null;
 }
 
 /** What `POST /apps` / `PATCH /apps/:id` accept. */
@@ -31,11 +33,12 @@ export interface AppWriteInput {
   companies?: AppCompanyInput[];
 }
 
-/** แถวเชื่อมหลัง validate — id ตรวจแล้ว วันที่ normalize เป็น `YYYY-MM-DD` แล้ว */
+/** แถวเชื่อมหลัง validate — id ตรวจแล้ว วันที่/ชั่วโมง normalize แล้ว */
 interface AppLinkInput {
   companyId: number;
   startedAt: string | null;
   expiresAt: string | null;
+  maHours: number | null;
 }
 
 /** แถวเชื่อม + ชื่อบริษัทที่ join มาแล้ว — ใช้ทั้งตอนทำ response และแจ้งเตือน */
@@ -201,6 +204,7 @@ export class AppsService {
         companyId: id,
         startedAt: this.normalizeDate(row.startedAt, "startedAt"),
         expiresAt: this.normalizeDate(row.expiresAt, "expiresAt"),
+        maHours: this.normalizeHours(row.maHours),
       });
     }
     if (wanted.length === 0) {
@@ -215,7 +219,7 @@ export class AppsService {
 
   /**
    * Sync the join rows with what the form sent: keep the pairs still listed
-   * (touching only their dates), insert the new ones, drop the rest.
+   * (touching only their dates/hours), insert the new ones, drop the rest.
    *
    * Never rebuilds the table from scratch — that would reset
    * `expiry_notified` on pairs the user never touched and re-ring their
@@ -236,6 +240,7 @@ export class AppsService {
           companyId: row.companyId,
           startedAt: row.startedAt,
           expiresAt: row.expiresAt,
+          maHours: row.maHours,
           expiryStatus: "none",
           expiryNotified: "none",
         });
@@ -243,10 +248,18 @@ export class AppsService {
       }
       const started = current.startedAt ? toIsoDate(current.startedAt) : null;
       const expires = current.expiresAt ? toIsoDate(current.expiresAt) : null;
-      if (started !== row.startedAt || expires !== row.expiresAt) {
+      if (
+        started !== row.startedAt ||
+        expires !== row.expiresAt ||
+        (current.maHours ?? null) !== row.maHours
+      ) {
         await this.appCompanies.update(
           { appId, companyId: row.companyId },
-          { startedAt: row.startedAt, expiresAt: row.expiresAt },
+          {
+            startedAt: row.startedAt,
+            expiresAt: row.expiresAt,
+            maHours: row.maHours,
+          },
         );
       }
     }
@@ -268,6 +281,20 @@ export class AppsService {
       throw new BadRequestException(`${field} must be a YYYY-MM-DD date`);
     }
     return value;
+  }
+
+  /**
+   * `undefined` / `null` / `""` = ยังไม่กำหนด (`null`); อย่างอื่นต้องเป็น
+   * **จำนวนชั่วโมงเต็ม ≥ 0** — ไม่รับทศนิยม/ติดลบ/NaN เพราะคอลัมน์เป็น `INT`
+   * และตอนนี้ยังไม่มีการคำนวณใด ๆ ต่อท้าย (การหักเวลาจริงรอบถัดไป)
+   */
+  private normalizeHours(value: number | string | null | undefined): number | null {
+    if (value === undefined || value === null || value === "") return null;
+    const hours = typeof value === "string" ? Number(value) : value;
+    if (!Number.isInteger(hours) || hours < 0) {
+      throw new BadRequestException("maHours must be a non-negative whole number of hours");
+    }
+    return hours;
   }
 
   /**
@@ -304,6 +331,8 @@ export class AppsService {
         name: companyName.get(link.companyId) ?? "",
         startedAt: link.startedAt ? toIsoDate(link.startedAt) : null,
         expiresAt: link.expiresAt ? toIsoDate(link.expiresAt) : null,
+        /** ชั่วโมง MA ที่ตกลงให้คู่นี้ — `null` = ยังไม่กำหนด */
+        maHours: link.maHours ?? null,
         expiryStatus: link.expiryStatus,
       }))
       .sort((a, b) => a.name.localeCompare(b.name, "th"));

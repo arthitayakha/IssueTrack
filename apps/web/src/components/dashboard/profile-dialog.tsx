@@ -1,21 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   Avatar,
   Box,
   Button,
-  Card,
-  CardContent,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
   IconButton,
-  Tab,
-  Tabs,
   TextField,
   Tooltip,
   Typography,
@@ -27,30 +23,67 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { invalidateAvatar, resizeAvatar, useOwnAvatar } from "@/lib/avatar";
 import { useNotification } from "@/components/notification";
 
-/** Which tab the popup opens on — chosen by the caller (menu / bell gear). */
-export type ProfileDialogTab = "settings" | "profile";
+/** Which inline editor is open over the popup (name / e-mail / password). */
+type Editor = "name" | "email" | "password" | null;
 
 interface ProfileDialogProps {
   open: boolean;
-  tab: ProfileDialogTab;
-  /** The caller owns the tab state so menu / bell / reopen can pick it. */
-  onTabChange: (tab: ProfileDialogTab) => void;
   onClose: () => void;
 }
 
+/** One label → value → action line, the layout of the account popup. */
+function ProfileRow({
+  label,
+  action,
+  children,
+}: {
+  label: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 2, py: 1 }}>
+      <Typography
+        variant="body2"
+        color="text.secondary"
+        sx={{ width: { xs: 92, sm: 110 }, flexShrink: 0 }}
+      >
+        {label}
+      </Typography>
+      <Typography
+        variant="body2"
+        color="text.primary"
+        fontWeight={600}
+        sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}
+      >
+        {children}
+      </Typography>
+      {action}
+    </Box>
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <Typography variant="subtitle1" fontWeight={700} color="text.primary" sx={{ mb: 0.5 }}>
+      {children}
+    </Typography>
+  );
+}
+
+/** Cheap client-side shape check — the API's `@IsEmail` is the real gate. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** Mirrors `ChangePasswordDto`'s `@MinLength(6)` (same floor as logging in). */
+const MIN_PASSWORD = 6;
+
 /**
- * The account popup that replaced the old `/settings` page: two tabs —
- * settings (placeholder; the notification toggle is parked) and profile
- * (swap the picture, rename yourself). Password changes stay parked until
- * a real e-mail flow exists. Writes go through the self-service
- * `/auth/profile` endpoints, so no `user.update` permission is needed.
+ * The account popup: a list of read-only rows (name / e-mail / password /
+ * role) each with its own edit dialog, plus the avatar row. Everything is
+ * self-service through `/auth/profile*`, so no `user.update` permission is
+ * needed — and a wrong current password comes back as 403, which never logs
+ * the user out (only a real 401 does).
  */
-export default function ProfileDialog({
-  open,
-  tab,
-  onTabChange,
-  onClose,
-}: ProfileDialogProps) {
+export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   const t = useTranslations("Settings");
   const { notify } = useNotification();
   const token = useAuthStore((s) => s.token);
@@ -59,8 +92,24 @@ export default function ProfileDialog({
   const avatarUrl = useOwnAvatar();
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [editor, setEditor] = useState<Editor>(null);
+
+  // name editor
   const [name, setName] = useState(user?.name ?? "");
   const [savingName, setSavingName] = useState(false);
+  // e-mail editor
+  const [email, setEmail] = useState("");
+  const [emailPassword, setEmailPassword] = useState("");
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailPwError, setEmailPwError] = useState<string | null>(null);
+  const [savingEmail, setSavingEmail] = useState(false);
+  // password editor
+  const [pwCurrent, setPwCurrent] = useState("");
+  const [pwNew, setPwNew] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [savingPassword, setSavingPassword] = useState(false);
+  // avatar
   const [uploading, setUploading] = useState(false);
   const [removing, setRemoving] = useState(false);
 
@@ -69,9 +118,25 @@ export default function ProfileDialog({
     if (open) setName(user?.name ?? "");
   }, [open, user?.name]);
 
+  /** Wipes every sub-form — used when the popup shuts or an editor closes. */
+  const resetEditors = useCallback(() => {
+    setEditor(null);
+    setEmail("");
+    setEmailPassword("");
+    setEmailError(null);
+    setEmailPwError(null);
+    setPwCurrent("");
+    setPwNew("");
+    setPwConfirm("");
+    setPwError(null);
+  }, []);
+
+  useEffect(() => {
+    if (!open) resetEditors();
+  }, [open, resetEditors]);
+
   const hasAvatar = Boolean(avatarUrl);
   const nameChanged = name.trim() !== (user?.name ?? "").trim();
-  const tabs: ProfileDialogTab[] = ["settings", "profile"];
 
   function handlePickPicture() {
     fileInputRef.current?.click();
@@ -127,7 +192,10 @@ export default function ProfileDialog({
       notify(t("profileNameRequired"), "error");
       return;
     }
-    if (!nameChanged) return;
+    if (!nameChanged) {
+      setEditor(null);
+      return;
+    }
     setSavingName(true);
     try {
       const updated = await apiFetch<{ name: string }>(
@@ -137,7 +205,7 @@ export default function ProfileDialog({
       );
       updateUser({ name: updated.name });
       notify(t("profileNameSaved"), "success");
-      onClose();
+      setEditor(null);
     } catch (err) {
       notify(err instanceof ApiError ? err.message : t("genericError"), "error");
     } finally {
@@ -145,141 +213,210 @@ export default function ProfileDialog({
     }
   }
 
-  const tabLabels: Record<ProfileDialogTab, string> = {
-    settings: t("tabSettings"),
-    profile: t("tabProfile"),
-  };
+  async function handleSaveEmail() {
+    if (!token) return;
+    const trimmed = email.trim();
+    if (!EMAIL_RE.test(trimmed)) {
+      setEmailError(t("emailInvalid"));
+      setEmailPwError(null);
+      return;
+    }
+    if (!emailPassword) {
+      setEmailPwError(t("passwordCurrentRequired"));
+      setEmailError(null);
+      return;
+    }
+    setEmailError(null);
+    setEmailPwError(null);
+    setSavingEmail(true);
+    try {
+      const updated = await apiFetch<{ email: string }>(
+        "/auth/profile/email",
+        {
+          method: "PATCH",
+          body: JSON.stringify({ email: trimmed, currentPassword: emailPassword }),
+        },
+        token,
+      );
+      updateUser({ email: updated.email });
+      notify(t("emailSaved"), "success");
+      setEditor(null);
+    } catch (err) {
+      // 403 = wrong current password, 409 = already taken, 400 = bad format
+      const status = err instanceof ApiError ? err.status : 0;
+      const message =
+        status === 403
+          ? t("passwordWrongCurrent")
+          : status === 409
+            ? t("emailTaken")
+            : status === 400
+              ? t("emailInvalid")
+              : err instanceof ApiError
+                ? err.message
+                : t("genericError");
+      notify(message, "error");
+    } finally {
+      setSavingEmail(false);
+    }
+  }
+
+  async function handleSavePassword() {
+    if (!token) return;
+    if (!pwCurrent || !pwNew || !pwConfirm) {
+      setPwError(t("passwordRequired"));
+      return;
+    }
+    if (pwNew.length < MIN_PASSWORD) {
+      setPwError(t("passwordTooShort"));
+      return;
+    }
+    if (pwNew !== pwConfirm) {
+      setPwError(t("passwordMismatch"));
+      return;
+    }
+    if (pwNew === pwCurrent) {
+      setPwError(t("passwordSame"));
+      return;
+    }
+    setPwError(null);
+    setSavingPassword(true);
+    try {
+      await apiFetch(
+        "/auth/profile/password",
+        {
+          method: "PATCH",
+          body: JSON.stringify({ currentPassword: pwCurrent, newPassword: pwNew }),
+        },
+        token,
+      );
+      notify(t("passwordChanged"), "success");
+      setEditor(null);
+    } catch (err) {
+      // 403 = wrong current password; 400 only survives client checks when
+      // the DTO rejects the length, so map it to the length message
+      const status = err instanceof ApiError ? err.status : 0;
+      const message =
+        status === 403
+          ? t("passwordWrongCurrent")
+          : status === 400
+            ? t("passwordTooShort")
+            : err instanceof ApiError
+              ? err.message
+              : t("genericError");
+      notify(message, "error");
+    } finally {
+      setSavingPassword(false);
+    }
+  }
+
+  const editButton = (target: Editor) => (
+    <Button size="small" variant="contained" onClick={() => setEditor(target)}>
+      {t("edit")}
+    </Button>
+  );
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
       <DialogTitle fontWeight={700} sx={{ pb: 0 }}>
-        {t("title")}
+        {user?.name}
       </DialogTitle>
 
-      <DialogContent dividers sx={{ px: 0, pt: 0 }}>
-        <Tabs
-          value={tab}
-          onChange={(_, v: ProfileDialogTab) => onTabChange(v)}
-          sx={{ px: 3 }}
-        >
-          {tabs.map((key) => (
-            <Tab key={key} value={key} label={tabLabels[key]} />
-          ))}
-        </Tabs>
+      <DialogContent dividers sx={{ px: 3, py: 2 }}>
+        {/* --- Account data --- */}
+        <SectionTitle>{t("sectionAccount")}</SectionTitle>
 
-        {tab === "settings" && (
-          <Box sx={{ p: 3 }}>
-            <Card variant="outlined">
-              <CardContent>
-                <Typography variant="subtitle1" fontWeight={700}>
-                  {t("tabSettings")}
-                </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {t("comingSoon")}
-                </Typography>
-              </CardContent>
-            </Card>
-          </Box>
-        )}
+        <ProfileRow label={t("profileName")} action={editButton("name")}>
+          {user?.name || "—"}
+        </ProfileRow>
 
-        {tab === "profile" && (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5, p: 3 }}>
-            {/* Picture + actions */}
-            <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-              <Avatar
-                src={avatarUrl ?? undefined}
-                sx={{
-                  width: 64,
-                  height: 64,
-                  bgcolor: "primary.main",
-                  color: "primary.contrastText",
-                  fontSize: "1.5rem",
-                  fontWeight: 600,
-                  flexShrink: 0,
-                }}
-              >
-                {user?.name?.charAt(0).toUpperCase()}
-              </Avatar>
-              <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={<PhotoCameraIcon fontSize="small" />}
-                  onClick={handlePickPicture}
-                  disabled={uploading}
-                >
-                  {uploading ? t("profilePhotoUploading") : t("profileUploadPhoto")}
-                </Button>
-                {hasAvatar && (
-                  <Tooltip title={t("profileRemovePhoto")}>
-                    <IconButton
-                      size="small"
-                      onClick={handleRemovePicture}
-                      disabled={removing}
-                      aria-label={t("profileRemovePhoto")}
-                    >
-                      <DeleteOutlineIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                )}
-              </Box>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                hidden
-                onChange={handleFileChange}
-              />
-            </Box>
+        <ProfileRow label={t("profileEmail")} action={editButton("email")}>
+          {user?.email || "—"}
+        </ProfileRow>
 
-            <Divider />
+        <ProfileRow label={t("profilePassword")} action={editButton("password")}>
+          {"••••••••"}
+        </ProfileRow>
 
-            {/* Rename */}
-            <TextField
-              label={t("profileName")}
+        <ProfileRow label={t("profileRole")}>{user?.roleName || "—"}</ProfileRow>
+
+        <Divider sx={{ my: 2 }} />
+
+        {/* --- Avatar --- */}
+        <SectionTitle>{t("sectionAvatar")}</SectionTitle>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 2, py: 1 }}>
+          <Avatar
+            src={avatarUrl ?? undefined}
+            sx={{
+              width: 48,
+              height: 48,
+              bgcolor: "primary.main",
+              color: "primary.contrastText",
+              fontSize: "1.25rem",
+              fontWeight: 600,
+              flexShrink: 0,
+            }}
+          >
+            {user?.name?.charAt(0).toUpperCase()}
+          </Avatar>
+          <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", flex: 1 }}>
+            <Button
               size="small"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              inputProps={{ maxLength: 100 }}
-              helperText={name.trim() === "" ? t("profileNameRequired") : " "}
-            />
-
-            {/* Read-only facts */}
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-              <Box sx={{ display: "flex", gap: 2 }}>
-                <Typography
-                  variant="body2"
-                  color="text.secondary"
-                  sx={{ width: 100, flexShrink: 0 }}
+              variant="contained"
+              startIcon={<PhotoCameraIcon fontSize="small" />}
+              onClick={handlePickPicture}
+              disabled={uploading}
+            >
+              {uploading ? t("profilePhotoUploading") : t("profileUploadPhoto")}
+            </Button>
+            {hasAvatar && (
+              <Tooltip title={t("profileRemovePhoto")}>
+                <IconButton
+                  size="small"
+                  onClick={handleRemovePicture}
+                  disabled={removing}
+                  aria-label={t("profileRemovePhoto")}
                 >
-                  {t("profileEmail")}
-                </Typography>
-                <Typography variant="body2" color="text.primary" fontWeight={600}>
-                  {user?.email ?? "—"}
-                </Typography>
-              </Box>
-              <Box sx={{ display: "flex", gap: 2 }}>
-                <Typography
-                  variant="body2"
-                  color="text.secondary"
-                  sx={{ width: 100, flexShrink: 0 }}
-                >
-                  {t("profileRole")}
-                </Typography>
-                <Typography variant="body2" color="text.primary" fontWeight={600}>
-                  {user?.roleName ?? "—"}
-                </Typography>
-              </Box>
-            </Box>
+                  <DeleteOutlineIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            )}
           </Box>
-        )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={handleFileChange}
+          />
+        </Box>
       </DialogContent>
 
       <DialogActions sx={{ px: 3, py: 2 }}>
         <Button onClick={onClose} color="inherit">
-          {t("cancel")}
+          {t("close")}
         </Button>
-        {tab === "profile" && (
+      </DialogActions>
+
+      {/* ---------- Rename ---------- */}
+      <Dialog open={editor === "name"} onClose={() => setEditor(null)} maxWidth="xs" fullWidth>
+        <DialogTitle fontWeight={700}>{t("nameEditTitle")}</DialogTitle>
+        <DialogContent>
+          <TextField
+            label={t("profileName")}
+            size="small"
+            fullWidth
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            inputProps={{ maxLength: 100 }}
+            sx={{ mt: 1 }}
+            helperText={name.trim() === "" ? t("profileNameRequired") : " "}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setEditor(null)} color="inherit">
+            {t("cancel")}
+          </Button>
           <Button
             variant="contained"
             onClick={handleSaveName}
@@ -287,8 +424,110 @@ export default function ProfileDialog({
           >
             {t("save")}
           </Button>
-        )}
-      </DialogActions>
+        </DialogActions>
+      </Dialog>
+
+      {/* ---------- Change e-mail ---------- */}
+      <Dialog open={editor === "email"} onClose={() => setEditor(null)} maxWidth="xs" fullWidth>
+        <DialogTitle fontWeight={700}>{t("emailEdit")}</DialogTitle>
+        <DialogContent>
+          <TextField
+            label={t("emailNew")}
+            type="email"
+            size="small"
+            fullWidth
+            autoFocus
+            value={email}
+            onChange={(event) => {
+              setEmail(event.target.value);
+              setEmailError(null);
+            }}
+            error={Boolean(emailError)}
+            helperText={emailError ?? " "}
+            sx={{ mt: 1, mb: 2 }}
+          />
+          <TextField
+            label={t("passwordCurrent")}
+            type="password"
+            size="small"
+            fullWidth
+            value={emailPassword}
+            onChange={(event) => {
+              setEmailPassword(event.target.value);
+              setEmailPwError(null);
+            }}
+            error={Boolean(emailPwError)}
+            helperText={emailPwError ?? " "}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setEditor(null)} color="inherit">
+            {t("cancel")}
+          </Button>
+          <Button variant="contained" onClick={handleSaveEmail} disabled={savingEmail}>
+            {t("save")}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ---------- Change password (image-2 layout) ---------- */}
+      <Dialog open={editor === "password"} onClose={() => setEditor(null)} maxWidth="xs" fullWidth>
+        <DialogTitle fontWeight={700}>{t("passwordDialogTitle")}</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            {t("passwordDialogSubtitle")}
+          </Typography>
+          <TextField
+            label={t("passwordCurrent")}
+            type="password"
+            size="small"
+            fullWidth
+            required
+            autoFocus
+            value={pwCurrent}
+            onChange={(event) => {
+              setPwCurrent(event.target.value);
+              setPwError(null);
+            }}
+            sx={{ mb: 2 }}
+          />
+          <TextField
+            label={t("passwordNew")}
+            type="password"
+            size="small"
+            fullWidth
+            required
+            value={pwNew}
+            onChange={(event) => {
+              setPwNew(event.target.value);
+              setPwError(null);
+            }}
+            sx={{ mb: 2 }}
+          />
+          <TextField
+            label={t("passwordConfirm")}
+            type="password"
+            size="small"
+            fullWidth
+            required
+            value={pwConfirm}
+            onChange={(event) => {
+              setPwConfirm(event.target.value);
+              setPwError(null);
+            }}
+            error={Boolean(pwError)}
+            helperText={pwError ?? " "}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setEditor(null)} color="inherit">
+            {t("cancel")}
+          </Button>
+          <Button variant="contained" onClick={handleSavePassword} disabled={savingPassword}>
+            {t("save")}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Dialog>
   );
 }
