@@ -50,6 +50,7 @@ import {
   ListItem,
   keyframes,
 } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import {
   DndContext,
   DragOverlay,
@@ -110,6 +111,7 @@ import FlagIcon from "@mui/icons-material/Flag";
 import LabelIcon from "@mui/icons-material/Label";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import TimerOutlinedIcon from "@mui/icons-material/TimerOutlined";
+import DescriptionIcon from "@mui/icons-material/Description";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { usePermissions } from "@/lib/permissions";
@@ -145,6 +147,7 @@ import {
   fetchAttachments,
   deleteAttachment,
   type BoardIssue,
+  type StaleRule,
   type ActivityLog,
   type Comment,
   type IssueStatus,
@@ -159,6 +162,7 @@ import {
   fetchOpenTimers,
   getOpenTimer,
   setActualFixDuration,
+  getToken,
 } from "@/lib/board-api";
 import { fetchLabels, createLabel, updateLabel, type Label } from "@/lib/labels-api";
 import { resolveStatusColor } from "@/lib/status-color";
@@ -379,6 +383,27 @@ function getCategoryLabel(issue: BoardIssue): string {
   return "—";
 }
 
+/**
+ * Days this card has sat in its current status when a stale rule covers its
+ * status and the count has reached that rule's days — the number the red
+ * border's tooltip shows. Null = no border: no rule, no stamp or an
+ * unreadable date all fail open (the card just looks normal).
+ */
+function staleDaysFor(
+  issue: BoardIssue,
+  staleRules: StaleRule[],
+  nowMs = Date.now(),
+): number | null {
+  if (staleRules.length === 0 || issue.statusId == null || !issue.statusChangedAt) return null;
+  const since = new Date(issue.statusChangedAt).getTime();
+  if (!Number.isFinite(since)) return null;
+  const days = Math.floor((nowMs - since) / 86_400_000);
+  // several rules may cover one status (3 days, 7 days…) — the first to
+  // fire paints the card, and the tooltip always shows the real age
+  const covered = staleRules.some((rule) => rule.statusId === issue.statusId && days >= rule.days);
+  return covered ? days : null;
+}
+
 function TrelloCardContent({
   issue,
   actions,
@@ -584,6 +609,7 @@ function TrelloCard({
   runningSince,
   nowMs,
   showTime = true,
+  staleDays = null,
   onOpen,
   onEdit,
   onDelete,
@@ -598,6 +624,8 @@ function TrelloCard({
   runningSince?: string | null;
   nowMs?: number;
   showTime?: boolean;
+  /** Days past a stale rule's limit — paints the card's own border red. */
+  staleDays?: number | null;
   onOpen?: (issue: BoardIssue) => void;
   onEdit?: (issue: BoardIssue) => void;
   onDelete?: (issue: BoardIssue) => void;
@@ -626,29 +654,38 @@ function TrelloCard({
   const [hovered, setHovered] = useState(false);
 
   return (
-    <Paper
-      ref={setNodeRef}
-      style={style}
-      {...attributes}
-      {...(!issue.isLocked ? listeners : {})}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onClick={() => {
-        if (!issue.isLocked) onOpen?.(issue);
-      }}
-      elevation={1}
-      sx={{
-        p: 1.5,
-        mb: 1,
-        cursor: issue.isLocked ? "not-allowed" : "grab",
-        "&:hover": { boxShadow: "0 4px 12px rgba(0,0,0,0.12)" },
-        bgcolor: "background.paper",
-        borderRadius: 1.5,
-        border: "none",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-        transition: "box-shadow 0.2s ease, transform 0.2s ease",
-      }}
+    <Tooltip
+      // only when the card is actually over a rule's day count — an empty
+      // title never opens, so a normal card has no popper at all
+      title={staleDays != null ? t("staleDays", { days: staleDays }) : ""}
+      placement="top"
     >
+      <Paper
+        ref={setNodeRef}
+        style={style}
+        {...attributes}
+        {...(!issue.isLocked ? listeners : {})}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onClick={() => {
+          if (!issue.isLocked) onOpen?.(issue);
+        }}
+        elevation={1}
+        sx={{
+          p: 1.5,
+          mb: 1,
+          cursor: issue.isLocked ? "not-allowed" : "grab",
+          "&:hover": { boxShadow: "0 4px 12px rgba(0,0,0,0.12)" },
+          bgcolor: "background.paper",
+          borderRadius: 1.5,
+          // the card's own border turns red while it sits past a stale rule —
+          // no overlay, no extra box; back to "none" the moment it moves
+          border: staleDays != null ? "2px solid" : "none",
+          borderColor: "error.main",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+          transition: "box-shadow 0.2s ease, transform 0.2s ease",
+        }}
+      >
       <TrelloCardContent
         issue={issue}
         runningSince={runningSince}
@@ -712,7 +749,8 @@ function TrelloCard({
           </MenuItem>
         )}
       </Menu>
-    </Paper>
+      </Paper>
+    </Tooltip>
   );
 }
 
@@ -732,6 +770,7 @@ function KanbanColumn({
   roleName,
   timers,
   showTime,
+  staleRules,
   onOpenIssue,
   onEditIssue,
   onDeleteIssue,
@@ -754,6 +793,8 @@ function KanbanColumn({
   roleName: string;
   timers: BoardTimers;
   showTime: boolean;
+  /** Active stale rules — each card paints its red border from these. */
+  staleRules: StaleRule[];
   onOpenIssue: (issue: BoardIssue) => void;
   onEditIssue: (issue: BoardIssue) => void;
   onDeleteIssue: (issue: BoardIssue) => void;
@@ -849,6 +890,7 @@ function KanbanColumn({
               runningSince={timers.running[issue.id] ?? null}
               nowMs={timers.now}
               showTime={showTime}
+              staleDays={staleDaysFor(issue, staleRules, timers.now || Date.now())}
               onOpen={onOpenIssue}
               onEdit={onEditIssue}
               onDelete={onDeleteIssue}
@@ -3371,6 +3413,7 @@ function KanbanView({
   toolbar,
   roleName,
   stepOnlyMoves,
+  staleRules,
 }: {
   statuses: IssueStatus[];
   labels: Label[];
@@ -3395,6 +3438,8 @@ function KanbanView({
   roleName: string;
   /** The step-only drag rule is on — columns must refuse a jump-over drop. */
   stepOnlyMoves: boolean;
+  /** Active stale rules ({statusId, days}) — the red card border. */
+  staleRules: StaleRule[];
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
@@ -3884,6 +3929,7 @@ function KanbanView({
                 roleName={roleName}
                 timers={timers}
                 showTime={showTime}
+                staleRules={staleRules}
                 onOpenIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
                 onEditIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
                 onDeleteIssue={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
@@ -4364,6 +4410,816 @@ function TableView({
   );
 }
 
+/* ================= Folder view (Drive-style drill-down) =================
+   แอป → หมวดหมู่ → ความสำคัญ → สถานะ → การ์ด. Purely client-side grouping
+   over the same filtered `issues` the table view uses — no extra API calls.
+   Status changes go through the same `moveIssue` the drag handler calls, so
+   the step-only (400) and status-lock (409) guards apply unchanged. */
+const FOLDER_PAGE_SIZE = 12;
+
+/* ---------- folder card thumbnails (Drive-style preview) ----------
+   The attachment download endpoint needs the Bearer token, so a plain
+   <img src> at the API can never render — fetch the bytes and hand the card
+   an object URL instead. Cached per issue at module scope (survives drilling
+   in and out of folders) with one in-flight promise per id, so a page of
+   cards never double-fetches. The cache stores the attachment count it was
+   built from: uploading a new image bumps the count and the thumb refreshes.
+   A transient failure stays uncached so the next visit retries; "no image"
+   and 403 are cached as misses. Object URLs live for the session — they are
+   small thumbnails and revoking them would defeat the cache. */
+type ThumbEntry = { count: number; url: string | null };
+const thumbCache = new Map<number, ThumbEntry>();
+const thumbPending = new Map<number, Promise<string | null>>();
+
+function loadFolderThumb(issueId: number, attachmentCount: number): Promise<string | null> {
+  const cached = thumbCache.get(issueId);
+  if (cached && cached.count === attachmentCount) return Promise.resolve(cached.url);
+  const pending = thumbPending.get(issueId);
+  if (pending) return pending;
+
+  const task = (async (): Promise<string | null> => {
+    try {
+      const files = await fetchAttachments(issueId);
+      const image = files.find(
+        (f) =>
+          (f.fileType ?? "").trim().startsWith("image/") ||
+          /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(f.fileName ?? ""),
+      );
+      if (!image) {
+        thumbCache.set(issueId, { count: attachmentCount, url: null });
+        return null;
+      }
+      const token = getToken();
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002"}/attachments/${image.id}/download`,
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      );
+      if (!res.ok) {
+        // 403 = no permission — cache the miss; anything else stays retryable
+        if (res.status === 403) thumbCache.set(issueId, { count: attachmentCount, url: null });
+        return null;
+      }
+      const url = URL.createObjectURL(await res.blob());
+      thumbCache.set(issueId, { count: attachmentCount, url });
+      return url;
+    } catch {
+      // network hiccup — leave uncached so the next mount retries
+      return null;
+    } finally {
+      thumbPending.delete(issueId);
+    }
+  })();
+
+  thumbPending.set(issueId, task);
+  return task;
+}
+
+function FolderThumb({
+  issue,
+  color,
+  enabled,
+}: {
+  issue: BoardIssue;
+  /** Resolved status colour — tints the placeholder when there is no image. */
+  color: string;
+  /** Gate: only viewers holding `board.view` may hit the attachment API. */
+  enabled: boolean;
+}) {
+  // undefined = still loading (spinner), null = no image (placeholder)
+  const [url, setUrl] = useState<string | null | undefined>(() => {
+    // synchronous cache hit — no spinner flash when the thumb is already known
+    if (!enabled || issue.attachmentCount <= 0) return null;
+    const hit = thumbCache.get(issue.id);
+    return hit && hit.count === issue.attachmentCount ? hit.url : undefined;
+  });
+
+  useEffect(() => {
+    if (!enabled || issue.attachmentCount <= 0) {
+      setUrl(null);
+      return;
+    }
+    let alive = true;
+    loadFolderThumb(issue.id, issue.attachmentCount).then((u) => {
+      if (alive) setUrl(u);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [issue.id, issue.attachmentCount, enabled]);
+
+  return (
+    <Box
+      sx={{
+        width: "100%",
+        aspectRatio: "16 / 10",
+        borderRadius: 1.5,
+        overflow: "hidden",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        bgcolor: alpha(color, 0.08),
+        border: "1px solid",
+        borderColor: "divider",
+      }}
+    >
+      {url === undefined ? (
+        <CircularProgress size={24} sx={{ color: alpha(color, 0.6) }} />
+      ) : url ? (
+        <Box
+          component="img"
+          src={url}
+          alt=""
+          sx={{ width: "100%", height: "100%", objectFit: "cover" }}
+        />
+      ) : (
+        <DescriptionIcon sx={{ color: alpha(color, 0.65), fontSize: 42 }} />
+      )}
+    </Box>
+  );
+}
+
+function FolderView({
+  statuses,
+  issues,
+  labels,
+  apps,
+  categories,
+  priorities,
+  selectedStatusIds,
+  selectedPriorityIds,
+  selectedCategoryIds,
+  selectedAppIds,
+  selectedAssigneeIds,
+  selectedReporterIds,
+  searchQuery,
+  canEdit,
+  canSeeReporter,
+  staleRules,
+  onRefresh,
+  toolbar,
+}: {
+  statuses: IssueStatus[];
+  issues: BoardIssue[];
+  labels: Label[];
+  apps: App[];
+  categories: Category[];
+  priorities: IssuePriority[];
+  selectedStatusIds: number[];
+  selectedPriorityIds: number[];
+  selectedCategoryIds: number[];
+  selectedAppIds: number[];
+  selectedAssigneeIds: string[];
+  selectedReporterIds: string[];
+  searchQuery: string;
+  canEdit: boolean;
+  canSeeReporter: boolean;
+  /** Active stale rules ({statusId, days}) — the red card border. */
+  staleRules: StaleRule[];
+  onRefresh: () => void;
+  toolbar?: ReactNode;
+}) {
+  const t = useTranslations("Boards");
+  const theme = useTheme();
+  const { can } = usePermissions();
+  /* `cat` may also be a string key ("x:<name>") for a custom category that has
+     no row of its own; -1 is the "no value" bucket at every level. */
+  const [path, setPath] = useState<{
+    app: number | null;
+    cat: number | string | null;
+    prio: number | null;
+    st: number | null;
+  }>({ app: null, cat: null, prio: null, st: null });
+  const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null);
+  const [visibleCount, setVisibleCount] = useState(FOLDER_PAGE_SIZE);
+  const [sort, setSort] = useState<"date" | "prio">("date");
+  const [error, setError] = useState<string | null>(null);
+  const [movingId, setMovingId] = useState<number | null>(null);
+  /* Status picker on a card: which chip opened it (Drive-like — no bulky
+     inline <Select> on the card face). */
+  const [statusMenu, setStatusMenu] = useState<{ el: HTMLElement; issue: BoardIssue } | null>(null);
+  const canViewAttachments = can("board.view");
+
+  const level =
+    path.st !== null ? 5 : path.prio !== null ? 4 : path.cat !== null ? 3 : path.app !== null ? 2 : 1;
+
+  const hasActiveFilters =
+    selectedStatusIds.length > 0 ||
+    selectedPriorityIds.length > 0 ||
+    selectedCategoryIds.length > 0 ||
+    selectedAppIds.length > 0 ||
+    selectedAssigneeIds.length > 0 ||
+    selectedReporterIds.length > 0 ||
+    searchQuery.trim() !== "";
+
+  /* Same filter rules as TableView, so the chips + search behave identically. */
+  const filteredIssues = useMemo(() => {
+    if (!hasActiveFilters) return issues;
+    const query = searchQuery.trim().toLowerCase();
+    return issues.filter((issue) => {
+      if (selectedStatusIds.length > 0) {
+        if (issue.statusId === null || !selectedStatusIds.includes(issue.statusId)) return false;
+      }
+      if (selectedPriorityIds.length > 0 && !selectedPriorityIds.includes(issue.priorityId ?? -1)) return false;
+      if (selectedCategoryIds.length > 0) {
+        const selectedCatNames = categories.filter((c) => selectedCategoryIds.includes(c.id)).map((c) => c.name);
+        const matchCat = selectedCategoryIds.includes(issue.categoryId ?? -1);
+        const matchCustom = issue.customCategory != null && selectedCatNames.includes(issue.customCategory);
+        if (!matchCat && !matchCustom) return false;
+      }
+      if (selectedAppIds.length > 0 && !selectedAppIds.includes(issue.appId ?? -1)) return false;
+      if (selectedAssigneeIds.length > 0) {
+        if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
+      }
+      if (selectedReporterIds.length > 0) {
+        if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
+      }
+      if (query) {
+        const matchTitle = issue.title.toLowerCase().includes(query);
+        const matchLabel = (issue.labels ?? []).some((l) => l.name.toLowerCase().includes(query));
+        if (!matchTitle && !matchLabel) return false;
+      }
+      return true;
+    });
+  }, [
+    issues,
+    categories,
+    selectedStatusIds,
+    selectedPriorityIds,
+    selectedCategoryIds,
+    selectedAppIds,
+    selectedAssigneeIds,
+    selectedReporterIds,
+    searchQuery,
+    hasActiveFilters,
+  ]);
+
+  /* Cards inside the current folder path (app → category → priority → status). */
+  const branch = filteredIssues.filter((issue) => {
+    if (path.app !== null) {
+      if (path.app === -1 ? issue.appId !== null : issue.appId !== path.app) return false;
+    }
+    if (path.cat !== null) {
+      if (typeof path.cat === "string") {
+        // custom category with no row of its own: "x:<name>"
+        if (!(issue.categoryId === null && issue.customCategory === path.cat.slice(2))) return false;
+      } else if (path.cat === -1) {
+        if (!(issue.categoryId === null && issue.customCategory == null)) return false;
+      } else {
+        const catName = categories.find((c) => c.id === path.cat)?.name;
+        if (!(issue.categoryId === path.cat || (catName != null && issue.customCategory === catName))) {
+          return false;
+        }
+      }
+    }
+    if (path.prio !== null) {
+      if (path.prio === -1 ? issue.priorityId !== null : issue.priorityId !== path.prio) return false;
+    }
+    if (path.st !== null) {
+      if (path.st === -1 ? issue.statusId !== null : issue.statusId !== path.st) return false;
+    }
+    return true;
+  });
+
+  /* Folders for levels 1–4; level 4 keeps the board's status order. Cards
+     missing a value get their own "no value" bucket so nothing is invisible. */
+  const folders: { id: number | string; name: string; count: number; color: string }[] = [];
+  if (level === 1) {
+    apps.forEach((a) =>
+      folders.push({
+        id: a.id,
+        name: a.name,
+        color: theme.palette.primary.main,
+        count: branch.filter((i) => i.appId === a.id).length,
+      }),
+    );
+    const noApp = branch.filter((i) => i.appId === null).length;
+    if (noApp > 0) {
+      folders.push({ id: -1, name: t("folderNoApp"), color: theme.palette.text.disabled, count: noApp });
+    }
+  } else if (level === 2) {
+    categories.forEach((c) =>
+      folders.push({
+        id: c.id,
+        name: c.name,
+        color: theme.palette.secondary.main,
+        count: branch.filter((i) => i.categoryId === c.id || i.customCategory === c.name).length,
+      }),
+    );
+    // custom categories that have no row of their own in `categories`
+    const customNames = [
+      ...new Set(
+        branch
+          .filter((i) => i.categoryId === null && i.customCategory)
+          .map((i) => i.customCategory as string),
+      ),
+    ].filter((n) => !categories.some((c) => c.name === n));
+    customNames.forEach((n) =>
+      folders.push({
+        id: "x:" + n,
+        name: n,
+        color: theme.palette.secondary.light,
+        count: branch.filter((i) => i.categoryId === null && i.customCategory === n).length,
+      }),
+    );
+    const noCat = branch.filter((i) => i.categoryId === null && i.customCategory == null).length;
+    if (noCat > 0) {
+      folders.push({ id: -1, name: t("folderNoCat"), color: theme.palette.text.disabled, count: noCat });
+    }
+  } else if (level === 3) {
+    priorities.forEach((p) =>
+      folders.push({
+        id: p.id,
+        name: p.name,
+        color: theme.palette.info.main,
+        count: branch.filter((i) => i.priorityId === p.id).length,
+      }),
+    );
+    const noPrio = branch.filter((i) => i.priorityId === null).length;
+    if (noPrio > 0) {
+      folders.push({ id: -1, name: t("folderNoPrio"), color: theme.palette.text.disabled, count: noPrio });
+    }
+  } else if (level === 4) {
+    statuses.forEach((s) =>
+      folders.push({
+        id: s.id,
+        name: s.name,
+        // resolve first — the column may hold a palette *name* ("yellow"),
+        // which MUI's alpha() would reject (it only takes hex/rgb/hsl)
+        color: resolveStatusColor(theme, s.color, s.name),
+        count: branch.filter((i) => i.statusId === s.id).length,
+      }),
+    );
+    const noStatus = branch.filter((i) => i.statusId === null).length;
+    if (noStatus > 0) {
+      folders.push({ id: -1, name: t("folderNoStatus"), color: theme.palette.text.disabled, count: noStatus });
+    }
+  }
+  const visibleFolders = hasActiveFilters ? folders.filter((f) => f.count > 0) : folders;
+
+  /* Level 5: flat card grid — newest first (or by priority), paged client-side. */
+  const sortedCards = [...branch].sort((a, b) => {
+    if (sort === "prio") {
+      const ra = priorities.find((p) => p.id === a.priorityId)?.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      const rb = priorities.find((p) => p.id === b.priorityId)?.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      if (ra !== rb) return ra - rb;
+    }
+    return b.createdAt.localeCompare(a.createdAt);
+  });
+  const shownCards = sortedCards.slice(0, visibleCount);
+
+  /* New folder / new filters → back to the first page of cards. */
+  useEffect(() => {
+    setVisibleCount(FOLDER_PAGE_SIZE);
+  }, [
+    path,
+    searchQuery,
+    selectedStatusIds,
+    selectedPriorityIds,
+    selectedCategoryIds,
+    selectedAppIds,
+    selectedAssigneeIds,
+    selectedReporterIds,
+  ]);
+
+  const drill = (id: number | string) => {
+    setPath((p) =>
+      level === 1
+        ? { app: typeof id === "number" ? id : null, cat: null, prio: null, st: null }
+        : level === 2
+          ? { ...p, cat: id, prio: null, st: null }
+          : level === 3
+            ? { ...p, prio: typeof id === "number" ? id : null, st: null }
+            : { ...p, st: typeof id === "number" ? id : null },
+    );
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const goCrumb = (key: "root" | "app" | "cat" | "prio" | "st") => {
+    if (key === "st") return; // last segment = current folder, not clickable
+    setPath((p) =>
+      key === "root"
+        ? { app: null, cat: null, prio: null, st: null }
+        : key === "app"
+          ? { app: p.app, cat: null, prio: null, st: null }
+          : key === "cat"
+            ? { app: p.app, cat: p.cat, prio: null, st: null }
+            : { app: p.app, cat: p.cat, prio: p.prio, st: null },
+    );
+  };
+
+  const handleMove = async (issue: BoardIssue, statusId: number) => {
+    if (issue.statusId === statusId) return;
+    setMovingId(issue.id);
+    try {
+      await moveIssue(issue.id, statusId);
+      onRefresh();
+    } catch (e) {
+      // Same mapping as the drag handler: 409 = status lock, 400 = step-only guard
+      setError(
+        isApiError(e, 409)
+          ? t("lockedCard")
+          : isApiError(e, 400)
+            ? t("invalidTransition")
+            : getErrorMessage(e, "เกิดข้อผิดพลาด"),
+      );
+      onRefresh();
+    } finally {
+      setMovingId(null);
+    }
+  };
+
+  /** Resolved status colour for a card — same lookup as the table's column. */
+  const statusColorOf = (issue: BoardIssue): string => {
+    const s = issue.statusId ? statuses.find((st) => st.id === issue.statusId) : null;
+    return resolveStatusColor(theme, s?.color, issue.statusName ?? s?.name ?? null);
+  };
+
+  const crumbs: { key: "root" | "app" | "cat" | "prio" | "st"; label: string }[] = [
+    { key: "root", label: t("board") },
+  ];
+  if (path.app !== null) {
+    const label = path.app === -1 ? t("folderNoApp") : apps.find((x) => x.id === path.app)?.name;
+    if (label) crumbs.push({ key: "app", label });
+  }
+  if (path.cat !== null) {
+    const label =
+      typeof path.cat === "string"
+        ? path.cat.slice(2)
+        : path.cat === -1
+          ? t("folderNoCat")
+          : categories.find((x) => x.id === path.cat)?.name;
+    if (label) crumbs.push({ key: "cat", label });
+  }
+  if (path.prio !== null) {
+    const label = path.prio === -1 ? t("folderNoPrio") : priorities.find((x) => x.id === path.prio)?.name;
+    if (label) crumbs.push({ key: "prio", label });
+  }
+  if (path.st !== null) {
+    const label = path.st === -1 ? t("folderNoStatus") : statuses.find((x) => x.id === path.st)?.name;
+    if (label) crumbs.push({ key: "st", label });
+  }
+
+  return (
+    <Box>
+      {toolbar}
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
+
+      {/* breadcrumb: บอร์ด › แอป › หมวด › ความสำคัญ › สถานะ */}
+      <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0.75, mb: 2 }}>
+        {crumbs.map((c, i) => (
+          <Box key={c.key} component="span" sx={{ display: "inline-flex", alignItems: "center", gap: 0.75 }}>
+            {i > 0 && (
+              <Typography component="span" sx={{ color: "text.disabled" }}>
+                ›
+              </Typography>
+            )}
+            {i === crumbs.length - 1 ? (
+              <Typography component="span" fontWeight={700}>
+                {c.label}
+              </Typography>
+            ) : (
+              <Typography
+                component="button"
+                type="button"
+                onClick={() => goCrumb(c.key)}
+                sx={{
+                  border: "none",
+                  background: "none",
+                  p: 0,
+                  font: "inherit",
+                  cursor: "pointer",
+                  color: "text.secondary",
+                  "&:hover": { color: "primary.main", textDecoration: "underline" },
+                }}
+              >
+                {c.label}
+              </Typography>
+            )}
+          </Box>
+        ))}
+      </Box>
+
+      {level < 5 ? (
+        visibleFolders.length > 0 ? (
+          <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 2 }}>
+            {visibleFolders.map((f) => (
+              <Paper
+                key={f.id}
+                variant="outlined"
+                onClick={() => drill(f.id)}
+                sx={{
+                  // Drive-style tile: soft tinted plate, generous rounding,
+                  // no hard outline — the folder colour drives the tint
+                  p: 1.75,
+                  borderRadius: 3,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1.5,
+                  bgcolor: alpha(f.color, 0.08),
+                  borderColor: "transparent",
+                  transition: "box-shadow .15s ease, transform .15s ease",
+                  "&:hover": {
+                    bgcolor: alpha(f.color, 0.16),
+                    boxShadow: 4,
+                    transform: "translateY(-2px)",
+                  },
+                }}
+              >
+                <FolderIcon sx={{ color: f.color, fontSize: 34, flexShrink: 0 }} />
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography fontWeight={600} noWrap>
+                    {f.name}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {t("folderItems", { count: f.count })}
+                  </Typography>
+                </Box>
+                {level === 4 && (
+                  <Box
+                    sx={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: "50%",
+                      bgcolor: f.color,
+                      flexShrink: 0,
+                    }}
+                  />
+                )}
+              </Paper>
+            ))}
+          </Box>
+        ) : (
+          <Alert severity="info">{t("filter.noResults")}</Alert>
+        )
+      ) : (
+        <>
+          <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1.5 }}>
+            <FormControl size="small" sx={{ minWidth: 210 }}>
+              <Select value={sort} onChange={(e) => setSort(e.target.value as "date" | "prio")}>
+                <MenuItem value="date">{t("folderSortDate")}</MenuItem>
+                <MenuItem value="prio">{t("filter.sectionPriority")}</MenuItem>
+              </Select>
+            </FormControl>
+          </Box>
+          {sortedCards.length === 0 ? (
+            <Alert severity="info">{t("noCards")}</Alert>
+          ) : (
+            <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 2 }}>
+              {shownCards.map((issue) => {
+                const assignee =
+                  issue.programmerName ?? (canSeeReporter ? issue.customerName : null);
+                const statusColor = statusColorOf(issue);
+                // Trello-style label stubs, same as the Kanban card
+                const labelBars = (issue.labels ?? []).slice(0, 4);
+                const statusEditable = canEdit && !issue.isLocked && movingId !== issue.id;
+                const staleDays = staleDaysFor(issue, staleRules);
+                return (
+                  <Tooltip
+                    key={issue.id}
+                    title={staleDays != null ? t("staleDays", { days: staleDays }) : ""}
+                    placement="top"
+                  >
+                  <Paper
+                    variant="outlined"
+                    onClick={() => setDetailIssue(issue)}
+                    sx={{
+                      p: 2,
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 1.25,
+                      borderRadius: 3,
+                      // the card's own outline turns red while it sits past a
+                      // stale rule — same rule, same look as the Kanban board
+                      ...(staleDays != null
+                        ? { border: "2px solid", borderColor: "error.main" }
+                        : {}),
+                      transition: "box-shadow .15s ease, transform .15s ease",
+                      "&:hover": { boxShadow: 4, transform: "translateY(-2px)" },
+                    }}
+                  >
+                    {labelBars.length > 0 && (
+                      <Box sx={{ display: "flex", gap: 0.5 }}>
+                        {labelBars.map((lbl) => (
+                          <Box
+                            key={lbl.id}
+                            title={lbl.name}
+                            sx={{
+                              width: 28,
+                              height: 8,
+                              borderRadius: "4px",
+                              bgcolor: labelColorValue(lbl.color, theme),
+                            }}
+                          />
+                        ))}
+                      </Box>
+                    )}
+                    {issue.issueNumber && (
+                      <Typography variant="caption" color="text.disabled" fontWeight={700}>
+                        #{issue.issueNumber}
+                      </Typography>
+                    )}
+                    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 1 }}>
+                      <Typography variant="subtitle2" fontWeight={700} sx={{ lineHeight: 1.4, flex: 1, minWidth: 0 }}>
+                        {issue.title}
+                      </Typography>
+                      {issue.appName && (
+                        <Chip
+                          label={issue.appName}
+                          size="small"
+                          sx={{
+                            height: 18,
+                            fontSize: "0.65rem",
+                            fontWeight: 600,
+                            flexShrink: 0,
+                            ml: 0.5,
+                            bgcolor: "action.selected",
+                            color: "text.secondary",
+                          }}
+                        />
+                      )}
+                    </Box>
+
+                    {/* Drive-style preview: the first image attachment, or a
+                        status-tinted plate with a document icon */}
+                    <FolderThumb
+                      issue={issue}
+                      color={statusColor}
+                      enabled={canViewAttachments}
+                    />
+
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                      <Chip
+                        size="small"
+                        label={issue.statusName ?? "—"}
+                        onClick={(e) => {
+                          if (!statusEditable) return;
+                          e.stopPropagation();
+                          setStatusMenu({ el: e.currentTarget, issue });
+                        }}
+                        clickable={statusEditable}
+                        icon={issue.isLocked ? <LockIcon sx={{ fontSize: 14 }} /> : undefined}
+                        sx={{
+                          height: 22,
+                          fontSize: "0.7rem",
+                          fontWeight: 600,
+                          bgcolor: alpha(statusColor, 0.12),
+                          color: statusColor,
+                          border: `1px solid ${statusColor}`,
+                          cursor: statusEditable ? "pointer" : "default",
+                          "&:hover": statusEditable ? { bgcolor: alpha(statusColor, 0.22) } : undefined,
+                        }}
+                      />
+                      {issue.priorityName && (
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
+                          color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
+                          sx={{ height: 22, fontSize: "0.7rem", fontWeight: 600 }}
+                        />
+                      )}
+                      <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 0.75 }}>
+                        {issue.commentCount > 0 && (
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
+                            <ChatBubbleOutlineIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+                            <Typography variant="caption" color="text.secondary">
+                              {issue.commentCount}
+                            </Typography>
+                          </Box>
+                        )}
+                        {issue.attachmentCount > 0 && (
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
+                            <AttachFileIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+                            <Typography variant="caption" color="text.secondary">
+                              {issue.attachmentCount}
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    </Box>
+
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {issue.description || "—"}
+                    </Typography>
+                    <Divider />
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                      {assignee ? (
+                        <Avatar
+                          sx={{
+                            width: 22,
+                            height: 22,
+                            fontSize: "0.7rem",
+                            fontWeight: 700,
+                            bgcolor: "primary.main",
+                            color: "primary.contrastText",
+                          }}
+                        >
+                          {assignee.charAt(0).toUpperCase()}
+                        </Avatar>
+                      ) : (
+                        <Avatar
+                          sx={{
+                            width: 22,
+                            height: 22,
+                            bgcolor: theme.palette.grey[300],
+                            color: theme.palette.grey[600],
+                          }}
+                        >
+                          <PersonIcon sx={{ fontSize: 14 }} />
+                        </Avatar>
+                      )}
+                      <Typography variant="caption" color="text.secondary" noWrap sx={{ flex: 1 }}>
+                        {assignee ?? "—"}
+                      </Typography>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 0.35, flexShrink: 0 }}>
+                        <CalendarTodayIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+                        <Typography variant="caption" color="text.secondary">
+                          {formatDate(issue.createdAt)}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </Paper>
+                  </Tooltip>
+                );
+              })}
+            </Box>
+          )}
+          <Box sx={{ display: "flex", justifyContent: "center", gap: 1, mt: 2 }}>
+            {sortedCards.length > shownCards.length && (
+              <Button variant="outlined" size="small" onClick={() => setVisibleCount((v) => v + FOLDER_PAGE_SIZE)}>
+                {t("folderLoadMore")}
+              </Button>
+            )}
+            {visibleCount > FOLDER_PAGE_SIZE && sortedCards.length > FOLDER_PAGE_SIZE && (
+              <Button variant="text" size="small" onClick={() => setVisibleCount(FOLDER_PAGE_SIZE)}>
+                {t("folderShowLess")}
+              </Button>
+            )}
+          </Box>
+        </>
+      )}
+
+      {/* status picker opened from a card's status chip (canEdit + unlocked) */}
+      <Menu
+        anchorEl={statusMenu?.el}
+        open={Boolean(statusMenu)}
+        onClose={() => setStatusMenu(null)}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {statuses.map((s) => (
+          <MenuItem
+            key={s.id}
+            selected={s.id === statusMenu?.issue.statusId}
+            disabled={movingId !== null}
+            onClick={() => {
+              const issue = statusMenu?.issue;
+              setStatusMenu(null);
+              if (issue) handleMove(issue, s.id);
+            }}
+          >
+            <Box
+              component="span"
+              sx={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                bgcolor: resolveStatusColor(theme, s.color, s.name),
+                mr: 1.25,
+                flexShrink: 0,
+              }}
+            />
+            {s.name}
+          </MenuItem>
+        ))}
+      </Menu>
+
+      <IssueDetailDialog
+        issue={detailIssue}
+        open={!!detailIssue}
+        onClose={() => setDetailIssue(null)}
+        statuses={statuses}
+        labels={labels}
+        onRefresh={onRefresh}
+      />
+    </Box>
+  );
+}
+
 function BoardsPageInner() {
   const t = useTranslations("Boards");
   const { can, roleName } = usePermissions();
@@ -4372,9 +5228,17 @@ function BoardsPageInner() {
   const searchParams = useSearchParams();
   const currentUserId = useAuthStore((s) => s.user?.id) ?? null;
   const isCustomer = roleName === "customer";
-  const [view, setView] = useState<"board" | "table">("table");
+  // Default view = the Kanban board for staff, the table for customers.
+  // `chosenView` only records an explicit toggle (null = none yet), so the
+  // default re-applies on every visit and the derived value self-corrects if
+  // `roleName` resolves after the first render (usePermissions falls back to
+  // "customer" while logged out). Customers are forced to the table here —
+  // one place, regardless of what was chosen.
+  const [chosenView, setChosenView] = useState<"board" | "table" | "folder" | null>(null);
+  const view: "board" | "table" | "folder" = isCustomer ? "table" : (chosenView ?? "board");
   const isBoardView = view === "board";
   const isTableView = view === "table";
+  const isFolderView = view === "folder";
   const [issues, setIssues] = useState<BoardIssue[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
@@ -4384,6 +5248,9 @@ function BoardsPageInner() {
   // any active `issue.unlock` rule — a locked card only offers its unlock
   // button while the rules allow a release (false while the lookup fails)
   const [unlockAvailable, setUnlockAvailable] = useState(false);
+  // active stale rules ({statusId, days}) — the board/folder paint the red
+  // "sitting too long" border from these; [] (no rule / lookup failed) = none
+  const [staleRules, setStaleRules] = useState<StaleRule[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [apps, setApps] = useState<App[]>([]);
@@ -4522,7 +5389,7 @@ function BoardsPageInner() {
         fetchApps(),
         fetchMembers(),
         // fail-open: a rejected policy lookup must not raise the load error
-        fetchMovePolicy().catch(() => ({ stepOnly: false, unlockAvailable: false })),
+        fetchMovePolicy().catch(() => ({ stepOnly: false, unlockAvailable: false, staleRules: [] })),
         refreshTimers(),
       ]);
       const [iss, lbls, sts, pri, cats, aps, usr, policy] = results;
@@ -4536,6 +5403,7 @@ function BoardsPageInner() {
       if (policy.status === "fulfilled") {
         setStepOnlyMoves(policy.value.stepOnly);
         setUnlockAvailable(Boolean(policy.value.unlockAvailable));
+        setStaleRules(policy.value.staleRules ?? []);
       }
       const firstError = results.find((r) => r.status === "rejected");
       if (firstError && firstError.status === "rejected") {
@@ -4683,7 +5551,7 @@ function BoardsPageInner() {
               <Tooltip title={t("board")}>
                 <IconButton
                   size="small"
-                  onClick={() => setView("board")}
+                  onClick={() => setChosenView("board")}
                   sx={{
                     width: 36,
                     height: 36,
@@ -4698,7 +5566,7 @@ function BoardsPageInner() {
               <Tooltip title={t("table")}>
                 <IconButton
                   size="small"
-                  onClick={() => setView("table")}
+                  onClick={() => setChosenView("table")}
                   sx={{
                     width: 36,
                     height: 36,
@@ -4710,16 +5578,17 @@ function BoardsPageInner() {
                   <TableChartIcon fontSize="small" />
                 </IconButton>
               </Tooltip>
-              {/* Placeholder: folder view coming later — icon only for now */}
               <Tooltip title={t("folderView")}>
                 <IconButton
                   size="small"
                   aria-label={t("folderView")}
+                  onClick={() => setChosenView("folder")}
                   sx={{
                     width: 36,
                     height: 36,
-                    color: "text.secondary",
-                    "&:hover": { bgcolor: "action.hover" },
+                    color: isFolderView ? "primary.contrastText" : "text.secondary",
+                    bgcolor: isFolderView ? "primary.main" : "transparent",
+                    "&:hover": { bgcolor: isFolderView ? "primary.dark" : "action.hover" },
                   }}
                 >
                   <FolderIcon fontSize="small" />
@@ -4831,7 +5700,28 @@ function BoardsPageInner() {
               <CircularProgress />
             </Box>
           ) : (
-            isBoardView ? (
+            isFolderView ? (
+              <FolderView
+                statuses={statuses}
+                issues={issues}
+                labels={labels}
+                apps={apps}
+                categories={categories}
+                priorities={priorities}
+                selectedStatusIds={selectedStatusIds}
+                selectedPriorityIds={selectedPriorityIds}
+                selectedCategoryIds={selectedCategoryIds}
+                selectedAppIds={selectedAppIds}
+                selectedAssigneeIds={selectedAssigneeIds}
+                selectedReporterIds={selectedReporterIds}
+                searchQuery={searchQuery}
+                canEdit={canEdit}
+                canSeeReporter={canSeeReporter}
+                staleRules={staleRules}
+                onRefresh={() => loadData(false)}
+                toolbar={toolbar}
+              />
+            ) : isBoardView ? (
               <KanbanView
                 statuses={statuses}
                 labels={labels}
@@ -4854,6 +5744,7 @@ function BoardsPageInner() {
                 onRefresh={() => loadData(false)}
                 roleName={roleName}
                 stepOnlyMoves={stepOnlyMoves}
+                staleRules={staleRules}
                 toolbar={toolbar}
               />
             ) : (

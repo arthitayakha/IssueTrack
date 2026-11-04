@@ -106,6 +106,7 @@ export default function NotificationsPage() {
     rule_created: t("actions.rule_created"),
     rule_updated: t("actions.rule_updated"),
     rule_deleted: t("actions.rule_deleted"),
+    stale: t("actions.stale"),
   };
 
   const header = (

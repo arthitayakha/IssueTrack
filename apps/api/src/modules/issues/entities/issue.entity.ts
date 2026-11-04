@@ -163,6 +163,24 @@ export class Issue {
   @Column({ name: "received_at", type: "timestamptz", nullable: true })
   receivedAt!: Date | null;
 
+  /**
+   * วันเวลาที่เข้าสถานะปัจจุบันล่าสุด — stamped on create / manual drag /
+   * a rule's `issue.move_status` (any other edit leaves it alone, unlike
+   * `updated_at`). The stale policy (red border + daily bell) counts days
+   * from here. NULL = unknown age → never flagged (fail open).
+   */
+  @Column({ name: "status_changed_at", type: "timestamptz", nullable: true })
+  statusChangedAt!: Date | null;
+
+  /**
+   * เคยส่ง bell "ค้างนาน" ให้รอบนี้แล้วหรือยัง — stamped by the 09:00 sweep
+   * right after it notifies, cleared wherever `statusChangedAt` is written
+   * (a new sitting may ring again). NULL = not yet → picked up next round.
+   * Dedup cannot use `notifications` (reading deletes the row).
+   */
+  @Column({ name: "stale_notified_at", type: "timestamptz", nullable: true })
+  staleNotifiedAt!: Date | null;
+
   @Column({ name: "deleted_at", type: "timestamptz", nullable: true })
   deletedAt!: Date | null;
 

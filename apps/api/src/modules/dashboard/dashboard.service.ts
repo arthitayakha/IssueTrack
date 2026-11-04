@@ -63,15 +63,14 @@ export interface DashboardTrendRow {
 }
 
 /**
- * One programmer's open load + timer hours banked on those open cards
- * (sorted by open load desc). The position rides along so the card can build
- * its filter dropdown client-side without a second request.
+ * One programmer's open load (sorted by open load desc). The position rides
+ * along so the client can build its filter dropdown from this list alone —
+ * no second request, no `position.view` needed.
  */
 export interface DashboardWorkloadRow {
   userId: number;
   name: string;
   openCount: number;
-  hours: number;
   /** The programmer's `positions` row — null when they hold no position. */
   positionId: number | null;
   positionName: string | null;
@@ -155,10 +154,6 @@ function bkkDayStart(value?: string): Date | null {
 function bkkDayAfter(value?: string): Date | null {
   const start = bkkDayStart(value);
   return start ? new Date(start.getTime() + DAY_MS) : null;
-}
-
-function round1(n: number): number {
-  return Math.round(n * 10) / 10;
 }
 
 type RawCount = string | number;
@@ -518,12 +513,12 @@ export class DashboardService {
   }
 
   /**
-   * Per-programmer load: open cards (not yet in the done column) + timer
-   * hours banked **on those open cards only** (finished work is excluded from
-   * both numbers, so the card answers "who is holding what right now").
-   * Busiest open load first, hours as the tiebreak. The programmer's position
-   * rides along so the client can build its filter dropdown from this list
-   * alone — no second request, no `position.view` needed.
+   * Per-programmer load: open cards (not yet in the done column) — the card
+   * answers "who is holding what right now", so finished work counts for
+   * nothing here. Busiest open load first (person.id breaks ties so equal
+   * loads keep a stable order). The programmer's position rides along so the
+   * client can build its filter dropdown from this list alone — no second
+   * request, no `position.view` needed.
    * Programmers only (role = 'programmer').
    * Only computed for overview readers (scope "all"); everyone else gets [].
    */
@@ -542,7 +537,6 @@ export class DashboardService {
       .select("person.id", "userId")
       .addSelect("COALESCE(NULLIF(TRIM(person.name), ''), person.email)", "name")
       .addSelect(`COUNT(*) FILTER (WHERE ${openFilter})::int`, "openCount")
-      .addSelect(`COALESCE(SUM(issue.tracked_duration) FILTER (WHERE ${openFilter}), 0)`, "seconds")
       .addSelect("pos.id", "positionId")
       .addSelect("pos.name", "positionName")
       .groupBy("person.id")
@@ -550,13 +544,13 @@ export class DashboardService {
       .addGroupBy("pos.id")
       .addGroupBy("pos.name")
       .orderBy(`COUNT(*) FILTER (WHERE ${openFilter})`, "DESC")
-      .addOrderBy(`COALESCE(SUM(issue.tracked_duration) FILTER (WHERE ${openFilter}), 0)`, "DESC")
+      // ties on open load fall back to a stable order (no hours to rank by)
+      .addOrderBy("person.id", "ASC")
       .getRawMany();
     return raw.map((r) => ({
       userId: Number(r.userId),
       name: String(r.name ?? ""),
       openCount: num(r.openCount),
-      hours: round1(num(r.seconds) / 3600),
       positionId: r.positionId == null ? null : Number(r.positionId),
       positionName: r.positionName == null ? null : String(r.positionName),
     }));

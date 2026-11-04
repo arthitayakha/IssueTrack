@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { APP_GUARD } from "@nestjs/core";
+import { ScheduleModule } from "@nestjs/schedule";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { AuthModule } from "./modules/auth/auth.module";
 import { PermissionsModule } from "./modules/permissions/permissions.module";
@@ -12,6 +13,7 @@ import { RolesModule } from "./modules/roles/roles.module";
 import { PositionsModule } from "./modules/positions/positions.module";
 import { CategoriesModule } from "./modules/categories/categories.module";
 import { AppsModule } from "./modules/apps/apps.module";
+import { CompaniesModule } from "./modules/companies/companies.module";
 import { AttachmentsModule } from "./modules/attachments/attachments.module";
 import { IssueStatusesModule } from "./modules/issue-statuses/issue-statuses.module";
 import { IssuePrioritiesModule } from "./modules/issue-priorities/issue-priorities.module";
@@ -26,6 +28,8 @@ import { JwtAuthGuard } from "./modules/auth/jwt-auth.guard";
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // global: registers @Cron methods anywhere in the app (app expiry sweep)
+    ScheduleModule.forRoot(),
     TypeOrmModule.forRoot({
       type: "postgres",
       host: process.env.DB_HOST ?? "localhost",
@@ -46,6 +50,7 @@ import { JwtAuthGuard } from "./modules/auth/jwt-auth.guard";
     PositionsModule,
     CategoriesModule,
     AppsModule,
+    CompaniesModule,
     AttachmentsModule,
     IssueStatusesModule,
     IssuePrioritiesModule,

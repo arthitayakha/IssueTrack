@@ -19,7 +19,9 @@ export type NotificationAction =
   | "restored"
   | "rule_created"
   | "rule_updated"
-  | "rule_deleted";
+  | "rule_deleted"
+  // a card sat past a board-policy rule's days (daily 09:00 sweep)
+  | "stale";
 
 export interface AppNotification {
   id: number;

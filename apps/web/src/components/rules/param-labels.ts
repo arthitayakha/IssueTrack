@@ -27,6 +27,8 @@ export function getParamLabel(t: TranslateFn, key: string): string {
       return t("paramLabel");
     case "minutes":
       return t("paramMinutes");
+    case "days":
+      return t("paramDays");
     case "text":
       return t("paramComment");
     default:

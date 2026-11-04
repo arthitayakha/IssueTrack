@@ -38,10 +38,12 @@ export async function apiFetch<T>(
   options: RequestInit = {},
   token?: string | null,
 ): Promise<T> {
+  // FormData must let the browser set `multipart/form-data; boundary=…` itself
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },

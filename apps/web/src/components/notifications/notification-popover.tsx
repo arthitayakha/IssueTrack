@@ -38,6 +38,8 @@ interface NotificationPopoverProps {
   onClose: () => void;
   onMarkRead: (id: number) => void;
   onMarkAllRead: () => void;
+  /** Opens the account popup on its settings tab (was a /settings link). */
+  onOpenSettings: () => void;
 }
 
 /**
@@ -88,6 +90,7 @@ export default function NotificationPopover({
   onClose,
   onMarkRead,
   onMarkAllRead,
+  onOpenSettings,
 }: NotificationPopoverProps) {
   const t = useTranslations("Notifications");
   const locale = useLocale();
@@ -118,6 +121,9 @@ export default function NotificationPopover({
     rule_created: t("actions.rule_created"),
     rule_updated: t("actions.rule_updated"),
     rule_deleted: t("actions.rule_deleted"),
+    stale: t("actions.stale"),
+    app_expiring: t("actions.app_expiring"),
+    app_expired: t("actions.app_expired"),
   };
 
   function handleItemClick(item: AppNotification) {
@@ -251,7 +257,7 @@ export default function NotificationPopover({
         </Box>
         <Box sx={{ flex: 1 }} />
         <Tooltip title={t("settings")}>
-          <IconButton size="small" onClick={() => router.push("/settings")} sx={{ mb: 0.5 }}>
+          <IconButton size="small" onClick={onOpenSettings} sx={{ mb: 0.5 }}>
             <SettingsOutlinedIcon fontSize="small" />
           </IconButton>
         </Tooltip>

@@ -23,7 +23,13 @@ export type NotificationAction =
   // automation-rule changes — shown as "created rule X" / "updated rule X"
   | "rule_created"
   | "rule_updated"
-  | "rule_deleted";
+  | "rule_deleted"
+  // a card sat past a board-policy rule's days — the 09:00 sweep rings this
+  // once per sitting (assignee + every admin)
+  | "stale"
+  // app expiry — not an issue at all, so it points at the apps tab
+  | "app_expiring" // ใกล้หมดอายุ (≤30 วัน)
+  | "app_expired"; // หมดอายุแล้ว
 
 /**
  * Milestone columns, keyed by id — the names get renamed by hand
@@ -261,6 +267,41 @@ export class NotificationsService {
       actor,
       alsoAdmins: true,
     });
+  }
+
+  /**
+   * The bell for a card that sat past an `issue.notify_stale` rule's day
+   * count — to the assignee (the person who can clear it) and every active
+   * admin, deduplicated. Called by the 09:00 sweep only, which stamps
+   * `stale_notified_at` right after, so a sitting rings exactly once.
+   * No actor: the system is the sender, so nobody is skipped.
+   */
+  async notifyStaleCard(params: {
+    issue: NotificationIssueTarget;
+    statusName: string | null;
+    days: number;
+  }): Promise<void> {
+    const { issue, statusName, days } = params;
+    const ids = new Set<number>();
+    if (issue.programmerId && issue.programmerId > 0) ids.add(issue.programmerId);
+    // fan-out is a bonus — if the admin list cannot be read, the assignee
+    // still hears about it rather than losing the bell entirely
+    try {
+      for (const id of await this.adminIds()) ids.add(id);
+    } catch (error) {
+      this.logger.warn(`could not load admins for stale fan-out: ${(error as Error).message}`);
+    }
+    const context = `${statusName ?? "?"} · ${days} วัน`;
+    for (const userId of ids) {
+      await this.notify({
+        userId,
+        action: "stale",
+        title: issue.title,
+        context,
+        issueId: issue.id,
+        link: this.issueLink(issue.id),
+      });
+    }
   }
 
   /**

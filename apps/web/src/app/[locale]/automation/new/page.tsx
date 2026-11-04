@@ -17,7 +17,7 @@ export default function NewRulePage() {
     <Breadcrumbs aria-label={t("breadcrumbLabel")} separator="/">
       <MuiLink
         component={Link}
-        href="/settings?tab=statuses"
+        href="/master-data?tab=statuses"
         underline="hover"
         color="inherit"
       >

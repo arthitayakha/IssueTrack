@@ -231,8 +231,8 @@ describe("DashboardService.summary", () => {
         [{ bucket: "2026-10-01", count: "3" }],                   // trend
         [
           // workload — string counts, a real position and a position-less row
-          { userId: "13", name: "prog@example.com", openCount: "16", seconds: "175680", positionId: "2", positionName: "Backend" },
-          { userId: "14", name: "bob@example.com", openCount: "0", seconds: "0", positionId: null, positionName: null },
+          { userId: "13", name: "prog@example.com", openCount: "16", positionId: "2", positionName: "Backend" },
+          { userId: "14", name: "bob@example.com", openCount: "0", positionId: null, positionName: null },
         ],
       ],
       [64],
@@ -245,12 +245,12 @@ describe("DashboardService.summary", () => {
     expect(result.apps).toEqual([{ id: 3, name: "POS", count: 10 }]);
     expect(result.trend).toEqual([{ bucket: "2026-10-01", count: 3 }]);
     expect(result.workload).toEqual([
-      { userId: 13, name: "prog@example.com", openCount: 16, hours: 48.8, positionId: 2, positionName: "Backend" },
-      { userId: 14, name: "bob@example.com", openCount: 0, hours: 0, positionId: null, positionName: null },
+      { userId: 13, name: "prog@example.com", openCount: 16, positionId: 2, positionName: "Backend" },
+      { userId: 14, name: "bob@example.com", openCount: 0, positionId: null, positionName: null },
     ]);
   });
 
-  it("workload counts hours on unfinished cards only and sorts by open load", async () => {
+  it("workload counts unfinished cards only, busiest first, with the position", async () => {
     const { service, permissions, builders } = makeService(allScopeQueue(), [0]);
     permissions.getUserPermissions.mockResolvedValue([OWN, OVERVIEW]);
 
@@ -259,18 +259,16 @@ describe("DashboardService.summary", () => {
     // builder order: total, statuses, priorities, apps, categories, trend, workload
     const w = builders[6];
     const sql = w.conditions.join(" ");
-    // seconds (and the sort) are FILTERed to non-done cards — finished work
-    // must not inflate anyone's hours or ranking
-    expect(sql).toContain("SUM(issue.tracked_duration) FILTER (WHERE COALESCE(issue.status_id, 0) <> 4)");
-    // busiest open load first, hours as the tiebreak
+    // only open cards are counted — finished work must not inflate anyone's load
+    expect(sql).toContain("COUNT(*) FILTER (WHERE COALESCE(issue.status_id, 0) <> 4)");
+    // no timer hours on this card any more (no tracked_duration aggregate)
+    expect(sql).not.toContain("tracked_duration");
+    // busiest open load first, person.id breaks ties so equal loads stay stable
     expect(w.orderBy).toHaveBeenCalledWith(
       "COUNT(*) FILTER (WHERE COALESCE(issue.status_id, 0) <> 4)",
       "DESC",
     );
-    expect(w.addOrderBy).toHaveBeenCalledWith(
-      "COALESCE(SUM(issue.tracked_duration) FILTER (WHERE COALESCE(issue.status_id, 0) <> 4), 0)",
-      "DESC",
-    );
+    expect(w.addOrderBy).toHaveBeenCalledWith("person.id", "ASC");
     // the position rides along so the card's dropdown needs no second request
     expect(w.leftJoin).toHaveBeenCalledWith("person.position", "pos");
     expect(w.addSelect).toHaveBeenCalledWith("pos.id", "positionId");

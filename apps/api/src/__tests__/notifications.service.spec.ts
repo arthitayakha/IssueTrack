@@ -204,3 +204,64 @@ describe("NotificationsService.count — the badge number only", () => {
     expect(notifications.count).toHaveBeenCalledWith({ where: { userId: 99 } });
   });
 });
+
+describe("NotificationsService.notifyStaleCard — the 09:00 bell", () => {
+  it("rings the assignee + every admin once, with status and days in the context", async () => {
+    const { service, notifications } = makeService();
+
+    await service.notifyStaleCard({
+      issue: ISSUE,
+      statusName: "เสร็จสิ้น",
+      days: 3,
+    });
+
+    const rows = notifications.save.mock.calls.map(([row]) => row);
+    // assignee 7 + admins 80/81 — deduped, and no actor to skip (system send)
+    expect(rows.map((r) => r.userId).sort((a, b) => a - b)).toEqual([7, 80, 81]);
+    expect(new Set(rows.map((r) => r.type))).toEqual(new Set(["stale"]));
+    expect(rows[0].context).toBe("เสร็จสิ้น · 3 วัน");
+    // straight to the card behind the bell
+    expect(rows[0].link).toBe("/boards?issue=5");
+    expect(rows[0].title).toBe("POS error");
+  });
+
+  it("a card with nobody on it still reaches the admins", async () => {
+    const { service, notifications } = makeService();
+
+    await service.notifyStaleCard({
+      issue: { ...ISSUE, programmerId: null },
+      statusName: "เสร็จสิ้น",
+      days: 7,
+    });
+
+    const rows = notifications.save.mock.calls.map(([row]) => row.userId);
+    expect(rows.sort((a, b) => a - b)).toEqual([80, 81]);
+  });
+
+  it("an admin who is also the assignee gets one row, not two", async () => {
+    const { service, notifications } = makeService();
+
+    await service.notifyStaleCard({
+      issue: { ...ISSUE, programmerId: 80 },
+      statusName: "รอดำเนินการ",
+      days: 14,
+    });
+
+    const rows = notifications.save.mock.calls.map(([row]) => row.userId).sort();
+    expect(rows).toEqual([80, 81]);
+  });
+
+  it("keeps the bell when the admin list cannot be read — the assignee still hears", async () => {
+    const { service, notifications, users } = makeService();
+    users.find.mockRejectedValue(new Error("connection lost"));
+
+    await service.notifyStaleCard({
+      issue: ISSUE,
+      statusName: "เสร็จสิ้น",
+      days: 3,
+    });
+
+    const rows = notifications.save.mock.calls.map(([row]) => row.userId);
+    expect(rows).toEqual([7]);
+  });
+});

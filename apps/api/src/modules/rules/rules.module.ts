@@ -3,6 +3,7 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { RulesController } from "./rules.controller";
 import { RulesService } from "./rules.service";
 import { RulesEngineService } from "./rules-engine.service";
+import { StaleCardsService } from "./stale-cards.service";
 import { Rule } from "./entities/rule.entity";
 import { Issue } from "../issues/entities/issue.entity";
 import { Comment } from "../comments/entities/comment.entity";
@@ -34,7 +35,7 @@ import { NotificationsModule } from "../notifications/notifications.module";
     NotificationsModule,
   ],
   controllers: [RulesController],
-  providers: [RulesService, RulesEngineService],
+  providers: [RulesService, RulesEngineService, StaleCardsService],
   exports: [RulesService, RulesEngineService],
 })
 export class RulesModule {}

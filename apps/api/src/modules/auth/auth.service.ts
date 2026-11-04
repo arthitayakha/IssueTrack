@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Injectable, BadRequestException, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -59,6 +59,33 @@ export class AuthService {
           .map((p) => p.permission)
       : [];
     return this.toPublicUser(user, role?.name ?? null, positionPerms);
+  }
+
+  /** Self-service profile update — no `user.update` permission needed. */
+  async updateProfile(userId: number, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) throw new BadRequestException("Name is required");
+    await this.users.update({ id: userId }, { name: trimmed });
+    const user = await this.users.findOne({ where: { id: userId } });
+    return user ? await this.me(user) : null;
+  }
+
+  /** Stores the uploaded picture's path (the file itself lives in `uploads/`). */
+  async setAvatar(userId: number, path: string) {
+    await this.users.update({ id: userId }, { avatar: path });
+  }
+
+  async clearAvatar(userId: number) {
+    await this.users.update({ id: userId }, { avatar: null });
+  }
+
+  /** The stored path, or null — the controller deletes the old file on replace. */
+  async getAvatarPath(userId: number): Promise<string | null> {
+    const user = await this.users.findOne({
+      where: { id: userId },
+      select: { id: true, avatar: true },
+    });
+    return user?.avatar ?? null;
   }
 
   private toPublicUser(user: User, roleName: string | null, positionPermissions: string[] = []) {

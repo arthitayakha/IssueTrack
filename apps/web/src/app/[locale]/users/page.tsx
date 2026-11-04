@@ -121,6 +121,10 @@ const PERMISSION_GROUPS = [
         permissions: ["app.view", "app.create", "app.update", "app.delete"],
       },
       {
+        key: "company",
+        permissions: ["company.view", "company.create", "company.update", "company.delete"],
+      },
+      {
         key: "category",
         permissions: [
           "category.view", "category.create", "category.update", "category.delete", "category.visibility.update",

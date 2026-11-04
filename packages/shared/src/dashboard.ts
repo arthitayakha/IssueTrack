@@ -31,15 +31,14 @@ export interface DashboardTrendRow {
 }
 
 /**
- * One programmer's open load + timer hours banked on those open cards
- * (sorted by open load desc). The position rides along so the card can build
- * its filter dropdown client-side without a second request.
+ * One programmer's open load (sorted by open load desc). The position rides
+ * along so the client can build its filter dropdown from this list alone —
+ * no second request, no `position.view` needed.
  */
 export interface DashboardWorkloadRow {
   userId: number;
   name: string;
   openCount: number;
-  hours: number;
   /** The programmer's `positions` row — null when they hold no position. */
   positionId: number | null;
   positionName: string | null;

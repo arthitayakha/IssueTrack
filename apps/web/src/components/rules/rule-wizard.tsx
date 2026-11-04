@@ -180,10 +180,11 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
     if (current === 0) {
       if (!trigger) return t("errTrigger");
       if (!templateKey) return t("errTemplate");
-      // every dropdown in the sentence must be picked (free text / number slots stay optional)
+      // every dropdown (and any slot marked required) must be picked —
+      // plain free text / number slots stay optional
       const missingDropdown = template?.slots.some(
         (slot) =>
-          isDropdownFieldType(slot.type) &&
+          (isDropdownFieldType(slot.type) || slot.required) &&
           !(slotValues[slotKey(triggerKey, templateKey, slot.name)] ?? "").trim(),
       );
       if (missingDropdown) return t("errRequired");

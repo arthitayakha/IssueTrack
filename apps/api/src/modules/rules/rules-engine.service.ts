@@ -227,6 +227,36 @@ export class RulesEngineService {
     }
   }
 
+  /**
+   * The board's stale policy — every *active* `issue.notify_stale` rule as a
+   * `{ statusId, days }` pair, read fresh (pause/edit applies on the next
+   * read, no per-card flag). Two consumers: the daily 09:00 sweep
+   * (stale-cards.service) rings the bell, and the board/folder draw the red
+   * border (move-policy → frontend). Each rule's sentence carries the status
+   * and the day count as conditions; rules missing either value are skipped,
+   * and an unreadable rules table returns [] (fail open — nothing happens).
+   */
+  async staleRules(): Promise<Array<{ statusId: number; days: number }>> {
+    try {
+      const rules = await this.rules.find({
+        where: { actionKey: "issue.notify_stale", isActive: true },
+      });
+      const out: Array<{ statusId: number; days: number }> = [];
+      for (const rule of rules) {
+        const statusId = Number(rule.conditions?.find((c) => c.field === "status")?.value);
+        const days = Number(rule.conditions?.find((c) => c.field === "days")?.value);
+        if (Number.isInteger(statusId) && statusId > 0 && Number.isFinite(days) && days >= 1) {
+          out.push({ statusId, days: Math.floor(days) });
+        }
+      }
+      return out;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`stale rule lookup failed: ${message}`);
+      return [];
+    }
+  }
+
   /** All conditions are AND-combined (the wizard has no OR UI yet). */
   private conditionsPass(rule: Rule, triggerKey: string, ctx: RuleContext): boolean {
     const conditions = [...(rule.conditions ?? [])].sort((a, b) => a.position - b.position);
@@ -300,6 +330,11 @@ export class RulesEngineService {
         // write via isStepOnlyMoveActive(); returning early here keeps a rule
         // with this key harmless when the engine runs after a real move
         return { applied: false, reason: "checked before the move, not on it" };
+      case "issue.notify_stale":
+        // policy, not an event: the daily 09:00 sweep (stale-cards.service)
+        // notifies once per sitting and the board/folder draw the red border
+        // from these rules — nothing to do when an event happens to fire
+        return { applied: false, reason: "checked by the daily sweep, not on the event" };
       case "issue.set_priority": {
         const priorityId = Number(config.priority);
         if (!Number.isFinite(priorityId)) return { applied: false, reason: "no priority configured" };
@@ -319,10 +354,18 @@ export class RulesEngineService {
         if (!status) return { applied: false, reason: `status ${statusId} not found` };
         const issue = await this.issues.findOne({ where: { id: issueId }, relations: ["category"] });
         if (!issue) return { applied: false, reason: `issue ${issueId} not found` };
-        await this.issues.update(issueId, { statusId });
+        const statusChanged = issue.statusId !== statusId;
+        await this.issues.update(issueId, {
+          statusId,
+          // landing in a *new* status restarts the "sitting" clock — the same
+          // stamp a manual drag writes; a no-op move leaves the clock alone
+          ...(statusChanged
+            ? { statusChangedAt: new Date(), staleNotifiedAt: null }
+            : {}),
+        });
         // same recipient policy as a manual drag — a card finished by a rule
         // still reaches the customer + admins; a no-op move stays silent
-        if (issue.statusId !== statusId) {
+        if (statusChanged) {
           await this.notifications.notifyStatusChange({
             issue,
             statusId,

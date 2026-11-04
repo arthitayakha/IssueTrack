@@ -14,7 +14,7 @@ import {
 } from "@mui/material";
 import BarChartIcon from "@mui/icons-material/BarChart";
 import DashboardIcon from "@mui/icons-material/Dashboard";
-import SettingsIcon from "@mui/icons-material/Settings";
+import StorageIcon from "@mui/icons-material/Storage";
 import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
 import PeopleIcon from "@mui/icons-material/People";
 import PostAddIcon from "@mui/icons-material/PostAdd";
@@ -47,7 +47,7 @@ export default function Sidebar({
       ? [{ label: t("users"), href: "/users", icon: <PeopleIcon /> }]
       : []),
     ...(can("permission.update")
-      ? [{ label: t("settings"), href: "/settings", icon: <SettingsIcon /> }]
+      ? [{ label: t("settings"), href: "/master-data", icon: <StorageIcon /> }]
       : []),
     ...(can("report.view")
       ? [{ label: t("reports"), href: "/reports", icon: <BarChartIcon /> }]

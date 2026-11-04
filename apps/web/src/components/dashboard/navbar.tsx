@@ -12,11 +12,13 @@ import {
   Typography,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
-import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import { useAuthStore } from "@/lib/auth-store";
+import { useOwnAvatar } from "@/lib/avatar";
 import { usePathname, useRouter } from "@/i18n/navigation";
 import LanguageSwitcher from "./language-switcher";
+import ProfileMenu from "./profile-menu";
+import ProfileDialog, { type ProfileDialogTab } from "./profile-dialog";
 import NotificationPopover, {
   type NotificationListStatus,
 } from "@/components/notifications/notification-popover";
@@ -72,9 +74,12 @@ export default function Navbar({
   const router = useRouter();
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
+  const ownAvatar = useOwnAvatar();
 
   const routeTitleMap: Record<string, string> = {
     "/issues/new": "reportIssue",
+    // master-data keeps its old title; account settings lives in a popup now
+    "/master-data": "settings",
   };
   const routeTitleKey =
     routeTitleMap[pathname] ??
@@ -92,6 +97,12 @@ export default function Navbar({
   const [unreadCount, setUnreadCount] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [bellAnchorEl, setBellAnchorEl] = useState<HTMLElement | null>(null);
+  const [profileAnchorEl, setProfileAnchorEl] = useState<HTMLElement | null>(null);
+  // account settings popup — opened from the avatar menu or the bell's gear
+  const [profileDialog, setProfileDialog] = useState<{
+    open: boolean;
+    tab: ProfileDialogTab;
+  }>({ open: false, tab: "settings" });
 
   // polling and scroll-loading both need a fresh view of what is on screen
   const inboxRef = useRef(inbox);
@@ -234,13 +245,13 @@ export default function Navbar({
           </IconButton>
         )}
         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-          {header ?? (
-            <Typography variant="h6" fontWeight={700} color="text.primary">
-              {t(routeTitleKey)}
-            </Typography>
-          )}
-        </Box>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexShrink: 0 }}>
+          {header ??
+            (routeTitleKey ? (
+              <Typography variant="h6" fontWeight={700} color="text.primary">
+                {t(routeTitleKey)}
+              </Typography>
+            ) : null)}
+        </Box>        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexShrink: 0 }}>
           <IconButton
             onClick={handleOpenBell}
             aria-label={t("notifications")}
@@ -267,30 +278,45 @@ export default function Navbar({
             }}
             onMarkRead={handleMarkRead}
             onMarkAllRead={handleMarkAllRead}
+            onOpenSettings={() => setProfileDialog({ open: true, tab: "settings" })}
           />
           <LanguageSwitcher />
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{ display: { xs: "none", sm: "block" } }}
+          <IconButton
+            onClick={(event) => setProfileAnchorEl(event.currentTarget)}
+            aria-label={user?.name ?? t("menu")}
+            aria-haspopup="menu"
+            aria-expanded={Boolean(profileAnchorEl)}
+            title={user?.name}
+            sx={{ p: 0.5 }}
           >
-            {user?.name}
-          </Typography>
-          <Avatar
-            sx={{
-              width: 32,
-              height: 32,
-              bgcolor: "primary.main",
-              color: "primary.contrastText",
-              fontSize: "0.875rem",
-              fontWeight: 600,
-            }}
-          >
-            {user?.name?.charAt(0).toUpperCase()}
-          </Avatar>
-          <IconButton onClick={handleLogout} aria-label={t("signOut")} size="small">
-            <LogoutOutlinedIcon fontSize="small" />
+            <Avatar
+              src={ownAvatar ?? undefined}
+              sx={{
+                width: 32,
+                height: 32,
+                bgcolor: "primary.main",
+                color: "primary.contrastText",
+                fontSize: "0.875rem",
+                fontWeight: 600,
+              }}
+            >
+              {user?.name?.charAt(0).toUpperCase()}
+            </Avatar>
           </IconButton>
+          <ProfileMenu
+            open={Boolean(profileAnchorEl)}
+            anchorEl={profileAnchorEl}
+            onClose={() => setProfileAnchorEl(null)}
+            onLogout={handleLogout}
+            onOpenSettings={() => setProfileDialog({ open: true, tab: "settings" })}
+            onOpenProfile={() => setProfileDialog({ open: true, tab: "profile" })}
+          />
+          <ProfileDialog
+            open={profileDialog.open}
+            tab={profileDialog.tab}
+            onTabChange={(tab) => setProfileDialog({ open: true, tab })}
+            onClose={() => setProfileDialog((prev) => ({ ...prev, open: false }))}
+          />
         </Box>
       </Toolbar>
     </AppBar>

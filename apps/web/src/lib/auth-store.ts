@@ -59,6 +59,8 @@ interface AuthState {
   user: AuthUser | null;
   permissions: string[] | null;
   setSession: (token: string, user: AuthUser, rememberMe: boolean) => void;
+  /** Merge a patch into the stored user (e.g. after PATCH /auth/profile). */
+  updateUser: (patch: Partial<AuthUser>) => void;
   setPermissions: (permissions: string[]) => void;
   refreshPermissions: () => Promise<string[]>;
   logout: () => void;
@@ -69,6 +71,16 @@ export const useAuthStore = create<AuthState>()((set) => ({
   setSession: (token, user, rememberMe) => {
     persistSession({ token, user, permissions: null }, rememberMe);
     set({ token, user, permissions: null });
+  },
+  updateUser: (patch) => {
+    const current = useAuthStore.getState();
+    if (!current.user) return;
+    const user = { ...current.user, ...patch };
+    persistSession(
+      { token: current.token, user, permissions: current.permissions },
+      localStorage.getItem(AUTH_KEY) !== null,
+    );
+    set({ user });
   },
   setPermissions: (permissions) => {
     const current = useAuthStore.getState();

@@ -34,6 +34,10 @@ export class User {
   @Column({ name: "position_id", type: "int", nullable: true })
   positionId!: number | null;
 
+  /** Path of the uploaded profile picture inside `uploads/` (null = initials avatar). */
+  @Column({ type: "varchar", length: 255, nullable: true })
+  avatar!: string | null;
+
   @ManyToOne(() => Position, { nullable: true })
   @JoinColumn({ name: "position_id" })
   position?: Position;

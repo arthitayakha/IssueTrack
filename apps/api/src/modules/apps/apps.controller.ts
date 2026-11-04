@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
-import { AppsService } from "./apps.service";
+import { AppsService, AppCompanyInput } from "./apps.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -22,7 +22,8 @@ export class AppsController {
   constructor(private readonly apps: AppsService) {}
 
   // No @Permissions on purpose: any authenticated user (customers included)
-  // must be able to load the app list when reporting an issue.
+  // must be able to load the app list when reporting an issue. The rows now
+  // also carry company names + expiry — both are master data the board shows.
   @Get()
   findAll(@Query() query: { page?: string; limit?: string }) {
     return this.apps.findAll(normalizePagination(query));
@@ -30,13 +31,28 @@ export class AppsController {
 
   @Post()
   @Permissions("app.create")
-  create(@Body() body: { name: string }) {
-    return this.apps.create(body.name);
+  create(
+    @Body()
+    body: {
+      name: string;
+      /** ตารางย่อยในฟอร์ม — 1 แถวต่อบริษัท พร้อมวันที่ของคู่นั้น */
+      companies: AppCompanyInput[];
+    },
+  ) {
+    return this.apps.create(body);
   }
 
   @Patch(":id")
   @Permissions("app.update")
-  update(@Param("id", ParseIntPipe) id: number, @Body() body: { name?: string }) {
+  update(
+    @Param("id", ParseIntPipe) id: number,
+    @Body()
+    body: {
+      name?: string;
+      /** `undefined` = คงคู่เดิมไว้ · ส่ง array ว่าง = 400 (ต้องมีอย่างน้อย 1 บริษัท) */
+      companies?: AppCompanyInput[];
+    },
+  ) {
     return this.apps.update(id, body);
   }
 

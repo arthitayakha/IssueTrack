@@ -7,10 +7,9 @@ import { useTranslations } from "next-intl";
 import type { DashboardWorkloadRow } from "@kanban/shared";
 
 /**
- * "งานที่ยังไม่เสร็จ" — open cards + hours tracked on those cards per
- * programmer (server-sorted by open load desc). The list scrolls vertically
- * inside the card (never horizontally): the card stretches to the trend
- * chart's height, so any team size fits.
+ * "งานที่ยังไม่เสร็จ" — open cards per programmer (server-sorted by open load
+ * desc). The list scrolls vertically inside the card (never horizontally):
+ * the card stretches to the trend chart's height, so any team size fits.
  *
  * Two client-side extras, both fed by the rows alone (no second request):
  *   - a position dropdown, rendered only when some row actually carries a
@@ -203,12 +202,9 @@ export default function WorkloadCard({ rows }: { rows: DashboardWorkloadRow[] })
                   )}
                 </Box>
                 <Box sx={{ ml: "auto", textAlign: "right", flexShrink: 0 }}>
-                  <Typography sx={{ fontWeight: 700, fontSize: 14 }}>
-                    {t("workload.hours", { count: m.hours })}
-                  </Typography>
                   <Typography
                     sx={{
-                      fontSize: 12,
+                      fontSize: 14,
                       color: hasOpen ? "warning.dark" : "text.disabled",
                       fontWeight: hasOpen ? 700 : 400,
                     }}

@@ -75,6 +75,8 @@ export interface RuleTemplateSlotDef {
   name: string;
   field: string;
   type: RuleFieldType;
+  /** Force a value before step ② — number slots are optional by default. */
+  required?: boolean;
 }
 
 export interface RuleTemplateDef {
@@ -151,6 +153,8 @@ export const RULE_TRIGGER_CATEGORIES: RuleTriggerCategoryDef[] = [
   { key: "card_change", label: { th: "สร้าง · แก้ไข · ลบการ์ด", en: "Create · Edit · Delete" } },
   { key: "content", label: { th: "คอมเมนต์ & ไฟล์แนบ", en: "Comments & Files" } },
   { key: "timing", label: { th: "จับเวลา", en: "Time Tracking" } },
+  // display policies — "when the board lists cards", never fired as an event
+  { key: "board_policy", label: { th: "บอร์ด", en: "Board" } },
 ];
 
 export const RULE_TRIGGERS: RuleTriggerDef[] = [
@@ -330,6 +334,35 @@ export const RULE_TRIGGERS: RuleTriggerDef[] = [
       { key: "timer_over", text: { th: "เมื่อหยุดจับเวลาแล้วใช้เวลาเกิน {minutes} นาที", en: "When the timer stops after more than {minutes} minutes" }, slots: [{ name: "minutes", field: "duration", type: "number" }] },
     ],
   },
+  {
+    // a display *policy*, not an event — nothing ever fires this key; the
+    // daily 09:00 sweep (stale-cards.service) rings the bell and the board /
+    // folder draw a red border from the active rules of its action
+    // (staleRules). The sentence carries the status and the day count so the
+    // generated rule name reads complete.
+    key: "board.policy",
+    category: "board_policy",
+    phase: "mvp",
+    label: { th: "การ์ดค้างในสถานะ", en: "Cards sitting in a status" },
+    fields: [
+      { key: "status", type: "status", contextKey: "toStatusId" },
+      { key: "days", type: "number", contextKey: "staleDays" },
+    ],
+    templates: [
+      {
+        key: "stale_in_status",
+        text: {
+          th: "การ์ดในสถานะ {status} ที่ค้างอยู่เกิน {days} วัน",
+          en: "Cards in {status} that sit for more than {days} days",
+        },
+        slots: [
+          { name: "status", field: "status", type: "status" },
+          // number slots are optional by default — this one carries the policy
+          { name: "days", field: "days", type: "number", required: true },
+        ],
+      },
+    ],
+  },
 ];
 
 export const RULE_ACTION_CATEGORIES: Array<{ key: string; label: { th: string; en: string } }> = [
@@ -337,6 +370,7 @@ export const RULE_ACTION_CATEGORIES: Array<{ key: string; label: { th: string; e
   { key: "labels", label: { th: "ป้าย & หมวด & ลำดับ", en: "Labels, Categories & Priority" } },
   { key: "time", label: { th: "เวลา", en: "Time" } },
   { key: "content", label: { th: "เนื้อหา", en: "Content" } },
+  { key: "display", label: { th: "การแสดงผล", en: "Display" } },
 ];
 
 export const RULE_ACTIONS: RuleActionDef[] = [
@@ -525,6 +559,25 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     label: { th: "กู้คืนการ์ด", en: "Restore card" },
     description: { th: "กู้คืนการ์ดจากถังขยะ", en: "Restore the card from the trash" },
   },
+  // ── display policy ──────────────────────────────────────────────
+  {
+    // policy, not an event: only ever paired with the `board.policy` trigger
+    // (isActionCompatible). Two consumers read the active rules of this key
+    // — the sentence's status + days:
+    //   * the daily 09:00 sweep (stale-cards.service) notifies the assignee
+    //     and every admin once per sitting;
+    //   * the board/folder draw a red border on the card (move-policy's
+    //     staleRules + statusChangedAt in the payload).
+    // Nothing is hidden or deleted — the table shows every card too.
+    key: "issue.notify_stale",
+    category: "display",
+    status: "supported",
+    label: { th: "แจ้งเตือน + ตีกรอบการ์ดค้าง", en: "Notify & flag stale cards" },
+    description: {
+      th: "เมื่อการ์ดค้างในสถานะเกินจำนวนวันที่กำหนด — ตีกรอบแดงที่บอร์ด/โฟลเดอร์ และแจ้งผู้รับผิดชอบ + แอดมินทุกวัน 09:00 (ครั้งเดียวต่อการค้าง 1 รอบ) ไม่มีการลบข้อมูล",
+      en: "Once a card sits in the status past the chosen days — draws a red border on the board/folder and notifies the assignee + every admin daily at 09:00 (once per sitting). Nothing is deleted",
+    },
+  },
 ];
 
 export const RULE_FIELD_LABELS: Record<string, { th: string; en: string }> = {
@@ -547,6 +600,7 @@ export const RULE_FIELD_LABELS: Record<string, { th: string; en: string }> = {
   description: { th: "รายละเอียด", en: "Description" },
   old_description: { th: "รายละเอียดเดิม", en: "Previous description" },
   duration: { th: "เวลา (นาที)", en: "Duration (minutes)" },
+  days: { th: "จำนวนวัน", en: "Number of days" },
 };
 
 export function getFieldLabel(key: string, locale: "th" | "en" = "th"): string {
@@ -601,6 +655,12 @@ export const INVALID_ACTION_COMBOS: Array<{ trigger: string; action: string }> =
 
 export function isActionCompatible(triggerKey: string | null, actionKey: string): boolean {
   if (!triggerKey) return true;
+  // The board-hide policy travels as a pair: its trigger offers only this
+  // action, and this action shows up for no other trigger (nothing else
+  // would ever run it — it is read by the sweep and the list query, never
+  // fired as an event).
+  if (triggerKey === "board.policy") return actionKey === "issue.notify_stale";
+  if (actionKey === "issue.notify_stale") return false;
   return !INVALID_ACTION_COMBOS.some((c) => c.trigger === triggerKey && c.action === actionKey);
 }
 
@@ -640,6 +700,8 @@ export const RULE_ACTION_RECOMMENDATIONS: Record<string, string[]> = {
   "issue.category_changed": [],
   "issue.deleted": [],
   "issue.restored": ["issue.move_status"],
+  // the policy trigger offers exactly one action (isActionCompatible)
+  "board.policy": ["issue.notify_stale"],
   "work_session.started": ["issue.set_time", "issue.add_label"],
   "work_session.stopped": ["issue.set_time"],
 };

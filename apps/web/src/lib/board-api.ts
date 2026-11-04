@@ -94,6 +94,18 @@ export interface BoardIssue {
    * unlock (`lock_exempted`) already released it for the next move.
    */
   isLocked?: boolean;
+  /**
+   * When the card entered its current status — with move-policy's
+   * `staleRules` the board/folder draw the red "sitting too long" border
+   * from it. Null = unknown age → never flagged (fail open).
+   */
+  statusChangedAt?: string | null;
+}
+
+/** One active stale rule as the sentence carries it: this status, this many days. */
+export interface StaleRule {
+  statusId: number;
+  days: number;
 }
 
 export interface WorkSession {
@@ -389,11 +401,16 @@ export async function fetchStatuses(
 
 /**
  * Board drag policy: the "one column at a time" guard (drives the drop
- * preview) and whether any `issue.unlock` rule is on (a locked card only
- * offers its unlock button while the rules allow a release).
+ * preview), whether any `issue.unlock` rule is on (a locked card only offers
+ * its unlock button while the rules allow a release), and the active stale
+ * rules the board/folder turn into a red border. Every field fails open.
  */
-export async function fetchMovePolicy(): Promise<{ stepOnly: boolean; unlockAvailable: boolean }> {
-  return apiFetch<{ stepOnly: boolean; unlockAvailable: boolean }>(
+export async function fetchMovePolicy(): Promise<{
+  stepOnly: boolean;
+  unlockAvailable: boolean;
+  staleRules: StaleRule[];
+}> {
+  return apiFetch<{ stepOnly: boolean; unlockAvailable: boolean; staleRules: StaleRule[] }>(
     "/issues/move-policy",
     {},
     getToken(),

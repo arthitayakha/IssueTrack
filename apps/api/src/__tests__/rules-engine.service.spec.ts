@@ -703,7 +703,11 @@ describe("RulesEngineService.runAction — rule-driven notifications", () => {
 
     await engine.evaluate(MOVED, { issueId: 42, toStatusId: 3, actorId: 1 });
 
-    expect(issues.update).toHaveBeenCalledWith(42, { statusId: 4 });
+    expect(issues.update).toHaveBeenCalledWith(42, {
+      statusId: 4,
+      statusChangedAt: expect.any(Date),
+      staleNotifiedAt: null,
+    });
     expect(notifications.notifyStatusChange).toHaveBeenCalledWith(
       expect.objectContaining({
         issue: expect.objectContaining({ id: 42 }),
@@ -791,5 +795,67 @@ describe("RulesEngineService.isUnlockRuleActive — the unlock button switch", (
     rules.findOne.mockRejectedValue(new Error("connection lost"));
 
     expect(await engine.isUnlockRuleActive()).toBe(false);
+  });
+});
+
+describe("RulesEngineService.staleRules — the board's stale policy", () => {
+  it("returns each active rule as a {statusId, days} pair (fractional days floor)", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({
+        actionKey: "issue.notify_stale",
+        conditions: [
+          { field: "status", operator: "=", value: "4", position: 0 },
+          { field: "days", operator: "=", value: "7", position: 1 },
+        ],
+      }),
+      rule({
+        id: 2,
+        name: "REVIEW ค้าง 3 วัน",
+        actionKey: "issue.notify_stale",
+        conditions: [
+          { field: "status", operator: "=", value: "7", position: 0 },
+          { field: "days", operator: "=", value: "3.9", position: 1 },
+        ],
+      }),
+    ]);
+
+    expect(await engine.staleRules()).toEqual([
+      { statusId: 4, days: 7 },
+      { statusId: 7, days: 3 },
+    ]);
+    expect(rules.find).toHaveBeenCalledWith({
+      where: { actionKey: "issue.notify_stale", isActive: true },
+    });
+  });
+
+  it("skips rules whose sentence is missing a status or a usable day count", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({ actionKey: "issue.notify_stale", conditions: [] }),
+      rule({
+        actionKey: "issue.notify_stale",
+        conditions: [
+          { field: "status", operator: "=", value: "4", position: 0 },
+          { field: "days", operator: "=", value: "soon", position: 1 },
+        ],
+      }),
+      rule({
+        actionKey: "issue.notify_stale",
+        conditions: [
+          { field: "status", operator: "=", value: "0", position: 0 },
+          { field: "days", operator: "=", value: "0", position: 1 },
+        ],
+      }),
+    ]);
+
+    expect(await engine.staleRules()).toEqual([]);
+  });
+
+  it("fails open when the rules cannot be read — nothing happens", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockRejectedValue(new Error("connection lost"));
+
+    expect(await engine.staleRules()).toEqual([]);
   });
 });

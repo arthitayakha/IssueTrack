@@ -25,6 +25,21 @@ function repo(overrides: Partial<Stub> = {}): Stub {
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    // findAll's query chain (count → id page → data page); the id page ends
+    // in getRawMany, which tests stub to [] so the data query never runs
+    clone: jest.fn().mockReturnThis(),
+    distinct: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
+    offset: jest.fn().mockReturnThis(),
+    limit: jest.fn().mockReturnThis(),
+    leftJoin: jest.fn().mockReturnThis(),
+    leftJoinAndSelect: jest.fn().mockReturnThis(),
+    loadRelationCountAndMap: jest.fn().mockReturnThis(),
+    getCount: jest.fn().mockResolvedValue(0),
+    getRawMany: jest.fn().mockResolvedValue([]),
+    getMany: jest.fn().mockResolvedValue([]),
     getOne: jest.fn().mockResolvedValue(null),
   };
   return {
@@ -72,6 +87,8 @@ function makeService() {
     isStepOnlyMoveActive: jest.fn().mockResolvedValue(false),
     // the unlock-button switch: off by default so every test opts in
     isUnlockRuleActive: jest.fn().mockResolvedValue(false),
+    // the stale policy (red border + 09:00 bell): no active rule by default
+    staleRules: jest.fn().mockResolvedValue([]),
   };
   const notifications = {
     notifyIssueEvent: jest.fn().mockResolvedValue(undefined),
@@ -253,6 +270,8 @@ describe("IssuesService.move — time entry gate", () => {
       statusId: 1,
       timeEntryUnlocked: false,
       lockExempted: false,
+      statusChangedAt: expect.any(Date),
+      staleNotifiedAt: null,
     });
   });
 });
@@ -284,7 +303,13 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
 
     await service.move(5, 2, ACTOR);
 
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 2, timeEntryUnlocked: false, lockExempted: false });
+    expect(issues.update).toHaveBeenCalledWith(5, {
+      statusId: 2,
+      timeEntryUnlocked: false,
+      lockExempted: false,
+      statusChangedAt: expect.any(Date),
+      staleNotifiedAt: null,
+    });
   });
 
   it("allows one step backward (3 → 2)", async () => {
@@ -293,7 +318,13 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
 
     await service.move(5, 2, ACTOR);
 
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 2, timeEntryUnlocked: false, lockExempted: false });
+    expect(issues.update).toHaveBeenCalledWith(5, {
+      statusId: 2,
+      timeEntryUnlocked: false,
+      lockExempted: false,
+      statusChangedAt: expect.any(Date),
+      staleNotifiedAt: null,
+    });
   });
 
   it("allows every jump again while the rule is paused", async () => {
@@ -302,7 +333,13 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
 
     await service.move(5, 3, ACTOR);
 
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false, lockExempted: false });
+    expect(issues.update).toHaveBeenCalledWith(5, {
+      statusId: 3,
+      timeEntryUnlocked: false,
+      lockExempted: false,
+      statusChangedAt: expect.any(Date),
+      staleNotifiedAt: null,
+    });
   });
 
   it("lets a card with no status land in any column", async () => {
@@ -311,7 +348,13 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
 
     await service.move(5, 3, ACTOR);
 
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false, lockExempted: false });
+    expect(issues.update).toHaveBeenCalledWith(5, {
+      statusId: 3,
+      timeEntryUnlocked: false,
+      lockExempted: false,
+      statusChangedAt: expect.any(Date),
+      staleNotifiedAt: null,
+    });
   });
 
   it("fails open when the status order cannot be read", async () => {
@@ -321,7 +364,13 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
     issueStatuses.find.mockResolvedValue([]);
 
     await expect(service.move(5, 3, ACTOR)).resolves.toBeDefined();
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false, lockExempted: false });
+    expect(issues.update).toHaveBeenCalledWith(5, {
+      statusId: 3,
+      timeEntryUnlocked: false,
+      lockExempted: false,
+      statusChangedAt: expect.any(Date),
+      staleNotifiedAt: null,
+    });
   });
 });
 
@@ -353,7 +402,13 @@ describe("IssuesService.move — status lock (issue.lock rule)", () => {
     await service.move(5, 3, ACTOR);
 
     // the move itself clears the exemption — re-entering a locked status later locks again
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false, lockExempted: false });
+    expect(issues.update).toHaveBeenCalledWith(5, {
+      statusId: 3,
+      timeEntryUnlocked: false,
+      lockExempted: false,
+      statusChangedAt: expect.any(Date),
+      staleNotifiedAt: null,
+    });
   });
 
   it("blocks a card the engine locked per-card, even outside a locked status", async () => {
@@ -371,7 +426,13 @@ describe("IssuesService.move — status lock (issue.lock rule)", () => {
     rulesEngine.statusGates.mockRejectedValueOnce(new Error("connection lost"));
 
     await expect(service.move(5, 3, ACTOR)).resolves.toBeDefined();
-    expect(issues.update).toHaveBeenCalledWith(5, { statusId: 3, timeEntryUnlocked: false, lockExempted: false });
+    expect(issues.update).toHaveBeenCalledWith(5, {
+      statusId: 3,
+      timeEntryUnlocked: false,
+      lockExempted: false,
+      statusChangedAt: expect.any(Date),
+      staleNotifiedAt: null,
+    });
   });
 });
 
@@ -437,12 +498,16 @@ describe("IssuesService.findOne — the lock the board renders", () => {
 });
 
 describe("IssuesService.movePolicy — what the card menu keys off", () => {
-  it("reports both the step-only guard and the unlock availability", async () => {
+  it("reports the step-only guard, the unlock availability and the stale rules", async () => {
     const { service, rulesEngine } = makeService();
     rulesEngine.isStepOnlyMoveActive.mockResolvedValue(true);
     rulesEngine.isUnlockRuleActive.mockResolvedValue(true);
 
-    await expect(service.movePolicy()).resolves.toEqual({ stepOnly: true, unlockAvailable: true });
+    await expect(service.movePolicy()).resolves.toEqual({
+      stepOnly: true,
+      unlockAvailable: true,
+      staleRules: [],
+    });
   });
 });
 
@@ -649,5 +714,25 @@ describe("IssuesService.update — fill-ins change only where the rule opens the
       BadRequestException,
     );
     expect(issues.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("IssuesService.movePolicy — the stale rules the board paints from", () => {
+  it("passes the engine's active rules straight through", async () => {
+    const { service, rulesEngine } = makeService();
+    rulesEngine.staleRules.mockResolvedValue([{ statusId: 4, days: 3 }]);
+
+    const policy = await service.movePolicy();
+
+    expect(policy.staleRules).toEqual([{ statusId: 4, days: 3 }]);
+  });
+
+  it("fails open to [] when the lookup breaks — no border, board still loads", async () => {
+    const { service, rulesEngine } = makeService();
+    rulesEngine.staleRules.mockResolvedValue([]);
+
+    const policy = await service.movePolicy();
+
+    expect(policy.staleRules).toEqual([]);
   });
 });

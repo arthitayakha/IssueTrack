@@ -342,6 +342,10 @@ export class IssuesService {
       title: data.title,
       description: data.description,
       statusId: status.id,
+      // created straight into a status = the "sitting" clock starts now
+      statusChangedAt: new Date(),
+      // a brand-new sitting has no bell yet
+      staleNotifiedAt: null,
       // created straight into the receiving status = already รับเรื่อง
       receivedAt: status.id === RECEIVED_STATUS_ID ? new Date() : null,
       priorityId: data.priorityId ?? null,
@@ -619,6 +623,12 @@ export class IssuesService {
       targetStatus.id === RECEIVED_STATUS_ID && !issue.receivedAt ? new Date() : undefined;
     await this.issues.update(id, {
       statusId,
+      // entering a status restarts the "sitting" clock (move() returns early
+      // above when the status did not actually change, so a no-op drag never
+      // touches it)
+      statusChangedAt: new Date(),
+      // new sitting → the daily sweep may ring the bell for it again
+      staleNotifiedAt: null,
       timeEntryUnlocked: false,
       lockExempted: false,
       ...(stampReceivedAt ? { receivedAt: stampReceivedAt } : {}),
@@ -656,6 +666,9 @@ export class IssuesService {
       stepOnly: await this.rulesEngine.isStepOnlyMoveActive(),
       // the unlock button on a locked card only exists while a rule offers it
       unlockAvailable: await this.rulesEngine.isUnlockRuleActive(),
+      // active stale rules ({statusId, days}) — the board/folder draw the red
+      // border from these + each card's statusChangedAt; [] = fail open
+      staleRules: await this.rulesEngine.staleRules(),
     };
   }
 
@@ -1053,6 +1066,9 @@ export class IssuesService {
       timeEntryEverGranted: issue.timeEntryEverGranted ?? false,
       timerRuleApplies: covered(gates.timer),
       receivedAt: issue.receivedAt ?? null,
+      // when the card entered its current status — the board/folder compute
+      // the red "stale" border from this + move-policy's staleRules
+      statusChangedAt: issue.statusChangedAt ?? null,
       createdAt: issue.createdAt,
       updatedAt: issue.updatedAt,
     };
