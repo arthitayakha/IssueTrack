@@ -25,12 +25,14 @@ import { SORTABLE_FIELDS } from "@/lib/reports-api";
 import type { AppContract } from "@/lib/reports-api";
 import type { ReportColumnDef } from "./report-columns";
 import type {
+  CompanyRow,
   IssueRow,
   ReportRows,
   ReportView,
   SortState,
   SummaryRow,
 } from "@/lib/reports-api";
+import { formatDay } from "@/lib/app-expiry";
 import { VIEW_ICONS } from "./report-views";
 
 /** Fields that sort newest/biggest first when first clicked. */
@@ -75,6 +77,10 @@ const COL_MIN: Record<string, number> = {
   company: 160,
   maHours: 110,
   remaining: 110,
+  // company view — วันที่สัญญา + ชั่วโมงที่ใช้ทั้งหมด (ระดับแอป)
+  startedAt: 130,
+  expiresAt: 130,
+  usedHours: 150,
   priority: 130,
   // summaries
   person: 150,
@@ -205,7 +211,8 @@ export function ReportsTable({
   /* ---------------- contract cells (บริษัท / MA / คงเหลือ) ---------------- */
 
   /**
-   * คอลัมน์ "บริษัท" — รู้ผ่านแอปเท่านั้น (`issues` ไม่มี `company_id`)
+   * คอลัมน์ "บริษัท" (view รายการปัญหา) — รู้ผ่านแอปเท่านั้น
+   * (`issues` ไม่มี `company_id`)
    *
    * - ไม่มีแอป / แอปไม่มีบริษัท / ยังไม่ได้โหลดสัญญา → `—`
    * - ผูกหลายแห่ง → คั่นด้วย `", "` แล้วขึ้นบรรทัดใหม่ (ไม่ยุบเป็น `+N`
@@ -221,7 +228,7 @@ export function ReportsTable({
     if (appId == null) return empty;
     const contract = contractsByApp.get(appId);
     if (!contract || contract.companies.length === 0) return empty;
-    const text = contract.companies.join(", ");
+    const text = contract.companies.map((c) => c.name).join(", ");
     return (
       <Typography
         variant="body2"
@@ -233,46 +240,55 @@ export function ReportsTable({
     );
   };
 
+  /** จุดว่างกลางเซลล์ — ใช้ทุกครั้งที่ "ยังไม่มีค่าจะโชว์" */
+  const dash = (
+    <Typography variant="body2" color="text.secondary">
+      —
+    </Typography>
+  );
+
+  /** จับรอยว่า "ยังไม่กรอก" — ต่างจาก `0` ที่หมายถึงตกลง 0 ชม. จริง ๆ */
+  const notSet = (
+    <Typography variant="caption" color="text.disabled">
+      {t("columns.maNotSet")}
+    </Typography>
+  );
+
   /**
-   * คอลัมน์ "ชั่วโมง MA" — ตัวเลขล้วน (หัวตารางมีหน่วย "ชม." อยู่แล้ว)
-   * ยังไม่กรอก → `ยังไม่กรอก` แบบ caption (ต่างจาก `0` ที่หมายถึงตกลง 0 ชม.)
+   * คอลัมน์ "ชั่วโมง MA" (view ตามบริษัท) — **per-pair** คือค่าของคู่นี้เอง
+   * ไม่ใช่ผลรวมของแอป (ต่างจาก `sumMaHours` ที่ `/systems` ใช้ตอนกรอกเป็นระดับแอป)
    */
-  const maHoursCell = (appId: number | null) => {
-    const ma = appId == null ? null : (contractsByApp.get(appId)?.maHours ?? null);
-    if (ma == null) {
-      return (
-        <Typography variant="caption" color="text.disabled">
-          {t("columns.maNotSet")}
-        </Typography>
-      );
-    }
-    return <Typography variant="body2">{ma}</Typography>;
+  const maHoursCell = (ma: number | null) =>
+    ma == null ? notSet : <Typography variant="body2">{ma}</Typography>;
+
+  /**
+   * คอลัมน์ "ชั่วโมงที่ใช้ทั้งหมด" — **ระดับแอป** (`issues` ไม่มี
+   * `company_id` จึงระบุคู่ไม่ได้) อ่านจาก `usage` prop ตอน render เพราะ
+   * แถวถูกสร้างก่อนที่ `fetchAppUsageAllTime()` จะเสร็จ
+   *
+   * ยังโหลด/ดึงไม่สำเร็จ → `—` (**ห้าม**โชว์ 0 เพราะนั่นคือการโกง —
+   * "ยังไม่รู้" กับ "ใช้ไป 0 ชม." เป็นคนละเรื่อง)
+   */
+  const usedHoursCell = (appId: number) => {
+    if (usage.status !== "ready") return dash;
+    const used = usage.byApp.get(appId) ?? 0;
+    return <Typography variant="body2">{round1(used)}</Typography>;
   };
 
   /**
    * คอลัมน์ "คงเหลือ" = MA − ใช้ไป — แยก 4 กรณีให้ชัดเหมือน `/systems`:
    * - ยังโหลด/ดึง "ใช้ไป" ไม่สำเร็จ → `—` (**ไม่ใช่** "ยังไม่กรอก" และไม่ใช่
-   *   ตัวเลข เพราะถ้าโชว์ MA เต็มก้อนทั้งที่ยังไม่รู้ค่าจริงจะเป็นการโกง)
+   *   ตัวเลข เพราะถ้าโชว์ MA เต็มก้อนทั้งที่ยังไม่รู้ค่าจริงจะเป็นการโกเง)
    * - ยังไม่กรอก MA → "ยังไม่กรอก"
    * - อย่างอื่น → ตัวเลขปัด 1 ตำแหน่ง
+   *
+   * หมายเหตุ: "ใช้ไป" เป็นระดับแอป — ถ้าแอปผูกหลายบริษัท ตัวเลขนี้ซ้ำทุกแถว
+   * ของแอปนั้น (ในทางปฏิบัติ `AppFormDialog` บังคับแอปละ 1 บริษัท)
    */
-  const remainingCell = (appId: number | null) => {
-    const unknown = (
-      <Typography variant="body2" color="text.secondary">
-        —
-      </Typography>
-    );
-    if (appId == null || usage.status !== "ready") return unknown;
-    const ma = contractsByApp.get(appId)?.maHours ?? null;
-    if (ma == null) {
-      return (
-        <Typography variant="caption" color="text.disabled">
-          {t("columns.maNotSet")}
-        </Typography>
-      );
-    }
-    const used = usage.byApp.get(appId) ?? 0;
-    return <Typography variant="body2">{round1(ma - used)}</Typography>;
+  const remainingCell = (appId: number, ma: number | null) => {
+    if (usage.status !== "ready") return dash;
+    if (ma == null) return notSet;
+    return <Typography variant="body2">{round1(ma - (usage.byApp.get(appId) ?? 0))}</Typography>;
   };
 
   const th = (field: string, label: string, numeric = false) => {
@@ -375,12 +391,6 @@ export function ReportsTable({
         switch (key) {
           case "app":
             return th("label", t("columns.app"));
-          case "company":
-            return <DataTableCell>{t("columns.company")}</DataTableCell>;
-          case "maHours":
-            return <DataTableCell align="right">{t("columns.maHours")}</DataTableCell>;
-          case "remaining":
-            return <DataTableCell align="right">{t("columns.remaining")}</DataTableCell>;
           case "issueCount":
             return th("issueCount", t("columns.issueCount"), true);
           case "openCount":
@@ -393,6 +403,26 @@ export function ReportsTable({
             return <DataTableCell>{t("columns.topAssignee")}</DataTableCell>;
           case "lastAt":
             return <DataTableCell>{t("columns.lastAt")}</DataTableCell>;
+          default:
+            return null;
+        }
+      case "company":
+        switch (key) {
+          case "company":
+            return th("companyName", t("columns.company"));
+          case "app":
+            return th("appName", t("columns.app"));
+          case "startedAt":
+            return th("startedAt", t("columns.startedAt"));
+          case "expiresAt":
+            return th("expiresAt", t("columns.expiresAt"));
+          case "maHours":
+            return th("maHours", t("columns.maHours"), true);
+          // ระดับแอป ไม่ใช่ระดับแถว → ไม่เรียงได้ (ค่าเดียวซ้ำได้หลายแถว)
+          case "usedHours":
+            return <DataTableCell align="right">{t("columns.usedHours")}</DataTableCell>;
+          case "remaining":
+            return <DataTableCell align="right">{t("columns.remaining")}</DataTableCell>;
           default:
             return null;
         }
@@ -705,21 +735,6 @@ export function ReportsTable({
             )}
           </DataTableCell>
         );
-      case "company":
-        // แถว "รวมทั้งหมด" ไม่ใช่แอป — ไม่มีสัญญาของตัวเอง
-        return <DataTableCell>{r.isTotal ? "—" : contractCell(r.appId ?? null)}</DataTableCell>;
-      case "maHours":
-        return (
-          <DataTableCell align="right">
-            {r.isTotal ? "—" : maHoursCell(r.appId ?? null)}
-          </DataTableCell>
-        );
-      case "remaining":
-        return (
-          <DataTableCell align="right">
-            {r.isTotal ? "—" : remainingCell(r.appId ?? null)}
-          </DataTableCell>
-        );
       case "issueCount":
         return <DataTableCell align="right">{r.issueCount}</DataTableCell>;
       case "openCount":
@@ -742,6 +757,61 @@ export function ReportsTable({
         return (
           <DataTableCell sx={{ whiteSpace: "nowrap" }}>
             {r.lastAt ? fmtDate(r.lastAt) : "—"}
+          </DataTableCell>
+        );
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * ตาราง **"ตามบริษัท"** — แถวละ 1 คู่ แอป×บริษัท
+   *
+   * คอลัมน์สัญญา 5 ตัวแรกอ่านจากตัวแถวเอง (per-pair) ส่วน 2 ตัวสุดท้าย
+   * เป็นระดับ**แอป** จึงต้องถาม `usage` prop ตอน render — แถวถูกสร้าง
+   * จาก `GET /apps` ก่อนที่ `fetchAppUsageAllTime()` จะเสร็จ
+   */
+  function companyCell(key: string, r: CompanyRow): React.ReactNode {
+    switch (key) {
+      case "company":
+        return (
+          <DataTableCell>
+            {r.companyName == null ? (
+              <Typography variant="body2" color="text.secondary">
+                —
+              </Typography>
+            ) : (
+              <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+                {r.companyName}
+              </Typography>
+            )}
+          </DataTableCell>
+        );
+      case "app":
+        return <DataTableCell>{r.appName}</DataTableCell>;
+      case "startedAt":
+        // `formatDay` ไม่ใช่ `new Date()` ตรง ๆ — ค่าเป็น `YYYY-MM-DD`
+        // (parse เป็น UTC midnight จะเพี้ยน 1 วันใน timezone ติดลบ)
+        // และต้องโชว์ตรงกับ `/systems` ที่ใช้ตัวเดียวกับ field เดียวกัน
+        return (
+          <DataTableCell sx={{ whiteSpace: "nowrap" }}>
+            {r.startedAt ? formatDay(r.startedAt, locale) : "—"}
+          </DataTableCell>
+        );
+      case "expiresAt":
+        return (
+          <DataTableCell sx={{ whiteSpace: "nowrap" }}>
+            {r.expiresAt ? formatDay(r.expiresAt, locale) : "—"}
+          </DataTableCell>
+        );
+      case "maHours":
+        return <DataTableCell align="right">{maHoursCell(r.maHours)}</DataTableCell>;
+      case "usedHours":
+        return <DataTableCell align="right">{usedHoursCell(r.appId)}</DataTableCell>;
+      case "remaining":
+        return (
+          <DataTableCell align="right">
+            {remainingCell(r.appId, r.maHours)}
           </DataTableCell>
         );
       default:
@@ -800,6 +870,18 @@ export function ReportsTable({
           >
             {visible.map((c) => (
               <Fragment key={c.key}>{appCell(c.key, r)}</Fragment>
+            ))}
+          </DataTableRow>
+        ));
+
+      case "company":
+        return (rows as CompanyRow[]).map((r, i) => (
+          <DataTableRow
+            // 1 แถวต่อคู่ แอป×บริษัท — แอปไม่มีบริษัทก็ยังมีแถว (`none`)
+            key={`${r.appId}:${r.companyId ?? "none"}-${i}`}
+          >
+            {visible.map((c) => (
+              <Fragment key={c.key}>{companyCell(c.key, r)}</Fragment>
             ))}
           </DataTableRow>
         ));

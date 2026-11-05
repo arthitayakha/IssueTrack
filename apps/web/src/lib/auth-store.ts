@@ -11,6 +11,7 @@ export interface AuthUser {
   roleId: number | null;
   roleName: string | null;
   positionId?: number | null;
+  positionName?: string | null;
   positionPermissions?: string[];
 }
 

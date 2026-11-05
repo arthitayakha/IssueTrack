@@ -511,6 +511,7 @@
     "profileName": "Name",
     "profileEmail": "Email",
     "profileRole": "Role",
+    "profilePosition": "Position",
     "profileUploadPhoto": "Upload photo",
     "profilePhotoUploading": "Uploading…",
     "profileRemovePhoto": "Remove photo",
@@ -1004,6 +1005,7 @@
       "assignee": "By assignee",
       "category": "By category",
       "app": "By app",
+      "company": "By company",
       "activity": "Recent activity",
       "rules": "Automation history"
     },
@@ -1099,6 +1101,9 @@
       "maHours": "MA hours",
       "remaining": "Remaining",
       "maNotSet": "Not set",
+      "startedAt": "Start date",
+      "expiresAt": "Expiry date",
+      "usedHours": "Total hours used",
       "medianActual": "Median timer (min)",
       "medianEntered": "Median entered (min)"
     },

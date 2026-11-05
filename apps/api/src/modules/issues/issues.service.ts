@@ -115,6 +115,14 @@ export class IssuesService {
       createdTo?: string;
       sortBy?: string;
       sortOrder?: string;
+      /**
+       * The board's hide flag (`?hideStaleDone=1`) — only the per-column
+       * fetch sends it, so the table's request can never be filtered. Reads
+       * the active `issue.hide_from_board` rules fresh on every call: pause
+       * or edit the rule and the next board load already agrees, with no
+       * per-card flag to clean up.
+       */
+      hideStaleDone?: boolean;
     } = {},
     withTimeline = false,
   ) {
@@ -155,12 +163,22 @@ export class IssuesService {
      * `EXISTS` and not a JOIN: this query runs `DISTINCT` and `getCount()`,
      * and a join would multiply every card once per linked company.
      * Cards with no app are excluded, exactly like the app filter above.
+     *
+     * TODO(company-design): **ปิดชั่วคราว** — ยังไม่ตัดสินใจเรื่อง company ↔ user
+     * กับพี่ (ตาราง `users` ไม่มี `company_id`) ดังนั้นตัวกรองนี้ต้องไม่ตรง
+     * อะไรเลย ห้ามโชว์ผลที่ได้จากเส้น "งาน → แอป → บริษัท" เพราะดูเหมือน
+     * feature พร้อมใช้ทั้งที่ยังไม่ได้กรองตามความหมายที่ตั้งใจ
+     *
+     * **เปิดใหม่:** ลบ `1 = 0` แล้วคืน SQL เดิมข้างล่าง
+     * ```ts
+     * qb.andWhere(
+     *   "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
+     *   { companyIds: filters.companyIds },
+     * );
+     * ```
      */
     if (filters.companyIds && filters.companyIds.length > 0) {
-      qb.andWhere(
-        "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
-        { companyIds: filters.companyIds },
-      );
+      qb.andWhere("1 = 0"); // TODO(company-design) — ดู comment ด้านบน
     }
     if (filters.assigneeIds && filters.assigneeIds.length > 0) {
       qb.andWhere("issue.programmer_id IN (:...assigneeIds)", { assigneeIds: filters.assigneeIds });
@@ -174,6 +192,32 @@ export class IssuesService {
     if (from) qb.andWhere("issue.created_at >= :createdFrom", { createdFrom: from });
     const to = dayEnd(filters.createdTo);
     if (to) qb.andWhere("issue.created_at <= :createdTo", { createdTo: to });
+
+    /**
+     * Stale-hide policy — `?hideStaleDone=1` cuts the rows an active
+     * `issue.hide_from_board` rule covers out of the response (data, count
+     * and search alike, since they all ride this builder). Each rule hides
+     * "this status, sitting longer than N days" so the rules OR together
+     * inside one NOT: a card stays visible unless SOME rule matches it.
+     * Fail open both ways — no active rule → no clause at all; a card with
+     * an unknown age (`status_changed_at IS NULL`, backfill gap) never hides.
+     */
+    if (filters.hideStaleDone) {
+      const hideRules = await this.rulesEngine.hideStaleRules();
+      if (hideRules.length > 0) {
+        const params: Record<string, unknown> = {};
+        const clauses = hideRules.map((rule, i) => {
+          params[`hideStatus${i}`] = rule.statusId;
+          params[`hideCutoff${i}`] = new Date(Date.now() - rule.days * 86_400_000);
+          return (
+            `(issue.status_id = :hideStatus${i} ` +
+            `AND issue.status_changed_at IS NOT NULL ` +
+            `AND issue.status_changed_at < :hideCutoff${i})`
+          );
+        });
+        qb.andWhere(`NOT (${clauses.join(" OR ")})`, params);
+      }
+    }
 
     // sort — whitelisted above; join early so count/id/data clones all see it
     const sortKey = SORT_COLUMNS[filters.sortBy ?? ""] ?? "issue.createdAt";
@@ -683,6 +727,10 @@ export class IssuesService {
       // active stale rules ({statusId, days}) — the board/folder draw the red
       // border from these + each card's statusChangedAt; [] = fail open
       staleRules: await this.rulesEngine.staleRules(),
+      // the hide policy ({statusId, days}) — the folder filters its cards
+      // client-side off these (the board asks the API instead with
+      // `hideStaleDone=1`); [] = nothing hides
+      hideStaleRules: await this.rulesEngine.hideStaleRules(),
     };
   }
 

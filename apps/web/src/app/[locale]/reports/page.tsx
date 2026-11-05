@@ -12,6 +12,7 @@ import { usePathname, useRouter } from "@/i18n/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermissions } from "@/lib/permissions";
 import {
+  buildCompanyRows,
   buildCsv,
   DEFAULT_SORT,
   downloadCsv,
@@ -21,10 +22,13 @@ import {
   fetchReportRows,
   loadFilterOptions,
   EMPTY_FILTER_OPTIONS,
+  paginate,
+  REPORT_PAGE_SIZE,
   SORTABLE_FIELDS,
 } from "@/lib/reports-api";
 import type {
   AppContract,
+  CompanyRow,
   FilterOptions,
   IssueRow,
   ReportFilters,
@@ -44,6 +48,8 @@ import {
 } from "./components/report-columns";
 import type { ColumnPrefs, ColumnPrefsByView } from "./components/report-columns";
 import { exportReportPdf } from "@/lib/report-pdf";
+// วันที่สัญญา (`YYYY-MM-DD`) — ห้าม `new Date()` ตรง ๆ (เพี้ยนใน timezone ติดลบ)
+import { formatDay } from "@/lib/app-expiry";
 import { ReportsToolbar } from "./components/reports-toolbar";
 import { ReportsTable } from "./components/reports-table";
 
@@ -258,22 +264,33 @@ function ReportsScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  /**
+   * `GET /apps` เสร็จแล้วหรือยัง — เฉพาะ view ตามบริษัทที่ต้องใช้
+   * (แถวถูกสร้างจากมันในเบราว์เซอร์) กันระหว่างทางโผล่ "ไม่พบข้อมูล"
+   * ทั้งที่ยังดึงสัญญาไม่เสร็จ
+   */
+  const [contractsReady, setContractsReady] = useState(false);
 
+  // refresh 🔄 ต้องดึงสัญญาใหม่ด้วย — ไม่งั้นเพิ่มบริษัท/คู่ใหม่แล้วกดรีเฟรชไม่เห็น
   useEffect(() => {
     let cancelled = false;
     loadFilterOptions()
       .then((o) => {
         if (!cancelled) setOptions(o);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        // set ทั้งสองทาง — `loadFilterOptions` คืน EMPTY ตอนพังเองอยู่แล้ว
+        if (!cancelled) setContractsReady(true);
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadKey]);
 
-  // "ใช้ไป" = ของ view ตามแอป เท่านั้น — ไม่ต้องยิงตอนดูรายการปัญหา
+  // "ใช้ไป" = ของ view ตามบริษัท เท่านั้น (view ตามแอปถอดคอลัมน์คงเหลือไปแล้ว)
   useEffect(() => {
-    if (view !== "app") return;
+    if (view !== "company") return;
     let cancelled = false;
     setUsage((u) => ({ ...u, status: "loading" }));
     fetchAppUsageAllTime()
@@ -289,7 +306,30 @@ function ReportsScreen() {
     };
   }, [view, reloadKey]);
 
+  /**
+   * view "company" — contract data, **rows built in the browser** from the
+   * `GET /apps` payload already loaded (no API call; these rows are not
+   * issues). Split from the fetch effect below so that a late-landing
+   * `GET /apps` does not re-trigger a wasted refetch for the other views.
+   *
+   * Before the contracts land, nothing is written: `rowsView` still holds the
+   * previous view, so `rowsView !== view` keeps the spinner up instead of
+   * flashing "no data".
+   */
   useEffect(() => {
+    if (view !== "company" || !contractsReady) return;
+    const built = buildCompanyRows(options.appContracts, filters, sort);
+    const paged = paginate(built, page, REPORT_PAGE_SIZE);
+    setRows(paged);
+    setRowsView("company");
+    setLoading(false);
+    setError(null);
+    // paginate() clamps out-of-range pages — keep the URL honest
+    if (paged.page !== page) updateParams({ page: paged.page });
+  }, [view, contractsReady, options.appContracts, filters, sort, page, updateParams]);
+
+  useEffect(() => {
+    if (view === "company") return; // handled by the client-side effect above
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -495,6 +535,13 @@ function ReportsScreen() {
         new Date(iso).toLocaleString(locale, { dateStyle: "short", timeStyle: "short" });
       const fmtDay = (iso: string) =>
         new Date(iso).toLocaleDateString(locale, { dateStyle: "short" });
+      /**
+       * วันที่สัญญา (`YYYY-MM-DD`) — ใช้ `formatDay` ของ `app-expiry` เหมือน
+       * ตารางจอ เพราะ `new Date("2026-11-05")` parse เป็น UTC midnight จะ
+       * เพี้ยน 1 วันใน timezone ติดลบ และ CSV/PDF ต้องโชว์ตรงกับจอ
+       */
+      const fmtContractDay = (iso: string | null) =>
+        iso ? formatDay(iso, locale) : "";
       const fmtDuration = (totalSeconds: number) => {
         const totalMinutes = Math.round((totalSeconds || 0) / 60);
         return `${t("duration.hours", { h: Math.floor(totalMinutes / 60) })} ${t("duration.minutes", { m: totalMinutes % 60 })}`;
@@ -504,20 +551,26 @@ function ReportsScreen() {
 
       /**
        * คอลัมน์สัญญา — ค่าเดียวกับที่ตารางจอโชว์ (จอ/CSV/PDF ห้ามต่างกัน)
-       * - บริษัท คั่นด้วย `", "` · ไม่รู้ → ""
-       * - คงเหลือ ใช้ "ใช้ไป" all-time เหมือนจอ; ยังโหลด/พัง/ยังไม่กรอก MA → ""
+       *
+       * - `companiesOf` (view รายการปัญหา): ชื่อบริษัททั้งหมดของแอปคั่น `", "`
+       * - 3 ตัวล่าง (view ตามบริษัท): **per-pair** — ค่าของคู่นั้น ๆ
+       * - คงเหลือ ใช้ "ใช้ไป" all-time เหมือนจอ; ยังโหลด/พัง → ""
+       *   (ห้ามโชว์ MA เต็มก้อนเพราะยังไม่รู้ค่าจริง — ตรงกับ cell)
        */
       const companiesOf = (appId: number | null) =>
-        appId == null ? "" : (contractsByApp.get(appId)?.companies.join(", ") ?? "");
-      const maHoursOf = (appId: number | null) => {
-        const ma = appId == null ? null : (contractsByApp.get(appId)?.maHours ?? null);
-        return ma ?? "";
+        appId == null
+          ? ""
+          : (contractsByApp
+              .get(appId)
+              ?.companies.map((c) => c.name)
+              .join(", ") ?? "");
+      const usedHoursOf = (r: CompanyRow) => {
+        if (usage.status !== "ready") return "";
+        return round1(usage.byApp.get(r.appId) ?? 0);
       };
-      const remainingOf = (appId: number | null) => {
-        if (appId == null || usage.status !== "ready") return "";
-        const ma = contractsByApp.get(appId)?.maHours ?? null;
-        if (ma == null) return "";
-        return round1(ma - (usage.byApp.get(appId) ?? 0));
+      const remainingOf = (r: CompanyRow) => {
+        if (usage.status !== "ready" || r.maHours == null) return "";
+        return round1(r.maHours - (usage.byApp.get(r.appId) ?? 0));
       };
 
       switch (view) {
@@ -561,18 +614,27 @@ function ReportsScreen() {
         }
         case "app": {
           const rs = all as SummaryRow[];
-          const appIdOf = (r: SummaryRow) => (r.isTotal ? null : (r.appId ?? null));
           const cols: Array<ExportCol<SummaryRow>> = [
             { key: "app", header: t("columns.app"), value: (r) => sumLabel(r) },
-            { key: "company", header: t("columns.company"), value: (r) => companiesOf(appIdOf(r)) },
-            { key: "maHours", header: t("columns.maHours"), value: (r) => maHoursOf(appIdOf(r)) },
-            { key: "remaining", header: t("columns.remaining"), value: (r) => remainingOf(appIdOf(r)) },
             { key: "issueCount", header: t("columns.issueCount"), value: (r) => r.issueCount },
             { key: "openCount", header: t("columns.openCount"), value: (r) => r.openCount },
             { key: "medianActualMinutes", header: t("columns.medianActual"), value: (r) => r.medianActualMinutes ?? "" },
             { key: "medianEnteredMinutes", header: t("columns.medianEntered"), value: (r) => r.medianEnteredMinutes ?? "" },
             { key: "topAssignee", header: t("columns.topAssignee"), value: (r) => r.topAssignee ?? "" },
             { key: "lastAt", header: t("columns.lastAt"), value: (r) => (r.lastAt ? fmtDay(r.lastAt) : "") },
+          ];
+          return matrix(cols, rs, hidden, orderKeys);
+        }
+        case "company": {
+          const rs = all as CompanyRow[];
+          const cols: Array<ExportCol<CompanyRow>> = [
+            { key: "company", header: t("columns.company"), value: (r) => r.companyName ?? "" },
+            { key: "app", header: t("columns.app"), value: (r) => r.appName },
+            { key: "startedAt", header: t("columns.startedAt"), value: (r) => fmtContractDay(r.startedAt) },
+            { key: "expiresAt", header: t("columns.expiresAt"), value: (r) => fmtContractDay(r.expiresAt) },
+            { key: "maHours", header: t("columns.maHours"), value: (r) => r.maHours ?? "" },
+            { key: "usedHours", header: t("columns.usedHours"), value: (r) => usedHoursOf(r) },
+            { key: "remaining", header: t("columns.remaining"), value: (r) => remainingOf(r) },
           ];
           return matrix(cols, rs, hidden, orderKeys);
         }
@@ -643,10 +705,26 @@ function ReportsScreen() {
     [view, buildExport, t, detailHidden, detailColumns, detailExportCols, fetchDetailForExport],
   );
 
+  /**
+   * Rows behind an export — **same set CSV and PDF share**, so the two files
+   * can never diverge.
+   *
+   * `company` view never hits the API: its rows are contract pairs built from
+   * `GET /apps` in the browser (see the company effect). Everything else keeps
+   * walking the real endpoints page by page.
+   */
+  const loadAllRows = useCallback(async (): Promise<ReportRows[]> => {
+    if (view === "company") {
+      if (!contractsReady) return [];
+      return buildCompanyRows(options.appContracts, filters, sort);
+    }
+    return fetchAllReportRows(view, { filters, sort });
+  }, [view, contractsReady, options.appContracts, filters, sort]);
+
   const handleExportCsv = useCallback(async () => {
     setExporting(true);
     try {
-      const all = await fetchAllReportRows(view, { filters, sort });
+      const all = await loadAllRows();
       const { headers, data } = await buildExportWithDetail(all);
       const stamp = new Date().toISOString().slice(0, 10);
       downloadCsv(`report-${view}-${stamp}.csv`, buildCsv(headers, data));
@@ -655,14 +733,21 @@ function ReportsScreen() {
     } finally {
       setExporting(false);
     }
-  }, [view, filters, sort, buildExportWithDetail, t]);
+  }, [loadAllRows, buildExportWithDetail, view, t]);
 
   /* ---------------- export header text (shared by the PDF header) ---------------- */
 
+  /**
+   * PDF "ช่วงวันที่" — **ห้ามโชว์ใน view ตามบริษัท** เพราะช่วงวันที่ถูกซ่อน
+   * และไม่ได้กรองอะไรในมุมมองนี้ (แถวคือสัญญา ไม่ใช่งาน) — ปล่อยโชว์
+   * จะเหมือนบอกว่ากรองแล้วทั้งที่ไม่ได้กรอง
+   */
   const rangeText =
-    filters.from || filters.to
-      ? `${filters.from || "…"} – ${filters.to || "…"}`
-      : t("print.allRange");
+    view === "company"
+      ? t("print.allRange")
+      : filters.from || filters.to
+        ? `${filters.from || "…"} – ${filters.to || "…"}`
+        : t("print.allRange");
   const generatedText = new Date().toLocaleString(locale, {
     dateStyle: "short",
     timeStyle: "short",
@@ -678,7 +763,7 @@ function ReportsScreen() {
     setExporting(true);
     setExportError(null);
     try {
-      const all = await fetchAllReportRows(view, { filters, sort });
+      const all = await loadAllRows();
       const { keys, headers, data, summaryRows } = await buildExportWithDetail(all);
       const stamp = new Date().toISOString().slice(0, 10);
       await exportReportPdf({
@@ -702,10 +787,9 @@ function ReportsScreen() {
       setExporting(false);
     }
   }, [
-    view,
-    filters,
-    sort,
+    loadAllRows,
     buildExportWithDetail,
+    view,
     rangeText,
     generatedText,
     userEmail,

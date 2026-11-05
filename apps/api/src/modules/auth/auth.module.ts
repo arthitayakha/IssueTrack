@@ -9,13 +9,14 @@ import { User } from "./entities/user.entity";
 import { PasswordResetToken } from "./entities/password-reset-token.entity";
 import { Role } from "../roles/entities/role.entity";
 import { PositionPermission } from "../positions/entities/position-permission.entity";
+import { Position } from "../positions/position.entity";
 import { MailService } from "./mail.service";
 import { PermissionsModule } from "../permissions/permissions.module";
 import { RolesModule } from "../roles/roles.module";
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, PasswordResetToken, Role, PositionPermission]),
+    TypeOrmModule.forFeature([User, PasswordResetToken, Role, Position, PositionPermission]),
     PassportModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET ?? "secret",

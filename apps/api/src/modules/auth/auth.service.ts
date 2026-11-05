@@ -17,6 +17,7 @@ import { Role } from "../roles/entities/role.entity";
 import { LoginDto } from "./dto/login.dto";
 import { MailService } from "./mail.service";
 import { PositionPermission } from "../positions/entities/position-permission.entity";
+import { Position } from "../positions/position.entity";
 
 /** How long a reset link stays valid, and how often we may re-send one. */
 const RESET_TTL_MS = 30 * 60 * 1000;
@@ -33,6 +34,8 @@ export class AuthService {
     private readonly resetTokens: Repository<PasswordResetToken>,
     @InjectRepository(Role)
     private readonly roles: Repository<Role>,
+    @InjectRepository(Position)
+    private readonly positions: Repository<Position>,
     @InjectRepository(PositionPermission)
     private readonly positionPermissions: Repository<PositionPermission>,
     private readonly mail: MailService,
@@ -65,7 +68,7 @@ export class AuthService {
       roleId: user.roleId,
       positionId: user.positionId,
     });
-    return { accessToken, user: this.toPublicUser(user, role?.name ?? null, positionPerms) };
+    return { accessToken, user: await this.toPublicUser(user, role?.name ?? null, positionPerms) };
   }
 
   async me(user: User) {
@@ -77,7 +80,7 @@ export class AuthService {
           .filter((p) => !p.denied)
           .map((p) => p.permission)
       : [];
-    return this.toPublicUser(user, role?.name ?? null, positionPerms);
+    return await this.toPublicUser(user, role?.name ?? null, positionPerms);
   }
 
   /** Self-service profile update — no `user.update` permission needed. */
@@ -251,13 +254,17 @@ export class AuthService {
     return user?.avatar ?? null;
   }
 
-  private toPublicUser(user: User, roleName: string | null, positionPermissions: string[] = []) {
+  private async toPublicUser(user: User, roleName: string | null, positionPermissions: string[] = []) {
+    const positionName = user.positionId
+      ? ((await this.positions.findOne({ where: { id: user.positionId } }))?.name ?? null)
+      : null;
     return {
       id: String(user.id),
       email: user.email,
       name: user.name,
       roleId: user.roleId,
       positionId: user.positionId,
+      positionName,
       roleName,
       isActive: user.isActive,
       positionPermissions,

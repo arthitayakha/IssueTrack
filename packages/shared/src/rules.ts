@@ -578,6 +578,23 @@ export const RULE_ACTIONS: RuleActionDef[] = [
       en: "Once a card sits in the status past the chosen days — draws a red border on the board/folder and notifies the assignee + every admin daily at 09:00 (once per sitting). Nothing is deleted",
     },
   },
+  {
+    // the OTHER half of the board policy — same trigger/sentence (status +
+    // days), read at query time and never fired as an event. The board's
+    // per-column fetch sends `hideStaleDone=1` so `IssuesService.findAll`
+    // cuts these rows out of the response (count/search included); the
+    // folder filters client-side off move-policy's `hideStaleRules`. The
+    // table never asks → it still shows every card. Fail-open: no active
+    // rule, or a NULL `status_changed_at` (unknown age) → nothing hides.
+    key: "issue.hide_from_board",
+    category: "display",
+    status: "supported",
+    label: { th: "ซ่อนออกจากบอร์ด", en: "Hide from board" },
+    description: {
+      th: "เมื่อการ์ดค้างในสถานะเกินจำนวนวันที่กำหนด — ไม่ส่งการ์ดนี้ให้หน้าบอร์ด/โฟลเดอร์ (ตัวเลขหัวคอลัมน์กับค้นหาลดตาม) หน้าตารางยังแสดงครบทุกใบ ไม่มีการลบข้อมูล · pause กฎเมื่อไหร่การ์ดกลับมาทันที",
+      en: "Once a card sits in the status past the chosen days — stops sending that card to the board/folder (column counts and search drop with it). The table still shows every card, nothing is deleted · pausing the rule brings the cards straight back",
+    },
+  },
 ];
 
 export const RULE_FIELD_LABELS: Record<string, { th: string; en: string }> = {
@@ -653,14 +670,18 @@ export const INVALID_ACTION_COMBOS: Array<{ trigger: string; action: string }> =
   { trigger: "work_session.stopped", action: "issue.move_step_only" },
 ];
 
+/**
+ * The board-policy actions — read at query time (border/sweep/SQL filter),
+ * never fired as an event. They travel as a pair with the `board.policy`
+ * trigger: that trigger offers exactly these, and these show up for no
+ * other trigger (nothing else would ever run them).
+ */
+const BOARD_POLICY_ACTIONS = new Set(["issue.notify_stale", "issue.hide_from_board"]);
+
 export function isActionCompatible(triggerKey: string | null, actionKey: string): boolean {
   if (!triggerKey) return true;
-  // The board-hide policy travels as a pair: its trigger offers only this
-  // action, and this action shows up for no other trigger (nothing else
-  // would ever run it — it is read by the sweep and the list query, never
-  // fired as an event).
-  if (triggerKey === "board.policy") return actionKey === "issue.notify_stale";
-  if (actionKey === "issue.notify_stale") return false;
+  if (triggerKey === "board.policy") return BOARD_POLICY_ACTIONS.has(actionKey);
+  if (BOARD_POLICY_ACTIONS.has(actionKey)) return false;
   return !INVALID_ACTION_COMBOS.some((c) => c.trigger === triggerKey && c.action === actionKey);
 }
 
@@ -700,8 +721,8 @@ export const RULE_ACTION_RECOMMENDATIONS: Record<string, string[]> = {
   "issue.category_changed": [],
   "issue.deleted": [],
   "issue.restored": ["issue.move_status"],
-  // the policy trigger offers exactly one action (isActionCompatible)
-  "board.policy": ["issue.notify_stale"],
+  // the policy trigger offers exactly these two (isActionCompatible)
+  "board.policy": ["issue.notify_stale", "issue.hide_from_board"],
   "work_session.started": ["issue.set_time", "issue.add_label"],
   "work_session.stopped": ["issue.set_time"],
 };

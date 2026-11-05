@@ -74,6 +74,8 @@ const COLUMN_WIDTHS: Record<ReportView, Record<string, number>> = {
     status: 42,
     category: 44,
     app: 40,
+    // ผ่านแอป — ชื่อบริษัทคั่น ", " อาจยาว ปล่อยให้ตัดบรรทัด
+    company: 70,
     priority: 34,
   },
   assignee: {
@@ -94,6 +96,16 @@ const COLUMN_WIDTHS: Record<ReportView, Record<string, number>> = {
     medianEntered: 60,
     topAssignee: 90,
     lastAt: 52,
+  },
+  // view ตามบริษัท — 7 คอลัมน์บน A4 landscape มีที่ว่างพอให้ชื่อบริษัท/แอป กว้าง
+  company: {
+    company: 90,
+    app: 70,
+    startedAt: 46,
+    expiresAt: 46,
+    maHours: 34,
+    usedHours: 40,
+    remaining: 36,
   },
 };
 

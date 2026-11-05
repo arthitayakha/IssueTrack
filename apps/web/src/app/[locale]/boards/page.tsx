@@ -433,6 +433,27 @@ function staleDaysFor(
   return covered ? days : null;
 }
 
+/**
+ * Does the hide policy (an active `issue.hide_from_board` rule) take this
+ * card off the folder? Same shape and same fail-open rules as the red
+ * border above: no rule, no stamp or an unreadable date → visible. The
+ * board doesn't use this — it asks the API with `hideStaleDone=1` so its
+ * column counts and search drop the card server-side too.
+ */
+function isHiddenFromFolder(
+  issue: BoardIssue,
+  hideStaleRules: StaleRule[],
+  nowMs = Date.now(),
+): boolean {
+  if (hideStaleRules.length === 0 || issue.statusId == null || !issue.statusChangedAt) {
+    return false;
+  }
+  const since = new Date(issue.statusChangedAt).getTime();
+  if (!Number.isFinite(since)) return false;
+  const days = Math.floor((nowMs - since) / 86_400_000);
+  return hideStaleRules.some((rule) => rule.statusId === issue.statusId && days >= rule.days);
+}
+
 function TrelloCardContent({
   issue,
   actions,
@@ -3564,6 +3585,9 @@ function KanbanView({
             companyIds: selectedCompanyIds,
             assigneeIds: selectedAssigneeIds,
             reporterIds: selectedReporterIds,
+            // the board hides stale cards AT THE API — column counts, pages
+            // and search all drop them together (the table never sends this)
+            hideStaleDone: true,
           },
         );
         if (requestSeqRef.current[statusId] !== seq) return;
@@ -4624,6 +4648,7 @@ function FolderView({
   canEdit,
   canSeeReporter,
   staleRules,
+  hideStaleRules,
   onRefresh,
   toolbar,
 }: {
@@ -4646,6 +4671,12 @@ function FolderView({
   canSeeReporter: boolean;
   /** Active stale rules ({statusId, days}) — the red card border. */
   staleRules: StaleRule[];
+  /**
+   * Active hide rules ({statusId, days}) — cards past their day count are
+   * dropped before anything below (folder counts, breadcrumbs, cards), so
+   * every number in this view agrees. The table next door never filters.
+   */
+  hideStaleRules: StaleRule[];
   onRefresh: () => void;
   toolbar?: ReactNode;
 }) {
@@ -4683,11 +4714,21 @@ function FolderView({
     selectedReporterIds.length > 0 ||
     searchQuery.trim() !== "";
 
-  /* Same filter rules as TableView, so the chips + search behave identically. */
+  /* Same filter rules as TableView, so the chips + search behave identically.
+     The hide policy runs FIRST: a card an active `issue.hide_from_board`
+     rule covers never reaches the filters, so folder counts, breadcrumbs and
+     cards all drop it together (the table never receives this prop). */
+  const visibleIssues = useMemo(
+    () =>
+      hideStaleRules.length === 0
+        ? issues
+        : issues.filter((issue) => !isHiddenFromFolder(issue, hideStaleRules)),
+    [issues, hideStaleRules],
+  );
   const filteredIssues = useMemo(() => {
-    if (!hasActiveFilters) return issues;
+    if (!hasActiveFilters) return visibleIssues;
     const query = searchQuery.trim().toLowerCase();
-    return issues.filter((issue) => {
+    return visibleIssues.filter((issue) => {
       if (selectedStatusIds.length > 0) {
         if (issue.statusId === null || !selectedStatusIds.includes(issue.statusId)) return false;
       }
@@ -4715,7 +4756,7 @@ function FolderView({
       return true;
     });
   }, [
-    issues,
+    visibleIssues,
     categories,
     selectedStatusIds,
     selectedPriorityIds,
@@ -5339,6 +5380,10 @@ function BoardsPageInner() {
   // active stale rules ({statusId, days}) — the board/folder paint the red
   // "sitting too long" border from these; [] (no rule / lookup failed) = none
   const [staleRules, setStaleRules] = useState<StaleRule[]>([]);
+  // the OTHER board policy ({statusId, days}) — active `issue.hide_from_board`
+  // rules; the folder drops covered cards client-side off these, the board
+  // asks the API instead (hideStaleDone=1). [] = nothing hides (fail open)
+  const [hideStaleRules, setHideStaleRules] = useState<StaleRule[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [apps, setApps] = useState<App[]>([]);
@@ -5489,7 +5534,12 @@ function BoardsPageInner() {
         fetchCompanies(),
         fetchMembers(),
         // fail-open: a rejected policy lookup must not raise the load error
-        fetchMovePolicy().catch(() => ({ stepOnly: false, unlockAvailable: false, staleRules: [] })),
+        fetchMovePolicy().catch(() => ({
+          stepOnly: false,
+          unlockAvailable: false,
+          staleRules: [],
+          hideStaleRules: [],
+        })),
         refreshTimers(),
       ]);
       const [iss, lbls, sts, pri, cats, aps, cmps, usr, policy] = results;
@@ -5505,6 +5555,7 @@ function BoardsPageInner() {
         setStepOnlyMoves(policy.value.stepOnly);
         setUnlockAvailable(Boolean(policy.value.unlockAvailable));
         setStaleRules(policy.value.staleRules ?? []);
+        setHideStaleRules(policy.value.hideStaleRules ?? []);
       }
       const firstError = results.find((r) => r.status === "rejected");
       if (firstError && firstError.status === "rejected") {
@@ -5547,16 +5598,27 @@ function BoardsPageInner() {
    * `null` = no company selected (no constraint at all); `[]` = a selected
    * company that no app is linked to, which must match nothing (an empty
    * array without the null would read as "no filter" and show every card).
+   *
+   * TODO(company-design): **ปิดชั่วคราว** — ยังไม่ตัดสินใจเรื่อง company ↔
+   * user กับพี่ (ตาราง `users` ไม่มี `company_id`) เลือกบริษัทแล้วจึงต้อง
+   * **ไม่ตรงอะไรเลย** (`[]` ตาม semantics ข้างบน) ห้ามโชว์ผลจากเส้น
+   * "งาน → แอป → บริษัท" · **ตรงกับ backend ที่ `issues.service.ts` ปิดไว้**
+   *
+   * **เปิดใหม่:** ลบ `return []` แล้วคืน logic เดิมข้างล่าง
+   * (อย่าลืมใส่ `apps` กลับใน deps)
+   * ```ts
+   * const wanted = new Set(selectedCompanyIds);
+   * const ids = new Set<number>();
+   * for (const app of apps) {
+   *   if (app.companies?.some((link) => wanted.has(link.id))) ids.add(app.id);
+   * }
+   * return [...ids];
+   * ```
    */
   const companyAppIds = useMemo<number[] | null>(() => {
     if (selectedCompanyIds.length === 0) return null;
-    const wanted = new Set(selectedCompanyIds);
-    const ids = new Set<number>();
-    for (const app of apps) {
-      if (app.companies?.some((link) => wanted.has(link.id))) ids.add(app.id);
-    }
-    return [...ids];
-  }, [apps, selectedCompanyIds]);
+    return []; // TODO(company-design) — ดู comment ด้านบน
+  }, [selectedCompanyIds]);
 
   const activeFilterChips = useMemo(() => {
     type FilterChipEntry = {
@@ -5848,6 +5910,7 @@ function BoardsPageInner() {
                 canEdit={canEdit}
                 canSeeReporter={canSeeReporter}
                 staleRules={staleRules}
+                hideStaleRules={hideStaleRules}
                 onRefresh={() => loadData(false)}
                 toolbar={toolbar}
               />

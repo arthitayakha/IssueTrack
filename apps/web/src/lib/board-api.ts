@@ -194,6 +194,13 @@ export async function fetchIssues(
     companyIds?: number[];
     assigneeIds?: string[];
     reporterIds?: string[];
+    /**
+     * The board's hide policy — only the Kanban column fetch sets it. The
+     * server then cuts the cards an active `issue.hide_from_board` rule
+     * covers out of the response (count and search included); the table
+     * never sends it, so it still shows every card.
+     */
+    hideStaleDone?: boolean;
   },
 ): Promise<PaginatedResponse<BoardIssue>> {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
@@ -223,6 +230,9 @@ export async function fetchIssues(
   }
   if (filters?.reporterIds && filters.reporterIds.length > 0) {
     params.set("reporterIds", filters.reporterIds.join(","));
+  }
+  if (filters?.hideStaleDone) {
+    params.set("hideStaleDone", "1");
   }
   return apiFetch<PaginatedResponse<BoardIssue>>(
     `/issues?${params.toString()}`,
@@ -406,15 +416,23 @@ export async function fetchStatuses(
 /**
  * Board drag policy: the "one column at a time" guard (drives the drop
  * preview), whether any `issue.unlock` rule is on (a locked card only offers
- * its unlock button while the rules allow a release), and the active stale
- * rules the board/folder turn into a red border. Every field fails open.
+ * its unlock button while the rules allow a release), the active stale
+ * rules the board/folder turn into a red border, and the active hide rules
+ * the folder filters its cards with client-side (the board asks the API
+ * instead via `hideStaleDone=1`). Every field fails open.
  */
 export async function fetchMovePolicy(): Promise<{
   stepOnly: boolean;
   unlockAvailable: boolean;
   staleRules: StaleRule[];
+  hideStaleRules: StaleRule[];
 }> {
-  return apiFetch<{ stepOnly: boolean; unlockAvailable: boolean; staleRules: StaleRule[] }>(
+  return apiFetch<{
+    stepOnly: boolean;
+    unlockAvailable: boolean;
+    staleRules: StaleRule[];
+    hideStaleRules: StaleRule[];
+  }>(
     "/issues/move-policy",
     {},
     getToken(),

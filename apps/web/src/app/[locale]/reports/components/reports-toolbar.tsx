@@ -296,7 +296,7 @@ export function ReportsToolbar({
     return () => clearTimeout(id);
   }, [searchInput, filters, onFiltersChange]);
 
-  const activeCount = activeFilterCount(filters);
+  const activeCount = activeFilterCount(filters, view);
 
   /** The detail section only exists in the assignee view (its expandable rows). */
   const showDetailSection = view === "assignee";
@@ -325,13 +325,17 @@ export function ReportsToolbar({
           ))}
         </Select>
 
-        <DateRangeSelect
-          value={filters}
-          onChange={(range) => onFiltersChange({ ...filters, from: range.from, to: range.to })}
-          presets={rangePresets}
-          minWidth={165}
-          ariaLabel={t("toolbar.range")}
-        />
+        {/* ช่วงวันที่กรอง "วันที่ของงาน" — ไม่มีความหมายกับ view ตามบริษัท
+            (แถวคือสัญญา แอป×บริษัท) จึงซ่อนออกไป ไม่ใช่ปล่อยให้ไม่ทำงาน */}
+        {view !== "company" && (
+          <DateRangeSelect
+            value={filters}
+            onChange={(range) => onFiltersChange({ ...filters, from: range.from, to: range.to })}
+            presets={rangePresets}
+            minWidth={165}
+            ariaLabel={t("toolbar.range")}
+          />
+        )}
 
         <Tooltip title={t("toolbar.filtersBtn")}>
           <IconButton

@@ -12,7 +12,6 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
-  Tooltip,
   TextField,
   Typography,
   Tab,
@@ -34,7 +33,6 @@ import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
-import BoltIcon from "@mui/icons-material/Bolt";
 import HistoryIcon from "@mui/icons-material/History";
 import RulesPanel from "@/components/rules/rules-panel";
 import { usePermissions } from "@/lib/permissions";
@@ -1257,38 +1255,10 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
 
           {tabs[tab]?.content === "statuses" && (
             <Box>
-              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3 }}>
-                <Box>
-                  <Typography variant="h6" fontWeight={700} sx={{ color: theme.palette.navy.main }}>
-                    {t("tabStatuses")}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                    ลากเพื่อเรียงลำดับสถานะ
-                  </Typography>
-                </Box>
-                
+              {/* ไม่มีหัวข้อ h6 — ชื่อแท็บอยู่ที่แถบแท็บด้านบนแล้ว (ตรงกับแท็บอื่นทั้ง 6)
+                  และปุ่ม ⚡ ถูกลบออกแล้ว: ทางเข้ากฎมีแท็บ "ระบบอัตโนมัติ" ที่เดียว */}
+              <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", mb: 3 }}>
 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-  {/* ทางลัดเข้ากฎ — ขึ้นเฉพาะคนที่มีสิทธิ์กฎจริง (เคส "มีแค่สถานะ" ต้องไม่เห็น) */}
-  {canViewAutomation && (
-    <Tooltip title={tAuto("title")}>
-      <IconButton
-        color="primary"
-        aria-label={tAuto("title")}
-        onClick={() => router.push("/automation")}
-        sx={{
-          border: 1,
-          borderColor: "primary.main",
-          borderRadius: 1,
-          width: 40,
-          height: 40,
-          p: 0,
-        }}
-      >
-        <BoltIcon fontSize="small" />
-      </IconButton>
-    </Tooltip>
-  )}
-
   {can("status.create") && (
     <Button
       variant="contained"
@@ -1491,15 +1461,8 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
               เปิดด้วย `automation.view`; ปุ่มสร้าง/แก้ไข/สวิตซ์ ดูตาม `automation.update` */}
           {tabs[tab]?.content === "automation" && (
             <Box>
-              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3 }}>
-                <Box>
-                  <Typography variant="h6" fontWeight={700} sx={{ color: theme.palette.navy.main }}>
-                    {t("tabAutomation")}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                    {tAuto("subtitle")}
-                  </Typography>
-                </Box>
+              {/* ไม่มีหัวข้อ h6 — ชื่อแท็บอยู่ที่แถบแท็บด้านบนแล้ว (ตรงกับแท็บอื่นทั้ง 6) */}
+              <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", mb: 3 }}>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <Button
                     variant="outlined"

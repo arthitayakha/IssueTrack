@@ -859,3 +859,48 @@ describe("RulesEngineService.staleRules — the board's stale policy", () => {
     expect(await engine.staleRules()).toEqual([]);
   });
 });
+
+describe("RulesEngineService.hideStaleRules — the board's hide policy", () => {
+  it("reads only the hide rules, as {statusId, days} pairs", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({
+        actionKey: "issue.hide_from_board",
+        conditions: [
+          { field: "status", operator: "=", value: "4", position: 0 },
+          { field: "days", operator: "=", value: "10", position: 1 },
+        ],
+      }),
+    ]);
+
+    expect(await engine.hideStaleRules()).toEqual([{ statusId: 4, days: 10 }]);
+    // same shape as the border policy but a different action key — the
+    // notify rules must never leak into the hide filter and vice versa
+    expect(rules.find).toHaveBeenCalledWith({
+      where: { actionKey: "issue.hide_from_board", isActive: true },
+    });
+  });
+
+  it("skips rules without a status or a usable day count", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({ actionKey: "issue.hide_from_board", conditions: [] }),
+      rule({
+        actionKey: "issue.hide_from_board",
+        conditions: [
+          { field: "status", operator: "=", value: "4", position: 0 },
+          { field: "days", operator: "=", value: "none", position: 1 },
+        ],
+      }),
+    ]);
+
+    expect(await engine.hideStaleRules()).toEqual([]);
+  });
+
+  it("fails open — an unreadable rules table hides nothing", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockRejectedValue(new Error("connection lost"));
+
+    expect(await engine.hideStaleRules()).toEqual([]);
+  });
+});

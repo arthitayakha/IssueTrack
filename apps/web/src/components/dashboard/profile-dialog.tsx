@@ -38,22 +38,34 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /** Mirrors `ChangePasswordDto`'s `@MinLength(6)` (same floor as logging in). */
 const MIN_PASSWORD = 6;
 
-/** The caption line of a field, with its edit pencil hanging off the right. */
-function FieldLabel({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
+/**
+ * One row of the account list: the label sits over the value (or the input
+ * takes their place while editing) inside a fixed-height block, with the
+ * action hanging off the right. The block never changes height — that is
+ * what stops the list from jumping when a field turns into an input.
+ */
+function FieldRow({
+  action,
+  children,
+}: {
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
-    <Box
-      sx={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        minHeight: 26,
-        mb: 0.25,
-      }}
-    >
-      <Typography variant="body2" fontWeight={700} color="text.primary">
+    <Box sx={{ display: "flex", alignItems: "center", mb: 1 }}>
+      <Box
+        sx={{
+          flex: 1,
+          minWidth: 0,
+          minHeight: 40,
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+        }}
+      >
         {children}
-      </Typography>
-      {action}
+      </Box>
+      {action ? <Box sx={{ flexShrink: 0, display: "flex" }}>{action}</Box> : null}
     </Box>
   );
 }
@@ -63,7 +75,10 @@ function FieldLabel({ children, action }: { children: React.ReactNode; action?: 
  * one field into an input in place — Escape reverts it, Enter / leaving the
  * field keeps what was typed, and a single Save button writes everything. A
  * changed e-mail asks for the current password in a confirm popup first; the
- * password form sits in its own box under the role. Everything is
+ * password form sits in its own box under the role. Two rules keep the list
+ * still while editing: label and value share one fixed-height block (the
+ * input replaces both, so nothing below moves) and validation messages go
+ * to the reserved line above Save instead of under the field. Everything is
  * self-service through `/auth/profile*`, so no `user.update` permission is
  * needed — and a wrong current password comes back as 403, which never logs
  * the user out (only a real 401 does).
@@ -79,6 +94,9 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [editor, setEditor] = useState<Editor>(null);
   const [editing, setEditing] = useState<EditableField>(null);
+  // validation message shown in the reserved line above the Save button —
+  // keeping it out of the rows is what stops the list from jumping around
+  const [formError, setFormError] = useState<string | null>(null);
 
   // the form itself
   const [name, setName] = useState(user?.name ?? "");
@@ -109,6 +127,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   const resetSubDialogs = useCallback(() => {
     setEditor(null);
     setEditing(null);
+    setFormError(null);
     setConfirmPassword("");
     setPwCurrent("");
     setPwNew("");
@@ -119,6 +138,23 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   useEffect(() => {
     if (!open) resetSubDialogs();
   }, [open, resetSubDialogs]);
+
+  // Sessions stored before the API returned `positionName` only carry the id —
+  // pull the name once when the popup opens so the position row can show it.
+  useEffect(() => {
+    if (!open || !token || !user?.positionId || user.positionName) return;
+    let cancelled = false;
+    void apiFetch<{ positionName: string | null }>("/auth/me", {}, token)
+      .then((me) => {
+        if (!cancelled && me.positionName) updateUser({ positionName: me.positionName });
+      })
+      .catch(() => {
+        /* no position.view needed — if this fails the row just stays hidden */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, token, user?.positionId, user?.positionName, updateUser]);
 
   const hasAvatar = Boolean(avatarUrl);
   const trimmedName = name.trim();
@@ -185,6 +221,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
         setEmail(user?.email ?? "");
         setEmailError(null);
       }
+      setFormError(null);
       setEditing(null);
     } else if (event.key === "Enter") {
       event.preventDefault();
@@ -195,12 +232,19 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   /** Save button: validate, then ask for the password only if the e-mail moved. */
   function handleSave() {
     if (!token || saving) return;
-    if (!trimmedName) return; // the field's own helper text already says why
+    if (!trimmedName) {
+      // the message lives on the reserved line under the form, so nothing moves
+      setFormError(t("profileNameRequired"));
+      setEditing("name");
+      return;
+    }
     if (!EMAIL_RE.test(trimmedEmail)) {
       setEmailError(t("emailInvalid"));
+      setFormError(t("emailInvalid"));
       setEditing("email"); // show the field that needs fixing
       return;
     }
+    setFormError(null);
     if (!dirty) {
       onClose();
       return;
@@ -391,7 +435,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   );
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { maxWidth: 520 } }}>
       <DialogTitle
         sx={{
           display: "flex",
@@ -473,39 +517,44 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
           {t("sectionAccount")}
         </Typography>
 
+        {/* Label over value inside a fixed-height block: the input replaces
+            both while editing, so the rows below never move. */}
         {/* name */}
-        <Box sx={{ mb: 1.5 }}>
-          <FieldLabel action={editing === "name" ? undefined : pencil("name")}>
-            {t("profileName")}
-          </FieldLabel>
+        <FieldRow action={editing === "name" ? undefined : pencil("name")}>
           {editing === "name" ? (
             <TextField
+              label={t("profileName")}
               size="small"
               fullWidth
               autoFocus
               value={name}
-              onChange={(event) => setName(event.target.value)}
+              onChange={(event) => {
+                setName(event.target.value);
+                setFormError(null);
+              }}
               onKeyDown={(event) => handleFieldKeyDown(event, "name")}
               onBlur={() => setEditing(null)}
               inputProps={{ maxLength: 100 }}
               error={trimmedName === ""}
-              helperText={trimmedName === "" ? t("profileNameRequired") : " "}
             />
           ) : (
-            <Typography variant="body2" color="text.primary">
-              {trimmedName || "—"}
-            </Typography>
+            <>
+              <Typography variant="body2" fontWeight={700} color="text.primary">
+                {t("profileName")}
+              </Typography>
+              <Typography variant="body2" color="text.primary">
+                {trimmedName || "—"}
+              </Typography>
+            </>
           )}
-        </Box>
+        </FieldRow>
 
         {/* e-mail */}
-        <Box sx={{ mb: 1.5 }}>
-          <FieldLabel action={editing === "email" ? undefined : pencil("email")}>
-            {t("profileEmail")}
-          </FieldLabel>
+        <FieldRow action={editing === "email" ? undefined : pencil("email")}>
           {editing === "email" ? (
             <TextField
               type="email"
+              label={t("profileEmail")}
               size="small"
               fullWidth
               autoFocus
@@ -513,37 +562,42 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
               onChange={(event) => {
                 setEmail(event.target.value);
                 setEmailError(null);
+                setFormError(null);
               }}
               onKeyDown={(event) => handleFieldKeyDown(event, "email")}
               onBlur={() => setEditing(null)}
               error={Boolean(emailError)}
-              helperText={emailError ?? " "}
             />
           ) : (
-            <Typography variant="body2" color="text.primary">
-              {trimmedEmail || "—"}
-            </Typography>
+            <>
+              <Typography variant="body2" fontWeight={700} color="text.primary">
+                {t("profileEmail")}
+              </Typography>
+              <Typography variant="body2" color="text.primary">
+                {trimmedEmail || "—"}
+              </Typography>
+            </>
           )}
-        </Box>
+        </FieldRow>
 
-        {/* password — a row like the others; its pencil opens the password
-            form instead of an inline editor (the value is never real) */}
-        <Box sx={{ mb: 1.5 }}>
-          <FieldLabel
-            action={
-              <IconButton
-                size="small"
-                onClick={() => setEditor("password")}
-                aria-label={t("changePassword")}
-                title={t("changePassword")}
-                sx={{ mr: -0.75 }}
-              >
-                <EditIcon fontSize="small" />
-              </IconButton>
-            }
-          >
+        {/* password — its pencil opens the password form instead of an inline
+            editor (the value is never real) */}
+        <FieldRow
+          action={
+            <IconButton
+              size="small"
+              onClick={() => setEditor("password")}
+              aria-label={t("changePassword")}
+              title={t("changePassword")}
+              sx={{ mr: -0.75 }}
+            >
+              <EditIcon fontSize="small" />
+            </IconButton>
+          }
+        >
+          <Typography variant="body2" fontWeight={700} color="text.primary">
             {t("profilePassword")}
-          </FieldLabel>
+          </Typography>
           <Typography variant="body2" color="text.primary">
             {"••••••••"}
           </Typography>
@@ -556,32 +610,65 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
             aria-label={t("passwordResetLink")}
             sx={{
               p: 0,
+              alignSelf: "flex-start", // the row is a column: keep it left
               border: "none",
               bgcolor: "transparent",
               cursor: "pointer",
               fontFamily: "inherit",
               fontSize: "0.875rem",
+              lineHeight: 1.25,
               color: "primary.main",
               "&:hover": { textDecoration: "underline" },
             }}
           >
             {t("passwordResetLink")}
           </Box>
-        </Box>
+        </FieldRow>
+
+        {/* position — read-only; keyed off the id (not the name) so the late
+            name lookup can never shove the role row down */}
+        {Boolean(user?.positionId) && (
+          <FieldRow>
+            <Typography variant="body2" fontWeight={700} color="text.primary">
+              {t("profilePosition")}
+            </Typography>
+            <Typography variant="body2" color="text.primary">
+              {user?.positionName || "—"}
+            </Typography>
+          </FieldRow>
+        )}
 
         {/* role — read-only: no pencil, because there is nothing to edit */}
-        <Box>
-          <FieldLabel>{t("profileRole")}</FieldLabel>
+        <FieldRow>
+          <Typography variant="body2" fontWeight={700} color="text.primary">
+            {t("profileRole")}
+          </Typography>
           <Typography variant="body2" color="text.primary">
             {user?.roleName || "—"}
           </Typography>
-        </Box>
+        </FieldRow>
       </DialogContent>
 
+      {/* Reserved for validation messages — always rendered (empty when there
+          is none) so raising an error never nudges the rows above it. */}
+      <Box sx={{ px: 3, minHeight: 24, display: "flex", alignItems: "center" }}>
+        {formError && (
+          <Typography variant="caption" color="error">
+            {formError}
+          </Typography>
+        )}
+      </Box>
+
       <DialogActions sx={{ px: 3, py: 2 }}>
-        <Button variant="contained" onClick={handleSave} disabled={!dirty || saving}>
-          {t("save")}
-        </Button>
+        {/* The button only exists while there is something to save; the box
+            keeps its height either way, so it never makes the dialog jump. */}
+        <Box sx={{ display: "flex", alignItems: "center", minHeight: 40 }}>
+          {(dirty || saving) && (
+            <Button variant="contained" onClick={handleSave} disabled={saving}>
+              {t("save")}
+            </Button>
+          )}
+        </Box>
       </DialogActions>
 
       {/* ---------- Confirm the e-mail change (current password) ---------- */}

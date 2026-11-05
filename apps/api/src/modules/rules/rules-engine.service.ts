@@ -237,9 +237,29 @@ export class RulesEngineService {
    * and an unreadable rules table returns [] (fail open — nothing happens).
    */
   async staleRules(): Promise<Array<{ statusId: number; days: number }>> {
+    return this.policyRules("issue.notify_stale");
+  }
+
+  /**
+   * The other half of the board policy — every *active*
+   * `issue.hide_from_board` rule as `{ statusId, days }`. Two consumers:
+   * `IssuesService.findAll` cuts those rows out when the board's fetch
+   * carries `hideStaleDone=1`, and the folder filters client-side off the
+   * same pairs in the move-policy payload. Fail open exactly like
+   * `staleRules()`: no rule, a rule missing its status/days, or an
+   * unreadable rules table → [] → nothing hides.
+   */
+  async hideStaleRules(): Promise<Array<{ statusId: number; days: number }>> {
+    return this.policyRules("issue.hide_from_board");
+  }
+
+  /** Both board-policy actions share one shape: the sentence's status + days. */
+  private async policyRules(
+    actionKey: "issue.notify_stale" | "issue.hide_from_board",
+  ): Promise<Array<{ statusId: number; days: number }>> {
     try {
       const rules = await this.rules.find({
-        where: { actionKey: "issue.notify_stale", isActive: true },
+        where: { actionKey, isActive: true },
       });
       const out: Array<{ statusId: number; days: number }> = [];
       for (const rule of rules) {
@@ -252,7 +272,7 @@ export class RulesEngineService {
       return out;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`stale rule lookup failed: ${message}`);
+      this.logger.error(`policy rule lookup failed (${actionKey}): ${message}`);
       return [];
     }
   }
@@ -335,6 +355,10 @@ export class RulesEngineService {
         // notifies once per sitting and the board/folder draw the red border
         // from these rules — nothing to do when an event happens to fire
         return { applied: false, reason: "checked by the daily sweep, not on the event" };
+      case "issue.hide_from_board":
+        // policy, not an event: the list query (`hideStaleDone=1`) and the
+        // folder's client-side filter read these rules — nothing to do here
+        return { applied: false, reason: "checked at query time, not on the event" };
       case "issue.set_priority": {
         const priorityId = Number(config.priority);
         if (!Number.isFinite(priorityId)) return { applied: false, reason: "no priority configured" };

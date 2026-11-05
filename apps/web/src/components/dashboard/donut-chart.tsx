@@ -108,10 +108,19 @@ export default function DonutChart({
                 flexShrink: 0,
                 width: { xs: "100%", sm: 150, md: "100%", lg: 150 },
                 "& .recharts-sector": { cursor: "pointer" },
+                // same deal as trend-chart: recharts makes the <svg> focusable
+                // (accessibilityLayer), so clicking a slice leaves Chrome's focus
+                // frame painted around the whole chart. No keyboard-only feature
+                // inside the ring needs it (author styles beat the UA outline).
+                "& .recharts-surface, & .recharts-surface *": { outline: "none" },
               }}
             >
               <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
+                <PieChart
+                  // no focusable <svg>: clicking a slice would otherwise leave
+                  // Chrome's focus frame around the ring (see the container below)
+                  accessibilityLayer={false}
+                >
                   <Pie
                     data={ring.map((c) => c.row)}
                     dataKey="count"

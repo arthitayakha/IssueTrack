@@ -5,7 +5,7 @@ import { getToken } from "./rules-api";
 import { fetchCategories, fetchPriorities, fetchStatuses } from "./board-api";
 // apps-api's `fetchApps` — unlike board-api's, it types `companies[].maHours`,
 // which the MA / คงเหลือ columns need. Same endpoint, same payload.
-import { fetchCompanies, fetchApps, sumMaHours } from "./apps-api";
+import { fetchCompanies, fetchApps, type AppCompanyLink } from "./apps-api";
 
 /**
  * Reports data layer — every row on the /reports page comes from the real
@@ -29,7 +29,7 @@ const EXPORT_MAX_PAGES = 50;
 /* Types                                                               */
 /* ------------------------------------------------------------------ */
 
-export type ReportView = "issues" | "assignee" | "app";
+export type ReportView = "issues" | "assignee" | "app" | "company";
 
 /** Mirrors theme.custom.columnColors — drives the soft status dots. */
 export type StatusKey = "backlog" | "todo" | "doing" | "review" | "done";
@@ -132,7 +132,7 @@ export interface SummaryRow {
   isTotal?: boolean;
 }
 
-export type ReportRows = IssueRow | SummaryRow;
+export type ReportRows = IssueRow | SummaryRow | CompanyRow;
 
 export interface ReportQuery {
   filters: ReportFilters;
@@ -145,6 +145,7 @@ export const DEFAULT_SORT: Record<ReportView, SortState> = {
   issues: { field: "createdAt", dir: "desc" },
   assignee: { field: "hoursActual", dir: "desc" },
   app: { field: "medianActualMinutes", dir: "desc" },
+  company: { field: "companyName", dir: "asc" },
 };
 
 /** Columns the table header offers as sortable, per view. */
@@ -152,6 +153,9 @@ export const SORTABLE_FIELDS: Record<ReportView, string[]> = {
   issues: ["title", "assigneeName", "receivedAt"],
   assignee: ["label", "issueCount", "openCount", "hoursActual", "hoursEntered"],
   app: ["label", "issueCount", "openCount", "medianActualMinutes", "medianEnteredMinutes"],
+  // contract columns only — ชั่วโมงที่ใช้ทั้งหมด/คงเหลือ ระดับแอป ไม่เรียงได้
+  // เพราะแถวคือคู่ แอป×บริษัท (ค่าเดียวซ้ำได้หลายแถว)
+  company: ["companyName", "appName", "startedAt", "expiresAt", "maHours"],
 };
 
 export interface FilterOption {
@@ -160,17 +164,41 @@ export interface FilterOption {
 }
 
 /**
- * Contract facts of one app — the data behind the บริษัท / ชั่วโมง MA / คงเหลือ
- * columns. Built from the same `GET /apps` call the filter panel already makes,
- * so the columns cost no extra request. **Not a filter section** (the panel
- * ignores it): MA is a contract number, it does not respond to report filters.
+ * Contract facts of one app — the source behind the บริษัท column (issues
+ * view) and **every** row of the `company` view. Built from the same
+ * `GET /apps` call the filter panel already makes, so it costs no extra
+ * request.
+ *
+ * The links are kept whole (not flattened to names) because `company` view is
+ * **one row per pair** แอป×บริษัท: `started_at` / `expires_at` / `ma_hours`
+ * all live on the pair, not on the app.
  */
 export interface AppContract {
   id: number;
   name: string;
-  /** Company names linked through `app_companies`, in the order the API sends. */
-  companies: string[];
-  /** Sum of `ma_hours` over every pair — `null` = no pair has one yet. */
+  /** Every `app_companies` row for this app, in the order the API sends. */
+  companies: AppCompanyLink[];
+}
+
+/**
+ * One row of the `company` view = **one pair** แอป×บริษัท (`app_companies`).
+ *
+ * An app linked to no company still yields a row (`companyId: null`) so nothing
+ * disappears silently — it renders `—` and drops out the moment a company
+ * filter is on.
+ *
+ * **Not carried here:** ชั่วโมงที่ใช้ทั้งหมด / คงเหลือ. Those are **app-level**
+ * (`issues` has no `company_id`, so hours cannot be attributed to a pair) and
+ * only become known once `fetchAppUsageAllTime()` resolves — the cells read
+ * them from the `usage` prop at render time instead.
+ */
+export interface CompanyRow {
+  appId: number;
+  appName: string;
+  companyId: number | null;
+  companyName: string | null;
+  startedAt: string | null;
+  expiresAt: string | null;
   maHours: number | null;
 }
 
@@ -198,7 +226,22 @@ export const EMPTY_FILTER_OPTIONS: FilterOptions = {
   appContracts: [],
 };
 
-export function activeFilterCount(f: ReportFilters): number {
+/**
+ * How many filter chips are lit — drives the badge on the toolbar's funnel.
+ *
+ * The `company` view is contract data: it offers only the company / app
+ * sections and the search box (date range is hidden — it filters *issues*, not
+ * contracts). Counting the other fields there would tint the badge for filters
+ * the user cannot even see.
+ */
+export function activeFilterCount(f: ReportFilters, view?: ReportView): number {
+  if (view === "company") {
+    let n = 0;
+    if (f.search.trim()) n += 1;
+    if (f.appIds.length) n += 1;
+    if (f.companyIds.length) n += 1;
+    return n;
+  }
   let n = 0;
   if (f.from || f.to) n += 1;
   if (f.search.trim()) n += 1;
@@ -266,6 +309,21 @@ function accessorFor(
         default:
           return undefined;
       }
+    case "company":
+      switch (field) {
+        case "companyName":
+          return (r) => (r as CompanyRow).companyName ?? "";
+        case "appName":
+          return (r) => (r as CompanyRow).appName;
+        case "startedAt":
+          return (r) => (r as CompanyRow).startedAt;
+        case "expiresAt":
+          return (r) => (r as CompanyRow).expiresAt;
+        case "maHours":
+          return (r) => (r as CompanyRow).maHours;
+        default:
+          return undefined;
+      }
     default:
       return undefined;
   }
@@ -294,7 +352,8 @@ function sortRows(view: ReportView, rows: ReportRows[], sort: SortState): Report
   return total ? [...sorted, total] : sorted;
 }
 
-function paginate<T>(rows: T[], page: number, limit: number): ReportPage<T> {
+/** Client-side page window — the company view's rows are built in the browser. */
+export function paginate<T>(rows: T[], page: number, limit: number): ReportPage<T> {
   const total = rows.length;
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const current = Math.min(Math.max(1, page), totalPages);
@@ -566,8 +625,8 @@ export async function loadFilterOptions(): Promise<FilterOptions> {
       appContracts: apps.data.map((a) => ({
         id: a.id,
         name: a.name,
-        companies: (a.companies ?? []).map((c) => c.name),
-        maHours: sumMaHours(a.companies ?? []),
+        // full links, not just names — the company view's rows ARE these pairs
+        companies: a.companies ?? [],
       })),
     };
   } catch {
@@ -591,6 +650,78 @@ export async function fetchAppUsageAllTime(): Promise<Map<number, number>> {
     used.set(row.appId, row.hoursEntered);
   }
   return used;
+}
+
+/* ------------------------------------------------------------------ */
+/* company view — contract rows built client-side                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * มุมมอง **"ตามบริษัท"** — แถว = 1 คู่ แอป×บริษัท สร้างจาก `GET /apps`
+ * ที่หน้าโหลดไว้แล้ว **ไม่มี API call** (ข้อมูลสัญญาไม่ใช่ข้อมูลงาน)
+ *
+ * - แอปที่ยังไม่ผูกบริษัทก็ได้แถว (`companyId: null` → โชว์ `—`) ไม่ให้ข้อมูล
+ *   หายเงียบ — แล้วก็หายไปเองทันทีที่เปิดตัวกรองบริษัท
+ * - กรองได้แค่ **บริษัท / แอป / ค้นหา** — ช่วงวันที่ถูกซ่อนในมุมมองนี้เพราะมัน
+ *   กรอง "วันที่ของงาน" ไม่ใช่วันที่สัญญา ส่วนตัวกรองสถานะ/หมวด/ผู้รับ/ผู้แจ้ง
+ *   ไม่มีความหมายกับแถวสัญญา
+ * - `search` จับทั้งชื่อแอปและชื่อบริษัท (case-insensitive)
+ *
+ * ไม่รวม "ชั่วโมงที่ใช้ทั้งหมด" / "คงเหลือ" — สองค่านั้นเป็นระดับ**แอป**
+ * (`issues` ไม่มี `company_id`) และยังไม่รู้ค่าตอนสร้างแถว ให้ cell หยิบจาก
+ * `usage` prop ตอน render เอง (ดู `CompanyRow`)
+ */
+export function buildCompanyRows(
+  contracts: AppContract[],
+  filters: ReportFilters,
+  sort: SortState,
+): CompanyRow[] {
+  /**
+   * TODO(company-design): **ปิดชั่วคราว** — ยังไม่ตัดสินใจเรื่อง company ↔
+   * user กับพี่ (ตาราง `users` ไม่มี `company_id`) เลือกบริษัทแล้วมุมมองนี้
+   * จึงต้องคืน **0 แถว** ห้ามโชว์ผลจากเส้น "งาน → แอป → บริษัท" ·
+   * **ตรงกับอีก 3 จุด** (`issues.service.ts` / `reports.service.ts` /
+   * `boards/page.tsx`) ที่ปิดไว้เหมือนกัน — เปิดต้องเปิดพร้อมกันทั้ง 4
+   *
+   * **เปิดใหม่:** ลบ 3 บรรทัดนี้ทิ้ง — logic ด้านล่างยังกรองต่อได้ตามเดิม
+   */
+  if (filters.companyIds.length > 0) return [];
+
+  const q = filters.search.trim().toLocaleLowerCase();
+  const wantedCompanies = new Set(filters.companyIds);
+  const wantedApps = new Set(filters.appIds);
+
+  const rows: CompanyRow[] = [];
+  for (const app of contracts) {
+    // app ยังไม่ผูกบริษัท → 1 แถวว่าง (ไม่ใช่ 0 แถว) เพื่อไม่ให้หายเงียบ
+    const links: Array<AppCompanyLink | null> =
+      app.companies.length > 0 ? app.companies : [null];
+
+    for (const link of links) {
+      if (wantedCompanies.size > 0 && (link == null || !wantedCompanies.has(link.id))) {
+        continue;
+      }
+      if (wantedApps.size > 0 && !wantedApps.has(app.id)) continue;
+      if (
+        q &&
+        !app.name.toLocaleLowerCase().includes(q) &&
+        !(link?.name ?? "").toLocaleLowerCase().includes(q)
+      ) {
+        continue;
+      }
+      rows.push({
+        appId: app.id,
+        appName: app.name,
+        companyId: link?.id ?? null,
+        companyName: link?.name ?? null,
+        startedAt: link?.startedAt ?? null,
+        expiresAt: link?.expiresAt ?? null,
+        maHours: link?.maHours ?? null,
+      });
+    }
+  }
+
+  return sortRows("company", rows, sort) as CompanyRow[];
 }
 
 /* ------------------------------------------------------------------ */

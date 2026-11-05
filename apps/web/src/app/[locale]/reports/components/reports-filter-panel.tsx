@@ -81,11 +81,17 @@ type SectionKey =
  * as the by-assignee table header) and leads the issues view; the summary
  * views end on it and skip the reporter section entirely.
  * `company` sits under `app`: a card reaches a company through its app.
+ *
+ * `company` view = contract data (rows are แอป×บริษัท pairs): only the two
+ * sections that mean anything on a contract. สถานะ/หมวด/ผู้รับ/ผู้แจ้ง/ความสำคัญ
+ * are issue fields — they filter nothing here, and date range is hidden in the
+ * toolbar for the same reason.
  */
 const VIEW_SECTIONS: Record<ReportView, SectionKey[]> = {
   issues: ["assignee", "status", "priority", "category", "app", "company", "reporter"],
   assignee: ["status", "priority", "category", "app", "company", "assignee"],
   app: ["status", "priority", "category", "app", "company", "assignee"],
+  company: ["company", "app"],
 };
 
 /** Collapsible section with its own search + "show all" — mirrors the board's FilterSection. */
@@ -294,7 +300,7 @@ export function ReportsFilterPanel({
 }: ReportsFilterPanelProps) {
   const t = useTranslations("Reports");
   const theme = useTheme();
-  const totalSelected = activeFilterCount(filters);
+  const totalSelected = activeFilterCount(filters, view);
 
   const startsOpen = (count: number, fallback: boolean) =>
     totalSelected > 0 ? count > 0 : fallback;

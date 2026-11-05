@@ -89,6 +89,8 @@ function makeService() {
     isUnlockRuleActive: jest.fn().mockResolvedValue(false),
     // the stale policy (red border + 09:00 bell): no active rule by default
     staleRules: jest.fn().mockResolvedValue([]),
+    // the hide-from-board policy: nothing hides by default
+    hideStaleRules: jest.fn().mockResolvedValue([]),
   };
   const notifications = {
     notifyIssueEvent: jest.fn().mockResolvedValue(undefined),
@@ -507,6 +509,7 @@ describe("IssuesService.movePolicy — what the card menu keys off", () => {
       stepOnly: true,
       unlockAvailable: true,
       staleRules: [],
+      hideStaleRules: [],
     });
   });
 });
@@ -734,5 +737,79 @@ describe("IssuesService.movePolicy — the stale rules the board paints from", (
     const policy = await service.movePolicy();
 
     expect(policy.staleRules).toEqual([]);
+  });
+});
+
+describe("IssuesService.movePolicy — the hide rules the folder filters with", () => {
+  it("passes the engine's active hide rules straight through", async () => {
+    const { service, rulesEngine } = makeService();
+    rulesEngine.hideStaleRules.mockResolvedValue([{ statusId: 4, days: 7 }]);
+
+    const policy = await service.movePolicy();
+
+    expect(policy.hideStaleRules).toEqual([{ statusId: 4, days: 7 }]);
+  });
+
+  it("fails open to [] when the lookup breaks — nothing hides", async () => {
+    const { service, rulesEngine } = makeService();
+    rulesEngine.hideStaleRules.mockResolvedValue([]);
+
+    const policy = await service.movePolicy();
+
+    expect(policy.hideStaleRules).toEqual([]);
+  });
+});
+
+describe("IssuesService.findAll — ?hideStaleDone=1 cuts stale cards for the board", () => {
+  const PARAMS = { page: 1, limit: 20 };
+
+  /** The `andWhere` calls the single query builder received during findAll. */
+  function whereCalls(issues: { createQueryBuilder: jest.Mock }): unknown[][] {
+    const builder = issues.createQueryBuilder.mock.results.at(-1)?.value;
+    return builder?.andWhere?.mock.calls ?? [];
+  }
+
+  it("excludes each rule's status past its day count — OR'd inside one NOT", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    rulesEngine.hideStaleRules.mockResolvedValue([
+      { statusId: 4, days: 7 },
+      { statusId: 7, days: 3 },
+    ]);
+
+    await service.findAll(PARAMS, [], null, undefined, { hideStaleDone: true });
+
+    const calls = whereCalls(issues);
+    const hideClause = calls.find(([sql]) => String(sql).includes("NOT ("));
+    expect(hideClause).toBeDefined();
+    const [sql, params] = hideClause as [string, Record<string, unknown>];
+    // both rules inside ONE NOT: a card stays visible unless some rule covers it
+    expect(sql).toContain("issue.status_id = :hideStatus0");
+    expect(sql).toContain("issue.status_id = :hideStatus1");
+    expect(sql).toContain(" OR ");
+    expect(params.hideStatus0).toBe(4);
+    expect(params.hideStatus1).toBe(7);
+    // unknown age (NULL stamp) can never satisfy the cutoff → fails open
+    expect(sql).toContain("issue.status_changed_at IS NOT NULL");
+    expect((params.hideCutoff0 as Date).getTime()).toBeLessThan(Date.now());
+  });
+
+  it("never hides without the flag — the table's request stays untouched", async () => {
+    const { service, issues, rulesEngine } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {});
+
+    // no flag → the policy isn't even looked up (the table sees every card)
+    expect(rulesEngine.hideStaleRules).not.toHaveBeenCalled();
+    expect(whereCalls(issues).some(([sql]) => String(sql).includes("NOT ("))).toBe(false);
+  });
+
+  it("adds no clause at all when no hide rule is active (fail open)", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    rulesEngine.hideStaleRules.mockResolvedValue([]);
+
+    await service.findAll(PARAMS, [], null, undefined, { hideStaleDone: true });
+
+    expect(rulesEngine.hideStaleRules).toHaveBeenCalled();
+    expect(whereCalls(issues).some(([sql]) => String(sql).includes("NOT ("))).toBe(false);
   });
 });

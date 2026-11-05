@@ -195,6 +195,25 @@ describe("getPickerActions — wizard step ② list", () => {
     expect(all).toContain("issue.restore");
   });
 
+  it("offers both board-policy actions for board.policy — and only there", () => {
+    const policyActions = RULE_ACTION_CATEGORIES.flatMap((cat) =>
+      getPickerActions("board.policy", cat.key).map((a) => a.key),
+    );
+    // step ② shows the flag rule and the hide rule side by side
+    expect(policyActions.sort()).toEqual(["issue.hide_from_board", "issue.notify_stale"]);
+
+    // neither policy leaks into any other trigger's picker (nothing else
+    // would ever run them — they are read at query time)
+    for (const trigger of RULE_TRIGGERS) {
+      if (trigger.key === "board.policy") continue;
+      const offered = RULE_ACTION_CATEGORIES.flatMap((cat) =>
+        getPickerActions(trigger.key, cat.key).map((a) => a.key),
+      );
+      expect(offered).not.toContain("issue.notify_stale");
+      expect(offered).not.toContain("issue.hide_from_board");
+    }
+  });
+
   it("puts the sensible actions first", () => {
     const all = getPickerActions("issue.created", "card");
     const recommended = new Set(getRecommendedActions("issue.created"));

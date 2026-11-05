@@ -45,16 +45,28 @@ export const REPORT_COLUMNS: Record<ReportView, ReportColumnDef[]> = {
   ],
   app: [
     { key: "app", labelKey: "columns.app" },
-    // contract block — บริษัท / MA / คงเหลือ อยู่รวมกันหลังชื่อแอป
-    { key: "company", labelKey: "columns.company" },
-    { key: "maHours", labelKey: "columns.maHours" },
-    { key: "remaining", labelKey: "columns.remaining" },
     { key: "issueCount", labelKey: "columns.issueCount" },
     { key: "openCount", labelKey: "columns.openCount" },
     { key: "medianActualMinutes", labelKey: "columns.medianActual" },
     { key: "medianEnteredMinutes", labelKey: "columns.medianEntered" },
     { key: "topAssignee", labelKey: "columns.topAssignee" },
     { key: "lastAt", labelKey: "columns.lastAt" },
+  ],
+  /**
+   * มุมมอง **"ตามบริษัท"** — แถวละ 1 คู่ แอป×บริษัท (contract data ไม่ใช่
+   * ข้อมูลงาน) เรียง บริษัท → แอป → วันที่ → MA ตามที่อ่านจากซ้าย
+   *
+   * ไม่มีคอลัมน์ "ชั่วโมงที่ใช้ทั้งหมด" / "คงเหลือ" ใน registry เพราะสองค่านั้น
+   * เป็นระดับแอปและยังไม่รู้ตอนสร้างแถว — cell หยิบจาก `usage` prop เอง
+   */
+  company: [
+    { key: "company", labelKey: "columns.company" },
+    { key: "app", labelKey: "columns.app" },
+    { key: "startedAt", labelKey: "columns.startedAt" },
+    { key: "expiresAt", labelKey: "columns.expiresAt" },
+    { key: "maHours", labelKey: "columns.maHours" },
+    { key: "usedHours", labelKey: "columns.usedHours" },
+    { key: "remaining", labelKey: "columns.remaining" },
   ],
 };
 

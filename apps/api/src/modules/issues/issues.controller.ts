@@ -59,6 +59,7 @@ export class IssuesController {
       sortBy?: string;
       sortOrder?: string;
       withTimeline?: string;
+      hideStaleDone?: string;
     },
     @CurrentUser() user: AuthUser,
   ) {
@@ -74,6 +75,9 @@ export class IssuesController {
       createdTo: query.createdTo,
       sortBy: query.sortBy,
       sortOrder: query.sortOrder,
+      // only the board's per-column fetch sets it — the table never does, so
+      // the hide policy can never leak into the list that must show everything
+      hideStaleDone: query.hideStaleDone === "1" || query.hideStaleDone === "true",
     },
     query.withTimeline === "1" || query.withTimeline === "true");
   }

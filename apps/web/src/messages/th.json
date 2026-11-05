@@ -473,6 +473,7 @@
     "profileName": "ชื่อ",
     "profileEmail": "อีเมล",
     "profileRole": "บทบาท",
+    "profilePosition": "ตำแหน่ง",
     "profileUploadPhoto": "อัปโหลดรูป",
     "profilePhotoUploading": "กำลังอัปโหลด…",
     "profileRemovePhoto": "ลบรูป",
@@ -970,6 +971,7 @@
       "assignee": "ตามผู้รับผิดชอบ",
       "category": "ตามหมวดหมู่",
       "app": "ตามแอป",
+      "company": "ตามบริษัท",
       "activity": "ความเคลื่อนไหวล่าสุด",
       "rules": "ประวัติระบบอัตโนมัติ"
     },
@@ -1065,6 +1067,9 @@
       "maHours": "ชั่วโมง MA",
       "remaining": "คงเหลือ",
       "maNotSet": "ยังไม่กรอก",
+      "startedAt": "วันที่เริ่มใช้งาน",
+      "expiresAt": "วันที่หมดอายุ",
+      "usedHours": "ชั่วโมงที่ใช้ทั้งหมด",
       "medianActual": "ค่ากลางจับเวลา (นาที)",
       "medianEntered": "ค่ากลางกรอก (นาที)"
     },
