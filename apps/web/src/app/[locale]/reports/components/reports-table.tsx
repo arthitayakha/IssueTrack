@@ -22,6 +22,7 @@ import DataTable, {
   DataTableCell,
 } from "@/components/data-table";
 import { SORTABLE_FIELDS } from "@/lib/reports-api";
+import type { AppContract } from "@/lib/reports-api";
 import type { ReportColumnDef } from "./report-columns";
 import type {
   IssueRow,
@@ -71,6 +72,9 @@ const COL_MIN: Record<string, number> = {
   status: 130,
   category: 130,
   app: 130,
+  company: 160,
+  maHours: 110,
+  remaining: 110,
   priority: 130,
   // summaries
   person: 150,
@@ -108,6 +112,18 @@ export interface ReportsTableProps {
   personTasks: IssueRow[] | null;
   personTasksLoading: boolean;
   onTogglePerson: (personId: number) => void;
+  /**
+   * Contract facts per app (บริษัท / ชั่วโมง MA) keyed by app id — drives the
+   * `company` and `maHours` columns in the issues / app views. `issues` has no
+   * `company_id`, so a row only knows its company **through its app**.
+   */
+  contractsByApp: Map<number, AppContract>;
+  /**
+   * All-time "used" hours per app — the subtrahend of คงเหลือ = MA − ใช้ไป.
+   * `status` distinguishes "still fetching" from "fetch failed": both must
+   * render as `—`, never as MA itself (a full-MA remaining would be a lie).
+   */
+  usage: { status: "loading" | "ready" | "error"; byApp: Map<number, number> };
 }
 
 /**
@@ -132,6 +148,8 @@ export function ReportsTable({
   personTasks,
   personTasksLoading,
   onTogglePerson,
+  contractsByApp,
+  usage,
 }: ReportsTableProps) {
   const t = useTranslations("Reports");
   const theme = useTheme();
@@ -148,6 +166,9 @@ export function ReportsTable({
     new Date(iso).toLocaleString(locale, { dateStyle: "short", timeStyle: "short" });
   const fmtDate = (iso: string) =>
     new Date(iso).toLocaleDateString(locale, { dateStyle: "short" });
+
+  /** ปัดเศษ 1 ตำแหน่ง — ชั่วโมงกรอกอาจมีเศษทศนิยม (วินาที → ชม.) */
+  const round1 = (n: number): number => Math.round(n * 10) / 10;
 
   /** "0 ชั่วโมง 20 นาที" — the sheet's duration wording, localized. */
   const fmtDuration = (totalSeconds: number) => {
@@ -180,6 +201,79 @@ export function ReportsTable({
     );
 
   const personCell = (name: string) => <Typography variant="body2">{name}</Typography>;
+
+  /* ---------------- contract cells (บริษัท / MA / คงเหลือ) ---------------- */
+
+  /**
+   * คอลัมน์ "บริษัท" — รู้ผ่านแอปเท่านั้น (`issues` ไม่มี `company_id`)
+   *
+   * - ไม่มีแอป / แอปไม่มีบริษัท / ยังไม่ได้โหลดสัญญา → `—`
+   * - ผูกหลายแห่ง → คั่นด้วย `", "` แล้วขึ้นบรรทัดใหม่ (ไม่ยุบเป็น `+N`
+   *   แบบ `/systems` เพราะตารางนี้มีที่ว่างให้ wrap และ hover title
+   *   อ่านชื่อครบทุกแห่งได้อยู่แล้ว)
+   */
+  const contractCell = (appId: number | null) => {
+    const empty = (
+      <Typography variant="body2" color="text.secondary">
+        —
+      </Typography>
+    );
+    if (appId == null) return empty;
+    const contract = contractsByApp.get(appId);
+    if (!contract || contract.companies.length === 0) return empty;
+    const text = contract.companies.join(", ");
+    return (
+      <Typography
+        variant="body2"
+        title={text}
+        sx={{ overflowWrap: "anywhere", display: "block" }}
+      >
+        {text}
+      </Typography>
+    );
+  };
+
+  /**
+   * คอลัมน์ "ชั่วโมง MA" — ตัวเลขล้วน (หัวตารางมีหน่วย "ชม." อยู่แล้ว)
+   * ยังไม่กรอก → `ยังไม่กรอก` แบบ caption (ต่างจาก `0` ที่หมายถึงตกลง 0 ชม.)
+   */
+  const maHoursCell = (appId: number | null) => {
+    const ma = appId == null ? null : (contractsByApp.get(appId)?.maHours ?? null);
+    if (ma == null) {
+      return (
+        <Typography variant="caption" color="text.disabled">
+          {t("columns.maNotSet")}
+        </Typography>
+      );
+    }
+    return <Typography variant="body2">{ma}</Typography>;
+  };
+
+  /**
+   * คอลัมน์ "คงเหลือ" = MA − ใช้ไป — แยก 4 กรณีให้ชัดเหมือน `/systems`:
+   * - ยังโหลด/ดึง "ใช้ไป" ไม่สำเร็จ → `—` (**ไม่ใช่** "ยังไม่กรอก" และไม่ใช่
+   *   ตัวเลข เพราะถ้าโชว์ MA เต็มก้อนทั้งที่ยังไม่รู้ค่าจริงจะเป็นการโกง)
+   * - ยังไม่กรอก MA → "ยังไม่กรอก"
+   * - อย่างอื่น → ตัวเลขปัด 1 ตำแหน่ง
+   */
+  const remainingCell = (appId: number | null) => {
+    const unknown = (
+      <Typography variant="body2" color="text.secondary">
+        —
+      </Typography>
+    );
+    if (appId == null || usage.status !== "ready") return unknown;
+    const ma = contractsByApp.get(appId)?.maHours ?? null;
+    if (ma == null) {
+      return (
+        <Typography variant="caption" color="text.disabled">
+          {t("columns.maNotSet")}
+        </Typography>
+      );
+    }
+    const used = usage.byApp.get(appId) ?? 0;
+    return <Typography variant="body2">{round1(ma - used)}</Typography>;
+  };
 
   const th = (field: string, label: string, numeric = false) => {
     const sortable = SORTABLE_FIELDS[view].includes(field);
@@ -253,6 +347,8 @@ export function ReportsTable({
             return <DataTableCell>{t("columns.category")}</DataTableCell>;
           case "app":
             return <DataTableCell>{t("columns.app")}</DataTableCell>;
+          case "company":
+            return <DataTableCell>{t("columns.company")}</DataTableCell>;
           case "priority":
             return <DataTableCell>{t("columns.priority")}</DataTableCell>;
           default:
@@ -279,6 +375,12 @@ export function ReportsTable({
         switch (key) {
           case "app":
             return th("label", t("columns.app"));
+          case "company":
+            return <DataTableCell>{t("columns.company")}</DataTableCell>;
+          case "maHours":
+            return <DataTableCell align="right">{t("columns.maHours")}</DataTableCell>;
+          case "remaining":
+            return <DataTableCell align="right">{t("columns.remaining")}</DataTableCell>;
           case "issueCount":
             return th("issueCount", t("columns.issueCount"), true);
           case "openCount":
@@ -514,6 +616,8 @@ export function ReportsTable({
         return <DataTableCell>{r.categoryName ?? "—"}</DataTableCell>;
       case "app":
         return <DataTableCell>{r.appName ?? "—"}</DataTableCell>;
+      case "company":
+        return <DataTableCell>{contractCell(r.appId)}</DataTableCell>;
       case "priority":
         return <DataTableCell>{cellText(r.priorityName)}</DataTableCell>;
       default:
@@ -599,6 +703,21 @@ export function ReportsTable({
                 {r.label}
               </Typography>
             )}
+          </DataTableCell>
+        );
+      case "company":
+        // แถว "รวมทั้งหมด" ไม่ใช่แอป — ไม่มีสัญญาของตัวเอง
+        return <DataTableCell>{r.isTotal ? "—" : contractCell(r.appId ?? null)}</DataTableCell>;
+      case "maHours":
+        return (
+          <DataTableCell align="right">
+            {r.isTotal ? "—" : maHoursCell(r.appId ?? null)}
+          </DataTableCell>
+        );
+      case "remaining":
+        return (
+          <DataTableCell align="right">
+            {r.isTotal ? "—" : remainingCell(r.appId ?? null)}
           </DataTableCell>
         );
       case "issueCount":

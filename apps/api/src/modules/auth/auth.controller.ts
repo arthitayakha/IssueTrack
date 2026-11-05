@@ -20,9 +20,12 @@ import { existsSync, unlink } from "fs";
 import type { Response } from "express";
 import { AuthService } from "./auth.service";
 import { LoginDto } from "./dto/login.dto";
+import { ForgotPasswordDto } from "./dto/forgot-password.dto";
+import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { UpdateProfileDto } from "./dto/update-profile.dto";
 import { ChangeEmailDto } from "./dto/change-email.dto";
 import { ChangePasswordDto } from "./dto/change-password.dto";
+import { ResetOwnPasswordDto } from "./dto/reset-own-password.dto";
 import { RolesGuard } from "./roles.guard";
 import { Permissions } from "./permissions.decorator";
 import { CurrentUser } from "./current-user.decorator";
@@ -40,6 +43,24 @@ export class AuthController {
   @Post("login")
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
+  }
+
+  /**
+   * Step 1 of "forgot password". Always 200 with the same body — an unknown
+   * or inactive address is only logged, never revealed (anti-enumeration).
+   * With no SMTP configured the link is printed to the API console instead.
+   */
+  @Public()
+  @Post("forgot-password")
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.auth.requestPasswordReset(dto.email, dto.locale);
+  }
+
+  /** Step 2 — exchanging the one-time link for a brand new password. */
+  @Public()
+  @Post("reset-password")
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.auth.resetPassword(dto.token, dto.newPassword);
   }
 
   @Get("me")
@@ -72,6 +93,18 @@ export class AuthController {
   @Patch("profile/password")
   changePassword(@CurrentUser() user: User, @Body() dto: ChangePasswordDto) {
     return this.auth.changePassword(user.id, dto.currentPassword, dto.newPassword);
+  }
+
+  /**
+   * Self-service password RESET — the counterpart for people who cannot
+   * remember the current one: no current password and no e-mail, because the
+   * caller is already signed in and the session is the proof (that is why
+   * this route has no `@Public()`: the global JwtAuthGuard guards it). The
+   * e-mail flow above stays for signed-out users.
+   */
+  @Post("profile/reset-password")
+  resetOwnPassword(@CurrentUser() user: User, @Body() dto: ResetOwnPasswordDto) {
+    return this.auth.resetOwnPassword(user.id, dto.newPassword);
   }
 
   /** Upload (or replace) your profile picture; the old file is deleted. */

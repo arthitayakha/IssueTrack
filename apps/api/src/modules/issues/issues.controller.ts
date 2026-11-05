@@ -51,6 +51,7 @@ export class IssuesController {
       priorityIds?: string;
       categoryIds?: string;
       appIds?: string;
+      companyIds?: string;
       assigneeIds?: string;
       reporterIds?: string;
       createdFrom?: string;
@@ -66,6 +67,7 @@ export class IssuesController {
       priorityIds: parseIdList(query.priorityIds),
       categoryIds: parseIdList(query.categoryIds),
       appIds: parseIdList(query.appIds),
+      companyIds: parseIdList(query.companyIds),
       assigneeIds: parseIdList(query.assigneeIds),
       reporterIds: parseIdList(query.reporterIds),
       createdFrom: query.createdFrom,

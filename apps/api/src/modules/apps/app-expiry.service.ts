@@ -10,7 +10,7 @@ import { daysBetween, toIsoDate, todayIso } from "../../common/dates";
 
 /** แจ้งเตือน "ใกล้หมดอายุ" เมื่อเหลือไม่เกิน 30 วัน */
 export const EXPIRY_WARNING_DAYS = 30;
-/** แจ้งอีกครั้ง (และใช้สถานะ "วิกฤต") เมื่อเหลือไม่เกิน 7 วัน */
+/** แจ้งอีกครั้ง (สถานะ `critical` — UI โชว์ "เหลือ n วัน ใกล้หมดอายุ") เมื่อเหลือไม่เกิน 7 วัน */
 export const EXPIRY_CRITICAL_DAYS = 7;
 
 /** `none → d30 → d7 → expired` — how far an announcement has progressed. */

@@ -47,11 +47,21 @@ export default function Sidebar({
     ...(can("user.view") || can("role.view") || can("position.view")
       ? [{ label: t("users"), href: "/users", icon: <PeopleIcon /> }]
       : []),
-    ...(can("permission.update")
+    // /master-data = กลุ่มแท็บลูกย่อย — เห็นเมนูก็ต่อเมื่อมีสิทธิ์ดูแท็บใดแท็บหนึ่ง
+    // (รวม `automation.*`: เคส "มีแต่กฎ" ต้องเข้าถึงแท็บระบบอัตโนมัติในหน้านี้ได้)
+    ...(can("app.view") ||
+    can("company.view") ||
+    can("category.view") ||
+    can("status.view") ||
+    can("priority.view") ||
+    can("label.view") ||
+    can("automation.view") ||
+    can("automation.update")
       ? [{ label: t("settings"), href: "/master-data", icon: <StorageIcon /> }]
       : []),
     // ตารางละเอียดแอป+บริษัท — แยกเป็นหน้าของตัวเอง (เดิมเป็นแท็บใน /master-data)
-    ...(can("app.view")
+    // อ่านผ่าน GET /systems ของตัวเอง → ใช้ `system.view` แยกจากแท็บแอป
+    ...(can("system.view")
       ? [{ label: t("systems"), href: "/systems", icon: <DnsIcon /> }]
       : []),
     ...(can("report.view")

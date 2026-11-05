@@ -34,16 +34,18 @@ export class RolesGuard implements CanActivate {
     const user = request.user;
     if (!user) throw new ForbiddenException("Unauthorized");
 
+    // ANY-of (OR), not every-of: `@Permissions("app.update", "system.update")`
+    // means "either surface's permission unlocks this route" — used where two
+    // pages (each with its own permission card) share one endpoint. Every
+    // existing route passes a single permission, so OR ≡ the old AND there.
     for (const permission of required) {
       const allowed = await this.permissions.hasPermission(
         user.roleId,
         permission,
         user.positionId,
       );
-      if (!allowed) {
-        throw new ForbiddenException("Insufficient permissions");
-      }
+      if (allowed) return true;
     }
-    return true;
+    throw new ForbiddenException("Insufficient permissions");
   }
 }

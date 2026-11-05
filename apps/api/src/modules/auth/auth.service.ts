@@ -1,28 +1,41 @@
 import {
-  Injectable,
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Injectable,
+  Logger,
   UnauthorizedException,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { IsNull, Repository } from "typeorm";
+import { createHash, randomBytes } from "crypto";
 import * as bcrypt from "bcryptjs";
 import { User } from "./entities/user.entity";
+import { PasswordResetToken } from "./entities/password-reset-token.entity";
 import { Role } from "../roles/entities/role.entity";
 import { LoginDto } from "./dto/login.dto";
+import { MailService } from "./mail.service";
 import { PositionPermission } from "../positions/entities/position-permission.entity";
+
+/** How long a reset link stays valid, and how often we may re-send one. */
+const RESET_TTL_MS = 30 * 60 * 1000;
+const RESET_RESEND_MS = 60 * 1000;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @InjectRepository(User)
     private readonly users: Repository<User>,
+    @InjectRepository(PasswordResetToken)
+    private readonly resetTokens: Repository<PasswordResetToken>,
     @InjectRepository(Role)
     private readonly roles: Repository<Role>,
     @InjectRepository(PositionPermission)
     private readonly positionPermissions: Repository<PositionPermission>,
+    private readonly mail: MailService,
     private readonly jwt: JwtService,
   ) {}
 
@@ -126,6 +139,98 @@ export class AuthService {
     // rounds 12 — the same cost the admin form uses (UsersService)
     await this.users.update({ id: userId }, { passwordHash: await bcrypt.hash(newPassword, 12) });
     return { changed: true };
+  }
+
+  /**
+   * Self-service password RESET for someone who cannot remember the current
+   * password: the session already proved identity, so neither the current
+   * password nor the e-mail flow is involved (that one stays for signed-out
+   * users). We hold the hash, so "the new one repeats the old one" costs a
+   * single compare instead of a field on the form. Same caveats as
+   * `changePassword`: other sessions keep their 7-day JWT, and a wrong value
+   * here is a 400 — never a 401, which would log the web client out.
+   */
+  async resetOwnPassword(userId: number, newPassword: string) {
+    const user = await this.users.findOne({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException("User not found");
+    if (await bcrypt.compare(newPassword, user.passwordHash)) {
+      throw new BadRequestException("New password must differ from the current one");
+    }
+    await this.users.update({ id: userId }, { passwordHash: await bcrypt.hash(newPassword, 12) });
+    this.logger.log(`password reset by the signed-in user #${user.id} (${user.email})`);
+    return { reset: true };
+  }
+
+  /**
+   * "Forgot password" — answers the same `{ ok: true }` whether or not the
+   * e-mail has an active account, so the endpoint cannot be used to probe
+   * which addresses exist. A real request drops the user's older links, stores
+   * only the sha256 of a fresh 32-byte token, and mails a link that lives 30
+   * minutes and can be redeemed exactly once.
+   */
+  async requestPasswordReset(email: string, locale: "th" | "en" = "th") {
+    const trimmed = email.trim();
+    const user = await this.users
+      .createQueryBuilder("u")
+      .where("u.email ILIKE :email", { email: trimmed })
+      .getOne();
+
+    if (!user || !user.isActive) {
+      this.logger.warn(`password reset requested for unknown or inactive address: ${trimmed}`);
+      return { ok: true };
+    }
+
+    // one link per minute — a double submit must not re-send the e-mail
+    const recent = await this.resetTokens.findOne({
+      where: { userId: user.id, usedAt: IsNull() },
+      order: { createdAt: "DESC" },
+    });
+    if (recent && Date.now() - recent.createdAt.getTime() < RESET_RESEND_MS) {
+      return { ok: true };
+    }
+
+    // only the newest link may ever work
+    await this.resetTokens.delete({ userId: user.id, usedAt: IsNull() });
+
+    const token = randomBytes(32).toString("hex");
+    await this.resetTokens.save(
+      this.resetTokens.create({
+        userId: user.id,
+        tokenHash: createHash("sha256").update(token).digest("hex"),
+        expiresAt: new Date(Date.now() + RESET_TTL_MS),
+        usedAt: null,
+      }),
+    );
+
+    const base = (process.env.APP_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+    await this.mail.sendPasswordReset(user.email, user.name, `${base}/${locale}/reset-password?token=${token}`);
+    return { ok: true };
+  }
+
+  /**
+   * Redeems a reset link: hash lookup, expiry and single use are checked
+   * before the new password is written. The row is consumed atomically
+   * (`used_at IS NULL` in the UPDATE) so two parallel submits cannot both win.
+   * The wrong/expired token is always the same 400 — the page maps it to i18n.
+   */
+  async resetPassword(token: string, newPassword: string) {
+    const tokenHash = createHash("sha256").update(token.trim()).digest("hex");
+    const record = await this.resetTokens.findOne({ where: { tokenHash } });
+    if (!record || record.usedAt || record.expiresAt.getTime() < Date.now()) {
+      throw new BadRequestException("Invalid or expired reset link");
+    }
+    const consumed = await this.resetTokens.update(
+      { id: record.id, usedAt: IsNull() },
+      { usedAt: new Date() },
+    );
+    if (!consumed.affected) throw new BadRequestException("Invalid or expired reset link");
+
+    const user = await this.users.findOne({ where: { id: record.userId } });
+    if (!user || !user.isActive) throw new BadRequestException("Invalid or expired reset link");
+
+    await this.users.update({ id: user.id }, { passwordHash: await bcrypt.hash(newPassword, 12) });
+    this.logger.log(`password reset through a link for user #${user.id} (${user.email})`);
+    return { ok: true };
   }
 
   /** Stores the uploaded picture's path (the file itself lives in `uploads/`). */

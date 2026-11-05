@@ -15,6 +15,19 @@ export type ExpiryLabelKey =
   | "expiryCritical"
   | "expiryExpired";
 
+/** key ที่ `expiryChipLabel()` คืนได้ — 5 สถานะ + 2 key ที่มี `{n}` ต่อท้าย */
+export type ExpiryChipLabelKey = ExpiryLabelKey | "expiryExpiringSoonDays" | "daysExpired";
+
+/**
+ * label ของชิป — เรียกด้วย `t(key, { n: n ?? 0 })` ก็ได้ (next-intl โยนค่า
+ * ที่ message ไม่ได้ใช้ทิ้งเอง จึงไม่ต้องแตก branch ที่หน้าจอ)
+ */
+export interface ExpiryChipLabel {
+  key: ExpiryChipLabelKey;
+  /** จำนวนวันของ key ที่มี `{n}` — `undefined` = key นั้นไม่ใช้ตัวเลข */
+  n?: number;
+}
+
 /**
  * ต้องตรงกับ `EXPIRY_WARNING_DAYS` / `EXPIRY_CRITICAL_DAYS` ใน
  * `AppExpiryService` — ค่าสองตัวนี้ถูกจำลองฝั่ง client เพื่อให้ chip ใน
@@ -45,7 +58,7 @@ export function daysLeftIso(value: string): number | null {
 
 /**
  * สถานะอายุจากวันที่ในฟอร์ม — กฎเดียวกับเซิร์ฟเวอร์ (นับวันตามปฏิทิน):
- * ไม่มีวันที่ → ไม่กำหนด · ติดลบ → หมดอายุ · ≤7 → วิกฤต · ≤30 → ใกล้หมดอายุ
+ * ไม่มีวันที่ → ไม่กำหนด · ติดลบ → หมดอายุ · ≤7 → `critical` · ≤30 → `expiring_soon`
  */
 export function previewExpiryStatus(expiresAt: string): ExpiryStatus {
   const left = daysLeftIso(expiresAt);
@@ -70,6 +83,30 @@ export function expiryLabelKey(status: ExpiryStatus): ExpiryLabelKey {
     default:
       return "expiryNone";
   }
+}
+
+/**
+ * label ของชิป "สถานะอายุ" — **ตัดสินจาก "วันเหลือ" ล้วน** (ใช้ `status` เฉพาะ
+ * ตอนไม่มีวันที่) เพราะผู้ใช้อ่านจำนวนวันมากกว่าคำว่าสถานะ:
+ *
+ * - ไม่มีวันที่ → label ของ `status` (ไม่กำหนด / ปกติ)
+ * - เกินวันมาแล้ว → `หมดอายุแล้ว {n} วัน`
+ * - หมดอายุวันนี้พอดี (0 วัน) → `หมดอายุแล้ว`
+ * - 1–30 วัน → `เหลือ {n} วัน ใกล้หมดอายุ` (รวมช่วง ≤7 วันที่เคยโชว์ "วิกฤต")
+ * - มากกว่า 30 วัน → `ปกติ`
+ *
+ * สองหน้า (`AppFormDialog` กับ `/systems`) เรียกตัวนี้ร่วมกัน — กันคำนวณ
+ * ต่างกันคนละที่ ซึ่งเป็นที่มาของชิป "วิกฤต" ในฟอร์มที่ไม่ตรงกับตาราง
+ */
+export function expiryChipLabel(
+  status: ExpiryStatus,
+  daysLeft: number | null,
+): ExpiryChipLabel {
+  if (daysLeft === null) return { key: expiryLabelKey(status) };
+  if (daysLeft < 0) return { key: "daysExpired", n: -daysLeft };
+  if (daysLeft === 0) return { key: "expiryExpired" };
+  if (daysLeft <= EXPIRY_WARNING_DAYS) return { key: "expiryExpiringSoonDays", n: daysLeft };
+  return { key: "expiryNormal" };
 }
 
 /** สีของ chip สถานะอายุ — เขียว→น้ำเงิน→ส้ม→แดง (ไล่ตามความรุนแรง) */

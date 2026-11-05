@@ -31,6 +31,8 @@ export const REPORT_COLUMNS: Record<ReportView, ReportColumnDef[]> = {
     { key: "status", labelKey: "columns.status" },
     { key: "category", labelKey: "columns.category" },
     { key: "app", labelKey: "columns.app" },
+    // บริษัท มาจากแอปของงาน (issues ไม่มี company_id) — อยู่ติดกับคอลัมน์แอป
+    { key: "company", labelKey: "columns.company" },
     { key: "priority", labelKey: "columns.priority" },
   ],
   assignee: [
@@ -43,6 +45,10 @@ export const REPORT_COLUMNS: Record<ReportView, ReportColumnDef[]> = {
   ],
   app: [
     { key: "app", labelKey: "columns.app" },
+    // contract block — บริษัท / MA / คงเหลือ อยู่รวมกันหลังชื่อแอป
+    { key: "company", labelKey: "columns.company" },
+    { key: "maHours", labelKey: "columns.maHours" },
+    { key: "remaining", labelKey: "columns.remaining" },
     { key: "issueCount", labelKey: "columns.issueCount" },
     { key: "openCount", labelKey: "columns.openCount" },
     { key: "medianActualMinutes", labelKey: "columns.medianActual" },

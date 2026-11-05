@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import {
   Box,
@@ -33,8 +33,9 @@ import AppFormDialog from "@/components/app-form-dialog";
 import {
   checkApp,
   deleteApp,
-  fetchApps,
   fetchCompanies,
+  fetchSystemsApps,
+  sumMaHours,
   toggleAppActive,
   type App,
   type AppCompanyLink,
@@ -42,11 +43,12 @@ import {
 } from "@/lib/apps-api";
 import {
   daysLeftIso,
+  expiryChipLabel,
   expiryColor,
-  expiryLabelKey,
   formatDay,
   type ExpiryStatus,
 } from "@/lib/app-expiry";
+import { EMPTY_FILTERS, fetchSummaryRows, type SummaryRow } from "@/lib/reports-api";
 
 /**
  * คอลัมน์ "บริษัท" โชว์ชื่อสูงสุดกี่ชื่อ — ที่เหลือยุบเป็น `+N`
@@ -69,11 +71,27 @@ function pickNearest(links: AppCompanyLink[]): AppCompanyLink | null {
   return nearest ?? links[0] ?? null;
 }
 
+/** ปัดเศษ 1 ตำแหน่ง — เหมือน `round1` ของ reports (วินาที → ชม. อาจมีเศษทศนิยม) */
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+/**
+ * `ma_hours` ของแอป = **ผลรวมทุกคู่ แอป×บริษัท** — คำนวณที่ `sumMaHours()`
+ * ใน `lib/apps-api.ts` (ฟังก์ชันเดียวกับที่ `/reports` ใช้ ตัวเลขจึงตรงกัน)
+ *
+ * ต้องเป็นคนละค่ากับ "ใช้ไป" ซึ่งคิด **ระดับแอป** เพราะ `issues` ไม่มี
+ * `company_id` — งานจึงระบุบริษัทไม่ได้ (เรื่องนี้รอประชุม)
+ */
+function appMaHours(app: App): number | null {
+  return sumMaHours(app.companies);
+}
+
 /**
  * หน้า **ข้อมูลระบบ** — ตารางละเอียดของแอป (บริษัท / วันที่เริ่มใช้งาน /
- * วันที่หมดอายุ / สถานะอายุ / การใช้งาน) + ฟอร์มเพิ่ม/แก้ไข/ลบครบ
- * แยกออกมาจากแท็บ `ข้อมูลระบบ` เดิมใน `/master-data` ให้เป็นหน้าของตัวเอง
- * และมีเมนูใน sidebar (`app.view`)
+ * วันที่หมดอายุ / ชั่วโมง MA / **คงเหลือ** / สถานะอายุ / การใช้งาน)
+ * + ฟอร์มเพิ่ม/แก้ไข/ลบครบ แยกออกมาจากแท็บ `ข้อมูลระบบ` เดิมใน
+ * `/master-data` ให้เป็นหน้าของตัวเอง และมีเมนูใน sidebar (`system.view`)
  */
 export default function SystemsPage() {
   const t = useTranslations("Settings");
@@ -88,6 +106,14 @@ export default function SystemsPage() {
   const [page, setPage] = useState(1);
   const [mounted, setMounted] = useState(false);
 
+  /**
+   * ตัวเลข "ใช้ไป" ต่อแอป — ดึงคู่กับ `loadApps()` ตอนเปิดหน้า
+   * `error` ต้องแยกจาก `ready` เพราะถ้าดึงไม่ได้แล้วปล่อยให้เหลือ 0
+   * ตัวเลข "คงเหลือ" จะเท่ากับ MA ทั้งก้อนซึ่ง**ผิด**
+   */
+  const [usageSummary, setUsageSummary] = useState<SummaryRow[]>([]);
+  const [usageStatus, setUsageStatus] = useState<"loading" | "ready" | "error">("loading");
+
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -101,12 +127,12 @@ export default function SystemsPage() {
   );
   const [deleteLoading, setDeleteLoading] = useState(false);
 
-  const canUpdate = can("app.update");
-  const canDelete = can("app.delete");
+  const canUpdate = can("system.update");
+  const canDelete = can("system.delete");
 
   async function loadApps() {
     try {
-      const result = await fetchApps();
+      const result = await fetchSystemsApps();
       setApps(result.data);
     } catch {
       // รายการเดิมยังอยู่บนจอ — ห้ามเคลียร์ทิ้งเพราะดึงไม่สำเร็จ
@@ -123,9 +149,35 @@ export default function SystemsPage() {
   }
 
   useEffect(() => {
+    // หน้า spinner ผูกกับ apps/companies เท่านั้น — ตัวเลข "ใช้ไป" ดึงแยก
+    // เพื่อไม่ให้การช้าของ endpoint รายงานมาค้างหน้าทั้งใบ
     Promise.all([loadApps(), loadCompanies()]).finally(() => setLoading(false));
+    void loadUsage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  /**
+   * ดึง "ชั่วโมงที่ใช้ไป" ต่อแอป — `GET /reports/summary?groupBy=app`
+   * (`hoursEntered` = ผลรวม `actual_fix_duration` ฝั่งเซิร์ฟเวอร์)
+   * ล้มเหลวเองได้: คอลัมน์ "คงเหลือ" จะกลายเป็น `—` พร้อมปุ่มลองใหม่
+   */
+  async function loadUsage() {
+    setUsageStatus("loading");
+    try {
+      const rows = await fetchSummaryRows("app", EMPTY_FILTERS);
+      // แถว "รวมทั้งหมด" ไม่ใช่แอป — ทิ้งไปก่อนเข้า Map กันรวมผิด
+      setUsageSummary(rows.filter((row) => !row.isTotal));
+      setUsageStatus("ready");
+    } catch {
+      setUsageSummary([]);
+      setUsageStatus("error");
+    }
+  }
+
+  /** ปุ่ม "ลองใหม่" ใต้ตาราง — ยิง `loadUsage()` ซ้ำโดยไม่แตะตารางอื่น */
+  function retryUsage() {
+    void loadUsage();
+  }
 
   function openAddApp() {
     setEditingApp(null);
@@ -176,6 +228,25 @@ export default function SystemsPage() {
       notify(err instanceof ApiError ? err.message : t("genericError"), "error");
     }
   }
+
+  /**
+   * "ใช้ไป" ต่อแอป (ชม.) จาก endpoint รายงาน — join ด้วย `appId`
+   *
+   * คำนวณ**เฉพาะตอนดึงสำเร็จ** (`ready`) เพราะตอน `error` ถ้าปล่อยให้เป็น 0
+   * คอลัมน์ "คงเหลือ" จะเท่ากับ MA เต็มก้อนทั้งที่ยังไม่รู้ค่าจริง
+   *
+   * คิด**ระดับแอป** เพราะ `issues` ไม่มี `company_id` (งานระบุบริษัทไม่ได้ —
+   * เรื่องนี้รอประชุม) จึงต่างจาก `maHours` ที่เป็นรายคู่
+   */
+  const usedByApp = useMemo(() => {
+    const map = new Map<number, number>();
+    if (usageStatus !== "ready") return map;
+    for (const row of usageSummary) {
+      if (row.appId == null) continue; // งานที่ไม่ได้ผูกแอป — ไม่เข้าแถวไหน
+      map.set(row.appId, (map.get(row.appId) ?? 0) + row.hoursEntered);
+    }
+    return map;
+  }, [usageSummary, usageStatus]);
 
   // render nothing on the server: DashboardLayout reads the auth store, which
   // only the client can fill — matching it later would break hydration
@@ -231,11 +302,11 @@ export default function SystemsPage() {
     return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
         {app.companies.map((link) => {
-          const left = daysLeftIso(link.expiresAt ?? "");
-          const days = left !== null && left >= 0 ? ` · ${t("daysLeft", { n: left })}` : "";
+          // คำเดียวกับชิปทุกจุด — "มามี่ฟู้ด: เหลือ 5 วัน ใกล้หมดอายุ"
+          const chip = expiryChipLabel(link.expiryStatus, daysLeftIso(link.expiresAt ?? ""));
           return (
             <Typography key={link.id} variant="caption" component="span">
-              {`${link.name}: ${t(expiryLabelKey(link.expiryStatus))}${days}`}
+              {`${link.name}: ${t(chip.key, { n: chip.n ?? 0 })}`}
             </Typography>
           );
         })}
@@ -244,27 +315,45 @@ export default function SystemsPage() {
   }
 
   /**
-   * label ของ chip "สถานะอายุ" — แสดง "จำนวนวัน" เฉพาะตอนที่มีความหมาย
-   * (≤30 วัน / หมดอายุแล้ว) ส่วน `ปกติ` / `ไม่กำหนด` คงคำเดิมไว้ เพราะ
-   * "เหลือ 400 วัน" ไม่ได้บอกอะไรใคร — **สีชิปยังเป็นตัวบอกความรุนแรง**
+   * label ของ chip "สถานะอายุ" — กฎทั้งหมดอยู่ที่ `expiryChipLabel()` ใน
+   * `lib/app-expiry.ts` (ใช้ร่วมกับ `AppFormDialog`) ที่นี่มีหน้าที่แปลเป็น
+   * ข้อความเท่านั้น สีชิปยังเป็นตัวบอกความรุนแรง
    */
-  function expiryChipLabel(status: ExpiryStatus, expiresAt: string | null) {
-    const left = daysLeftIso(expiresAt ?? "");
-    if (status === "expiring_soon" || status === "critical") {
-      return left === null ? t(expiryLabelKey(status)) : t("daysLeft", { n: left });
-    }
-    if (status === "expired") {
-      return left === null ? t(expiryLabelKey(status)) : t("daysExpired", { n: -left });
-    }
-    return t(expiryLabelKey(status));
+  function expiryChipText(status: ExpiryStatus, expiresAt: string | null) {
+    const chip = expiryChipLabel(status, daysLeftIso(expiresAt ?? ""));
+    return t(chip.key, { n: chip.n ?? 0 });
+  }
+
+  /**
+   * คอลัมน์ **"คงเหลือ"** = `MA − ใช้ไป`
+   *
+   * แยก 4 กรณีให้ชัด เพราะข้อความต้องไม่ปนกัน:
+   * - ยังดึง "ใช้ไป" ไม่สำเร็จ → spinner ระหว่างโหลด / `—` ตอนผิดพลาด
+   *   (**ไม่ใช่** "ยังไม่กรอก" เพราะ MA อาจกรอกไปแล้ว)
+   * - ยังไม่กรอก MA → "ยังไม่กรอก" (key เดิม)
+   * - อย่างอื่น → ตัวเลขปัด 1 ตำแหน่ง
+   */
+  function remainingCell(app: App) {
+    const caption = (text: string) => (
+      <Typography variant="caption" color="text.disabled">
+        {text}
+      </Typography>
+    );
+
+    if (usageStatus === "loading") return <CircularProgress size={16} />;
+    if (usageStatus === "error") return caption("—");
+
+    const ma = appMaHours(app);
+    if (ma == null) return caption(t("notSetYet"));
+    return round1(ma - (usedByApp.get(app.id) ?? 0));
   }
 
   return (
-    <RequirePermission permission="app.view">
+    <RequirePermission permission="system.view">
       <DashboardLayout>
         <Box>
           <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
-            {can("app.create") && (
+            {can("system.create") && (
               <Button variant="contained" startIcon={<AddIcon />} onClick={openAddApp}>
                 {t("addApp")}
               </Button>
@@ -279,6 +368,7 @@ export default function SystemsPage() {
                 <DataTableCell>{t("columnStartedAt")}</DataTableCell>
                 <DataTableCell>{t("columnExpiresAt")}</DataTableCell>
                 <DataTableCell align="center">{t("columnMaHours")}</DataTableCell>
+                <DataTableCell align="center">{t("columnRemaining")}</DataTableCell>
                 <DataTableCell align="center">{t("columnExpiryStatus")}</DataTableCell>
                 <DataTableCell align="center">{t("columnUsage")}</DataTableCell>
                 <DataTableCell align="right">{t("columnActions")}</DataTableCell>
@@ -321,11 +411,13 @@ export default function SystemsPage() {
                         </Typography>
                       )}
                     </DataTableCell>
+                    {/* คงเหลือ = MA − ใช้ไป — กฎทั้งหมดอยู่ที่ `remainingCell()` */}
+                    <DataTableCell align="center">{remainingCell(app)}</DataTableCell>
                     {/* สถานะอายุของคู่ที่ใกล้หมดที่สุด — hover ดูครบทุกบริษัท */}
                     <DataTableCell align="center">
                       <Tooltip title={expiryBreakdown(app)}>
                         <Chip
-                          label={expiryChipLabel(status, nearest?.expiresAt ?? null)}
+                          label={expiryChipText(status, nearest?.expiresAt ?? null)}
                           color={expiryColor(status)}
                           size="small"
                           variant="outlined"
@@ -356,6 +448,22 @@ export default function SystemsPage() {
               })}
             </DataTableBody>
           </DataTable>
+
+          {/* ดึง "ใช้ไป" ไม่สำเร็จ → บอกใต้ตาราง (ไม่ใช่ Alert ไม่บังตาราง) */}
+          {usageStatus === "error" && (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 1.5 }}>
+              <Typography variant="caption" color="text.disabled">
+                {t("usageError")}
+              </Typography>
+              <Button
+                size="small"
+                onClick={retryUsage}
+                sx={{ textTransform: "none", fontSize: "0.75rem", minHeight: 24, py: 0 }}
+              >
+                {t("retry")}
+              </Button>
+            </Box>
+          )}
 
           <Pagination
             page={page}

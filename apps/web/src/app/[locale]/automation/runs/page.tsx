@@ -118,8 +118,10 @@ export default function RuleHistoryPage() {
     </Breadcrumbs>
   );
 
+  // อ่านอย่างเดียว (fetchRules + fetchRuleActivity) → gate เป็น `automation.view`
+  // ส่วนการแก้ไขจริงอยู่ที่หน้า /automation, /automation/new, /automation/[id]
   return (
-    <RequirePermission permission="automation.update">
+    <RequirePermission permission="automation.view">
       <DashboardLayout header={header}>
         <Box sx={{ mb: 3 }}>
           <Typography variant="h4" fontWeight={700} sx={{ color: theme.palette.navy.main }}>

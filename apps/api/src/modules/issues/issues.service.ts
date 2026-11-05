@@ -108,6 +108,7 @@ export class IssuesService {
       priorityIds?: number[];
       categoryIds?: number[];
       appIds?: number[];
+      companyIds?: number[];
       assigneeIds?: number[];
       reporterIds?: number[];
       createdFrom?: string;
@@ -147,6 +148,19 @@ export class IssuesService {
     }
     if (filters.appIds && filters.appIds.length > 0) {
       qb.andWhere("issue.app_id IN (:...appIds)", { appIds: filters.appIds });
+    }
+    /**
+     * Company filter — a card reaches a company through its app
+     * (`app_companies`, many-to-many: one app serves several companies).
+     * `EXISTS` and not a JOIN: this query runs `DISTINCT` and `getCount()`,
+     * and a join would multiply every card once per linked company.
+     * Cards with no app are excluded, exactly like the app filter above.
+     */
+    if (filters.companyIds && filters.companyIds.length > 0) {
+      qb.andWhere(
+        "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
+        { companyIds: filters.companyIds },
+      );
     }
     if (filters.assigneeIds && filters.assigneeIds.length > 0) {
       qb.andWhere("issue.programmer_id IN (:...assigneeIds)", { assigneeIds: filters.assigneeIds });

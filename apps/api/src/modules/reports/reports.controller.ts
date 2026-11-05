@@ -30,6 +30,7 @@ function parseFilters(query: Record<string, string | undefined>): ReportIssueFil
     statuses: parseIdList(query.statuses),
     priorityIds: parseIdList(query.priorityIds),
     appIds: parseIdList(query.appIds),
+    companyIds: parseIdList(query.companyIds),
   };
 }
 

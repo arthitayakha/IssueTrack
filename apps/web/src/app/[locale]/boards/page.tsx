@@ -50,7 +50,7 @@ import {
   ListItem,
   keyframes,
 } from "@mui/material";
-import { alpha } from "@mui/material/styles";
+import { alpha, darken } from "@mui/material/styles";
 import {
   DndContext,
   DragOverlay,
@@ -100,6 +100,7 @@ import CalendarTodayIcon from "@mui/icons-material/CalendarToday";
 import PersonIcon from "@mui/icons-material/Person";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import AppsIcon from "@mui/icons-material/Apps";
+import BusinessIcon from "@mui/icons-material/Business";
 import DeleteIcon from "@mui/icons-material/Delete";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -111,7 +112,6 @@ import FlagIcon from "@mui/icons-material/Flag";
 import LabelIcon from "@mui/icons-material/Label";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import TimerOutlinedIcon from "@mui/icons-material/TimerOutlined";
-import DescriptionIcon from "@mui/icons-material/Description";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { usePermissions } from "@/lib/permissions";
@@ -165,6 +165,7 @@ import {
   getToken,
 } from "@/lib/board-api";
 import { fetchLabels, createLabel, updateLabel, type Label } from "@/lib/labels-api";
+import { fetchCompanies, type Company } from "@/lib/apps-api";
 import { resolveStatusColor } from "@/lib/status-color";
 import { Pagination } from "@/components/pagination";
 import AttachmentPreviewDialog from "@/components/attachment-preview-dialog";
@@ -181,12 +182,21 @@ const PRIORITY_COLORS: Record<string, "error" | "warning" | "success" | "default
   low: "success",
 };
 
-const PRIORITY_LABELS: Record<string, string> = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-};
+/**
+ * Priority wording lives in `messages/{th,en}.json` under `Boards.priorityLabel.*`
+ * — English in both on purpose, so moving it out of this file does not change
+ * what anyone sees; it only stops the words from being baked into the code.
+ * (`Boards.priority` is taken — that one is the column/section label.)
+ * A priority an admin renamed (or created) has no key and stays as stored.
+ */
+const PRIORITY_I18N_KEYS = ["critical", "high", "medium", "low"] as const;
+
+function priorityLabel(t: (key: string) => string, name: string): string {
+  const key = name.trim().toLowerCase();
+  return (PRIORITY_I18N_KEYS as readonly string[]).includes(key)
+    ? t(`priorityLabel.${key}`)
+    : name;
+}
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr);
@@ -363,6 +373,25 @@ function labelChipSx(color: string | null | undefined, theme: Theme) {
   };
 }
 
+/**
+ * Filled status pill — the solid look from the design reference: the status's
+ * own colour as the plate, text picked for contrast (a pale status gets dark
+ * text automatically), fully rounded. Every status chip on the board renders
+ * through here, so a restyle stays a single edit.
+ *
+ * Hover deliberately lives at the call site: only the clickable chip (folder
+ * card) wants it, and MUI's `.MuiChip-clickable:hover` would otherwise swap
+ * this plate for its grey overlay — re-asserting `bgcolor` beats that rule.
+ */
+function statusChipSx(color: string, theme: Theme) {
+  return {
+    bgcolor: color,
+    color: theme.palette.getContrastText(color),
+    border: "none",
+    borderRadius: "999px",
+  };
+}
+
 const dropAnimation: DropAnimation = {
   duration: 250,
   easing: "cubic-bezier(0.25, 1, 0.5, 1)",
@@ -487,7 +516,7 @@ function TrelloCardContent({
       {issue.priorityName && (
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mt: 0.25, flexWrap: "wrap" }}>
           <Chip
-            label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
+            label={priorityLabel(t, issue.priorityName)}
             size="small"
             variant="outlined"
             color={priorityColor}
@@ -1883,14 +1912,14 @@ function IssueDetailDialog({
                     color={draftPriorityName ? "text.primary" : "text.secondary"}
                   >
                     {draftPriorityName
-                      ? PRIORITY_LABELS[draftPriorityName.toLowerCase()] ?? draftPriorityName
+                      ? priorityLabel(t, draftPriorityName)
                       : t("detail.selectPriority")}
                   </Typography>
                   <ExpandMoreIcon sx={{ fontSize: 16, color: "text.secondary" }} />
                 </Box>
               ) : draftPriorityName ? (
                 <Typography variant="body2" sx={{ mt: 0.5 }}>
-                  {PRIORITY_LABELS[draftPriorityName.toLowerCase()] ?? draftPriorityName}
+                  {priorityLabel(t, draftPriorityName)}
                 </Typography>
               ) : (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>—</Typography>
@@ -2376,7 +2405,7 @@ function IssueDetailDialog({
                       fontWeight={selected ? 600 : 400}
                       color={selected ? "text.primary" : "text.secondary"}
                     >
-                      {PRIORITY_LABELS[p.name.toLowerCase()] ?? p.name}
+                      {priorityLabel(t, p.name)}
                     </Typography>
                   </Box>
                 );
@@ -3117,11 +3146,13 @@ function FilterPanel({
   priorities,
   categories,
   apps,
+  companies,
   users,
   selectedStatusIds,
   selectedPriorityIds,
   selectedCategoryIds,
   selectedAppIds,
+  selectedCompanyIds,
   selectedAssigneeIds,
   selectedReporterIds,
   isCustomer,
@@ -3129,6 +3160,7 @@ function FilterPanel({
   onTogglePriority,
   onToggleCategory,
   onToggleApp,
+  onToggleCompany,
   onToggleAssignee,
   onToggleReporter,
   onClearAll,
@@ -3140,11 +3172,13 @@ function FilterPanel({
   priorities: IssuePriority[];
   categories: Category[];
   apps: App[];
+  companies: Company[];
   users: BoardMember[];
   selectedStatusIds: number[];
   selectedPriorityIds: number[];
   selectedCategoryIds: number[];
   selectedAppIds: number[];
+  selectedCompanyIds: number[];
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
   isCustomer: boolean;
@@ -3152,6 +3186,7 @@ function FilterPanel({
   onTogglePriority: (priorityId: number) => void;
   onToggleCategory: (categoryId: number) => void;
   onToggleApp: (appId: number) => void;
+  onToggleCompany: (companyId: number) => void;
   onToggleAssignee: (userId: string) => void;
   onToggleReporter: (userId: string) => void;
   onClearAll: () => void;
@@ -3161,11 +3196,13 @@ function FilterPanel({
   const programmers = users.filter((u) => u.isActive && u.roleName === "programmer");
   const customers = users.filter((u) => u.isActive && u.roleName === "customer");
   const visibleApps = useMemo(() => apps.filter((a) => a.isVisible), [apps]);
+  const visibleCompanies = useMemo(() => companies.filter((c) => c.isVisible), [companies]);
   const totalSelected =
     selectedStatusIds.length +
     selectedPriorityIds.length +
     selectedCategoryIds.length +
     selectedAppIds.length +
+    selectedCompanyIds.length +
     selectedAssigneeIds.length +
     selectedReporterIds.length;
   const startsOpen = (count: number, fallback: boolean) =>
@@ -3196,6 +3233,14 @@ function FilterPanel({
     checked: selectedAppIds.includes(app.id),
     onToggle: () => onToggleApp(app.id),
     start: <AppsIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main" }} />,
+  }));
+
+  const companyOptions: FilterOption[] = visibleCompanies.map((company) => ({
+    id: company.id,
+    label: company.name,
+    checked: selectedCompanyIds.includes(company.id),
+    onToggle: () => onToggleCompany(company.id),
+    start: <BusinessIcon sx={{ fontSize: 16, flexShrink: 0, color: "warning.main" }} />,
   }));
 
   const priorityOptions: FilterOption[] = priorities.map((priority) => ({
@@ -3318,6 +3363,13 @@ function FilterPanel({
           initialOpen={startsOpen(selectedAppIds.length, false)}
         />
         <FilterSection
+          title={t("filter.sectionCompany")}
+          icon={<BusinessIcon sx={{ fontSize: 18 }} />}
+          count={selectedCompanyIds.length}
+          options={companyOptions}
+          initialOpen={startsOpen(selectedCompanyIds.length, false)}
+        />
+        <FilterSection
           title={t("filter.sectionPriority")}
           icon={<FlagIcon sx={{ fontSize: 18 }} />}
           count={selectedPriorityIds.length}
@@ -3400,6 +3452,7 @@ function KanbanView({
   selectedPriorityIds,
   selectedCategoryIds,
   selectedAppIds,
+  selectedCompanyIds,
   selectedAssigneeIds,
   selectedReporterIds,
   searchQuery,
@@ -3424,6 +3477,7 @@ function KanbanView({
   selectedPriorityIds: number[];
   selectedCategoryIds: number[];
   selectedAppIds: number[];
+  selectedCompanyIds: number[];
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
   searchQuery: string;
@@ -3506,6 +3560,8 @@ function KanbanView({
             priorityIds: selectedPriorityIds,
             categoryIds: selectedCategoryIds,
             appIds: selectedAppIds,
+            // the API resolves companies through the card's app (app_companies)
+            companyIds: selectedCompanyIds,
             assigneeIds: selectedAssigneeIds,
             reporterIds: selectedReporterIds,
           },
@@ -3535,6 +3591,7 @@ function KanbanView({
       selectedPriorityIds,
       selectedCategoryIds,
       selectedAppIds,
+      selectedCompanyIds,
       selectedAssigneeIds,
       selectedReporterIds,
     ],
@@ -4047,6 +4104,7 @@ function TableView({
   selectedPriorityIds,
   selectedCategoryIds,
   selectedAppIds,
+  companyAppIds,
   selectedAssigneeIds,
   selectedReporterIds,
   searchQuery,
@@ -4069,6 +4127,12 @@ function TableView({
   selectedPriorityIds: number[];
   selectedCategoryIds: number[];
   selectedAppIds: number[];
+  /**
+   * Company filter resolved to app ids: `null` = no company selected (no
+   * constraint), `[]` = a selected company with no linked apps (must match
+   * nothing — an empty array on its own would read as "no filter").
+   */
+  companyAppIds: number[] | null;
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
   searchQuery: string;
@@ -4099,6 +4163,7 @@ function TableView({
     selectedPriorityIds.length > 0 ||
     selectedCategoryIds.length > 0 ||
     selectedAppIds.length > 0 ||
+    companyAppIds !== null ||
     selectedAssigneeIds.length > 0 ||
     selectedReporterIds.length > 0 ||
     searchQuery.trim() !== "";
@@ -4117,6 +4182,8 @@ function TableView({
         if (!matchCat && !matchCustom) return false;
       }
       if (selectedAppIds.length > 0 && !selectedAppIds.includes(issue.appId ?? -1)) return false;
+      // company → the card's app must be linked to one of the selected ones
+      if (companyAppIds !== null && !companyAppIds.includes(issue.appId ?? -1)) return false;
       if (selectedAssigneeIds.length > 0) {
         if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
       }
@@ -4130,7 +4197,7 @@ function TableView({
       }
       return true;
     });
-  }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
+  }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, companyAppIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
   const pageIssues = filteredIssues.slice((page - 1) * 10, page * 10);
 
   const handleSaveIssue = async (data: { title: string; description: string; statusId: number; labelId?: number | null }) => {
@@ -4248,7 +4315,7 @@ function TableView({
                   <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>
                     {issue.priorityName ? (
                       <Chip
-                        label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
+                        label={priorityLabel(t, issue.priorityName)}
                         size="small"
                         variant="outlined"
                         color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
@@ -4261,9 +4328,7 @@ function TableView({
                       label={getStatusName(issue.statusId)}
                       size="small"
                       sx={{
-                        bgcolor: `${getStatusColorById(issue.statusId)}20`,
-                        color: getStatusColorById(issue.statusId),
-                        border: `1px solid ${getStatusColorById(issue.statusId)}`,
+                        ...statusChipSx(getStatusColorById(issue.statusId), theme),
                         fontWeight: 600,
                         fontSize: "0.7rem",
                       }}
@@ -4480,12 +4545,12 @@ function FolderThumb({
   enabled,
 }: {
   issue: BoardIssue;
-  /** Resolved status colour — tints the placeholder when there is no image. */
+  /** Resolved status colour — tints the loading spinner while the thumb loads. */
   color: string;
   /** Gate: only viewers holding `board.view` may hit the attachment API. */
   enabled: boolean;
 }) {
-  // undefined = still loading (spinner), null = no image (placeholder)
+  // undefined = still loading (spinner), null = no image (render no plate at all)
   const [url, setUrl] = useState<string | null | undefined>(() => {
     // synchronous cache hit — no spinner flash when the thumb is already known
     if (!enabled || issue.attachmentCount <= 0) return null;
@@ -4507,6 +4572,11 @@ function FolderThumb({
     };
   }, [issue.id, issue.attachmentCount, enabled]);
 
+  /* No image to show — no attachments at all, files that aren't pictures, or
+     no `board.view` — so the card skips the plate entirely instead of drawing
+     an empty one. The paperclip count on the card still signals the files. */
+  if (url === null) return null;
+
   return (
     <Box
       sx={{
@@ -4524,15 +4594,13 @@ function FolderThumb({
     >
       {url === undefined ? (
         <CircularProgress size={24} sx={{ color: alpha(color, 0.6) }} />
-      ) : url ? (
+      ) : (
         <Box
           component="img"
           src={url}
           alt=""
           sx={{ width: "100%", height: "100%", objectFit: "cover" }}
         />
-      ) : (
-        <DescriptionIcon sx={{ color: alpha(color, 0.65), fontSize: 42 }} />
       )}
     </Box>
   );
@@ -4549,6 +4617,7 @@ function FolderView({
   selectedPriorityIds,
   selectedCategoryIds,
   selectedAppIds,
+  companyAppIds,
   selectedAssigneeIds,
   selectedReporterIds,
   searchQuery,
@@ -4568,6 +4637,8 @@ function FolderView({
   selectedPriorityIds: number[];
   selectedCategoryIds: number[];
   selectedAppIds: number[];
+  /** See TableView: `null` = no company selected, `[]` = matches nothing. */
+  companyAppIds: number[] | null;
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
   searchQuery: string;
@@ -4607,6 +4678,7 @@ function FolderView({
     selectedPriorityIds.length > 0 ||
     selectedCategoryIds.length > 0 ||
     selectedAppIds.length > 0 ||
+    companyAppIds !== null ||
     selectedAssigneeIds.length > 0 ||
     selectedReporterIds.length > 0 ||
     searchQuery.trim() !== "";
@@ -4627,6 +4699,8 @@ function FolderView({
         if (!matchCat && !matchCustom) return false;
       }
       if (selectedAppIds.length > 0 && !selectedAppIds.includes(issue.appId ?? -1)) return false;
+      // company → the card's app must be linked to one of the selected ones
+      if (companyAppIds !== null && !companyAppIds.includes(issue.appId ?? -1)) return false;
       if (selectedAssigneeIds.length > 0) {
         if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
       }
@@ -4647,6 +4721,7 @@ function FolderView({
     selectedPriorityIds,
     selectedCategoryIds,
     selectedAppIds,
+    companyAppIds,
     selectedAssigneeIds,
     selectedReporterIds,
     searchQuery,
@@ -5045,8 +5120,8 @@ function FolderView({
                       )}
                     </Box>
 
-                    {/* Drive-style preview: the first image attachment, or a
-                        status-tinted plate with a document icon */}
+                    {/* Drive-style preview: the first image attachment only —
+                        cards without one render no plate at all */}
                     <FolderThumb
                       issue={issue}
                       color={statusColor}
@@ -5063,23 +5138,32 @@ function FolderView({
                           setStatusMenu({ el: e.currentTarget, issue });
                         }}
                         clickable={statusEditable}
-                        icon={issue.isLocked ? <LockIcon sx={{ fontSize: 14 }} /> : undefined}
+                        icon={
+                          issue.isLocked ? (
+                            // `color="inherit"` keeps the lock readable on the
+                            // solid plate — without it MUI paints the icon its
+                            // default grey regardless of the chip's text colour
+                            <LockIcon color="inherit" sx={{ fontSize: 14 }} />
+                          ) : undefined
+                        }
                         sx={{
+                          ...statusChipSx(statusColor, theme),
                           height: 22,
                           fontSize: "0.7rem",
                           fontWeight: 600,
-                          bgcolor: alpha(statusColor, 0.12),
-                          color: statusColor,
-                          border: `1px solid ${statusColor}`,
                           cursor: statusEditable ? "pointer" : "default",
-                          "&:hover": statusEditable ? { bgcolor: alpha(statusColor, 0.22) } : undefined,
+                          // re-assert the plate: MUI's clickable:hover would
+                          // otherwise swap it for the grey action overlay
+                          "&:hover": statusEditable
+                            ? { bgcolor: darken(statusColor, 0.12) }
+                            : undefined,
                         }}
                       />
                       {issue.priorityName && (
                         <Chip
                           size="small"
                           variant="outlined"
-                          label={PRIORITY_LABELS[issue.priorityName.toLowerCase()] ?? issue.priorityName}
+                          label={priorityLabel(t, issue.priorityName)}
                           color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
                           sx={{ height: 22, fontSize: "0.7rem", fontWeight: 600 }}
                         />
@@ -5104,19 +5188,23 @@ function FolderView({
                       </Box>
                     </Box>
 
-                    <Typography
-                      variant="body2"
-                      color="text.secondary"
-                      sx={{
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
-                      }}
-                    >
-                      {issue.description || "—"}
-                    </Typography>
-                    <Divider />
+                    {issue.description?.trim() && (
+                      <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        sx={{
+                          display: "-webkit-box",
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: "vertical",
+                          overflow: "hidden",
+                        }}
+                      >
+                        {issue.description}
+                      </Typography>
+                    )}
+                    {/* pinned to the cell floor so footers line up across a
+                        mixed row — a card with a thumb is taller than one without */}
+                    <Divider sx={{ mt: "auto" }} />
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                       {assignee ? (
                         <Avatar
@@ -5254,11 +5342,13 @@ function BoardsPageInner() {
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [apps, setApps] = useState<App[]>([]);
+  const [companies, setCompanies] = useState<Company[]>([]);
   const [users, setUsers] = useState<BoardMember[]>([]);
   const [selectedStatusIds, setSelectedStatusIds] = useState<number[]>([]);
   const [selectedPriorityIds, setSelectedPriorityIds] = useState<number[]>([]);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<number[]>([]);
   const [selectedAppIds, setSelectedAppIds] = useState<number[]>([]);
+  const [selectedCompanyIds, setSelectedCompanyIds] = useState<number[]>([]);
   const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<string[]>([]);
   const [selectedReporterIds, setSelectedReporterIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -5367,11 +5457,20 @@ function BoardsPageInner() {
     );
   };
 
+  const handleToggleCompanyFilter = (companyId: number) => {
+    setSelectedCompanyIds((prev) =>
+      prev.includes(companyId)
+        ? prev.filter((id) => id !== companyId)
+        : [...prev, companyId],
+    );
+  };
+
   const handleClearAllFilters = () => {
     setSelectedStatusIds([]);
     setSelectedPriorityIds([]);
     setSelectedCategoryIds([]);
     setSelectedAppIds([]);
+    setSelectedCompanyIds([]);
     setSelectedAssigneeIds([]);
     setSelectedReporterIds([]);
     setSearchQuery("");
@@ -5387,18 +5486,20 @@ function BoardsPageInner() {
         fetchPriorities(),
         fetchCategories(),
         fetchApps(),
+        fetchCompanies(),
         fetchMembers(),
         // fail-open: a rejected policy lookup must not raise the load error
         fetchMovePolicy().catch(() => ({ stepOnly: false, unlockAvailable: false, staleRules: [] })),
         refreshTimers(),
       ]);
-      const [iss, lbls, sts, pri, cats, aps, usr, policy] = results;
+      const [iss, lbls, sts, pri, cats, aps, cmps, usr, policy] = results;
       if (iss.status === "fulfilled") setIssues(iss.value.data);
       if (lbls.status === "fulfilled") setLabels(lbls.value.data);
       if (sts.status === "fulfilled") setStatuses(sts.value.data);
       if (pri.status === "fulfilled") setPriorities(pri.value.data);
       if (cats.status === "fulfilled") setCategories(cats.value.data);
       if (aps.status === "fulfilled") setApps(aps.value.data);
+      if (cmps.status === "fulfilled") setCompanies(cmps.value.data);
       if (usr.status === "fulfilled") setUsers(usr.value);
       if (policy.status === "fulfilled") {
         setStepOnlyMoves(policy.value.stepOnly);
@@ -5440,6 +5541,23 @@ function BoardsPageInner() {
     };
   }, [issueParam]);
 
+  /**
+   * Company filter resolved to app ids for the two in-memory views (table /
+   * folder) — the kanban columns ask the API with `companyIds` instead.
+   * `null` = no company selected (no constraint at all); `[]` = a selected
+   * company that no app is linked to, which must match nothing (an empty
+   * array without the null would read as "no filter" and show every card).
+   */
+  const companyAppIds = useMemo<number[] | null>(() => {
+    if (selectedCompanyIds.length === 0) return null;
+    const wanted = new Set(selectedCompanyIds);
+    const ids = new Set<number>();
+    for (const app of apps) {
+      if (app.companies?.some((link) => wanted.has(link.id))) ids.add(app.id);
+    }
+    return [...ids];
+  }, [apps, selectedCompanyIds]);
+
   const activeFilterChips = useMemo(() => {
     type FilterChipEntry = {
       key: string;
@@ -5474,6 +5592,15 @@ function BoardsPageInner() {
         label: app.name,
         icon: <AppsIcon sx={{ fontSize: 16, ml: 0.5 }} />,
         onDelete: () => handleToggleAppFilter(app.id),
+      });
+    }
+    for (const company of companies) {
+      if (!selectedCompanyIds.includes(company.id)) continue;
+      chips.push({
+        key: `company-${company.id}`,
+        label: company.name,
+        icon: <BusinessIcon sx={{ fontSize: 16, ml: 0.5 }} />,
+        onDelete: () => handleToggleCompanyFilter(company.id),
       });
     }
     for (const priority of priorities) {
@@ -5518,11 +5645,13 @@ function BoardsPageInner() {
   }, [
     statuses,
     apps,
+    companies,
     priorities,
     categories,
     users,
     selectedStatusIds,
     selectedAppIds,
+    selectedCompanyIds,
     selectedPriorityIds,
     selectedCategoryIds,
     selectedAssigneeIds,
@@ -5712,6 +5841,7 @@ function BoardsPageInner() {
                 selectedPriorityIds={selectedPriorityIds}
                 selectedCategoryIds={selectedCategoryIds}
                 selectedAppIds={selectedAppIds}
+                companyAppIds={companyAppIds}
                 selectedAssigneeIds={selectedAssigneeIds}
                 selectedReporterIds={selectedReporterIds}
                 searchQuery={searchQuery}
@@ -5732,6 +5862,7 @@ function BoardsPageInner() {
                 selectedPriorityIds={selectedPriorityIds}
                 selectedCategoryIds={selectedCategoryIds}
                 selectedAppIds={selectedAppIds}
+                selectedCompanyIds={selectedCompanyIds}
                 selectedAssigneeIds={selectedAssigneeIds}
                 selectedReporterIds={selectedReporterIds}
                 searchQuery={searchQuery}
@@ -5758,6 +5889,7 @@ function BoardsPageInner() {
                 selectedPriorityIds={selectedPriorityIds}
                 selectedCategoryIds={selectedCategoryIds}
                 selectedAppIds={selectedAppIds}
+                companyAppIds={companyAppIds}
                 selectedAssigneeIds={selectedAssigneeIds}
                 selectedReporterIds={selectedReporterIds}
                 searchQuery={searchQuery}
@@ -5780,11 +5912,13 @@ function BoardsPageInner() {
             priorities={priorities}
             categories={categories}
             apps={apps}
+            companies={companies}
             users={users}
             selectedStatusIds={selectedStatusIds}
             selectedPriorityIds={selectedPriorityIds}
             selectedCategoryIds={selectedCategoryIds}
             selectedAppIds={selectedAppIds}
+            selectedCompanyIds={selectedCompanyIds}
             selectedAssigneeIds={selectedAssigneeIds}
             selectedReporterIds={selectedReporterIds}
             isCustomer={isCustomer}
@@ -5792,6 +5926,7 @@ function BoardsPageInner() {
             onTogglePriority={handleTogglePriorityFilter}
             onToggleCategory={handleToggleCategoryFilter}
             onToggleApp={handleToggleAppFilter}
+            onToggleCompany={handleToggleCompanyFilter}
             onToggleAssignee={handleToggleAssigneeFilter}
             onToggleReporter={handleToggleReporterFilter}
             onClearAll={handleClearAllFilters}

@@ -2,12 +2,10 @@
 
 import { apiFetch } from "./api";
 import { getToken } from "./rules-api";
-import {
-  fetchApps,
-  fetchCategories,
-  fetchPriorities,
-  fetchStatuses,
-} from "./board-api";
+import { fetchCategories, fetchPriorities, fetchStatuses } from "./board-api";
+// apps-api's `fetchApps` — unlike board-api's, it types `companies[].maHours`,
+// which the MA / คงเหลือ columns need. Same endpoint, same payload.
+import { fetchCompanies, fetchApps, sumMaHours } from "./apps-api";
 
 /**
  * Reports data layer — every row on the /reports page comes from the real
@@ -47,6 +45,7 @@ export interface ReportFilters {
   statusIds: number[];
   priorityIds: number[];
   appIds: number[];
+  companyIds: number[];
 }
 
 export const EMPTY_FILTERS: ReportFilters = {
@@ -59,6 +58,7 @@ export const EMPTY_FILTERS: ReportFilters = {
   statusIds: [],
   priorityIds: [],
   appIds: [],
+  companyIds: [],
 };
 
 export interface SortState {
@@ -159,13 +159,31 @@ export interface FilterOption {
   name: string;
 }
 
+/**
+ * Contract facts of one app — the data behind the บริษัท / ชั่วโมง MA / คงเหลือ
+ * columns. Built from the same `GET /apps` call the filter panel already makes,
+ * so the columns cost no extra request. **Not a filter section** (the panel
+ * ignores it): MA is a contract number, it does not respond to report filters.
+ */
+export interface AppContract {
+  id: number;
+  name: string;
+  /** Company names linked through `app_companies`, in the order the API sends. */
+  companies: string[];
+  /** Sum of `ma_hours` over every pair — `null` = no pair has one yet. */
+  maHours: number | null;
+}
+
 export interface FilterOptions {
   statuses: FilterOption[];
   priorities: FilterOption[];
   categories: FilterOption[];
   apps: FilterOption[];
+  companies: FilterOption[];
   people: FilterOption[];
   reporters: FilterOption[];
+  /** Contract facts per app — see `AppContract`. Not a filter section. */
+  appContracts: AppContract[];
 }
 
 /** Until the option lists land, sections render empty (not a spinner). */
@@ -174,8 +192,10 @@ export const EMPTY_FILTER_OPTIONS: FilterOptions = {
   priorities: [],
   categories: [],
   apps: [],
+  companies: [],
   people: [],
   reporters: [],
+  appContracts: [],
 };
 
 export function activeFilterCount(f: ReportFilters): number {
@@ -188,6 +208,7 @@ export function activeFilterCount(f: ReportFilters): number {
   if (f.statusIds.length) n += 1;
   if (f.priorityIds.length) n += 1;
   if (f.appIds.length) n += 1;
+  if (f.companyIds.length) n += 1;
   return n;
 }
 
@@ -381,6 +402,7 @@ function filterParams(f: ReportFilters): URLSearchParams {
   if (f.statusIds.length) p.set("statuses", f.statusIds.join(","));
   if (f.priorityIds.length) p.set("priorityIds", f.priorityIds.join(","));
   if (f.appIds.length) p.set("appIds", f.appIds.join(","));
+  if (f.companyIds.length) p.set("companyIds", f.companyIds.join(","));
   return p;
 }
 
@@ -404,8 +426,13 @@ async function fetchRealIssues(query: ReportQuery): Promise<ReportPage<IssueRow>
   return { ...res, data: res.data.map(mapIssue) };
 }
 
-/** Every summary group — the client sorts and pages these (tens of rows). */
-async function fetchSummaryRows(
+/**
+ * Every summary group — the client sorts and pages these (tens of rows).
+ *
+ * Exported for `/systems`'s MA tab: it joins `hoursEntered` (the entered-time
+ * sum per app) against `maHours` from `fetchApps()` to show "คงเหลือ".
+ */
+export async function fetchSummaryRows(
   groupBy: "person" | "app",
   filters: ReportFilters,
 ): Promise<SummaryRow[]> {
@@ -511,14 +538,18 @@ export async function fetchReportPeople(): Promise<ReportPeople> {
 /**
  * Dropdown/section options from the existing board endpoints. On any failure
  * the panel renders with empty sections instead of breaking the page.
+ *
+ * `appContracts` rides the same `GET /apps` call the app section already
+ * needs — the บริษัท / ชั่วโมง MA columns get their data for free.
  */
 export async function loadFilterOptions(): Promise<FilterOptions> {
   try {
-    const [statuses, priorities, categories, apps, people] = await Promise.all([
+    const [statuses, priorities, categories, apps, companies, people] = await Promise.all([
       fetchStatuses(),
       fetchPriorities(),
       fetchCategories(),
       fetchApps(),
+      fetchCompanies(),
       fetchReportPeople(),
     ]);
     return {
@@ -526,12 +557,40 @@ export async function loadFilterOptions(): Promise<FilterOptions> {
       priorities: priorities.data.map((p) => ({ id: p.id, name: p.name })),
       categories: categories.data.map((c) => ({ id: c.id, name: c.name })),
       apps: apps.data.map((a) => ({ id: a.id, name: a.name })),
+      // master data — deactivated companies drop out, same as the app section
+      companies: companies.data
+        .filter((c) => c.isVisible)
+        .map((c) => ({ id: c.id, name: c.name })),
       people: people.assignees,
       reporters: people.reporters,
+      appContracts: apps.data.map((a) => ({
+        id: a.id,
+        name: a.name,
+        companies: (a.companies ?? []).map((c) => c.name),
+        maHours: sumMaHours(a.companies ?? []),
+      })),
     };
   } catch {
     return EMPTY_FILTER_OPTIONS;
   }
+}
+
+/**
+ * "ใช้ไป" ต่อแอป **แบบไม่กรองอะไรเลย** (`EMPTY_FILTERS`) — ตัวส่วนของสูตร
+ * คงเหลือ = MA − ใช้ไป ในมุมมอง "ตามแอป"
+ *
+ * ต้องเป็น all-time เพราะ `hoursEntered` ของแถวบนจอ **ผ่านตัวกรองวันที่/
+ * ค้นหา** อยู่แล้ว — ถ้าเอาตัวนั้นไปลบ MA พอผู้ใช้เลือกช่วงวันที่ ตัวเลข
+ * คงเหลือจะขยับทั้งที่สัญญาไม่ได้เปลี่ยน (คนละค่ากับ `/systems` ด้วย)
+ */
+export async function fetchAppUsageAllTime(): Promise<Map<number, number>> {
+  const rows = await fetchSummaryRows("app", EMPTY_FILTERS);
+  const used = new Map<number, number>();
+  for (const row of rows) {
+    if (row.isTotal || row.appId == null) continue;
+    used.set(row.appId, row.hoursEntered);
+  }
+  return used;
 }
 
 /* ------------------------------------------------------------------ */

@@ -21,9 +21,10 @@ import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import NoteAltOutlinedIcon from "@mui/icons-material/NoteAltOutlined";
 import Visibility from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
+import { Link as MuiLink } from "@mui/material";
 import { apiFetch, ApiError } from "@/lib/api";
 import { AuthUser, useAuthStore } from "@/lib/auth-store";
-import { useRouter } from "@/i18n/navigation";
+import { Link, useRouter } from "@/i18n/navigation";
 
 function LoginPageInner() {
   const t = useTranslations("Login");
@@ -143,7 +144,7 @@ function LoginPageInner() {
             <NoteAltOutlinedIcon fontSize="small" />
           </Box>
 
-          <Typography variant="h5" fontWeight={700} color="text.primary">
+          <Typography variant="h5" fontWeight={700} color="text.primary" sx={{ mb: 3 }}>
             {t("title")}
           </Typography>
 
@@ -209,7 +210,17 @@ function LoginPageInner() {
               }}
             />
 
-            <Box sx={{ display: "flex", justifyContent: "flex-start", mb: 3, mt: 1 }}>
+            {/* Remember me on the left, the reset entry point on the right */}
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 1,
+                mb: 3,
+                mt: 1,
+              }}
+            >
               <FormControlLabel
                 control={
                   <Checkbox
@@ -224,6 +235,9 @@ function LoginPageInner() {
                   </Typography>
                 }
               />
+              <MuiLink component={Link} href="/forgot-password" underline="hover" variant="body2">
+                {t("forgotPassword")}
+              </MuiLink>
             </Box>
 
             <Button

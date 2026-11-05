@@ -191,6 +191,7 @@ export async function fetchIssues(
     priorityIds?: number[];
     categoryIds?: number[];
     appIds?: number[];
+    companyIds?: number[];
     assigneeIds?: string[];
     reporterIds?: string[];
   },
@@ -213,6 +214,9 @@ export async function fetchIssues(
   }
   if (filters?.appIds && filters.appIds.length > 0) {
     params.set("appIds", filters.appIds.join(","));
+  }
+  if (filters?.companyIds && filters.companyIds.length > 0) {
+    params.set("companyIds", filters.companyIds.join(","));
   }
   if (filters?.assigneeIds && filters.assigneeIds.length > 0) {
     params.set("assigneeIds", filters.assigneeIds.join(","));
@@ -470,6 +474,12 @@ export interface App {
   name: string;
   isVisible: boolean;
   issueCount: number;
+  /**
+   * บริษัทที่ผูกอยู่ผ่าน `app_companies` — `GET /apps` sends it with every row;
+   * optional here only so a stripped-down payload cannot crash the board.
+   * The company filter resolves itself through this list.
+   */
+  companies?: Array<{ id: number; name: string }>;
 }
 
 export async function fetchApps(): Promise<PaginatedResponse<App>> {

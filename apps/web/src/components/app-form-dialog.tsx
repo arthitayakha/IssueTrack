@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import {
   Box,
   Button,
@@ -18,9 +18,19 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
+import { DatePicker } from "@mui/x-date-pickers/DatePicker";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
+import dayjs from "dayjs";
+import "dayjs/locale/th";
 import { ApiError } from "@/lib/api";
 import { saveApp, type App, type Company } from "@/lib/apps-api";
-import { expiryColor, expiryLabelKey, previewExpiryStatus } from "@/lib/app-expiry";
+import {
+  daysLeftIso,
+  expiryChipLabel,
+  expiryColor,
+  previewExpiryStatus,
+} from "@/lib/app-expiry";
 import { useNotification } from "@/components/notification";
 
 /**
@@ -47,6 +57,7 @@ export default function AppFormDialog({
   onSaved: () => void;
 }) {
   const t = useTranslations("Settings");
+  const locale = useLocale();
   const { notify } = useNotification();
 
   // ฟอร์มแอป = **บริษัทเดียว** (dropdown) + วันที่ 2 ช่อง + ชั่วโมง MA ของคู่
@@ -77,6 +88,8 @@ export default function AppFormDialog({
 
   /** สถานะอายุที่ชิปจะโชว์ — คำนวณใหม่ทุกครั้งที่ผู้ใช้แก้วันที่ */
   const status = previewExpiryStatus(form.expiresAt);
+  /** ข้อความชิป = "เหลือ n วัน ใกล้หมดอายุ" / "หมดอายุแล้ว n วัน" / … (จากวันเหลือ) */
+  const chip = expiryChipLabel(status, daysLeftIso(form.expiresAt));
 
   async function handleSave() {
     if (!form.companyId) {
@@ -137,10 +150,11 @@ export default function AppFormDialog({
                 </MenuItem>
               ))}
             </Select>
-            <FormHelperText>
-              {error ??
-                (companies.length === 0 ? t("noCompaniesHint") : t("companyOneHint"))}
-            </FormHelperText>
+            {/* error / ยังไม่มีบริษัทในระบบ เท่านั้นที่มีข้อความใต้ช่อง —
+                ปกติเว้นว่างไว้เพื่อให้ช่องไฟทุกช่องเท่ากัน */}
+            {(error || companies.length === 0) && (
+              <FormHelperText>{error ?? t("noCompaniesHint")}</FormHelperText>
+            )}
           </FormControl>
           {/* ชั่วโมง MA เป็นของคู่ แอป×บริษัท → วางใต้ dropdown บริษัท */}
           <TextField
@@ -150,33 +164,44 @@ export default function AppFormDialog({
             onChange={(e) => setForm({ ...form, maHours: e.target.value })}
             fullWidth
             inputProps={{ min: 0, step: 1 }}
-            helperText={t("maHoursHint")}
           />
-          <TextField
-            label={t("columnStartedAt")}
-            type="date"
-            value={form.startedAt}
-            onChange={(e) => setForm({ ...form, startedAt: e.target.value })}
-            fullWidth
-            InputLabelProps={{ shrink: true }}
-            helperText={t("startedAtHint")}
-          />
-          <TextField
-            label={t("columnExpiresAt")}
-            type="date"
-            value={form.expiresAt}
-            onChange={(e) => setForm({ ...form, expiresAt: e.target.value })}
-            fullWidth
-            InputLabelProps={{ shrink: true }}
-            helperText={t("expiresAtHint")}
-          />
+          {/* วันที่ 2 ช่อง — MUI DatePicker format DD/MM/YYYY (วัน เดือน ปี)
+              ค่าที่เก็บ/ส่ง API ยังเป็น string yyyy-mm-dd เหมือนเดิม */}
+          <LocalizationProvider
+            dateAdapter={AdapterDayjs}
+            adapterLocale={locale === "th" ? "th" : undefined}
+          >
+            <DatePicker
+              label={t("columnStartedAt")}
+              value={form.startedAt ? dayjs(form.startedAt) : null}
+              onChange={(next) =>
+                setForm({ ...form, startedAt: next ? next.format("YYYY-MM-DD") : "" })
+              }
+              format="DD/MM/YYYY"
+              slotProps={{ textField: { fullWidth: true } }}
+            />
+            {/* ไม่มี `mt` — `gap: 2` ของกล่องแม่เป็นตัวเว้นคนเดียว
+                (`LocalizationProvider` ไม่สร้าง DOM จึงกลายเป็น flex child ตรง ๆ
+                 ถ้าบวก mt จะได้ 32px ส่วนอื่น 16px) */}
+            <Box>
+              <DatePicker
+                label={t("columnExpiresAt")}
+                value={form.expiresAt ? dayjs(form.expiresAt) : null}
+                onChange={(next) =>
+                  setForm({ ...form, expiresAt: next ? next.format("YYYY-MM-DD") : "" })
+                }
+                format="DD/MM/YYYY"
+                slotProps={{ textField: { fullWidth: true } }}
+              />
+            </Box>
+          </LocalizationProvider>
           {/* สถานะอายุที่คำนวณสดจากวันที่ด้านบน — เซิร์ฟเวอร์ยังเป็นคนตัวจริงตอนบันทึก */}
           <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
             <Typography variant="caption" color="text.secondary">
               {t("columnExpiryStatus")}
             </Typography>
             <Chip
-              label={t(expiryLabelKey(status))}
+              label={t(chip.key, { n: chip.n ?? 0 })}
               color={expiryColor(status)}
               size="small"
               variant="outlined"

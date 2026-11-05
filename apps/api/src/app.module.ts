@@ -23,6 +23,7 @@ import { ActivityLogsModule } from "./modules/activity-logs/activity-logs.module
 import { RulesModule } from "./modules/rules/rules.module";
 import { ReportsModule } from "./modules/reports/reports.module";
 import { DashboardModule } from "./modules/dashboard/dashboard.module";
+import { SystemsModule } from "./modules/systems/systems.module";
 import { JwtAuthGuard } from "./modules/auth/jwt-auth.guard";
 
 @Module({
@@ -60,6 +61,7 @@ import { JwtAuthGuard } from "./modules/auth/jwt-auth.guard";
     RulesModule,
     ReportsModule,
     DashboardModule,
+    SystemsModule,
   ],
   providers: [
     {

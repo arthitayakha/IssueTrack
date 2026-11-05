@@ -10,65 +10,27 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
   IconButton,
   TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
-import PhotoCameraIcon from "@mui/icons-material/PhotoCamera";
+import CloseIcon from "@mui/icons-material/Close";
+import EditIcon from "@mui/icons-material/Edit";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { useAuthStore } from "@/lib/auth-store";
 import { apiFetch, ApiError } from "@/lib/api";
 import { invalidateAvatar, resizeAvatar, useOwnAvatar } from "@/lib/avatar";
 import { useNotification } from "@/components/notification";
 
-/** Which inline editor is open over the popup (name / e-mail / password). */
-type Editor = "name" | "email" | "password" | null;
+/** Which sub-dialog sits over the popup (password form / e-mail reset / e-mail confirm). */
+type Editor = "password" | "passwordReset" | "emailConfirm" | null;
+/** Which field is currently being typed into (values show as text otherwise). */
+type EditableField = "name" | "email" | null;
 
 interface ProfileDialogProps {
   open: boolean;
   onClose: () => void;
-}
-
-/** One label → value → action line, the layout of the account popup. */
-function ProfileRow({
-  label,
-  action,
-  children,
-}: {
-  label: string;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 2, py: 1 }}>
-      <Typography
-        variant="body2"
-        color="text.secondary"
-        sx={{ width: { xs: 92, sm: 110 }, flexShrink: 0 }}
-      >
-        {label}
-      </Typography>
-      <Typography
-        variant="body2"
-        color="text.primary"
-        fontWeight={600}
-        sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}
-      >
-        {children}
-      </Typography>
-      {action}
-    </Box>
-  );
-}
-
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return (
-    <Typography variant="subtitle1" fontWeight={700} color="text.primary" sx={{ mb: 0.5 }}>
-      {children}
-    </Typography>
-  );
 }
 
 /** Cheap client-side shape check — the API's `@IsEmail` is the real gate. */
@@ -76,9 +38,32 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /** Mirrors `ChangePasswordDto`'s `@MinLength(6)` (same floor as logging in). */
 const MIN_PASSWORD = 6;
 
+/** The caption line of a field, with its edit pencil hanging off the right. */
+function FieldLabel({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        minHeight: 26,
+        mb: 0.25,
+      }}
+    >
+      <Typography variant="body2" fontWeight={700} color="text.primary">
+        {children}
+      </Typography>
+      {action}
+    </Box>
+  );
+}
+
 /**
- * The account popup: a list of read-only rows (name / e-mail / password /
- * role) each with its own edit dialog, plus the avatar row. Everything is
+ * The account popup: values are plain text until the pencil (✎) turns that
+ * one field into an input in place — Escape reverts it, Enter / leaving the
+ * field keeps what was typed, and a single Save button writes everything. A
+ * changed e-mail asks for the current password in a confirm popup first; the
+ * password form sits in its own box under the role. Everything is
  * self-service through `/auth/profile*`, so no `user.update` permission is
  * needed — and a wrong current password comes back as 403, which never logs
  * the user out (only a real 401 does).
@@ -93,17 +78,16 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [editor, setEditor] = useState<Editor>(null);
+  const [editing, setEditing] = useState<EditableField>(null);
 
-  // name editor
+  // the form itself
   const [name, setName] = useState(user?.name ?? "");
-  const [savingName, setSavingName] = useState(false);
-  // e-mail editor
-  const [email, setEmail] = useState("");
-  const [emailPassword, setEmailPassword] = useState("");
+  const [email, setEmail] = useState(user?.email ?? "");
   const [emailError, setEmailError] = useState<string | null>(null);
-  const [emailPwError, setEmailPwError] = useState<string | null>(null);
-  const [savingEmail, setSavingEmail] = useState(false);
-  // password editor
+  const [saving, setSaving] = useState(false);
+  // e-mail confirm popup (only shown when the e-mail actually changed)
+  const [confirmPassword, setConfirmPassword] = useState("");
+  // password form
   const [pwCurrent, setPwCurrent] = useState("");
   const [pwNew, setPwNew] = useState("");
   const [pwConfirm, setPwConfirm] = useState("");
@@ -113,18 +97,19 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   const [uploading, setUploading] = useState(false);
   const [removing, setRemoving] = useState(false);
 
-  // re-sync when reopened (or after an external rename)
+  // re-sync when reopened (or after an external rename / e-mail change)
   useEffect(() => {
-    if (open) setName(user?.name ?? "");
-  }, [open, user?.name]);
+    if (open) {
+      setName(user?.name ?? "");
+      setEmail(user?.email ?? "");
+    }
+  }, [open, user?.name, user?.email]);
 
-  /** Wipes every sub-form — used when the popup shuts or an editor closes. */
-  const resetEditors = useCallback(() => {
+  /** Wipes every sub-form and edit mode — used when the popup shuts. */
+  const resetSubDialogs = useCallback(() => {
     setEditor(null);
-    setEmail("");
-    setEmailPassword("");
-    setEmailError(null);
-    setEmailPwError(null);
+    setEditing(null);
+    setConfirmPassword("");
     setPwCurrent("");
     setPwNew("");
     setPwConfirm("");
@@ -132,11 +117,15 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   }, []);
 
   useEffect(() => {
-    if (!open) resetEditors();
-  }, [open, resetEditors]);
+    if (!open) resetSubDialogs();
+  }, [open, resetSubDialogs]);
 
   const hasAvatar = Boolean(avatarUrl);
-  const nameChanged = name.trim() !== (user?.name ?? "").trim();
+  const trimmedName = name.trim();
+  const trimmedEmail = email.trim();
+  const nameDirty = trimmedName !== (user?.name ?? "").trim();
+  const emailDirty = trimmedEmail.toLowerCase() !== (user?.email ?? "").toLowerCase();
+  const dirty = nameDirty || emailDirty;
 
   function handlePickPicture() {
     fileInputRef.current?.click();
@@ -185,65 +174,84 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
     }
   }
 
-  async function handleSaveName() {
-    if (!token) return;
-    const trimmed = name.trim();
-    if (!trimmed) {
-      notify(t("profileNameRequired"), "error");
-      return;
-    }
-    if (!nameChanged) {
-      setEditor(null);
-      return;
-    }
-    setSavingName(true);
-    try {
-      const updated = await apiFetch<{ name: string }>(
-        "/auth/profile",
-        { method: "PATCH", body: JSON.stringify({ name: trimmed }) },
-        token,
-      );
-      updateUser({ name: updated.name });
-      notify(t("profileNameSaved"), "success");
-      setEditor(null);
-    } catch (err) {
-      notify(err instanceof ApiError ? err.message : t("genericError"), "error");
-    } finally {
-      setSavingName(false);
+  /** Esc reverts the field to the stored value; Enter / blur just leaves edit
+   *  mode keeping what was typed (the popup must not close on Escape — that
+   *  is the Dialog's own handler, so propagation is stopped). */
+  function handleFieldKeyDown(event: React.KeyboardEvent, field: EditableField) {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      if (field === "name") setName(user?.name ?? "");
+      else {
+        setEmail(user?.email ?? "");
+        setEmailError(null);
+      }
+      setEditing(null);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      setEditing(null);
     }
   }
 
-  async function handleSaveEmail() {
-    if (!token) return;
-    const trimmed = email.trim();
-    if (!EMAIL_RE.test(trimmed)) {
+  /** Save button: validate, then ask for the password only if the e-mail moved. */
+  function handleSave() {
+    if (!token || saving) return;
+    if (!trimmedName) return; // the field's own helper text already says why
+    if (!EMAIL_RE.test(trimmedEmail)) {
       setEmailError(t("emailInvalid"));
-      setEmailPwError(null);
+      setEditing("email"); // show the field that needs fixing
       return;
     }
-    if (!emailPassword) {
-      setEmailPwError(t("passwordCurrentRequired"));
-      setEmailError(null);
+    if (!dirty) {
+      onClose();
       return;
     }
-    setEmailError(null);
-    setEmailPwError(null);
-    setSavingEmail(true);
+    if (emailDirty) {
+      setConfirmPassword("");
+      setEditor("emailConfirm");
+      return;
+    }
+    void doSave(null);
+  }
+
+  /**
+   * Writes the changes: e-mail first (it is the step that can be rejected by
+   * the password), then the name — so a wrong password leaves everything
+   * untouched. Each successful patch updates the store straight away, so a
+   * later failure never hides a change that already landed.
+   */
+  async function doSave(currentPassword: string | null) {
+    if (!token) return;
+    let step: "email" | "name" | null = null;
+    setSaving(true);
     try {
-      const updated = await apiFetch<{ email: string }>(
-        "/auth/profile/email",
-        {
-          method: "PATCH",
-          body: JSON.stringify({ email: trimmed, currentPassword: emailPassword }),
-        },
-        token,
-      );
-      updateUser({ email: updated.email });
-      notify(t("emailSaved"), "success");
-      setEditor(null);
+      if (emailDirty) {
+        step = "email";
+        const updated = await apiFetch<{ email: string }>(
+          "/auth/profile/email",
+          {
+            method: "PATCH",
+            body: JSON.stringify({ email: trimmedEmail, currentPassword }),
+          },
+          token,
+        );
+        updateUser({ email: updated.email });
+      }
+      if (nameDirty) {
+        step = "name";
+        const updated = await apiFetch<{ name: string }>(
+          "/auth/profile",
+          { method: "PATCH", body: JSON.stringify({ name: trimmedName }) },
+          token,
+        );
+        updateUser({ name: updated.name });
+      }
+      notify(t("profileSaved"), "success");
+      onClose();
     } catch (err) {
-      // 403 = wrong current password, 409 = already taken, 400 = bad format
+      // 403 = wrong current password, 409 = taken, 400 = bad format — all of
+      // which are worth another try inside the confirm popup
       const status = err instanceof ApiError ? err.status : 0;
+      const retryable = status === 403 || status === 409 || status === 400;
       const message =
         status === 403
           ? t("passwordWrongCurrent")
@@ -255,8 +263,13 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
                 ? err.message
                 : t("genericError");
       notify(message, "error");
+      if (step === "email" && retryable) {
+        setConfirmPassword(""); // let the user type it again
+      } else {
+        setEditor(null); // the form stays open with the fields still dirty
+      }
     } finally {
-      setSavingEmail(false);
+      setSaving(false);
     }
   }
 
@@ -290,7 +303,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
         token,
       );
       notify(t("passwordChanged"), "success");
-      setEditor(null);
+      setEditor(null); // only the password form closes — the profile stays open
     } catch (err) {
       // 403 = wrong current password; 400 only survives client checks when
       // the DTO rejects the length, so map it to the length message
@@ -309,78 +322,143 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
     }
   }
 
-  const editButton = (target: Editor) => (
-    <Button size="small" variant="contained" onClick={() => setEditor(target)}>
-      {t("edit")}
-    </Button>
+  /**
+   * Reset (for people who cannot remember the current password): the session
+   * is the proof, so only the new value and its confirmation are validated
+   * here. "Repeats the old one" can only come back from the API — it is the
+   * only side holding the hash — hence the 400 mapping below (length is
+   * already ruled out client-side by `MIN_PASSWORD`).
+   */
+  async function handleResetPassword() {
+    if (!token) return;
+    if (!pwNew || !pwConfirm) {
+      setPwError(t("passwordRequired"));
+      return;
+    }
+    if (pwNew.length < MIN_PASSWORD) {
+      setPwError(t("passwordTooShort"));
+      return;
+    }
+    if (pwNew !== pwConfirm) {
+      setPwError(t("passwordMismatch"));
+      return;
+    }
+    setPwError(null);
+    setSavingPassword(true);
+    try {
+      await apiFetch(
+        "/auth/profile/reset-password",
+        { method: "POST", body: JSON.stringify({ newPassword: pwNew }) },
+        token,
+      );
+      notify(t("passwordResetDone"), "success");
+      setPwNew("");
+      setPwConfirm("");
+      setEditor(null); // only the reset form closes — the profile stays open
+    } catch (err) {
+      notify(
+        err instanceof ApiError && err.status === 400
+          ? t("passwordSame")
+          : err instanceof ApiError
+            ? err.message
+            : t("genericError"),
+        "error",
+      );
+    } finally {
+      setSavingPassword(false);
+    }
+  }
+
+  /** Opens the reset form with clean fields (both entry points go through it). */
+  function openPasswordReset() {
+    setPwCurrent("");
+    setPwNew("");
+    setPwConfirm("");
+    setPwError(null);
+    setEditor("passwordReset");
+  }
+
+  const pencil = (field: Exclude<EditableField, null>) => (
+    <IconButton
+      size="small"
+      onClick={() => setEditing(field)}
+      aria-label={t("edit")}
+      title={t("edit")}
+      sx={{ mr: -0.75 }}
+    >
+      <EditIcon fontSize="small" />
+    </IconButton>
   );
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
-      <DialogTitle fontWeight={700} sx={{ pb: 0 }}>
-        {user?.name}
+      <DialogTitle
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          fontWeight: 700,
+        }}
+      >
+        {t("tabProfile")}
+        <IconButton edge="end" size="small" onClick={onClose} aria-label={t("close")}>
+          <CloseIcon fontSize="small" />
+        </IconButton>
       </DialogTitle>
 
       <DialogContent dividers sx={{ px: 3, py: 2 }}>
-        {/* --- Account data --- */}
-        <SectionTitle>{t("sectionAccount")}</SectionTitle>
+        {/* --- Avatar: picture + pencil badge, the upload trigger --- */}
+        <Box
+          sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1, mb: 2.5 }}
+        >
+          <Box sx={{ position: "relative", display: "inline-flex" }}>
+            <Avatar
+              src={avatarUrl ?? undefined}
+              sx={{
+                width: 72,
+                height: 72,
+                bgcolor: "primary.main",
+                color: "primary.contrastText",
+                fontSize: "1.75rem",
+                fontWeight: 600,
+              }}
+            >
+              {user?.name?.charAt(0).toUpperCase()}
+            </Avatar>
+            <Tooltip title={t("profileUploadPhoto")}>
+              <IconButton
+                onClick={handlePickPicture}
+                disabled={uploading}
+                aria-label={t("profileUploadPhoto")}
+                sx={{
+                  position: "absolute",
+                  right: -6,
+                  bottom: -6,
+                  width: 28,
+                  height: 28,
+                  bgcolor: "primary.main",
+                  color: "primary.contrastText",
+                  border: "2px solid",
+                  borderColor: "background.paper",
+                  "&:hover": { bgcolor: "primary.dark" },
+                }}
+              >
+                <EditIcon sx={{ fontSize: "1rem" }} />
+              </IconButton>
+            </Tooltip>
+          </Box>
 
-        <ProfileRow label={t("profileName")} action={editButton("name")}>
-          {user?.name || "—"}
-        </ProfileRow>
-
-        <ProfileRow label={t("profileEmail")} action={editButton("email")}>
-          {user?.email || "—"}
-        </ProfileRow>
-
-        <ProfileRow label={t("profilePassword")} action={editButton("password")}>
-          {"••••••••"}
-        </ProfileRow>
-
-        <ProfileRow label={t("profileRole")}>{user?.roleName || "—"}</ProfileRow>
-
-        <Divider sx={{ my: 2 }} />
-
-        {/* --- Avatar --- */}
-        <SectionTitle>{t("sectionAvatar")}</SectionTitle>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2, py: 1 }}>
-          <Avatar
-            src={avatarUrl ?? undefined}
-            sx={{
-              width: 48,
-              height: 48,
-              bgcolor: "primary.main",
-              color: "primary.contrastText",
-              fontSize: "1.25rem",
-              fontWeight: 600,
-              flexShrink: 0,
-            }}
-          >
-            {user?.name?.charAt(0).toUpperCase()}
-          </Avatar>
-          <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", flex: 1 }}>
+          {hasAvatar && (
             <Button
               size="small"
-              variant="contained"
-              startIcon={<PhotoCameraIcon fontSize="small" />}
-              onClick={handlePickPicture}
-              disabled={uploading}
+              startIcon={<DeleteOutlineIcon fontSize="small" />}
+              onClick={handleRemovePicture}
+              disabled={removing}
             >
-              {uploading ? t("profilePhotoUploading") : t("profileUploadPhoto")}
+              {t("profileRemovePhoto")}
             </Button>
-            {hasAvatar && (
-              <Tooltip title={t("profileRemovePhoto")}>
-                <IconButton
-                  size="small"
-                  onClick={handleRemovePicture}
-                  disabled={removing}
-                  aria-label={t("profileRemovePhoto")}
-                >
-                  <DeleteOutlineIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            )}
-          </Box>
+          )}
+
           <input
             ref={fileInputRef}
             type="file"
@@ -389,88 +467,161 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
             onChange={handleFileChange}
           />
         </Box>
+
+        {/* --- Account data: plain text until the pencil is clicked --- */}
+        <Typography variant="subtitle1" fontWeight={700} color="text.primary" sx={{ mb: 1 }}>
+          {t("sectionAccount")}
+        </Typography>
+
+        {/* name */}
+        <Box sx={{ mb: 1.5 }}>
+          <FieldLabel action={editing === "name" ? undefined : pencil("name")}>
+            {t("profileName")}
+          </FieldLabel>
+          {editing === "name" ? (
+            <TextField
+              size="small"
+              fullWidth
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              onKeyDown={(event) => handleFieldKeyDown(event, "name")}
+              onBlur={() => setEditing(null)}
+              inputProps={{ maxLength: 100 }}
+              error={trimmedName === ""}
+              helperText={trimmedName === "" ? t("profileNameRequired") : " "}
+            />
+          ) : (
+            <Typography variant="body2" color="text.primary">
+              {trimmedName || "—"}
+            </Typography>
+          )}
+        </Box>
+
+        {/* e-mail */}
+        <Box sx={{ mb: 1.5 }}>
+          <FieldLabel action={editing === "email" ? undefined : pencil("email")}>
+            {t("profileEmail")}
+          </FieldLabel>
+          {editing === "email" ? (
+            <TextField
+              type="email"
+              size="small"
+              fullWidth
+              autoFocus
+              value={email}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                setEmailError(null);
+              }}
+              onKeyDown={(event) => handleFieldKeyDown(event, "email")}
+              onBlur={() => setEditing(null)}
+              error={Boolean(emailError)}
+              helperText={emailError ?? " "}
+            />
+          ) : (
+            <Typography variant="body2" color="text.primary">
+              {trimmedEmail || "—"}
+            </Typography>
+          )}
+        </Box>
+
+        {/* password — a row like the others; its pencil opens the password
+            form instead of an inline editor (the value is never real) */}
+        <Box sx={{ mb: 1.5 }}>
+          <FieldLabel
+            action={
+              <IconButton
+                size="small"
+                onClick={() => setEditor("password")}
+                aria-label={t("changePassword")}
+                title={t("changePassword")}
+                sx={{ mr: -0.75 }}
+              >
+                <EditIcon fontSize="small" />
+              </IconButton>
+            }
+          >
+            {t("profilePassword")}
+          </FieldLabel>
+          <Typography variant="body2" color="text.primary">
+            {"••••••••"}
+          </Typography>
+          {/* for people who cannot remember it — a reset that needs neither
+              the current password nor the e-mail flow */}
+          <Box
+            component="button"
+            type="button"
+            onClick={openPasswordReset}
+            aria-label={t("passwordResetLink")}
+            sx={{
+              p: 0,
+              border: "none",
+              bgcolor: "transparent",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              fontSize: "0.875rem",
+              color: "primary.main",
+              "&:hover": { textDecoration: "underline" },
+            }}
+          >
+            {t("passwordResetLink")}
+          </Box>
+        </Box>
+
+        {/* role — read-only: no pencil, because there is nothing to edit */}
+        <Box>
+          <FieldLabel>{t("profileRole")}</FieldLabel>
+          <Typography variant="body2" color="text.primary">
+            {user?.roleName || "—"}
+          </Typography>
+        </Box>
       </DialogContent>
 
       <DialogActions sx={{ px: 3, py: 2 }}>
-        <Button onClick={onClose} color="inherit">
-          {t("close")}
+        <Button variant="contained" onClick={handleSave} disabled={!dirty || saving}>
+          {t("save")}
         </Button>
       </DialogActions>
 
-      {/* ---------- Rename ---------- */}
-      <Dialog open={editor === "name"} onClose={() => setEditor(null)} maxWidth="xs" fullWidth>
-        <DialogTitle fontWeight={700}>{t("nameEditTitle")}</DialogTitle>
+      {/* ---------- Confirm the e-mail change (current password) ---------- */}
+      <Dialog
+        open={editor === "emailConfirm"}
+        onClose={() => setEditor(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle fontWeight={700}>{t("emailConfirmTitle")}</DialogTitle>
         <DialogContent>
-          <TextField
-            label={t("profileName")}
-            size="small"
-            fullWidth
-            autoFocus
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            inputProps={{ maxLength: 100 }}
-            sx={{ mt: 1 }}
-            helperText={name.trim() === "" ? t("profileNameRequired") : " "}
-          />
-        </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setEditor(null)} color="inherit">
-            {t("cancel")}
-          </Button>
-          <Button
-            variant="contained"
-            onClick={handleSaveName}
-            disabled={savingName || !name.trim() || !nameChanged}
-          >
-            {t("save")}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* ---------- Change e-mail ---------- */}
-      <Dialog open={editor === "email"} onClose={() => setEditor(null)} maxWidth="xs" fullWidth>
-        <DialogTitle fontWeight={700}>{t("emailEdit")}</DialogTitle>
-        <DialogContent>
-          <TextField
-            label={t("emailNew")}
-            type="email"
-            size="small"
-            fullWidth
-            autoFocus
-            value={email}
-            onChange={(event) => {
-              setEmail(event.target.value);
-              setEmailError(null);
-            }}
-            error={Boolean(emailError)}
-            helperText={emailError ?? " "}
-            sx={{ mt: 1, mb: 2 }}
-          />
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            {t("emailConfirmHint", { email: trimmedEmail })}
+          </Typography>
           <TextField
             label={t("passwordCurrent")}
             type="password"
             size="small"
             fullWidth
-            value={emailPassword}
-            onChange={(event) => {
-              setEmailPassword(event.target.value);
-              setEmailPwError(null);
-            }}
-            error={Boolean(emailPwError)}
-            helperText={emailPwError ?? " "}
+            required
+            autoFocus
+            value={confirmPassword}
+            onChange={(event) => setConfirmPassword(event.target.value)}
           />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setEditor(null)} color="inherit">
+          <Button color="inherit" onClick={() => setEditor(null)}>
             {t("cancel")}
           </Button>
-          <Button variant="contained" onClick={handleSaveEmail} disabled={savingEmail}>
-            {t("save")}
+          <Button
+            variant="contained"
+            onClick={() => void doSave(confirmPassword)}
+            disabled={saving || !confirmPassword}
+          >
+            {t("confirm")}
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* ---------- Change password (image-2 layout) ---------- */}
+      {/* ---------- Change password form ---------- */}
       <Dialog open={editor === "password"} onClose={() => setEditor(null)} maxWidth="xs" fullWidth>
         <DialogTitle fontWeight={700}>{t("passwordDialogTitle")}</DialogTitle>
         <DialogContent>
@@ -491,6 +642,27 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
             }}
             sx={{ mb: 2 }}
           />
+          {/* the current password is exactly what a forgetful user lacks —
+              offer the reset that skips it (and the e-mail flow) */}
+          <Box
+            component="button"
+            type="button"
+            onClick={openPasswordReset}
+            aria-label={t("passwordResetLink")}
+            sx={{
+              p: 0,
+              mb: 2,
+              border: "none",
+              bgcolor: "transparent",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              fontSize: "0.875rem",
+              color: "primary.main",
+              "&:hover": { textDecoration: "underline" },
+            }}
+          >
+            {t("passwordResetLink")}
+          </Box>
           <TextField
             label={t("passwordNew")}
             type="password"
@@ -520,10 +692,66 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
           />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setEditor(null)} color="inherit">
+          <Button color="inherit" onClick={() => setEditor(null)}>
             {t("cancel")}
           </Button>
           <Button variant="contained" onClick={handleSavePassword} disabled={savingPassword}>
+            {t("save")}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ---------- Reset password (the session is the proof — no current
+          password, no e-mail; for people who cannot remember theirs) ---------- */}
+      <Dialog
+        open={editor === "passwordReset"}
+        onClose={() => setEditor(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle fontWeight={700}>{t("passwordResetTitle")}</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            {t("passwordResetSubtitle")}
+          </Typography>
+          <TextField
+            label={t("passwordNew")}
+            type="password"
+            size="small"
+            fullWidth
+            required
+            autoFocus
+            value={pwNew}
+            onChange={(event) => {
+              setPwNew(event.target.value);
+              setPwError(null);
+            }}
+            sx={{ mb: 2 }}
+          />
+          <TextField
+            label={t("passwordConfirm")}
+            type="password"
+            size="small"
+            fullWidth
+            required
+            value={pwConfirm}
+            onChange={(event) => {
+              setPwConfirm(event.target.value);
+              setPwError(null);
+            }}
+            error={Boolean(pwError)}
+            helperText={pwError ?? " "}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button color="inherit" onClick={() => setEditor(null)}>
+            {t("cancel")}
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleResetPassword()}
+            disabled={savingPassword}
+          >
             {t("save")}
           </Button>
         </DialogActions>

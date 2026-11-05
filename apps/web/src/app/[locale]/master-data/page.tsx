@@ -35,6 +35,8 @@ import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } 
 import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
 import BoltIcon from "@mui/icons-material/Bolt";
+import HistoryIcon from "@mui/icons-material/History";
+import RulesPanel from "@/components/rules/rules-panel";
 import { usePermissions } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
 import { resolveStatusColor } from "@/lib/status-color";
@@ -304,6 +306,8 @@ function SortableStatusRow({
 
 export default function SettingsPage() {
   const t = useTranslations("Settings");
+  // คำ/ปุ่มของแท็บระบบอัตโนมัติอยู่ใน namespace Automation ชุดเดียวกับหน้า /automation
+  const tAuto = useTranslations("Automation");
   const router = useRouter();
   const { can } = usePermissions();
   const token = useAuthStore((s) => s.token);
@@ -360,6 +364,9 @@ export default function SettingsPage() {
   const canViewStatuses = can("status.view");
   const canViewPriorities = can("priority.view");
   const canViewLabels = can("label.view");
+  // แท็บระบบอัตโนมัติ = ทางเข้ากฎสำหรับคนที่มีแต่สิทธิ์กฎ (ไม่มี status.view)
+  // ใช้ OR กันเคส position เก่าที่มี update โดยไม่มี view (dialog บังคับ update⇒view อยู่แล้ว)
+  const canViewAutomation = can("automation.view") || can("automation.update");
 
   const statusSensors = useSensors(
     useSensor(PointerSensor, {
@@ -453,10 +460,11 @@ export default function SettingsPage() {
       ...(canViewStatuses ? ["statuses"] : []),
       ...(canViewPriorities ? ["priorities"] : []),
       ...(canViewLabels ? ["labels"] : []),
+      ...(canViewAutomation ? ["automation"] : []),
     ];
     const idx = contents.indexOf(tabParam);
     if (idx >= 0) setTab(idx);
-  }, [canViewApps, canViewCompanies, canViewCategories, canViewStatuses, canViewPriorities, canViewLabels]);
+  }, [canViewApps, canViewCompanies, canViewCategories, canViewStatuses, canViewPriorities, canViewLabels, canViewAutomation]);
 
   /** ดึงรายการแอปใหม่ — เรียกทั้งตอนบันทึกฟอร์มสำเร็จ (`onSaved`) และตอนลบ */
   async function loadApps() {
@@ -1024,10 +1032,24 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
     ...(canViewStatuses ? [{ label: t("tabStatuses"), content: "statuses" }] : []),
     ...(canViewPriorities ? [{ label: t("tabPriorities"), content: "priorities" }] : []),
     ...(canViewLabels ? [{ label: t("tabLabels"), content: "labels" }] : []),
+    ...(canViewAutomation ? [{ label: t("tabAutomation"), content: "automation" }] : []),
   ];
 
   return (
-    <RequirePermission permission="permission.update">
+    // เปิดหน้าเมื่อมีสิทธิ์ดูแท็บใดแท็บหนึ่ง (ลูกย่อยในการ์ดจัดการข้อมูลหลัก)
+    // — ไม่ใช้ permission.update แล้ว: "สิทธิ์ครอบสิทธิ์" ซ้ำซ้อนกับลูกย่อยข้างใน
+    <RequirePermission
+      permissions={[
+        "app.view",
+        "company.view",
+        "category.view",
+        "status.view",
+        "priority.view",
+        "label.view",
+        "automation.view",
+        "automation.update",
+      ]}
+    >
       <DashboardLayout>
         <Box>
           <Tabs
@@ -1246,23 +1268,26 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                 </Box>
                 
 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-  <Tooltip title="กฎ Automation">
-    <IconButton
-      color="primary"
-      aria-label="กฎ Automation"
-      onClick={() => router.push("/automation")}
-      sx={{
-        border: 1,
-        borderColor: "primary.main",
-        borderRadius: 1,
-        width: 40,
-        height: 40,
-        p: 0,
-      }}
-    >
-      <BoltIcon fontSize="small" />
-    </IconButton>
-  </Tooltip>
+  {/* ทางลัดเข้ากฎ — ขึ้นเฉพาะคนที่มีสิทธิ์กฎจริง (เคส "มีแค่สถานะ" ต้องไม่เห็น) */}
+  {canViewAutomation && (
+    <Tooltip title={tAuto("title")}>
+      <IconButton
+        color="primary"
+        aria-label={tAuto("title")}
+        onClick={() => router.push("/automation")}
+        sx={{
+          border: 1,
+          borderColor: "primary.main",
+          borderRadius: 1,
+          width: 40,
+          height: 40,
+          p: 0,
+        }}
+      >
+        <BoltIcon fontSize="small" />
+      </IconButton>
+    </Tooltip>
+  )}
 
   {can("status.create") && (
     <Button
@@ -1459,6 +1484,42 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                 limit={10}
                 onPageChange={setPage}
               />
+            </Box>
+          )}
+
+          {/* ระบบอัตโนมัติ — รายการกฎชุดเดียวกับหน้า /automation (RulesPanel แชร์กัน)
+              เปิดด้วย `automation.view`; ปุ่มสร้าง/แก้ไข/สวิตซ์ ดูตาม `automation.update` */}
+          {tabs[tab]?.content === "automation" && (
+            <Box>
+              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3 }}>
+                <Box>
+                  <Typography variant="h6" fontWeight={700} sx={{ color: theme.palette.navy.main }}>
+                    {t("tabAutomation")}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    {tAuto("subtitle")}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<HistoryIcon />}
+                    onClick={() => router.push("/automation/runs")}
+                  >
+                    {tAuto("history")}
+                  </Button>
+                  {can("automation.update") && (
+                    <Button
+                      variant="contained"
+                      startIcon={<AddIcon />}
+                      onClick={() => router.push("/automation/new")}
+                    >
+                      {tAuto("create")}
+                    </Button>
+                  )}
+                </Box>
+              </Box>
+              <RulesPanel canUpdate={can("automation.update")} />
             </Box>
           )}
 

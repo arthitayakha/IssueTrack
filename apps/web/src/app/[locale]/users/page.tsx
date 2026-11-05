@@ -28,6 +28,7 @@ import {
   FormControlLabel,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import DnsIcon from "@mui/icons-material/Dns";
 import { Pagination } from "@/components/pagination";
 import { PaginatedResponse } from "@kanban/shared";
 import EditIcon from "@mui/icons-material/Edit";
@@ -36,7 +37,6 @@ import ViewColumnIcon from "@mui/icons-material/ViewColumn";
 import PersonIcon from "@mui/icons-material/Person";
 import WorkIcon from "@mui/icons-material/Work";
 import GroupIcon from "@mui/icons-material/Group";
-import SecurityIcon from "@mui/icons-material/Security";
 import CategoryIcon from "@mui/icons-material/Category";
 import FlagIcon from "@mui/icons-material/Flag";
 import PriorityHighIcon from "@mui/icons-material/PriorityHigh";
@@ -46,8 +46,6 @@ import AssessmentIcon from "@mui/icons-material/Assessment";
 import LockIcon from "@mui/icons-material/Lock";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import HistoryIcon from "@mui/icons-material/History";
-import LabelIcon from "@mui/icons-material/Label";
-import BoltIcon from "@mui/icons-material/Bolt";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
@@ -138,16 +136,22 @@ const PERMISSION_GROUPS = [
         key: "priority",
         permissions: ["priority.view", "priority.create", "priority.update", "priority.delete"],
       },
-    ],
-  },
-  {
-    key: "labels",
-    icon: LabelIcon,
-    children: [
       {
         key: "labels",
         permissions: ["label.view", "label.create", "label.update", "label.delete"],
       },
+      {
+        // กฎอัตโนมัติ = แท็บใน /master-data (ปุ่ม ⚡ ในแท็บสถานะเป็นทางลัด ขึ้นเมื่อมีสิทธิ์กฎ)
+        key: "automation",
+        permissions: ["automation.view", "automation.update"],
+      },
+    ],
+  },
+  {
+    key: "systems",
+    icon: DnsIcon,
+    children: [
+      { key: "systems", permissions: ["system.view", "system.create", "system.update", "system.delete"] },
     ],
   },
   {
@@ -155,20 +159,6 @@ const PERMISSION_GROUPS = [
     icon: AssessmentIcon,
     children: [
       { key: "report", permissions: ["report.view", "report.export"] },
-    ],
-  },
-  {
-    key: "permissions",
-    icon: SecurityIcon,
-    children: [
-      { key: "permissions", permissions: ["permission.view", "permission.update"] },
-    ],
-  },
-  {
-    key: "automation",
-    icon: BoltIcon,
-    children: [
-      { key: "automation", permissions: ["automation.view", "automation.update"] },
     ],
   },
   {

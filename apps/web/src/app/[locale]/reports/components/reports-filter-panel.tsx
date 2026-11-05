@@ -21,6 +21,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
 import AppsIcon from "@mui/icons-material/Apps";
+import BusinessIcon from "@mui/icons-material/Business";
 import FlagIcon from "@mui/icons-material/Flag";
 import CategoryIcon from "@mui/icons-material/Category";
 import PersonIcon from "@mui/icons-material/Person";
@@ -64,7 +65,14 @@ const FILTER_VISIBLE_ITEMS = 6;
 
 /* ---------------- per-view section order ---------------- */
 
-type SectionKey = "assignee" | "status" | "priority" | "category" | "app" | "reporter";
+type SectionKey =
+  | "assignee"
+  | "status"
+  | "priority"
+  | "category"
+  | "app"
+  | "company"
+  | "reporter";
 
 /**
  * Which filter sections each report view shows, top to bottom — every view
@@ -72,11 +80,12 @@ type SectionKey = "assignee" | "status" | "priority" | "category" | "app" | "rep
  * same on every dropdown. `assignee` is labelled โปรแกรมเมอร์ (same wording
  * as the by-assignee table header) and leads the issues view; the summary
  * views end on it and skip the reporter section entirely.
+ * `company` sits under `app`: a card reaches a company through its app.
  */
 const VIEW_SECTIONS: Record<ReportView, SectionKey[]> = {
-  issues: ["assignee", "status", "priority", "category", "app", "reporter"],
-  assignee: ["status", "priority", "category", "app", "assignee"],
-  app: ["status", "priority", "category", "app", "assignee"],
+  issues: ["assignee", "status", "priority", "category", "app", "company", "reporter"],
+  assignee: ["status", "priority", "category", "app", "company", "assignee"],
+  app: ["status", "priority", "category", "app", "company", "assignee"],
 };
 
 /** Collapsible section with its own search + "show all" — mirrors the board's FilterSection. */
@@ -291,7 +300,14 @@ export function ReportsFilterPanel({
     totalSelected > 0 ? count > 0 : fallback;
 
   const toggleIn = (
-    key: "statusIds" | "priorityIds" | "categoryIds" | "appIds" | "assigneeIds" | "reporterIds",
+    key:
+      | "statusIds"
+      | "priorityIds"
+      | "categoryIds"
+      | "appIds"
+      | "companyIds"
+      | "assigneeIds"
+      | "reporterIds",
     id: number,
   ) => {
     const current = filters[key];
@@ -326,6 +342,14 @@ export function ReportsFilterPanel({
     checked: filters.appIds.includes(app.id),
     onToggle: () => toggleIn("appIds", app.id),
     start: <AppsIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main" }} />,
+  }));
+
+  const companyOptions: PanelOption[] = options.companies.map((company) => ({
+    id: company.id,
+    label: company.name,
+    checked: filters.companyIds.includes(company.id),
+    onToggle: () => toggleIn("companyIds", company.id),
+    start: <BusinessIcon sx={{ fontSize: 16, flexShrink: 0, color: "warning.main" }} />,
   }));
 
   const priorityOptions: PanelOption[] = options.priorities.map((priority) => ({
@@ -396,6 +420,12 @@ export function ReportsFilterPanel({
       icon: <AppsIcon sx={{ fontSize: 18 }} />,
       count: filters.appIds.length,
       options: appOptions,
+    },
+    company: {
+      title: t("filters.company"),
+      icon: <BusinessIcon sx={{ fontSize: 18 }} />,
+      count: filters.companyIds.length,
+      options: companyOptions,
     },
     reporter: {
       title: t("filters.sectionReporter"),

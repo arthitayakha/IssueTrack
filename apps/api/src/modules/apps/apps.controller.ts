@@ -29,8 +29,11 @@ export class AppsController {
     return this.apps.findAll(normalizePagination(query));
   }
 
+  // The CRUD below serves TWO surfaces with separate permission cards:
+  // the apps tab in `/master-data` (`app.*`) and the `/systems` page
+  // (`system.*`). Same endpoint, either permission opens it (guard is OR).
   @Post()
-  @Permissions("app.create")
+  @Permissions("app.create", "system.create")
   create(
     @Body()
     body: {
@@ -43,7 +46,7 @@ export class AppsController {
   }
 
   @Patch(":id")
-  @Permissions("app.update")
+  @Permissions("app.update", "system.update")
   update(
     @Param("id", ParseIntPipe) id: number,
     @Body()
@@ -57,7 +60,7 @@ export class AppsController {
   }
 
   @Patch(":id/active")
-  @Permissions("app.update")
+  @Permissions("app.update", "system.update")
   updateActive(
     @Param("id", ParseIntPipe) id: number,
     @Body() body: { isActive: boolean },
@@ -66,13 +69,13 @@ export class AppsController {
   }
 
   @Get(":id/check")
-  @Permissions("app.delete")
+  @Permissions("app.delete", "system.delete")
   check(@Param("id", ParseIntPipe) id: number) {
     return this.apps.check(id);
   }
 
   @Delete(":id")
-  @Permissions("app.delete")
+  @Permissions("app.delete", "system.delete")
   remove(@Param("id", ParseIntPipe) id: number) {
     return this.apps.remove(id);
   }

@@ -9,6 +9,11 @@ import type { ExpiryStatus } from "./app-expiry";
  * ข้อมูลแอป/บริษัท + การเรียก API ของแอป — **ที่เดียวที่สองหน้า
  * (`/master-data` กับ `/systems`) ใช้ร่วมกัน** เพื่อไม่ให้รูปแบบ response
  * เพี้ยนจากกันคนละที่
+ *
+ * อ่านอย่างเดียว: `/master-data` ใช้ `fetchApps()` (GET /apps — เปิดให้ทุกคน
+ * ที่ล็อกอิน เพราะฟอร์มแจ้งปัญหาต้องใช้) ส่วน `/systems` ใช้
+ * `fetchSystemsApps()` (GET /systems — กันด้้วย `system.view`) สองหน้าจึงให้
+ * สิทธิ์แยกกันได้
  */
 
 /**
@@ -25,7 +30,7 @@ export interface AppCompanyLink {
   expiresAt: string | null;
   /** ชั่วโมง MA ที่ตกลงให้คู่นี้จาก `app_companies.ma_hours`, null = ยังไม่กำหนด */
   maHours: number | null;
-  /** stored state **ของคู่นี้** — ปกติ / ใกล้หมดอายุ / วิกฤต / หมดอายุ / ไม่กำหนด */
+  /** stored state **ของคู่นี้** — ไม่กำหนด / ปกติ / ใกล้หมดอายุ (≤30 วัน) / หมดอายุ — UI โชว์เป็นจำนวนวันดูที่ `expiryChipLabel()` */
   expiryStatus: ExpiryStatus;
 }
 
@@ -58,12 +63,35 @@ export interface AppCompanyInput {
   maHours: number | null;
 }
 
+/**
+ * ชั่วโมง MA ของแอป = **ผลรวมทุกคู่ แอป×บริษัท** — `null` เมื่อยังไม่มีคู่ไหน
+ * กรอกเลย (ต่างจาก `0` ซึ่งหมายถึงตกลงให้ 0 ชม. จริง ๆ)
+ *
+ * ฟังก์ชันเดียวที่ `/systems` กับ `/reports` ใช้ร่วมกัน เพื่อให้ตัวเลข
+ * "ชั่วโมง MA" ของแอปเดียวกันตรงกันทุกหน้า
+ */
+export function sumMaHours(links: AppCompanyLink[]): number | null {
+  const filled = links
+    .map((link) => link.maHours)
+    .filter((v): v is number => v != null);
+  if (filled.length === 0) return null;
+  return filled.reduce((sum, v) => sum + v, 0);
+}
+
 function getToken(): string | null {
   return useAuthStore.getState().token;
 }
 
 export async function fetchApps(page = 1, limit = 100): Promise<PaginatedResponse<App>> {
   return apiFetch<PaginatedResponse<App>>(`/apps?page=${page}&limit=${limit}`, {}, getToken());
+}
+
+/**
+ * `/systems` (ข้อมูลระบบ) อ่านผ่าน endpoint ของตัวเอง — กันด้้วย `system.view`
+ * ให้หน้าแยกสิทธิ์จากแท็บแอปใน `/master-data` ได้ (payload เดียวกับ GET /apps)
+ */
+export async function fetchSystemsApps(page = 1, limit = 100): Promise<PaginatedResponse<App>> {
+  return apiFetch<PaginatedResponse<App>>(`/systems?page=${page}&limit=${limit}`, {}, getToken());
 }
 
 /** `GET /companies` เปิดให้ทุกคนที่ล็อกอิน — ฟอร์มแอปต้องใช้รายการนี้ แม้ไม่มีสิทธิ์ดูแท็บบริษัท */

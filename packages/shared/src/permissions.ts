@@ -38,6 +38,10 @@ export type Permission =
   | "app.create"
   | "app.update"
   | "app.delete"
+  | "system.view"
+  | "system.create"
+  | "system.update"
+  | "system.delete"
   | "company.view"
   | "company.create"
   | "company.update"
@@ -119,6 +123,10 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
   "app.create",
   "app.update",
   "app.delete",
+  "system.view",
+  "system.create",
+  "system.update",
+  "system.delete",
   "company.view",
   "company.create",
   "company.update",
@@ -322,6 +330,10 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "app.create": "สร้างแอป",
   "app.update": "แก้ไขแอป",
   "app.delete": "ลบแอป",
+  "system.view": "ดูข้อมูลระบบ",
+  "system.create": "สร้างข้อมูลระบบ",
+  "system.update": "แก้ไขข้อมูลระบบ",
+  "system.delete": "ลบข้อมูลระบบ",
   "company.view": "ดูบริษัท",
   "company.create": "สร้างบริษัท",
   "company.update": "แก้ไขบริษัท",
@@ -385,6 +397,9 @@ export const PERMISSION_DEPENDENCIES: Record<string, string[]> = {
   "app.create": ["app.view"],
   "app.update": ["app.view"],
   "app.delete": ["app.view"],
+  "system.create": ["system.view"],
+  "system.update": ["system.view"],
+  "system.delete": ["system.view"],
   "company.create": ["company.view"],
   "company.update": ["company.view"],
   "company.delete": ["company.view"],
@@ -427,6 +442,7 @@ export const ROUTE_ACCESS: Record<string, string> = {
   "comment.view": "/comments",
   "user.view": "/users",
   "permission.update": "/master-data",
+  "system.view": "/systems",
   "automation.view": "/automation",
   "report.view": "/reports",
   "log.view": "/logs",

@@ -1,102 +1,46 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useTheme } from "@mui/material";
-import { Alert, Breadcrumbs, Box, Button, CircularProgress, Link as MuiLink, Tooltip, Typography } from "@mui/material";
+import { Breadcrumbs, Box, Button, Link as MuiLink, Tooltip, Typography } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import HistoryIcon from "@mui/icons-material/History";
 import { useTranslations } from "next-intl";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import { Link, useRouter } from "@/i18n/navigation";
-import { useAuthStore } from "@/lib/auth-store";
-import { useNotification } from "@/components/notification";
-import { fetchRules, deleteRule, toggleRule } from "@/lib/rules-api";
-import { isApiError } from "@/lib/api";
-import type { RuleDto } from "@kanban/shared";
-import RuleList from "@/components/rules/rule-list";
+import { usePermissions } from "@/lib/permissions";
+import RulesPanel from "@/components/rules/rules-panel";
 
+/**
+ * รายการกฎ — gate ด้วย **`automation.view`** (ดูได้) ส่วนปุ่ม "สร้างกฎ" ขึ้นเฉพาะ
+ * **`automation.update`** ตรงกับ backend (`GET /rules` = view, mutation = update)
+ * ทำให้ช่อง "ดูกฎ" ใน dialog สิทธิ์มีผลจริง
+ */
 export default function AutomationPage() {
   const t = useTranslations("Automation");
   const theme = useTheme();
   const router = useRouter();
-  const token = useAuthStore((s) => s.token);
-  const { notify } = useNotification();
+  const { can } = usePermissions();
 
-  const [rules, setRules] = useState<RuleDto[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = await fetchRules();
-        if (!cancelled) {
-          setRules(data);
-        }
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : t("loadError"));
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-    load();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, reloadKey]);
+  const canUpdate = can("automation.update");
 
   /**
-   * A 404 means the rule is already gone from the DB (deleted from another
-   * tab / session). Drop the stale row by refetching instead of leaving a
-   * ghost that keeps failing every action.
+   * ทางกลับ: ใครมี `status.view` กลับแท็บสถานะเหมือนเดิม — แต่คนที่มีแต่สิทธิ์กฎ
+   * ไม่มีแท็บสถานะให้กลับ จึงชี้ไปแท็บระบบอัตโนมัติแทน (ไม่งั้นโดนเด้งออกหน้าแรก)
    */
-  function handleRuleGone(err: unknown): boolean {
-    if (!isApiError(err, 404)) return false;
-    notify(t("ruleGone"), "warning");
-    setReloadKey((k) => k + 1);
-    return true;
-  }
-
-  async function handleToggle(rule: RuleDto, isActive: boolean) {
-    try {
-      const updated = await toggleRule(rule.id, isActive);
-      setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-    } catch (err) {
-      if (handleRuleGone(err)) return;
-      notify(err instanceof Error ? err.message : t("genericError"), "error");
-    }
-  }
-
-  async function handleDelete(id: number) {
-    try {
-      await deleteRule(id);
-      setRules((prev) => prev.filter((r) => r.id !== id));
-      notify(t("deleted"), "success");
-    } catch (err) {
-      if (handleRuleGone(err)) return;
-      notify(err instanceof Error ? err.message : t("genericError"), "error");
-    }
-  }
+  const backHref = can("status.view") ? "/master-data?tab=statuses" : "/master-data?tab=automation";
+  const backLabel = can("status.view") ? t("backToStatuses") : t("backToMasterData");
 
   const header = (
     <Breadcrumbs aria-label={t("breadcrumbLabel")} separator="/">
       <MuiLink
         component={Link}
-        href="/master-data?tab=statuses"
+        href={backHref}
         underline="hover"
         color="inherit"
         sx={{ display: "flex", alignItems: "center", gap: 0.5 }}
       >
-        {t("backToStatuses")}
+        {backLabel}
       </MuiLink>
       <Typography color="text.primary" fontWeight={600}>
         {t("title")}
@@ -105,7 +49,7 @@ export default function AutomationPage() {
   );
 
   return (
-    <RequirePermission permission="automation.update">
+    <RequirePermission permission="automation.view">
       <DashboardLayout header={header}>
         <Box sx={{ mb: 3 }}>
           <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 2, flexWrap: "wrap" }}>
@@ -125,48 +69,25 @@ export default function AutomationPage() {
               >
                 {t("history")}
               </Button>
-              <Tooltip title={t("createTooltip")}>
-                <span>
-                  <Button
-                    variant="contained"
-                    startIcon={<AddIcon />}
-                    onClick={() => router.push("/automation/new")}
-                  >
-                    {t("create")}
-                  </Button>
-                </span>
-              </Tooltip>
+              {canUpdate && (
+                <Tooltip title={t("createTooltip")}>
+                  <span>
+                    <Button
+                      variant="contained"
+                      startIcon={<AddIcon />}
+                      onClick={() => router.push("/automation/new")}
+                    >
+                      {t("create")}
+                    </Button>
+                  </span>
+                </Tooltip>
+              )}
             </Box>
           </Box>
         </Box>
 
-        {loading ? (
-          <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
-            <CircularProgress />
-          </Box>
-        ) : error ? (
-          <Alert
-            severity="error"
-            action={
-              <Button color="inherit" size="small" onClick={() => setReloadKey((k) => k + 1)}>
-                {t("retry")}
-              </Button>
-            }
-          >
-            <Typography>{error}</Typography>
-          </Alert>
-        ) : rules.length === 0 ? (
-          <Box sx={{ py: 8, textAlign: "center" }}>
-            <Typography variant="h6" fontWeight={700} sx={{ color: theme.palette.navy.main }}>
-              {t("emptyTitle")}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              {t("emptyDescription")}
-            </Typography>
-          </Box>
-        ) : (
-          <RuleList rules={rules} onToggle={handleToggle} onDelete={handleDelete} />
-        )}
+        {/* fetch + loading/error/empty + รายการ — แชร์กับแท็บใน /master-data */}
+        <RulesPanel canUpdate={canUpdate} />
       </DashboardLayout>
     </RequirePermission>
   );

@@ -50,11 +50,17 @@ interface RuleListProps {
   rules: RuleDto[];
   onToggle: (rule: RuleDto, isActive: boolean) => void;
   onDelete: (id: number) => void;
+  /**
+   * `false` = view-only seat (`automation.view` without `automation.update`):
+   * rows still render, but the enable/disable switch, edit and delete controls
+   * stay hidden — viewing rules must not imply changing them.
+   */
+  canUpdate?: boolean;
 }
 
 type StatusFilter = "all" | "active" | "inactive";
 
-export default function RuleList({ rules, onToggle, onDelete }: RuleListProps) {
+export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }: RuleListProps) {
   const t = useTranslations("Automation");
   const theme = useTheme();
 
@@ -264,26 +270,30 @@ export default function RuleList({ rules, onToggle, onDelete }: RuleListProps) {
                     variant="outlined"
                     sx={{ height: 22, fontSize: 11, flexShrink: 0 }}
                   />
-                  <Tooltip title={rule.isActive ? t("enabled") : t("disabled")}>
-                    <Switch checked={rule.isActive} onChange={(e) => onToggle(rule, e.target.checked)} size="small" />
-                  </Tooltip>
-                  <IconButton
-                    size="small"
-                    aria-label={t("edit")}
-                    component={Link}
-                    href={`/automation/${rule.id}`}
-                    sx={{ color: theme.palette.primary.main, flexShrink: 0 }}
-                  >
-                    <EditIcon fontSize="small" />
-                  </IconButton>
-                  <IconButton
-                    size="small"
-                    aria-label={t("delete")}
-                    onClick={() => setDeleteTarget(rule)}
-                    sx={{ color: theme.palette.error.main, flexShrink: 0 }}
-                  >
-                    <DeleteIcon fontSize="small" />
-                  </IconButton>
+                  {canUpdate && (
+                    <>
+                      <Tooltip title={rule.isActive ? t("enabled") : t("disabled")}>
+                        <Switch checked={rule.isActive} onChange={(e) => onToggle(rule, e.target.checked)} size="small" />
+                      </Tooltip>
+                      <IconButton
+                        size="small"
+                        aria-label={t("edit")}
+                        component={Link}
+                        href={`/automation/${rule.id}`}
+                        sx={{ color: theme.palette.primary.main, flexShrink: 0 }}
+                      >
+                        <EditIcon fontSize="small" />
+                      </IconButton>
+                      <IconButton
+                        size="small"
+                        aria-label={t("delete")}
+                        onClick={() => setDeleteTarget(rule)}
+                        sx={{ color: theme.palette.error.main, flexShrink: 0 }}
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </>
+                  )}
                 </Box>
               </ListItem>
             );

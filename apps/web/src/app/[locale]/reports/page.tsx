@@ -16,6 +16,7 @@ import {
   DEFAULT_SORT,
   downloadCsv,
   fetchAllReportRows,
+  fetchAppUsageAllTime,
   fetchPersonTasks,
   fetchReportRows,
   loadFilterOptions,
@@ -23,6 +24,7 @@ import {
   SORTABLE_FIELDS,
 } from "@/lib/reports-api";
 import type {
+  AppContract,
   FilterOptions,
   IssueRow,
   ReportFilters,
@@ -66,6 +68,11 @@ interface ExportCol<T> {
   key: string;
   header: string;
   value: (row: T, index: number) => string | number;
+}
+
+/** ปัดเศษ 1 ตำแหน่ง — ชั่วโมงกรอกอาจมีเศษทศนิยม (วินาที → ชม.) */
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
 }
 
 /**
@@ -146,6 +153,7 @@ function paramsToFilters(raw: string): ReportFilters {
     statusIds: parseIds(p.get("status")),
     priorityIds: parseIds(p.get("priority")),
     appIds: parseIds(p.get("app")),
+    companyIds: parseIds(p.get("company")),
   };
 }
 
@@ -160,6 +168,7 @@ function filtersToPatch(f: ReportFilters) {
     status: f.statusIds.length ? f.statusIds : null,
     priority: f.priorityIds.length ? f.priorityIds : null,
     app: f.appIds.length ? f.appIds : null,
+    company: f.companyIds.length ? f.companyIds : null,
   };
 }
 
@@ -227,6 +236,17 @@ function ReportsScreen() {
   /* ---------------- options + rows ---------------- */
 
   const [options, setOptions] = useState<FilterOptions>(EMPTY_FILTER_OPTIONS);
+  /**
+   * "ใช้ไป" ต่อแอป (all-time) — ตัวส่วนของ คงเหลือ = MA − ใช้ไป ใน view ตามแอป
+   *
+   * ดึง **เฉพาะตอนเปิด view ตามแอป** เพราะเป็นคนละ query กับตารางบนจอ
+   * (ตารางใช้ตัวกรองของผู้ใช้ ส่วนตัวเลขนี้ต้องคงที่เสมอ — ดูเหตุผลใน
+   * `fetchAppUsageAllTime`) · `status` แยกโหลด/ผิดพลาดให้ตารางโชว์ `—` ได้ถูก
+   */
+  const [usage, setUsage] = useState<{
+    status: "loading" | "ready" | "error";
+    byApp: Map<number, number>;
+  }>({ status: "loading", byApp: new Map() });
   const [rows, setRows] = useState<ReportPage<ReportRows> | null>(null);
   /**
    * Which view `rows` actually belongs to. The URL flips `view` immediately on
@@ -250,6 +270,24 @@ function ReportsScreen() {
       cancelled = true;
     };
   }, []);
+
+  // "ใช้ไป" = ของ view ตามแอป เท่านั้น — ไม่ต้องยิงตอนดูรายการปัญหา
+  useEffect(() => {
+    if (view !== "app") return;
+    let cancelled = false;
+    setUsage((u) => ({ ...u, status: "loading" }));
+    fetchAppUsageAllTime()
+      .then((byApp) => {
+        if (!cancelled) setUsage({ status: "ready", byApp });
+      })
+      .catch(() => {
+        // ล้มเหลว = คงเหลือทุกแถวเป็น `—` — ห้ามเดาค่า (ดู remainingCell)
+        if (!cancelled) setUsage({ status: "error", byApp: new Map() });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, reloadKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -326,6 +364,12 @@ function ReportsScreen() {
   const columns = useMemo(() => orderedColumns(view, prefs[view]?.order), [prefs, view]);
   /** Same order as key list — what the CSV export follows. */
   const orderKeys = useMemo(() => columns.map((c) => c.key), [columns]);
+
+  /** Contract facts by app id — one lookup per row for บริษัท / MA / คงเหลือ. */
+  const contractsByApp = useMemo(
+    () => new Map<number, AppContract>(options.appContracts.map((c) => [c.id, c])),
+    [options.appContracts],
+  );
 
   const updatePrefs = useCallback(
     (updater: (cur: ColumnPrefs) => ColumnPrefs) => {
@@ -458,6 +502,24 @@ function ReportsScreen() {
       const sumLabel = (r: SummaryRow) =>
         r.labelKey ? t(`columns.${r.labelKey}`) : (r.label ?? "");
 
+      /**
+       * คอลัมน์สัญญา — ค่าเดียวกับที่ตารางจอโชว์ (จอ/CSV/PDF ห้ามต่างกัน)
+       * - บริษัท คั่นด้วย `", "` · ไม่รู้ → ""
+       * - คงเหลือ ใช้ "ใช้ไป" all-time เหมือนจอ; ยังโหลด/พัง/ยังไม่กรอก MA → ""
+       */
+      const companiesOf = (appId: number | null) =>
+        appId == null ? "" : (contractsByApp.get(appId)?.companies.join(", ") ?? "");
+      const maHoursOf = (appId: number | null) => {
+        const ma = appId == null ? null : (contractsByApp.get(appId)?.maHours ?? null);
+        return ma ?? "";
+      };
+      const remainingOf = (appId: number | null) => {
+        if (appId == null || usage.status !== "ready") return "";
+        const ma = contractsByApp.get(appId)?.maHours ?? null;
+        if (ma == null) return "";
+        return round1(ma - (usage.byApp.get(appId) ?? 0));
+      };
+
       switch (view) {
         case "issues": {
           const rs = all as IssueRow[];
@@ -479,6 +541,8 @@ function ReportsScreen() {
             { key: "status", header: t("columns.status"), value: (r) => r.statusName ?? "" },
             { key: "category", header: t("columns.category"), value: (r) => r.categoryName ?? "" },
             { key: "app", header: t("columns.app"), value: (r) => r.appName ?? "" },
+            // บริษัท = ผ่านแอป (issues ไม่มี company_id) — ตรงกับที่จอโชว์
+            { key: "company", header: t("columns.company"), value: (r) => companiesOf(r.appId) },
             { key: "priority", header: t("columns.priority"), value: (r) => r.priorityName ?? "" },
           ];
           return matrix(cols, rs, hidden, orderKeys);
@@ -497,8 +561,12 @@ function ReportsScreen() {
         }
         case "app": {
           const rs = all as SummaryRow[];
+          const appIdOf = (r: SummaryRow) => (r.isTotal ? null : (r.appId ?? null));
           const cols: Array<ExportCol<SummaryRow>> = [
             { key: "app", header: t("columns.app"), value: (r) => sumLabel(r) },
+            { key: "company", header: t("columns.company"), value: (r) => companiesOf(appIdOf(r)) },
+            { key: "maHours", header: t("columns.maHours"), value: (r) => maHoursOf(appIdOf(r)) },
+            { key: "remaining", header: t("columns.remaining"), value: (r) => remainingOf(appIdOf(r)) },
             { key: "issueCount", header: t("columns.issueCount"), value: (r) => r.issueCount },
             { key: "openCount", header: t("columns.openCount"), value: (r) => r.openCount },
             { key: "medianActualMinutes", header: t("columns.medianActual"), value: (r) => r.medianActualMinutes ?? "" },
@@ -512,7 +580,7 @@ function ReportsScreen() {
           return { keys: [], headers: [], data: [] };
       }
     },
-    [view, locale, t, hidden, orderKeys],
+    [view, locale, t, hidden, orderKeys, contractsByApp, usage],
   );
 
   /**
@@ -733,6 +801,8 @@ function ReportsScreen() {
               personTasks={personTasks}
               personTasksLoading={personTasksLoading}
               onTogglePerson={handleTogglePerson}
+              contractsByApp={contractsByApp}
+              usage={usage}
             />
           )}
 

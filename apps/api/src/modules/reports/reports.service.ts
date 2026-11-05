@@ -33,6 +33,7 @@ export interface ReportIssueFilters {
   statuses?: number[];
   priorityIds?: number[];
   appIds?: number[];
+  companyIds?: number[];
 }
 
 /** Median minutes per issue (1 decimal); null = no task in the group has a recorded time. */
@@ -212,6 +213,19 @@ export class ReportsService {
     }
     if (f.appIds?.length) {
       qb.andWhere("issue.app_id IN (:...appIds)", { appIds: f.appIds });
+    }
+    /**
+     * Company filter — a card reaches a company only through its app
+     * (`app_companies`, many-to-many). `EXISTS` and not a JOIN: these
+     * builders feed COUNTs and grouped aggregates, and a join would multiply
+     * every card once per linked company. Cards with no app never match,
+     * same as the app filter above.
+     */
+    if (f.companyIds?.length) {
+      qb.andWhere(
+        "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
+        { companyIds: f.companyIds },
+      );
     }
   }
 

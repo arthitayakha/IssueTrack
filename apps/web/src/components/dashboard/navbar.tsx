@@ -13,11 +13,11 @@ import {
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
+import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import { useAuthStore } from "@/lib/auth-store";
 import { useOwnAvatar } from "@/lib/avatar";
 import { usePathname, useRouter } from "@/i18n/navigation";
 import LanguageSwitcher from "./language-switcher";
-import ProfileMenu from "./profile-menu";
 import ProfileDialog from "./profile-dialog";
 import NotificationPopover, {
   type NotificationListStatus,
@@ -97,8 +97,7 @@ export default function Navbar({
   const [unreadCount, setUnreadCount] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [bellAnchorEl, setBellAnchorEl] = useState<HTMLElement | null>(null);
-  const [profileAnchorEl, setProfileAnchorEl] = useState<HTMLElement | null>(null);
-  // account popup — opened from the avatar menu or the bell's gear
+  // account popup — opened from the navbar avatar or the bell's gear
   const [profileOpen, setProfileOpen] = useState(false);
 
   // polling and scroll-loading both need a fresh view of what is on screen
@@ -248,7 +247,8 @@ export default function Navbar({
                 {t(routeTitleKey)}
               </Typography>
             ) : null)}
-        </Box>        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexShrink: 0 }}>
+        </Box>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexShrink: 0 }}>
           <IconButton
             onClick={handleOpenBell}
             aria-label={t("notifications")}
@@ -278,12 +278,12 @@ export default function Navbar({
             onOpenProfile={() => setProfileOpen(true)}
           />
           <LanguageSwitcher />
+          {/* Account actions — no dropdown: the avatar opens the profile popup */}
           <IconButton
-            onClick={(event) => setProfileAnchorEl(event.currentTarget)}
-            aria-label={user?.name ?? t("menu")}
-            aria-haspopup="menu"
-            aria-expanded={Boolean(profileAnchorEl)}
-            title={user?.name}
+            onClick={() => setProfileOpen(true)}
+            aria-label={t("profile")}
+            title={t("profile")}
+            size="small"
             sx={{ p: 0.5 }}
           >
             <Avatar
@@ -300,13 +300,14 @@ export default function Navbar({
               {user?.name?.charAt(0).toUpperCase()}
             </Avatar>
           </IconButton>
-          <ProfileMenu
-            open={Boolean(profileAnchorEl)}
-            anchorEl={profileAnchorEl}
-            onClose={() => setProfileAnchorEl(null)}
-            onLogout={handleLogout}
-            onOpenProfile={() => setProfileOpen(true)}
-          />
+          <IconButton
+            onClick={handleLogout}
+            aria-label={t("signOut")}
+            title={t("signOut")}
+            size="small"
+          >
+            <LogoutOutlinedIcon fontSize="small" />
+          </IconButton>
           <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} />
         </Box>
       </Toolbar>
