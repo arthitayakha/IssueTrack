@@ -10,8 +10,9 @@ import { paginate, PaginationParams } from "../../common/pagination";
  * `is_visible`), plus `appCount`: since migration 1808 an app can belong to
  * several companies (`app_companies`), so a company is only deletable while
  * nothing points at it — the same guard apps already have over issues.
- * Each join row is one app×company pair, so counting rows counts pairs; a
- * company linked twice by the same app is impossible (composite PK).
+ *
+ * นับด้วย `COUNT(DISTINCT app_id)` เพราะหลัง migration 1812 แถว = 1 ช่วงเวลา
+ * ไม่ใช่ 1 คู่ — คู่เดิมมีได้หลายแถว และการนับแถวตรง ๆ จะปลอมเป็น "หลายแอป"
  */
 @Injectable()
 export class CompaniesService {
@@ -114,8 +115,17 @@ export class CompaniesService {
     return { deleted: true };
   }
 
-  /** Apps linked through the `app_companies` join table (migration 1808). */
-  private appCount(companyId: number): Promise<number> {
-    return this.appCompanies.count({ where: { companyId } });
+  /**
+   * จำนวน **แอป** ที่ผูกกับบริษัทนี้ — ต้องนับ `DISTINCT app_id` เพราะหลัง
+   * migration 1812 คู่เดิมมีได้หลายแถว (หลายช่วงเวลา) การนับแถวตรง ๆ จะ
+   * ทำให้แท็บบริษัทโชว์ "จำนวนแอป" ผิด (เช่น 1 แอป มี 2 ช่วง = นับเป็น 2)
+   */
+  private async appCount(companyId: number): Promise<number> {
+    const row = await this.appCompanies
+      .createQueryBuilder("ac")
+      .select("COUNT(DISTINCT ac.app_id)", "n")
+      .where("ac.company_id = :companyId", { companyId })
+      .getRawOne<{ n: string }>();
+    return Number(row?.n ?? 0);
   }
 }

@@ -12,7 +12,7 @@ import { NotificationsModule } from "../notifications/notifications.module";
 @Module({
   // NotificationsModule: the expiry sweep rings the admin bell
   // AppCompany: the join rows carry the per-company dates the form posts
-  // Company: `resolveCompanies()` has to verify the ids the form posts
+  // Company: `resolveCompanyId()` has to verify the id the form posts
   imports: [TypeOrmModule.forFeature([App, AppCompany, Issue, Company]), NotificationsModule],
   controllers: [AppsController],
   providers: [AppsService, AppExpiryService],

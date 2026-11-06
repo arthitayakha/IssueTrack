@@ -40,7 +40,6 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { resolveStatusColor } from "@/lib/status-color";
 import { useNotification } from "@/components/notification";
 import AppActions from "@/components/app-actions";
-import AppFormDialog from "@/components/app-form-dialog";
 import { type App, type Company } from "@/lib/apps-api";
 import {
   DndContext,
@@ -324,6 +323,9 @@ export default function SettingsPage() {
 
   const [appDialogOpen, setAppDialogOpen] = useState(false);
   const [editingApp, setEditingApp] = useState<App | null>(null);
+  // ฟอร์มแอปแท็บนี้ = **ชื่อล้วน** (เหมือนแท็บบริษัท/หมวดหมู่) — รายละเอียด
+  // คู่ แอป×บริษัท (บริษัท/วันที่/MA) อยู่ที่หน้า `/systems` คนเดียว
+  const [appForm, setAppForm] = useState({ name: "" });
 
   const [companyDialogOpen, setCompanyDialogOpen] = useState(false);
   const [editingCompany, setEditingCompany] = useState<Company | null>(null);
@@ -476,12 +478,50 @@ export default function SettingsPage() {
 
   function openAddApp() {
     setEditingApp(null);
+    setAppForm({ name: "" });
     setAppDialogOpen(true);
   }
 
   function openEditApp(app: App) {
     setEditingApp(app);
+    setAppForm({ name: app.name });
     setAppDialogOpen(true);
+  }
+
+  /**
+   * บันทึกชื่อแอป — เพิ่ม = `POST /apps` (ไม่ส่ง `companies` = สร้างแอปเปล่า) ·
+   * แก้ไข = `PATCH /apps/:id` ส่ง **เฉพาะ `name`** (`companies` = `undefined`
+   * ฝั่ง API จึงคงคู่ แอป×บริษัท เดิมไว้ ไม่โดนล้าง)
+   */
+  async function handleSaveApp() {
+    if (!appForm.name.trim()) {
+      notify(t("appNameRequired"), "error");
+      return;
+    }
+    try {
+      const name = appForm.name.trim();
+      if (editingApp) {
+        await apiFetch(`/apps/${editingApp.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name }),
+        }, token);
+        notify(t("appUpdated"));
+      } else {
+        await apiFetch("/apps", {
+          method: "POST",
+          body: JSON.stringify({ name }),
+        }, token);
+        notify(t("appCreated"));
+      }
+      setAppDialogOpen(false);
+      await loadApps();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        notify(err.message, "error");
+      } else {
+        notify(t("genericError"), "error");
+      }
+    }
   }
 
   async function handleToggleAppActive(app: App) {
@@ -1486,14 +1526,29 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
             </Box>
           )}
 
-          {/* ฟอร์มเพิ่ม/แก้ไขแอป — component แชร์กับหน้า `/systems` */}
-          <AppFormDialog
-            open={appDialogOpen}
-            app={editingApp}
-            companies={companies}
-            onClose={() => setAppDialogOpen(false)}
-            onSaved={loadApps}
-          />
+          {/* ฟอร์มเพิ่ม/แก้ไขแอป = ชื่อล้วน (เหมือนแท็บบริษัท) — รายละเอียดคู่
+              แอป×บริษัท อยู่ที่หน้า `/systems` ใน `AppFormDialog` */}
+          <Dialog open={appDialogOpen} onClose={() => setAppDialogOpen(false)} maxWidth="sm" fullWidth>
+            <DialogTitle>{editingApp ? t("editApp") : t("addApp")}</DialogTitle>
+            <DialogContent>
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 1 }}>
+                <TextField
+                  label={t("columnName")}
+                  value={appForm.name}
+                  onChange={(e) => setAppForm({ ...appForm, name: e.target.value })}
+                  fullWidth
+                  required
+                  inputProps={{ maxLength: 100 }}
+                />
+              </Box>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setAppDialogOpen(false)}>{t("cancel")}</Button>
+              <Button variant="contained" onClick={handleSaveApp}>
+                {t("save")}
+              </Button>
+            </DialogActions>
+          </Dialog>
 
           <Dialog open={companyDialogOpen} onClose={() => setCompanyDialogOpen(false)} maxWidth="sm" fullWidth>
             <DialogTitle>{editingCompany ? t("editCompany") : t("addCompany")}</DialogTitle>

@@ -14,31 +14,24 @@ import { AppExpiryService } from "./app-expiry.service";
 import { isIsoDate, toIsoDate } from "../../common/dates";
 import { paginate, PaginationParams } from "../../common/pagination";
 
-/** 1 แถวของตารางย่อยในฟอร์ม — บริษัท 1 แห่ง พร้อมวันที่ + ชั่วโมง MA ของคู่นั้น */
-export interface AppCompanyInput {
-  /** บริษัทที่ผูก — อย่างน้อย 1 รายการต่อการบันทึก */
-  id?: number | null;
-  /** `YYYY-MM-DD` — วันที่เริ่มใช้งานของคู่นี้, `null` = ยังไม่กรอก */
+/**
+ * 1 รายการข้อมูลที่ฟอร์มส่งมา — **append หรือแก้แถวเดียว** ไม่ใช่ส่ง list
+ * ทั้งชุดมาแทนที่ (คู่เดิมมีได้หลายช่วงเวลาหลัง migration 1812)
+ */
+export interface AppRecordInput {
+  /** บริษัทของรายการนี้ — ตอนเพิ่มต้องระบุ · ตอนแก้ไขส่งมา = เปลี่ยนบริษัท */
+  companyId?: number | null;
+  /** `YYYY-MM-DD` — วันที่เริ่มใช้งานของช่วงนี้, `null` = ยังไม่กรอก */
   startedAt?: string | null;
-  /** `YYYY-MM-DD` — วันหมดอายุของคู่นี้, `null` = ไม่กำหนด */
+  /** `YYYY-MM-DD` — วันหมดอายุของช่วงนี้, `null` = ไม่กำหนด */
   expiresAt?: string | null;
-  /** ชั่วโมง MA ที่ตกลงให้คู่นี้, `null` = ยังไม่กำหนด */
-  maHours?: number | null;
+  /** ชั่วโมง MA ของช่วงนี้, `null` = ยังไม่กำหนด · รับ string ด้วย (ช่องกรอกในฟอร์ม) */
+  maHours?: number | string | null;
 }
 
-/** What `POST /apps` / `PATCH /apps/:id` accept. */
+/** What `POST /apps` / `PATCH /apps/:id` accept — **ชื่อล้วน** (แท็บแอปใน `/master-data`) */
 export interface AppWriteInput {
   name?: string;
-  /** อย่างน้อย 1 รายการ · `undefined` = คงเดิมไว้ (PATCH ที่ไม่ได้แตะบริษัท) */
-  companies?: AppCompanyInput[];
-}
-
-/** แถวเชื่อมหลัง validate — id ตรวจแล้ว วันที่/ชั่วโมง normalize แล้ว */
-interface AppLinkInput {
-  companyId: number;
-  startedAt: string | null;
-  expiresAt: string | null;
-  maHours: number | null;
 }
 
 /** แถวเชื่อม + ชื่อบริษัทที่ join มาแล้ว — ใช้ทั้งตอนทำ response และแจ้งเตือน */
@@ -90,6 +83,10 @@ export class AppsService {
     return paginate(result, params);
   }
 
+  /**
+   * สร้าง "ชื่อแอป" อย่างเดียว — หน้าที่ของแท็บแอปใน `/master-data`
+   * (ข้อมูลระบบเพิ่มทีหลังผ่าน `addRecord()` ที่ `/systems`)
+   */
   async create(data: AppWriteInput) {
     if (!data.name) {
       throw new BadRequestException("App name is required");
@@ -98,22 +95,13 @@ export class AppsService {
     if (existing) {
       throw new ConflictException(`App "${data.name}" already exists`);
     }
-    const wanted = await this.resolveCompanies(data.companies);
     const app = await this.apps.save(
       this.apps.create({ name: data.name, isVisible: true }),
     );
-    await this.writeLinks(app.id, wanted);
-
-    const { links, companyName } = await this.loadLinks([app.id]);
-    for (const link of links) {
-      await this.expiry.reconcile(link, {
-        appName: app.name,
-        companyName: companyName.get(link.companyId) ?? "",
-      });
-    }
-    return this.toResponse(app, links, companyName);
+    return this.toResponse(app, [], new Map());
   }
 
+  /** เปลี่ยนชื่อแอป — ไม่แตะข้อมูลระบบ (`app_companies`) แม้แต่แถวเดียว */
   async update(id: number, data: AppWriteInput) {
     const app = await this.apps.findOne({ where: { id } });
     if (!app) {
@@ -127,13 +115,79 @@ export class AppsService {
       app.name = data.name;
     }
     await this.apps.save(app);
+    return this.appPayload(app);
+  }
 
-    // `undefined` = leave the join rows alone (a partial PATCH must not wipe them)
-    if (data.companies !== undefined) {
-      await this.writeLinks(id, await this.resolveCompanies(data.companies));
+  /* ------------------------------------------------------------------ */
+  /* รายการข้อมูลระบบ — 1 แถวต่อ 1 ช่วงเวลา (append / patch / delete)    */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * เพิ่ม 1 รายการข้อมูลให้แอป — **append เสมอ** คู่เดิมซ้ำได้ (คนละช่วงเวลา
+   * ต่ออายุ MA) จึงไม่มีทางเขียนทับช่วงเก่า
+   */
+  async addRecord(appId: number, data: AppRecordInput) {
+    const app = await this.apps.findOne({ where: { id: appId } });
+    if (!app) {
+      throw new NotFoundException(`App with id ${appId} not found`);
     }
+    const companyId = await this.resolveCompanyId(data.companyId);
+    await this.appCompanies.save(
+      this.appCompanies.create({
+        appId,
+        companyId,
+        startedAt: this.normalizeDate(data.startedAt, "startedAt"),
+        expiresAt: this.normalizeDate(data.expiresAt, "expiresAt"),
+        maHours: this.normalizeHours(data.maHours),
+        expiryStatus: "none",
+        expiryNotified: "none",
+      }),
+    );
+    return this.appPayload(app);
+  }
 
-    const { links, companyName } = await this.loadLinks([id]);
+  /**
+   * แก้ **แถวเดียว** — ฟิลด์ที่ไม่ส่งมา = คงเดิมไว้ (ส่ง `null` = ล้างค่า)
+   * แถวต้องอยู่ใต้แอปที่ระบุ ไม่งั้น 404 (กันแก้ข้ามแอปโดยบังเอิญ)
+   */
+  async updateRecord(appId: number, recordId: number, data: AppRecordInput) {
+    const app = await this.apps.findOne({ where: { id: appId } });
+    if (!app) {
+      throw new NotFoundException(`App with id ${appId} not found`);
+    }
+    const row = await this.appCompanies.findOne({ where: { id: recordId } });
+    if (!row || row.appId !== appId) {
+      throw new NotFoundException(`Record with id ${recordId} not found`);
+    }
+    if (data.companyId !== undefined) {
+      row.companyId = await this.resolveCompanyId(data.companyId);
+    }
+    if (data.startedAt !== undefined) {
+      row.startedAt = this.normalizeDate(data.startedAt, "startedAt");
+    }
+    if (data.expiresAt !== undefined) {
+      row.expiresAt = this.normalizeDate(data.expiresAt, "expiresAt");
+    }
+    if (data.maHours !== undefined) {
+      row.maHours = this.normalizeHours(data.maHours);
+    }
+    await this.appCompanies.save(row);
+    return this.appPayload(app);
+  }
+
+  /** ลบ 1 รายการข้อมูล — **แอปไม่หาย** (การลบแอปเป็นหน้าที่ `remove()`) */
+  async removeRecord(appId: number, recordId: number) {
+    const row = await this.appCompanies.findOne({ where: { id: recordId } });
+    if (!row || row.appId !== appId) {
+      throw new NotFoundException(`Record with id ${recordId} not found`);
+    }
+    await this.appCompanies.delete({ id: recordId });
+    return { deleted: true };
+  }
+
+  /** โหลดคู่ทั้งหมดของแอป + รีเฟรชสถานะอายุทุกแถว แล้วคืน payload ของแอป */
+  private async appPayload(app: App) {
+    const { links, companyName } = await this.loadLinks([app.id]);
     for (const link of links) {
       await this.expiry.reconcile(link, {
         appName: app.name,
@@ -141,6 +195,19 @@ export class AppsService {
       });
     }
     return this.toResponse(app, links, companyName);
+  }
+
+  /** ตรวจว่าบริษัทมีจริงก่อนเขียน — 400 ถ้าไม่มี (ไม่ insert แถวกำพร้า) */
+  private async resolveCompanyId(value: number | string | null | undefined): Promise<number> {
+    const id = Number(value);
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new BadRequestException("companyId is required");
+    }
+    const company = await this.companies.findOne({ where: { id } });
+    if (!company) {
+      throw new BadRequestException("Company does not exist");
+    }
+    return id;
   }
 
   async updateActive(id: number, isActive: boolean) {
@@ -179,98 +246,6 @@ export class AppsService {
     return { deleted: true };
   }
 
-  /**
-   * The form posts the whole list of pairs. At least one company is required
-   * and every id must exist — a silent partial match would unlink companies
-   * the user never deselected — and each date is validated here so a bad one
-   * never reaches `app_companies`.
-   */
-  private async resolveCompanies(rows?: AppCompanyInput[]): Promise<AppLinkInput[]> {
-    if (!Array.isArray(rows)) {
-      throw new BadRequestException("At least one company is required");
-    }
-    const seen = new Set<number>();
-    const wanted: AppLinkInput[] = [];
-    for (const row of rows) {
-      const id = Number(row?.id);
-      if (!Number.isInteger(id) || id <= 0) {
-        throw new BadRequestException("One or more companies are invalid");
-      }
-      if (seen.has(id)) {
-        throw new BadRequestException(`Company ${id} is listed twice`);
-      }
-      seen.add(id);
-      wanted.push({
-        companyId: id,
-        startedAt: this.normalizeDate(row.startedAt, "startedAt"),
-        expiresAt: this.normalizeDate(row.expiresAt, "expiresAt"),
-        maHours: this.normalizeHours(row.maHours),
-      });
-    }
-    if (wanted.length === 0) {
-      throw new BadRequestException("At least one company is required");
-    }
-    const companies = await this.companies.find({ where: { id: In([...seen]) } });
-    if (companies.length !== seen.size) {
-      throw new BadRequestException("One or more companies do not exist");
-    }
-    return wanted;
-  }
-
-  /**
-   * Sync the join rows with what the form sent: keep the pairs still listed
-   * (touching only their dates/hours), insert the new ones, drop the rest.
-   *
-   * Never rebuilds the table from scratch — that would reset
-   * `expiry_notified` on pairs the user never touched and re-ring their
-   * bells. A changed date is left for `reconcile()` to interpret (it decides
-   * whether the announcement column resets or advances).
-   */
-  private async writeLinks(appId: number, wanted: AppLinkInput[]): Promise<void> {
-    const existing = await this.appCompanies.find({ where: { appId } });
-    const held = new Map(existing.map((row) => [row.companyId, row]));
-    const keep = new Set<number>();
-
-    for (const row of wanted) {
-      keep.add(row.companyId);
-      const current = held.get(row.companyId);
-      if (!current) {
-        await this.appCompanies.insert({
-          appId,
-          companyId: row.companyId,
-          startedAt: row.startedAt,
-          expiresAt: row.expiresAt,
-          maHours: row.maHours,
-          expiryStatus: "none",
-          expiryNotified: "none",
-        });
-        continue;
-      }
-      const started = current.startedAt ? toIsoDate(current.startedAt) : null;
-      const expires = current.expiresAt ? toIsoDate(current.expiresAt) : null;
-      if (
-        started !== row.startedAt ||
-        expires !== row.expiresAt ||
-        (current.maHours ?? null) !== row.maHours
-      ) {
-        await this.appCompanies.update(
-          { appId, companyId: row.companyId },
-          {
-            startedAt: row.startedAt,
-            expiresAt: row.expiresAt,
-            maHours: row.maHours,
-          },
-        );
-      }
-    }
-
-    for (const row of existing) {
-      if (!keep.has(row.companyId)) {
-        await this.appCompanies.delete({ appId, companyId: row.companyId });
-      }
-    }
-  }
-
   /** `undefined` / `null` / `""` = leave it empty; anything else must be a date. */
   private normalizeDate(
     value: string | null | undefined,
@@ -301,11 +276,15 @@ export class AppsService {
    * Join rows + every company name, in two queries. Master data holds a
    * handful of rows, and the names are needed both for the chips and for the
    * notification text — `AppCompany` maps no relation on purpose.
+   *
+   * เรียง `id ASC` (ลำดับที่เพิ่ม) — รายการใหม่ต้องโผล่ **ใต้** รายการเดิม
+   * ในตาราง `/systems` ไม่ใช่กระโดดขึ้นข้างบน
    */
   private async loadLinks(appIds?: number[]): Promise<LoadedLinks> {
-    const links = await this.appCompanies.find(
-      appIds ? { where: { appId: In(appIds) } } : {},
-    );
+    const links = await this.appCompanies.find({
+      where: appIds ? { appId: In(appIds) } : {},
+      order: { id: "ASC" },
+    });
     const companies = await this.companies.find();
     return {
       links,
@@ -323,19 +302,24 @@ export class AppsService {
     return grouped;
   }
 
-  /** คู่ทั้งหมดของแอป เรียงตามชื่อบริษัท — นี่คือสิ่งที่ชิปในตารางโชว์ */
+  /**
+   * รายการทั้งหมดของแอป เรียงตามลำดับที่เพิ่ม (`id ASC`) — 1 แถวต่อ 1 ช่วง
+   * เวลา คู่เดิมจึงโผล่หลายแถวได้ · `id` ที่ส่งกลับไป = **companyId** (ฝั่ง
+   * boards/reports ใช้กรองบริษัทด้วยค่านี้) ส่วน `recordId` คือ PK ของแถว
+   */
   private companyLinks(links: AppCompany[], companyName: Map<number, string>) {
     return links
       .map((link) => ({
+        recordId: link.id,
         id: link.companyId,
         name: companyName.get(link.companyId) ?? "",
         startedAt: link.startedAt ? toIsoDate(link.startedAt) : null,
         expiresAt: link.expiresAt ? toIsoDate(link.expiresAt) : null,
-        /** ชั่วโมง MA ที่ตกลงให้คู่นี้ — `null` = ยังไม่กำหนด */
+        /** ชั่วโมง MA ของช่วงนี้ — `null` = ยังไม่กำหนด */
         maHours: link.maHours ?? null,
         expiryStatus: link.expiryStatus,
       }))
-      .sort((a, b) => a.name.localeCompare(b.name, "th"));
+      .sort((a, b) => a.recordId - b.recordId);
   }
 
   private toResponse(app: App, links: AppCompany[], companyName: Map<number, string>) {

@@ -14,23 +14,30 @@ import type { ExpiryStatus } from "./app-expiry";
  * ที่ล็อกอิน เพราะฟอร์มแจ้งปัญหาต้องใช้) ส่วน `/systems` ใช้
  * `fetchSystemsApps()` (GET /systems — กันด้้วย `system.view`) สองหน้าจึงให้
  * สิทธิ์แยกกันได้
+ *
+ * เขียน: `addAppRecord` / `updateAppRecord` / `deleteAppRecord` (รายการข้อมูล)
+ * เป็นของ `/systems` · ส่วนชื่อแอป แท็บ `/master-data` เรียก `apiFetch` ตรง ๆ
+ * เอง — สองเรื่องจึงไม่เขียนทับกัน
  */
 
 /**
- * 1 แถวของ `app_companies` — **คู่ แอป×บริษัท** พร้อมวันที่ของคู่นั้นเอง
- * (migration 1810 ย้ายวันที่ออกจาก `apps` ลงมาที่ตารางเชื่อม เพราะแต่ละ
- * บริษัทต่ออายุคนละช่วงเวลา)
+ * 1 แถวของ `app_companies` — **1 ช่วงเวลาของคู่ แอป×บริษัท** (migration 1810
+ * ย้ายวันที่ออกจาก `apps` ลงมาที่ตารางเชื่อม · migration 1812 ทำให้คู่เดิม
+ * มีได้หลายแถว → หน้า `/systems` จึงโชว์ **1 แถวต่อ 1 รายการ**)
  */
 export interface AppCompanyLink {
+  /** PK ของแถว — API ฝั่ง record (`/apps/:id/companies/:recordId`) ใช้ตัวนี้ */
+  recordId: number;
+  /** `company_id` — ฝั่ง `boards` / `reports` กรองบริษัทด้วยค่านี้ */
   id: number;
   name: string;
   /** `YYYY-MM-DD` from `app_companies.started_at`, null = ยังไม่กรอก */
   startedAt: string | null;
   /** `YYYY-MM-DD` from `app_companies.expires_at`, null = ไม่กำหนด */
   expiresAt: string | null;
-  /** ชั่วโมง MA ที่ตกลงให้คู่นี้จาก `app_companies.ma_hours`, null = ยังไม่กำหนด */
+  /** ชั่วโมง MA ของช่วงนี้จาก `app_companies.ma_hours`, null = ยังไม่กำหนด */
   maHours: number | null;
-  /** stored state **ของคู่นี้** — ไม่กำหนด / ปกติ / ใกล้หมดอายุ (≤30 วัน) / หมดอายุ — UI โชว์เป็นจำนวนวันดูที่ `expiryChipLabel()` */
+  /** stored state **ของแถวนี้** — ไม่กำหนด / ปกติ / ใกล้หมดอายุ (≤30 วัน) / หมดอายุ — UI โชว์เป็นจำนวนวันดูที่ `expiryChipLabel()` */
   expiryStatus: ExpiryStatus;
 }
 
@@ -53,29 +60,15 @@ export interface Company {
   appCount: number;
 }
 
-/** 1 แถวของตารางย่อย/ dropdown ในฟอร์ม — บริษัท 1 แห่ง พร้อมวันที่ + ชั่วโมง MA */
-export interface AppCompanyInput {
-  id: number;
-  /** `YYYY-MM-DD`, `null` = ยังไม่กรอก / ไม่กำหนด */
-  startedAt: string | null;
-  expiresAt: string | null;
-  /** ชั่วโมง MA ที่ตกลงให้คู่นี้, `null` = ยังไม่กำหนด */
-  maHours: number | null;
-}
-
-/**
- * ชั่วโมง MA ของแอป = **ผลรวมทุกคู่ แอป×บริษัท** — `null` เมื่อยังไม่มีคู่ไหน
- * กรอกเลย (ต่างจาก `0` ซึ่งหมายถึงตกลงให้ 0 ชม. จริง ๆ)
- *
- * ฟังก์ชันเดียวที่ `/systems` กับ `/reports` ใช้ร่วมกัน เพื่อให้ตัวเลข
- * "ชั่วโมง MA" ของแอปเดียวกันตรงกันทุกหน้า
- */
-export function sumMaHours(links: AppCompanyLink[]): number | null {
-  const filled = links
-    .map((link) => link.maHours)
-    .filter((v): v is number => v != null);
-  if (filled.length === 0) return null;
-  return filled.reduce((sum, v) => sum + v, 0);
+/** payload ของ `POST` / `PATCH /apps/:id/companies` — 1 รายการข้อมูลระบบ */
+export interface AppRecordInput {
+  /** บริษัทของรายการ — ตอนเพิ่มต้องระบุ · ตอนแก้ไขส่งมา = เปลี่ยนบริษัท */
+  companyId?: number;
+  /** `YYYY-MM-DD`, `null` = ยังไม่กรอก / ไม่กำหนด · ไม่ส่ง = คงเดิมไว้ */
+  startedAt?: string | null;
+  expiresAt?: string | null;
+  /** ชั่วโมง MA ของช่วงนี้, `null` = ยังไม่กำหนด */
+  maHours?: number | null;
 }
 
 function getToken(): string | null {
@@ -103,16 +96,39 @@ export async function fetchCompanies(page = 1, limit = 100): Promise<PaginatedRe
   );
 }
 
-/** POST (ไม่ส่ง `id`) / PATCH (ส่ง `id`) — ฟอร์มส่งบริษัทเดียวเป็น array อันเดียว */
-export async function saveApp(data: {
-  id?: number;
-  name: string;
-  companies: AppCompanyInput[];
-}): Promise<App> {
-  const { id, ...body } = data;
-  return apiFetch<App>(id ? `/apps/${id}` : "/apps", {
-    method: id ? "PATCH" : "POST",
-    body: JSON.stringify(body),
+/**
+ * **รายการข้อมูลระบบ** — 3 endpoint ใต้ `/apps/:id/companies`:
+ * append / patch แถวเดียว / ลบแถวเดียว
+ *
+ * ตั้งใจ**ไม่มี** "ส่ง list ทั้งชุดมาแทนที่" อีกต่อไป เพราะคู่เดิมมีได้หลาย
+ * ช่วงเวลา (migration 1812) — การส่ง list จะไปลบช่วงเก่าทิ้งเอง
+ */
+export async function addAppRecord(appId: number, data: AppRecordInput): Promise<App> {
+  return apiFetch<App>(`/apps/${appId}/companies`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  }, getToken());
+}
+
+/** แก้ **แถวนั้นแถบเดียว** — ฟิลด์ที่ไม่ส่ง = คงเดิม, ส่ง `null` = ล้างค่า */
+export async function updateAppRecord(
+  appId: number,
+  recordId: number,
+  data: AppRecordInput,
+): Promise<App> {
+  return apiFetch<App>(`/apps/${appId}/companies/${recordId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  }, getToken());
+}
+
+/** ลบรายการ — **แอปไม่หาย** (การลบแอปอยู่ที่แท็บแอปใน `/master-data`) */
+export async function deleteAppRecord(
+  appId: number,
+  recordId: number,
+): Promise<{ deleted: boolean }> {
+  return apiFetch<{ deleted: boolean }>(`/apps/${appId}/companies/${recordId}`, {
+    method: "DELETE",
   }, getToken());
 }
 

@@ -24,7 +24,15 @@ import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import dayjs from "dayjs";
 import "dayjs/locale/th";
 import { ApiError } from "@/lib/api";
-import { fetchApps, saveApp, type App, type Company } from "@/lib/apps-api";
+import {
+  addAppRecord,
+  deleteAppRecord,
+  fetchApps,
+  updateAppRecord,
+  type App,
+  type AppCompanyLink,
+  type Company,
+} from "@/lib/apps-api";
 import {
   daysLeftIso,
   expiryChipLabel,
@@ -33,29 +41,39 @@ import {
 } from "@/lib/app-expiry";
 import { useNotification } from "@/components/notification";
 
+/** แถวที่กำลังแก้ไข — ส่งมาจากตาราง `/systems` (1 แถว = 1 ช่วงเวลา) */
+export interface EditingRecord {
+  app: App;
+  link: AppCompanyLink;
+}
+
 /**
- * ฟอร์มเพิ่ม/แก้ไขแอป — **ที่เดียวที่สองหน้า (`/master-data` กับ `/systems`)
- * ใช้ร่วมกัน** รูปแบบคือ **dropdown เลือกชื่อแอปที่มีอยู่ในระบบ** (ดึง `GET /apps`
- * เองตอนเปิดฟอร์ม — ฟอร์มนี้**ไม่รับพิมพ์ชื่อใหม่** โหมดแก้ไขล็อกชื่อไว้) →
- * dropdown เลือก 1 บริษัท → วันที่ 2 ช่อง + ชั่วโมง MA ของคู่ แอป×บริษัท นั้น →
- * chip สถานะอายุที่คำนวณสดตอนพิมพ์
+ * ฟอร์มรายละเอียดแอป — **ใช้ที่หน้า `/systems` (ข้อมูลระบบ) ที่เดียว** (แท็บแอปใน
+ * `/master-data` เป็นฟอร์มชื่อล้วนคนละตัว) รูปแบบคือ **dropdown เลือกชื่อแอปที่มี
+ * อยู่ในระบบ** (ดึง `GET /apps` เองตอนเปิดฟอร์ม — ฟอร์มนี้**ไม่รับพิมพ์ชื่อใหม่**
+ * ชื่อใหม่/แก้ชื่อทำที่แท็บแอปใน `/master-data`) → dropdown เลือก 1 บริษัท → วันที่ 2 ช่อง +
+ * ชั่วโมง MA ของช่วงนั้น → chip สถานะอายุที่คำนวณสดตอนพิมพ์
  *
- * บันทึก = `PATCH` แอปที่เลือกพร้อม **รวม link เดิม** (ผูกบริษัท/วันที่/MA เข้ากับ
- * แอปเดิม — ไม่สร้างแอปซ้ำ ไม่ลบ link บริษัทอื่นที่แอปผูกอยู่ทิ้ง)
+ * **บันทึก = 1 รายการ (1 แถว)** — ไม่ใช่ "ส่ง list ทั้งชุดมาแทนที่":
+ * - เพิ่มใหม่ → `POST /apps/:id/companies` (**append** — คู่เดิมซ้ำได้ คนละช่วงเวลา
+ *   ช่องว่างเสมอ ไม่มีทางดึงค่าเก่ามาให้เห็น)
+ * - แก้ไข → `PATCH /apps/:id/companies/:recordId` (แก้แถวนั้นแถบเดียว)
+ * - เปลี่ยนแอปตอนแก้ไข = **ย้าย**: เพิ่มที่แอปใหม่ก่อน แล้วค่อยลบแถวเก่า
+ *   (ทำหลังเสมอ — ถ้า fail กลางทางจะเหลือข้อมูลซ้ำ มากกว่าหาย)
  *
  * ตัว component เป็นเจ้าของ form state เองทั้งหมด — ผู้เรียกแค่ส่ง `open`,
- * `app` (null = เพิ่มใหม่), รายการบริษัท และ callback หลังบันทึก
+ * `record` (null = เพิ่มใหม่), รายการบริษัท และ callback หลังบันทึก
  */
 export default function AppFormDialog({
   open,
-  app,
+  record,
   companies,
   onClose,
   onSaved,
 }: {
   open: boolean;
-  /** null = เพิ่มใหม่ · ไม่ null = แก้ไข (โหลดคู่แรกของแอปมาให้) */
-  app: App | null;
+  /** null = เพิ่มข้อมูลใหม่ · ไม่ null = แก้ไขแถวนั้น */
+  record: EditingRecord | null;
   companies: Company[];
   onClose: () => void;
   /** เรียกหลังบันทึกสำเร็จ — ให้ผู้เรียกดึงรายการใหม่เอง */
@@ -65,9 +83,9 @@ export default function AppFormDialog({
   const locale = useLocale();
   const { notify } = useNotification();
 
-  // ฟอร์มแอป = **บริษัทเดียว** (dropdown) + วันที่ 2 ช่อง + ชั่วโมง MA ของคู่
-  // แอป×บริษัท นั้น (`""` = ยังไม่กรอก / ไม่กำหนด, `0` = ยังไม่ได้เลือกบริษัท)
-  // ชื่อ**ไม่อยู่ใน form** อีกต่อไป — มาจาก dropdown ที่เลือก `selectedAppId`
+  // ฟอร์ม = **บริษัทเดียว** (dropdown) + วันที่ 2 ช่อง + ชั่วโมง MA ของช่วงนั้น
+  // (`""` = ยังไม่กรอก / ไม่กำหนด, `0` = ยังไม่ได้เลือกบริษัท)
+  // ชื่อ**ไม่อยู่ใน form** — มาจาก dropdown ที่เลือก `selectedAppId`
   const [form, setForm] = useState({
     companyId: 0,
     startedAt: "",
@@ -77,57 +95,34 @@ export default function AppFormDialog({
   /** inline error under the company dropdown (one is required) */
   const [error, setError] = useState<string | null>(null);
 
-  // รายการชื่อแอปสำหรับ dropdown — ดึง `GET /apps` ตอนเปิดฟอร์มโหมดเพิ่มใหม่
-  // (`app` ไม่ null = โหมดแก้ไข ไม่ต้องดึง เพราะชื่อล็อกไว้ที่ค่าเดิม)
+  // รายการชื่อแอปสำหรับ dropdown — ดึง `GET /apps` ตอนเปิดฟอร์มทั้งสองโหมด
+  // (`cancelled` กัน setState หลังไดอะล็อกถูกปิดกลางคัน)
   const [availableApps, setAvailableApps] = useState<App[]>([]);
   const [appsLoading, setAppsLoading] = useState(false);
   const [appsError, setAppsError] = useState(false);
-  /** แอปที่เลือกในโหมดเพิ่มใหม่ (`0` = ยังไม่เลือก) — บันทึก = ผูกข้อมูลกับแอปนั้น */
+  /** แอปที่เลือกใน dropdown (`0` = ยังไม่เลือก) — บันทึก = เพิ่มข้อมูลให้แอปนั้น */
   const [selectedAppId, setSelectedAppId] = useState(0);
   /** inline error under the app dropdown (one is required) */
   const [nameError, setNameError] = useState<string | null>(null);
 
-  /**
-   * โหลดฟอร์มตามคู่ แอป×บริษัท — ถ้าคู่นั้นผูกอยู่แล้ว **ค่าเดิมถูกดึงมาให้เห็น**
-   * (กันบันทึกทับ link เดิมด้วยช่องว่างตอน merge) · ยังไม่ผูก → ช่องว่าง
-   * · ยังไม่ได้เลือกบริษัท (`0`) → คงช่องวันที่/MA ที่ผู้ใช้กรอกไว้ตามเดิม
-   */
-  function applyPair(selectedApp: App | undefined, companyId: number) {
-    const link = selectedApp?.companies.find((l) => l.id === companyId);
-    setForm((f) => ({
-      companyId,
-      startedAt: companyId === 0 ? f.startedAt : (link?.startedAt ?? ""),
-      expiresAt: companyId === 0 ? f.expiresAt : (link?.expiresAt ?? ""),
-      maHours:
-        companyId === 0
-          ? f.maHours
-          : link?.maHours == null
-            ? ""
-            : String(link.maHours),
-    }));
-  }
-
-  // เปิดฟอร์มใหม่ = เคลียร์ · เปิดแก้ไข = โหลดคู่แรก (ฟอร์มถือได้แค่ 1 บริษัท)
-  // พร้อมล็อก dropdown ชื่อไปที่แอปนั้น (`selectedAppId`)
+  // เปิดฟอร์มใหม่ = ช่องว่างเสมอ (ข้อมูลใหม่ ไม่ดึงค่าเก่ามาให้เห็น) ·
+  // เปิดแก้ไข = โหลดค่าของแถวนั้น (WYSIWYG) + ล็อก dropdown ไปที่แอปของแถว
   useEffect(() => {
     if (!open) return;
-    const link = app?.companies[0];
+    const link = record?.link;
     setForm({
       companyId: link?.id ?? 0,
       startedAt: link?.startedAt ?? "",
       expiresAt: link?.expiresAt ?? "",
       maHours: link?.maHours == null ? "" : String(link.maHours),
     });
-    setSelectedAppId(app?.id ?? 0);
+    setSelectedAppId(record?.app.id ?? 0);
     setError(null);
     setNameError(null);
-  }, [open, app]);
+  }, [open, record]);
 
-  // โหมดเพิ่มใหม่: ดึงชื่อแอปที่มีอยู่ในระบบมาให้ dropdown เลือก — ฟอร์มนี้
-  // **ไม่รับพิมพ์ชื่อใหม่** จึงไม่ต้องดึงอะไรเลยตอนแก้ไข (`cancelled` กัน
-  // setState หลังไดอะล็อกถูกปิดกลางคัน)
   useEffect(() => {
-    if (!open || app) return;
+    if (!open) return;
     let cancelled = false;
     setAppsLoading(true);
     setAppsError(false);
@@ -144,27 +139,42 @@ export default function AppFormDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, app]);
+  }, [open]);
 
   /** สถานะอายุที่ชิปจะโชว์ — คำนวณใหม่ทุกครั้งที่ผู้ใช้แก้วันที่ */
   const status = previewExpiryStatus(form.expiresAt);
   /** ข้อความชิป = "เหลือ n วัน ใกล้หมดอายุ" / "หมดอายุแล้ว n วัน" / … (จากวันเหลือ) */
   const chip = expiryChipLabel(status, daysLeftIso(form.expiresAt));
 
-  /** ตัวเลือกใน dropdown ชื่อ — โหมดแก้ไขโชว์เฉพาะแอปตัวเอง (ล็อกชื่อไว้) */
-  const nameOptions: App[] = app ? [app] : availableApps;
+  /**
+   * ตัวเลือกใน dropdown ชื่อ = รายการที่ดึงมา · ยังไม่มา (หรือดึงไม่สำเร็จ) ใน
+   * โหมดแก้ไข → ค้างแอปของแถวนั้นไว้ก่อน เพื่อให้เห็นชื่อเดิม
+   */
+  const nameOptions: App[] = availableApps.length
+    ? record && !availableApps.some((a) => a.id === record.app.id)
+      ? [record.app, ...availableApps]
+      : availableApps
+    : record
+      ? [record.app]
+      : [];
 
   /**
-   * แอปที่ฟอร์มจะผูกข้อมูลด้วย = แอปที่กำลังแก้ไข หรือแอปที่เลือกจาก dropdown
-   * — โหมดเพิ่มใหม่**ไม่มีทางสร้างแอปใหม่** (ไม่มีช่องให้พิมพ์ชื่อ)
+   * แอปที่ฟอร์มจะเพิ่มข้อมูลให้ = แอปที่เลือกใน dropdown (โหมดแก้ไขเริ่มที่แอป
+   * ของแถวนั้น) · ยังไม่เลือก = `undefined` → บันทึกไม่ได้ — โหมดเพิ่มใหม่**ไม่มี
+   * ทางสร้างแอปใหม่** เพราะไม่มีช่องให้พิมพ์ชื่อ
    */
-  const target = app ?? availableApps.find((a) => a.id === selectedAppId);
+  const target =
+    selectedAppId === 0
+      ? undefined
+      : (availableApps.find((a) => a.id === selectedAppId) ??
+        // รายการยังไม่มา (หรือดึงไม่สำเร็จ) ในโหมดแก้ไข → ถือแอปของแถวไว้ก่อน
+        (record?.app.id === selectedAppId ? record.app : undefined));
 
   /** ข้อความใต้ dropdown ชื่อ — ลำดับ: ดึงรายการไม่สำเร็จ → ยังไม่ได้เลือก → ยังไม่มีแอป */
   const nameHelper = appsError
     ? t("genericError")
     : (nameError ??
-      (!appsLoading && !app && nameOptions.length === 0 ? t("noAppsHint") : null));
+      (!appsLoading && !record && nameOptions.length === 0 ? t("noAppsHint") : null));
 
   async function handleSave() {
     if (!target) {
@@ -178,29 +188,27 @@ export default function AppFormDialog({
     setNameError(null);
     setError(null);
 
-    const formRow = {
-      id: form.companyId,
+    const payload = {
+      companyId: form.companyId,
       startedAt: form.startedAt || null,
       expiresAt: form.expiresAt || null,
       // `""` = ยังไม่กำหนด → null (ต่างจาก 0 ที่หมายถึง "ตกลงให้ 0 ชม.")
       maHours: form.maHours === "" ? null : Number(form.maHours),
     };
-    // ส่ง **รวมกับ link เดิมของแอป** — `PATCH` ฝั่ง API เก็บเฉพาะแถวที่ส่งมา
-    // (ส่งแต่แถวของฟอร์ม = บริษัทอื่นที่แอปผูกอยู่จะถูกลบไปด้วย)
-    const kept = target.companies.map((link) => ({
-      id: link.id,
-      startedAt: link.startedAt,
-      expiresAt: link.expiresAt,
-      maHours: link.maHours,
-    }));
-    const companies = kept.some((row) => row.id === formRow.id)
-      ? kept.map((row) => (row.id === formRow.id ? formRow : row))
-      : [...kept, formRow];
 
     try {
-      await saveApp({ id: target.id, name: target.name, companies });
-      // ฟอร์มนี้ผูกข้อมูลกับแอปเดิมเสมอ → แจ้งเป็น "แก้ไข" เสมอ
-      notify(t("appUpdated"));
+      if (!record) {
+        // เพิ่มใหม่ = append — คู่เดิมที่มีอยู่แล้วไม่ถูกแตะ
+        await addAppRecord(target.id, payload);
+      } else if (target.id === record.app.id) {
+        // แก้ไข = แถวนั้นแถบเดียว
+        await updateAppRecord(record.app.id, record.link.recordId, payload);
+      } else {
+        // เปลี่ยนแอป = **ย้ายแถว**: เพิ่มที่ใหม่ก่อน แล้วค่อยลบของเก่า
+        await addAppRecord(target.id, payload);
+        await deleteAppRecord(record.app.id, record.link.recordId);
+      }
+      notify(record ? t("dataUpdated") : t("dataCreated"));
       onClose();
       onSaved();
     } catch (err) {
@@ -210,31 +218,28 @@ export default function AppFormDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>{app ? t("editApp") : t("addApp")}</DialogTitle>
+      <DialogTitle>{record ? t("editData") : t("addData")}</DialogTitle>
       <DialogContent sx={{ overflowY: "auto" }}>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 1 }}>
-          {/* ชื่อแอป = dropdown ดึงจาก `GET /apps` — บันทึก = ผูกข้อมูลกับแอปที่
-              เลือก (ไม่สร้างชื่อใหม่). โหมดแก้ไขล็อกชื่อไว้ที่ค่าเดิม */}
+          {/* ชื่อแอป = dropdown ดึงจาก `GET /apps` — เพิ่มใหม่ = เลือกแอปที่จะใส่ข้อมูล ·
+              แก้ไข = เปลี่ยนเป็นแอปอื่นได้ (บันทึกแล้วย้ายแถวนั้นไปแอปใหม่) */}
           <FormControl fullWidth error={!!nameError || appsError}>
-            <InputLabel id="app-name-label">{t("columnName")}</InputLabel>
+            <InputLabel id="app-name-label">{t("columnApp")}</InputLabel>
             <Select
               labelId="app-name-label"
-              value={app ? app.id : selectedAppId}
-              label={t("columnName")}
-              disabled={app != null || appsLoading}
+              value={selectedAppId}
+              label={t("columnApp")}
+              disabled={appsLoading}
               onChange={(e) => {
-                const id = Number(e.target.value);
-                setSelectedAppId(id);
+                setSelectedAppId(Number(e.target.value));
                 setNameError(null);
-                // เปลี่ยนแอป = คู่ แอป×บริษัท เปลี่ยนด้วย → โหลดค่าของคู่ใหม่
-                applyPair(availableApps.find((a) => a.id === id), form.companyId);
               }}
             >
-              {!app && (
-                <MenuItem value={0} disabled>
-                  {t("selectApp")}
-                </MenuItem>
-              )}
+              {/* placeholder ตอนยังไม่เลือก (`value={0}` ต้องมี MenuItem ตรงกัน
+                  ไม่งั้นช่องว่างเปล่าและ MUI เตือน out-of-range) */}
+              <MenuItem value={0} disabled>
+                {t("selectApp")}
+              </MenuItem>
               {nameOptions.map((option) => (
                 <MenuItem key={option.id} value={option.id}>
                   {option.name}
@@ -253,12 +258,17 @@ export default function AppFormDialog({
               value={form.companyId}
               label={t("columnCompany")}
               onChange={(e) => {
-                // บริษัทเดิมของแอปที่เลือก → ดึงค่าคู่นั้นมาให้เห็นก่อนบันทึก
-                applyPair(target, Number(e.target.value));
+                // เปลี่ยนเฉพาะบริษัท — ค่าวันที่/MA ที่พิมพ์ไว้คงตามเดิม
+                setForm({ ...form, companyId: Number(e.target.value) });
                 setError(null);
               }}
               disabled={companies.length === 0}
             >
+              {/* placeholder ตอนยังไม่เลือก — ให้ `value={0}` มี MenuItem ตรงกัน
+                  (ไม่งั้นช่องว่างเปล่าดูเหมือนไม่มีอะไรให้เลือก) */}
+              <MenuItem value={0} disabled>
+                {t("selectCompany")}
+              </MenuItem>
               {companies.map((company) => (
                 <MenuItem key={company.id} value={company.id}>
                   {company.name}
@@ -271,7 +281,7 @@ export default function AppFormDialog({
               <FormHelperText>{error ?? t("noCompaniesHint")}</FormHelperText>
             )}
           </FormControl>
-          {/* ชั่วโมง MA เป็นของคู่ แอป×บริษัท → วางใต้ dropdown บริษัท */}
+          {/* ชั่วโมง MA ของช่วงนี้ → วางใต้ dropdown บริษัท */}
           <TextField
             label={t("columnMaHours")}
             type="number"

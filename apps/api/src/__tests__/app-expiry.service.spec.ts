@@ -7,12 +7,12 @@ import type { AppCompany } from "../modules/apps/entities/app-company.entity";
 import { isIsoDate, toIsoDate, todayIso } from "../common/dates";
 
 /**
- * The expiry rules — 30 วัน / 7 วัน / หมดอายุ — **นับหนึ่งต่อคู่ แอป×บริษัท**
- * ไม่ใช่ต่อแอป, and *one* writer for `app_companies.expiry_status` +
- * `app_companies.expiry_notified`. Every path (list read, save, daily cron)
- * goes through `reconcile()`, so these tests pin the things that can go wrong:
- * a wrong chip, a bell that rings twice, a threshold that never rings at all,
- * or two companies of the same app ringing each other's dates.
+ * The expiry rules — 30 วัน / 7 วัน / หมดอายุ — **นับหนึ่งต่อ 1 แถว**
+ * (1 คู่มีได้หลายช่วงเวลาหลัง migration 1812) ไม่ใช่ต่อแอป, and *one* writer
+ * for `app_companies.expiry_status` + `app_companies.expiry_notified`. Every path
+ * (list read, save, daily cron) goes through `reconcile()`, so these tests pin
+ * the things that can go wrong: a wrong chip, a bell that rings twice, a
+ * threshold that never rings at all, or two rows ringing each other's dates.
  *
  * Stubbed repositories only — safe to run while `npm run dev` is up.
  */
@@ -47,6 +47,7 @@ function inDays(n: number): string {
 /** 1 แถวของ `app_companies` — ค่า default = ยังไม่กรอกอะไรเลย */
 function pair(overrides: Partial<AppCompany> = {}): AppCompany {
   return {
+    id: 700,
     appId: 42,
     companyId: 3,
     startedAt: null,
@@ -58,8 +59,12 @@ function pair(overrides: Partial<AppCompany> = {}): AppCompany {
   };
 }
 
-/** composite PK ที่ service ใช้ระบุแถว — ทุก assertion ของ `update` ต้องชี้ตรงนี้ */
-const POS_AT_ACME = { appId: 42, companyId: 3 };
+/**
+ * surrogate PK (migration 1812) ที่ service ใช้ระบุแถว — ทุก assertion ของ
+ * `update` ต้องชี้ตรงนี้ (การใช้ `(app_id, company_id)` จะโดนแถวช่วงอื่น
+ * ของคู่เดียวกันด้วย เพราะคู่เดิมมีได้หลายแถว)
+ */
+const POS_AT_ACME = { id: 700 };
 
 const NAMES = { appName: "POS", companyName: "ACME" };
 
@@ -270,8 +275,9 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
     const { service, links, notifications } = makeService();
 
     // มามี่ฟู้ด ใกล้หมด (ต้องแจ้ง) · ครัวบ้านสวน ยังอีก 200 วัน (นิ่ง)
-    const dueSoon = pair({ companyId: 3, expiresAt: inDays(5) });
+    const dueSoon = pair({ id: 11, companyId: 3, expiresAt: inDays(5) });
     const farOut = pair({
+      id: 12,
       companyId: 9,
       expiresAt: inDays(200),
       expiryStatus: "normal",
@@ -281,12 +287,12 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
     expect(await service.reconcile(dueSoon, NAMES)).toBe(true);
     expect(await service.reconcile(farOut, NAMES)).toBe(false);
 
-    // เขียนแค่แถวของคู่ที่เปลี่ยน — แตะคู่อื่น = reset รอบแจ้งเตือนของเขา
+    // เขียนแค่แถวที่เปลี่ยน — แตะแถวอื่น = reset รอบแจ้งเตือนของเขา
     expect(links.update).toHaveBeenCalledTimes(1);
-    expect(links.update).toHaveBeenCalledWith(POS_AT_ACME, {
-      expiryStatus: "critical",
-      expiryNotified: "d7",
-    });
+    expect(links.update).toHaveBeenCalledWith(
+      { id: 11 },
+      { expiryStatus: "critical", expiryNotified: "d7" },
+    );
     expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
   });
 
@@ -312,11 +318,11 @@ describe("AppExpiryService.reconcileAll — the 09:00 sweep", () => {
     const { service, links, apps, companies, notifications } = makeService();
     links.find.mockResolvedValue([
       // crosses both thresholds at once (7 days out) → the only real change
-      pair({ appId: 1, companyId: 3, expiresAt: inDays(5) }),
+      pair({ id: 501, appId: 1, companyId: 3, expiresAt: inDays(5) }),
       // no date, already `none` → nothing to do
-      pair({ appId: 2, companyId: 9, expiresAt: null }),
+      pair({ id: 502, appId: 2, companyId: 9, expiresAt: null }),
       // far out, already showing `normal` → nothing to do
-      pair({ appId: 3, companyId: 3, expiresAt: inDays(400), expiryStatus: "normal" }),
+      pair({ id: 503, appId: 3, companyId: 3, expiresAt: inDays(400), expiryStatus: "normal" }),
     ]);
     apps.find.mockResolvedValue([
       { id: 1, name: "POS" },
@@ -332,7 +338,7 @@ describe("AppExpiryService.reconcileAll — the 09:00 sweep", () => {
 
     expect(links.update).toHaveBeenCalledTimes(1);
     expect(links.update).toHaveBeenCalledWith(
-      { appId: 1, companyId: 3 },
+      { id: 501 },
       { expiryStatus: "critical", expiryNotified: "d7" },
     );
     expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);

@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
-import { AppsService, AppCompanyInput } from "./apps.service";
+import { AppsService, AppRecordInput, AppWriteInput } from "./apps.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -32,31 +32,48 @@ export class AppsController {
   // The CRUD below serves TWO surfaces with separate permission cards:
   // the apps tab in `/master-data` (`app.*`) and the `/systems` page
   // (`system.*`). Same endpoint, either permission opens it (guard is OR).
+  //
+  // **ชื่ออย่างเดียว** — ข้อมูลระบบ (บริษัท/วันที่/MA) ไม่ได้ผ่านสอง route
+  // นี้แล้ว แต่ไปที่ `/apps/:id/companies` ด้านล่าง (แท็บแอปจึงสร้าง/แก้ไข
+  // แอปได้โดยไม่ไปเขียนข้อมูลของหน้า `/systems`)
   @Post()
   @Permissions("app.create", "system.create")
-  create(
-    @Body()
-    body: {
-      name: string;
-      /** ตารางย่อยในฟอร์ม — 1 แถวต่อบริษัท พร้อมวันที่ + ชั่วโมง MA ของคู่นั้น */
-      companies: AppCompanyInput[];
-    },
-  ) {
+  create(@Body() body: AppWriteInput) {
     return this.apps.create(body);
   }
 
   @Patch(":id")
   @Permissions("app.update", "system.update")
-  update(
-    @Param("id", ParseIntPipe) id: number,
-    @Body()
-    body: {
-      name?: string;
-      /** `undefined` = คงคู่เดิมไว้ · ส่ง array ว่าง = 400 (ต้องมีอย่างน้อย 1 บริษัท) */
-      companies?: AppCompanyInput[];
-    },
-  ) {
+  update(@Param("id", ParseIntPipe) id: number, @Body() body: AppWriteInput) {
     return this.apps.update(id, body);
+  }
+
+  /* --- รายการข้อมูลระบบ: 1 แถวต่อ 1 ช่วงเวลา (append / patch / delete) --- */
+
+  @Post(":id/companies")
+  @Permissions("app.create", "system.create")
+  addRecord(@Param("id", ParseIntPipe) id: number, @Body() body: AppRecordInput) {
+    return this.apps.addRecord(id, body);
+  }
+
+  @Patch(":id/companies/:recordId")
+  @Permissions("app.update", "system.update")
+  updateRecord(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("recordId", ParseIntPipe) recordId: number,
+    @Body() body: AppRecordInput,
+  ) {
+    return this.apps.updateRecord(id, recordId, body);
+  }
+
+  /** ลบได้เฉพาะรายการ — ตัวแอปใช้ `DELETE /apps/:id` ด้านล่าง */
+  @Delete(":id/companies/:recordId")
+  @Permissions("app.delete", "system.delete")
+  removeRecord(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("recordId", ParseIntPipe) recordId: number,
+  ) {
+    return this.apps.removeRecord(id, recordId);
   }
 
   @Patch(":id/active")

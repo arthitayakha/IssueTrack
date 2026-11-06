@@ -255,8 +255,8 @@ export function ReportsTable({
   );
 
   /**
-   * คอลัมน์ "ชั่วโมง MA" (view ตามบริษัท) — **per-pair** คือค่าของคู่นี้เอง
-   * ไม่ใช่ผลรวมของแอป (ต่างจาก `sumMaHours` ที่ `/systems` ใช้ตอนกรอกเป็นระดับแอป)
+   * คอลัมน์ "ชั่วโมง MA" (view ตามบริษัท) — **per-row** คือค่าของแถว (1 ช่วงเวลา)
+   * นั้นเอง ไม่ใช่ผลรวมของแอป (ต่างจาก "ชั่วโมงที่ใช้ทั้งหมด" ที่เป็นระดับแอป)
    */
   const maHoursCell = (ma: number | null) =>
     ma == null ? notSet : <Typography variant="body2">{ma}</Typography>;

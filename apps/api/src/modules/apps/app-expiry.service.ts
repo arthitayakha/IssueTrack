@@ -84,8 +84,10 @@ export class AppExpiryService {
    * relation, and the callers (list read / save / daily sweep) already hold
    * the app and company rows.
    *
-   * Uses a targeted `UPDATE` keyed on the composite PK rather than `save()` —
-   * it must only ever touch this one row.
+   * Uses a targeted `UPDATE` keyed on the surrogate `id` (migration 1812)
+   * rather than `save()` — it must only ever touch this one row. Keying on
+   * `(app_id, company_id)` would rewrite **every** period of that pair now
+   * that one pair can hold several rows.
    */
   async reconcile(link: AppCompany, names: ExpiryNames): Promise<boolean> {
     const nextStatus = this.statusFor(link.expiresAt);
@@ -114,10 +116,7 @@ export class AppExpiryService {
     if (statusChanged) patch.expiryStatus = nextStatus;
     if (stageChanged) patch.expiryNotified = stage;
     if (Object.keys(patch).length > 0) {
-      await this.links.update(
-        { appId: link.appId, companyId: link.companyId },
-        patch,
-      );
+      await this.links.update({ id: link.id }, patch);
     }
 
     if (announce) await this.announce(link, names, announce);

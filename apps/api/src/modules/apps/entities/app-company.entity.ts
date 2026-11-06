@@ -1,4 +1,4 @@
-import { Column, Entity, PrimaryColumn } from "typeorm";
+import { Column, Entity, PrimaryGeneratedColumn } from "typeorm";
 
 /**
  * สถานะอายุที่ *เก็บไว้* ใน DB (`none` | `normal` | `expiring_soon` (≤30 วัน) |
@@ -22,27 +22,33 @@ export type AppExpiryStatus =
 export type AppExpiryStage = "none" | "d30" | "d7" | "expired";
 
 /**
- * **1 แถว = คู่ (แอป × บริษัท) 1 คู่** — ตารางเชื่อมที่ migration 1808 สร้าง
- * และ migration 1810 ยก "วันที่อายุ" ทั้ง 4 คอลัมน์ลงมาอยู่ที่นี่
+ * **1 แถว = 1 ช่วงข้อมูลของคู่ (แอป × บริษัท)** — ตารางเชื่อมที่ migration 1808
+ * สร้าง, migration 1810 ยก "วันที่อายุ" ทั้ง 4 คอลัมน์ลงมาที่นี่ และ
+ * migration 1812 เปลี่ยน composite PK → surrogate key `id`
  *
  * เหตุผลที่วันที่ต้องอยู่ตรงนี้: วันที่ *เป็นของคู่* ไม่ใช่ของแอป — 1 แอป
  * ผูกได้หลายบริษัท และแต่ละเจ้าต่ออายุคนละช่วงเวลา ดังนั้น
  * `started_at` / `expires_at` / `expiry_status` / `expiry_notified` ของ
  * "มามี่ฟู้ด" กับ "ครัวบ้านสวน" จึงเป็นคนละชุดค่ากันโดยสิ้นเชิง
  *
- * **ไม่มี relation (`@ManyToOne`) โดยเจตนา** — PK เป็นคู่ (`app_id`,
- * `company_id`) และคอลัมน์ FK ทั้งสองตัวก็เป็นส่วนหนึ่งของ PK อยู่แล้ว
- * การ map relation กลับจะทำให้ TypeORM ต้อง register คอลัมน์เดียวกันสองรอบ
- * ฝั่ง service จึง join เองด้วย `In([...])` แบบเดียวกับที่ `CompaniesService`
- * นับแอปผ่าน repository ตรง ๆ — cascade ทั้งสองทางยังเป็นงานของ FK ใน DB
- * (`ON DELETE CASCADE` ใน migration 1808) เหมือนเดิม
+ * **คู่เดิมมีได้หลายแถว** (1812): แถว (POS × มามี่ฟู้ด) ช่วงปี 2568 กับช่วง
+ * ปี 2569 เป็นคนละแถวกัน ห้ามเขียนทับกัน — หน้าที่แทนที่/ลบเป็นของ
+ * `PATCH` / `DELETE /apps/:id/companies/:recordId` ไม่ใช่การส่ง list ทั้งชุด
+ *
+ * **ไม่มี relation (`@ManyToOne`) โดยเจตนา** — ฝั่ง service โหลดคู่เองด้วย
+ * repository ตรง ๆ แล้ว join ชื่อบริษัทเอง (master data มีไม่กี่สิบแถว)
+ * cascade ทั้งสองทางเป็นงานของ FK ใน DB (`ON DELETE CASCADE` ใน 1808) เหมือนเดิม
  */
 @Entity("app_companies")
 export class AppCompany {
-  @PrimaryColumn({ name: "app_id", type: "integer" })
+  /** surrogate PK (migration 1812) — ใช้เป็น `recordId` ของ API ฝั่งเว็บ */
+  @PrimaryGeneratedColumn({ name: "id", type: "int" })
+  id!: number;
+
+  @Column({ name: "app_id", type: "integer" })
   appId!: number;
 
-  @PrimaryColumn({ name: "company_id", type: "integer" })
+  @Column({ name: "company_id", type: "integer" })
   companyId!: number;
 
   /**
