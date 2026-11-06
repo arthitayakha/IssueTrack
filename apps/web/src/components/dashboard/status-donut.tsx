@@ -7,6 +7,9 @@ import { useTranslations } from "next-intl";
 import DonutChart from "./donut-chart";
 import IssuesDrillDialog from "./issues-drill-dialog";
 import { resolveStatusColor } from "@/lib/status-color";
+import { useRouter } from "@/i18n/navigation";
+import { usePermissions } from "@/lib/permissions";
+import { reportsHref } from "@/lib/dashboard-nav";
 import type { DashboardCountRow, DashboardScope } from "@kanban/shared";
 
 /**
@@ -23,9 +26,10 @@ import type { DashboardCountRow, DashboardScope } from "@kanban/shared";
  *
  * The whole filter state lives in this card rather than in a page-level chip:
  * the subtitle switches to "กำลังกรอง: X — คลิกอีกครั้งเพื่อล้าง" and a small
- * "ดู N งาน" button opens the issue list behind the filter (the same dialog
- * the trend bars and the usage ring use). The footer total is always the
- * page-wide total — this card never claims to be filtered.
+ * "ดู N งาน" button jumps to /reports filtered to that status (the drill
+ * dialog only stays for seats without `report.view`, who would be bounced
+ * off the reports page). The footer total is always the page-wide total —
+ * this card never claims to be filtered.
  */
 export default function StatusDonut({
   rows,
@@ -45,6 +49,8 @@ export default function StatusDonut({
 }) {
   const theme = useTheme();
   const t = useTranslations("Dashboard");
+  const router = useRouter();
+  const { can } = usePermissions();
   /** The list opened by "ดู N งาน" — null while the dialog is closed. */
   const [listFor, setListFor] = useState<DashboardCountRow | null>(null);
 
@@ -90,7 +96,15 @@ export default function StatusDonut({
             <Button
               size="small"
               variant="outlined"
-              onClick={() => setListFor(selected)}
+              onClick={() => {
+                // to /reports with this status; the dialog only stays for
+                // seats without report.view, who cannot open the reports page
+                if (can("report.view") && selected.id != null) {
+                  router.push(reportsHref({ status: selected.id }));
+                  return;
+                }
+                setListFor(selected);
+              }}
               sx={{ textTransform: "none", fontWeight: 600, flexShrink: 0 }}
             >
               {t("filter.viewAll", { count: selected.count })}

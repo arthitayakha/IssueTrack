@@ -227,17 +227,6 @@ function formatClock(seconds: number | null | undefined): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-/**
- * Short clock for the card's bottom bar: "HH:MM" (hours:minutes, no seconds —
- * "00:00" right after a reset), the compact style Trello-ish cards use.
- */
-function formatShortClock(seconds: number | null | undefined): string {
-  if (seconds == null || seconds < 0) return "00:00";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-}
-
 /** Seconds elapsed since a session started (never negative). */
 function elapsedSince(startedAtIso: string | null | undefined, nowMs: number): number {
   if (!startedAtIso) return 0;
@@ -638,7 +627,7 @@ function TrelloCardContent({
                     variant="caption"
                     sx={{ fontFamily: "monospace", fontWeight: 700, fontSize: "0.7rem" }}
                   >
-                    {formatShortClock(totalSeconds)}
+                    {formatClock(totalSeconds)}
                   </Typography>
                 </Box>
               )}

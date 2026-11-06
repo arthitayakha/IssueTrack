@@ -22,6 +22,9 @@ import type {
 import { DateRangeIconButton } from "@/components/date-range-select";
 import IssuesDrillDialog, { type DrillSource } from "./issues-drill-dialog";
 import { formatBucketLabel } from "./trend-labels";
+import { useRouter } from "@/i18n/navigation";
+import { usePermissions } from "@/lib/permissions";
+import { bucketToRange, reportsHref } from "@/lib/dashboard-nav";
 
 /**
  * Trend chart: new cards per bucket (day / week / month / year).
@@ -38,7 +41,10 @@ import { formatBucketLabel } from "./trend-labels";
  *     component mirrors the same fallback rules when zero-filling, so the bars
  *     never span a different period than the query did.
  *
- * Clicking a bar opens the issues behind it (see issues-drill-dialog.tsx).
+ * Clicking a bar jumps to /reports filtered to that bucket's `from`/`to`
+ * (plus the active status cross-filter) — the drill dialog only stays as a
+ * fallback for users without `report.view`, who would otherwise be bounced
+ * off the reports page.
  */
 
 const PERIODS: DashboardPeriod[] = ["day", "week", "month", "year"];
@@ -205,6 +211,8 @@ export default function TrendChart({
   const theme = useTheme();
   const t = useTranslations("Dashboard");
   const locale = useLocale();
+  const router = useRouter();
+  const { can } = usePermissions();
 
   const [drill, setDrill] = useState<DrillTarget | null>(null);
 
@@ -354,15 +362,22 @@ export default function TrendChart({
                   radius={[8, 8, 3, 3]}
                   onClick={(clicked) => {
                     const payload = clicked?.payload as Partial<Bucket> | undefined;
-                    if (payload?.bucket) {
-                      const count = Number(payload.count ?? 0);
-                      const label = formatBucketLabel(payload.bucket, period, locale, true);
-                      setDrill({
-                        source: { kind: "trend", bucket: payload.bucket, period },
-                        title: t("trend.issuesTitle", { label, count }),
-                        count,
-                      });
+                    if (!payload?.bucket) return;
+                    // to /reports with this bar's window (+ the status
+                    // cross-filter as context); the dialog is only for seats
+                    // without report.view, who cannot open the reports page
+                    if (can("report.view")) {
+                      const { from, to } = bucketToRange(payload.bucket, period);
+                      router.push(reportsHref({ from, to, status: statusId }));
+                      return;
                     }
+                    const count = Number(payload.count ?? 0);
+                    const label = formatBucketLabel(payload.bucket, period, locale, true);
+                    setDrill({
+                      source: { kind: "trend", bucket: payload.bucket, period },
+                      title: t("trend.issuesTitle", { label, count }),
+                      count,
+                    });
                   }}
                 />
               </BarChart>

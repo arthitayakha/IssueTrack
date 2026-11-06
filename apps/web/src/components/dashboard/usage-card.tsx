@@ -16,6 +16,9 @@ import { useTranslations } from "next-intl";
 import DonutChart from "./donut-chart";
 import IssuesDrillDialog, { type DrillSource } from "./issues-drill-dialog";
 import { fetchDrilldown } from "@/lib/dashboard-api";
+import { useRouter } from "@/i18n/navigation";
+import { usePermissions } from "@/lib/permissions";
+import { reportsHref } from "@/lib/dashboard-nav";
 import type { DashboardCountRow, DashboardScope } from "@kanban/shared";
 
 /** The usage card's two tabs — which dimension the ring is cut from. */
@@ -35,8 +38,9 @@ interface DrillTarget {
  * Tabs in the header pick the dimension: **แอป** shows the app ring, and
  * clicking a slice drills *into* that app (the ring re-renders as the
  * categories inside it, with a ← กลับ control); clicking a category slice then
- * opens the issue list. The **หมวดหมู่** tab is the overall category ring —
- * one click straight to its list.
+ * jumps to /reports filtered to that category (the drill dialog only stays as
+ * a fallback without `report.view`). The **หมวดหมู่** tab is the overall
+ * category ring — one click straight to its filtered report.
  *
  * Both top-level rings arrive in the same `GET /dashboard/summary` payload, so
  * switching tabs and going back are free; only the level-2 ring fetches
@@ -56,6 +60,8 @@ export default function UsageCard({
 }) {
   const theme = useTheme();
   const t = useTranslations("Dashboard");
+  const router = useRouter();
+  const { can } = usePermissions();
 
   const [dim, setDim] = useState<Dim>("app");
   /** The app we drilled into (level 2) — null on the top level. */
@@ -110,7 +116,7 @@ export default function UsageCard({
       ? t("usage.hintDrill")
       : t("usage.hintList");
 
-  /** Slice / legend click — drill one level deeper, or open the list. */
+  /** Slice / legend click — drill one level deeper, or go to the list. */
   const handleSlice = (row: DashboardCountRow) => {
     if (row.id == null) return;
     const name = row.name ?? "—";
@@ -121,8 +127,17 @@ export default function UsageCard({
       return;
     }
 
-    // level-2 category (inside the drilled app) → its list, count must match
+    // category slice (either tab) → /reports filtered to it (+ the app it
+    // was drilled through + the page's status cross-filter as context).
+    // The dialog only stays for seats without report.view, who would be
+    // bounced off the reports page.
     const appId = parentAppId;
+    if (can("report.view")) {
+      router.push(reportsHref({ category: row.id, app: appId, status: statusId }));
+      return;
+    }
+
+    // level-2 category (inside the drilled app) → its list, count must match
     setDrill({
       source: {
         kind: "dimension",

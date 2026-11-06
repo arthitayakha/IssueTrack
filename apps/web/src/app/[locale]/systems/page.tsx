@@ -355,7 +355,7 @@ export default function SystemsPage() {
           <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
             {can("system.create") && (
               <Button variant="contained" startIcon={<AddIcon />} onClick={openAddApp}>
-                {t("addApp")}
+                {t("addData")}
               </Button>
             )}
           </Box>
