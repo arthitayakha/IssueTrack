@@ -236,22 +236,26 @@ export class AuthService {
     return { ok: true };
   }
 
-  /** Stores the uploaded picture's path (the file itself lives in `uploads/`). */
-  async setAvatar(userId: number, path: string) {
-    await this.users.update({ id: userId }, { avatar: path });
+  /** Stores the uploaded picture's bytes — no file on disk any more. */
+  async setAvatar(userId: number, data: Buffer, mime: string) {
+    await this.users.update({ id: userId }, { avatarData: data, avatarMime: mime });
   }
 
   async clearAvatar(userId: number) {
-    await this.users.update({ id: userId }, { avatar: null });
+    await this.users.update({ id: userId }, { avatarData: null, avatarMime: null });
   }
 
-  /** The stored path, or null — the controller deletes the old file on replace. */
-  async getAvatarPath(userId: number): Promise<string | null> {
+  /**
+   * The stored picture, or null when this user has none. The blob columns are
+   * `select: false`, so they are pulled in explicitly and only for this call.
+   */
+  async getAvatar(userId: number): Promise<{ data: Buffer; mime: string } | null> {
     const user = await this.users.findOne({
       where: { id: userId },
-      select: { id: true, avatar: true },
+      select: { id: true, avatarData: true, avatarMime: true },
     });
-    return user?.avatar ?? null;
+    if (!user?.avatarData?.length) return null;
+    return { data: user.avatarData, mime: user.avatarMime ?? "image/jpeg" };
   }
 
   private async toPublicUser(user: User, roleName: string | null, positionPermissions: string[] = []) {

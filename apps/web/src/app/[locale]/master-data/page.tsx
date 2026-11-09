@@ -355,7 +355,7 @@ export default function SettingsPage() {
   const [labelForm, setLabelForm] = useState({ name: "", color: "default" });
 
   const [deleteTarget, setDeleteTarget] = useState<{ type: "app" | "company" | "category" | "status" | "priority" | "label"; id: number; name: string } | null>(null);
-  const [deleteCheck, setDeleteCheck] = useState<{ canDelete: boolean; issueCount: number; columnCount: number; appCount?: number } | null>(null);
+  const [deleteCheck, setDeleteCheck] = useState<{ canDelete: boolean; issueCount: number; columnCount: number; appCount?: number; userCount?: number } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   const canViewApps = can("app.view");
@@ -624,12 +624,13 @@ export default function SettingsPage() {
   async function handleDeleteCompany(id: number) {
     const company = companies.find((c) => c.id === id);
     if (!company) return;
-    // apps reference companies now (M:N), so the same pre-flight check the
-    // apps tab runs decides whether the confirm button can appear
+    // apps reference companies (M:N) **and** customers do (`users.company_id`) —
+    // the same pre-flight check the apps tab runs decides whether the confirm
+    // button can appear, now for both kinds of reference
     setDeleteTarget({ type: "company", id, name: company.name });
     setDeleteLoading(true);
     try {
-      const result = await apiFetch<{ canDelete: boolean; appCount: number }>(
+      const result = await apiFetch<{ canDelete: boolean; appCount: number; userCount: number }>(
         `/companies/${id}/check`,
         {},
         token,
@@ -1693,6 +1694,7 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                     ? t("deleteCompanyInUse", {
                         name: deleteTarget.name,
                         appCount: deleteCheck.appCount ?? 0,
+                        userCount: deleteCheck.userCount ?? 0,
                       })
                     : t("deleteInUse", {
                         name: deleteTarget.name,

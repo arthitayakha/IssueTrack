@@ -96,13 +96,26 @@ export default function UsageCard({
       });
   }, [parentAppId, scope, statusId, attempt]);
 
-  const rows: DashboardCountRow[] = level2
+  /**
+   * The server groups cards with no app/category into one `id: null, name:
+   * null` row (the ring must count every live card) — its label lives here,
+   * since names are translated on the client. The label follows the ring's
+   * dimension: the app tab's top level is the only app slice, everything else
+   * (category tab, level-2 inside a drilled app) is a category.
+   */
+  const noneLabel = dim === "app" && !level2 ? t("usage.noApp") : t("usage.noCategory");
+
+  const rawRows: DashboardCountRow[] = level2
     ? level2Status === "ready"
       ? (level2Rows ?? [])
       : []
     : dim === "app"
       ? apps
       : categories;
+
+  const rows: DashboardCountRow[] = rawRows.map((row) =>
+    row.name == null ? { ...row, name: noneLabel } : row,
+  );
 
   const emptyText = level2
     ? t("usage.drillEmpty")
@@ -118,8 +131,31 @@ export default function UsageCard({
 
   /** Slice / legend click — drill one level deeper, or go to the list. */
   const handleSlice = (row: DashboardCountRow) => {
-    if (row.id == null) return;
     const name = row.name ?? "—";
+
+    // the NULL slice (no app / no category) has no id to drill or to filter
+    // /reports by — it opens its own list, the same dialog every other slice
+    // falls back to
+    if (row.id == null) {
+      const nullDim: "app" | "category" = dim === "app" && parent === null ? "app" : "category";
+      setDrill({
+        source: {
+          kind: "dimension",
+          dim: nullDim,
+          id: "none",
+          ...(parentAppId != null ? { app: parentAppId } : {}),
+        },
+        title: t("trend.issuesTitle", {
+          label:
+            parentAppId != null
+              ? `${name} · ${t("usage.inApp", { name: parent?.name ?? "" })}`
+              : name,
+          count: row.count,
+        }),
+        count: row.count,
+      });
+      return;
+    }
 
     // app tab, top level → drill into that app's categories
     if (dim === "app" && parent === null) {

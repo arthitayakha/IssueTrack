@@ -15,6 +15,8 @@ import { AppsService, AppRecordInput, AppWriteInput } from "./apps.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
+import { CurrentUser } from "../auth/current-user.decorator";
+import { AuthUser } from "../auth/auth-user";
 
 @Controller("apps")
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -24,9 +26,19 @@ export class AppsController {
   // No @Permissions on purpose: any authenticated user (customers included)
   // must be able to load the app list when reporting an issue. The rows now
   // also carry company names + expiry — both are master data the board shows.
+  //
+  // `?mine=1` = **แอปของบริษัทผู้เรียกเท่านั้น** — ฟอร์มรายงานปัญหาส่ง flag นี้
+  // เพื่อให้ dropdown เหลือเฉพาะแอปที่บริษัทของผู้รายงานใช้จริง (ตาม
+  // `users.company_id` → `app_companies`) ที่อื่น (แท็บแอปใน /master-data,
+  // ฟอร์มแอป, รายงาน) ไม่ส่ง → ได้ทุกแอปตามเดิม และ fail-open เมื่อผู้เรียก
+  // ไม่มีบริษัท (แอดมิน/โปรแกรมเมอร์) ก็ยังได้ทุกแอป
   @Get()
-  findAll(@Query() query: { page?: string; limit?: string }) {
-    return this.apps.findAll(normalizePagination(query));
+  findAll(
+    @Query() query: { page?: string; limit?: string; mine?: string },
+    @CurrentUser() user: AuthUser,
+  ) {
+    const mine = query.mine === "1" || query.mine === "true";
+    return this.apps.findAll(normalizePagination(query), mine ? (user?.companyId ?? null) : null);
   }
 
   // The CRUD below serves TWO surfaces with separate permission cards:

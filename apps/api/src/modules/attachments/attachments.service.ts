@@ -8,12 +8,18 @@ import { Attachment } from "./entities/attachment.entity";
 import { Issue } from "../issues/entities/issue.entity";
 import { User } from "../auth/entities/user.entity";
 import { RulesEngineService } from "../rules/rules-engine.service";
+import { UPLOADS_DIR } from "../../lib/uploads-path";
 
+/**
+ * Rows still carry the legacy `IssueTrack/backend/uploads/<file>` prefix, so
+ * the filename is the only reliable part. Resolution goes through the shared,
+ * cwd-independent folder — starting the API from another directory used to
+ * turn every download into a 404.
+ */
 function resolveFilePath(storedPath: string): string {
-  const cwd = process.cwd();
-  const primary = join(cwd, storedPath);
+  const primary = join(UPLOADS_DIR, storedPath);
   if (existsSync(primary)) return primary;
-  return join(cwd, "uploads", basename(storedPath));
+  return join(UPLOADS_DIR, basename(storedPath));
 }
 
 @Injectable()

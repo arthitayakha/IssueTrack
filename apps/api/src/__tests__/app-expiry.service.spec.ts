@@ -132,8 +132,8 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
     expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
     expect(notifications.notifyAdmins).toHaveBeenCalledWith({
       action: "app_expiring",
-      title: "POS",
-      context: "เหลือ 10 วัน · ACME",
+      title: "POS ACME",
+      context: "เหลือ 10 วัน",
       link: "/systems",
     });
   });
@@ -172,11 +172,11 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
     });
     expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
     expect(notifications.notifyAdmins).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "app_expiring", context: "เหลือ 5 วัน · ACME" }),
+      expect.objectContaining({ action: "app_expiring", context: "เหลือ 5 วัน" }),
     );
   });
 
-  it("passing the due date rings app_expired with the company as the context", async () => {
+  it("passing the due date rings app_expired with the app + company as the title and the overdue days as the context", async () => {
     const { service, notifications } = makeService();
 
     await service.reconcile(
@@ -190,8 +190,8 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
 
     expect(notifications.notifyAdmins).toHaveBeenCalledWith({
       action: "app_expired",
-      title: "POS",
-      context: "ACME",
+      title: "POS ACME",
+      context: "เลยกำหนด 3 วัน",
       link: "/systems",
     });
   });
@@ -215,7 +215,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
     });
     expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
     expect(notifications.notifyAdmins).toHaveBeenCalledWith(
-      expect.objectContaining({ context: "เหลือ 5 วัน · ACME" }),
+      expect.objectContaining({ context: "เหลือ 5 วัน" }),
     );
   });
 
@@ -267,7 +267,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
 
     expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
     expect(notifications.notifyAdmins).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "app_expiring", context: "เหลือ 5 วัน · ACME" }),
+      expect.objectContaining({ action: "app_expiring", context: "เหลือ 5 วัน" }),
     );
   });
 
@@ -296,7 +296,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
     expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
   });
 
-  it("the company name in the context is the one of the pair that rang", async () => {
+  it("the company name in the title is the one of the pair that rang", async () => {
     const { service, notifications } = makeService();
 
     await service.reconcile(
@@ -306,8 +306,8 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
 
     expect(notifications.notifyAdmins).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: "POS",
-        context: "เหลือ 12 วัน · มามี่ฟู้ด จำกัด",
+        title: "POS มามี่ฟู้ด จำกัด",
+        context: "เหลือ 12 วัน",
       }),
     );
   });
@@ -343,7 +343,7 @@ describe("AppExpiryService.reconcileAll — the 09:00 sweep", () => {
     );
     expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
     expect(notifications.notifyAdmins).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "POS", context: "เหลือ 5 วัน · ACME" }),
+      expect.objectContaining({ title: "POS ACME", context: "เหลือ 5 วัน" }),
     );
   });
 

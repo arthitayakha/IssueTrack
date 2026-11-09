@@ -6,9 +6,12 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import type { App } from "@/lib/apps-api";
 
 /**
- * คอลัมน์ "การจัดการ" ของแอป — switch เปิด/ปิด + ปุ่มแก้ + ปุ่มลบ
+ * คอลัมน์ "การจัดการ" ของแอป — ปุ่มแก้ + ปุ่มลบ (และ switch เปิด/ปิด **ถ้าส่ง `onToggle` มาให้**)
  * ใช้ร่วมกันทั้งตารางสั้นใน `/master-data` และตารางละเอียดใน `/systems`
  * เพื่อให้สิทธิ์/พฤติกรรมของปุ่มทั้งสองหน้าตรงกันเป๊ะ
+ *
+ * **`onToggle` เป็น optional**: หน้า `/systems` ไม่ส่งมา → ไม่โชว์สวิตช์
+ * (คอลัมน์ "การใช้งาน" ถูกเอาออกจากหน้านั้นแล้ว การเปิด/ปิดแอปทำที่แท็บแอปใน `/master-data`)
  */
 export default function AppActions({
   app,
@@ -21,13 +24,13 @@ export default function AppActions({
   app: App;
   canUpdate: boolean;
   canDelete: boolean;
-  onToggle: (app: App) => void;
+  onToggle?: (app: App) => void;
   onEdit: (app: App) => void;
   onDelete: (id: number) => void;
 }) {
   return (
     <>
-      {canUpdate && (
+      {canUpdate && onToggle && (
         <FormControlLabel
           control={
             <Switch

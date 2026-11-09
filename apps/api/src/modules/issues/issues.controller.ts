@@ -125,7 +125,7 @@ export class IssuesController {
     },
     @CurrentUser() user: AuthUser,
   ) {
-    return this.issues.create(body, this.actor(user));
+    return this.issues.create(body, this.actor(user), user?.companyId ?? null);
   }
 
   @Put("issues/:id")

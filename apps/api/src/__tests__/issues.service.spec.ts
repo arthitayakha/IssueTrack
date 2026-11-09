@@ -71,6 +71,8 @@ function makeService() {
   });
   const categories = repo();
   const labels = repo();
+  // `app_companies` — the create-time "this app belongs to my company" guard
+  const appCompanies = repo();
   const workSessions = { stop: jest.fn().mockResolvedValue(null) };
   const permissions = {};
   const rulesEngine = {
@@ -110,6 +112,8 @@ function makeService() {
       permissions,
       rulesEngine,
       notifications,
+      // create-time guard: no test creates a card for a company, so "no link"
+      appCompanies,
     ] as unknown as ServiceArgs ),
   );
   return { service, issues, users, issueStatuses, rulesEngine, activityLogs, workSessions, notifications };

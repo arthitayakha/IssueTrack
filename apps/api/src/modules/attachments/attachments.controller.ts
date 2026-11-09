@@ -12,9 +12,10 @@ import {
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
-import { extname, join } from "path";
+import { extname } from "path";
 import { randomBytes } from "crypto";
 import type { Response } from "express";
+import { UPLOADS_DIR } from "../../lib/uploads-path";
 import { AttachmentsService } from "./attachments.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -31,7 +32,7 @@ export class AttachmentsController {
   @UseInterceptors(
     FileInterceptor("file", {
       storage: diskStorage({
-        destination: join(process.cwd(), "uploads"),
+        destination: UPLOADS_DIR,
         filename: (_req, file, cb) => {
           cb(null, `${randomBytes(16).toString("hex")}${extname(file.originalname)}`);
         },

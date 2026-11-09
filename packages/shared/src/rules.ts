@@ -855,6 +855,68 @@ function valuesEqual(actual: unknown, expected: unknown, numeric: boolean): bool
 }
 
 /**
+ * Everything that makes a rule *itself*: what fires, the picked condition
+ * values, the action and its config. Names, authors and on/off state are NOT
+ * part of it — two rules sharing a signature are the same rule, so the API
+ * answers 409 on a second copy while the wizard warns before saving.
+ *
+ * Comparison is by value and order-independent: conditions and config keys are
+ * sorted (by their own JSON, so equal tuples always land the same way),
+ * numbers and their string form are equal (`3` ≡ `"3"`), and blank config
+ * values are dropped — an untouched field must not split one rule in two.
+ * Conditions with an empty value are kept: a stored clause really is
+ * different from a clause nobody wrote.
+ *
+ * The status picked in the sentence ("เมื่อการ์ดถูกย้ายไปยัง" → `to_status`)
+ * lives in `conditions`, which is exactly why the same trigger/action with
+ * ANOTHER status has a different signature and may be added.
+ */
+export interface RuleSignatureInput {
+  triggerKey: string;
+  templateKey?: string | null;
+  actionKey: string;
+  actionConfig?: Record<string, unknown> | null;
+  conditions?: Array<{ field?: string; operator?: string; value?: unknown }> | null;
+}
+
+/** `null` / `undefined` / `3` / `" 3 "` all reduce to the same comparable text. */
+function signatureValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+/** Total order on `[key, ...]` tuples — JSON form, never the bare `toString()` join. */
+function byJson(a: string[], b: string[]): number {
+  const left = JSON.stringify(a);
+  const right = JSON.stringify(b);
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
+ * Stable identity of a rule, shared by `RulesService` (409 on a copy) and the
+ * rule wizard (warn + disable Save). Serialized with `JSON.stringify` so two
+ * different shapes can never collapse into the same string.
+ */
+export function ruleSignature(rule: RuleSignatureInput): string {
+  const conditions = (rule.conditions ?? [])
+    .map((c) => [(c.field ?? "").trim(), (c.operator ?? "=").trim(), signatureValue(c.value)])
+    .sort(byJson);
+
+  const actionConfig = Object.entries(rule.actionConfig ?? {})
+    .map(([key, value]) => [key.trim(), signatureValue(value)])
+    .filter(([, value]) => value !== "")
+    .sort(byJson);
+
+  return JSON.stringify({
+    trigger: rule.triggerKey.trim(),
+    template: (rule.templateKey ?? "").trim(),
+    action: rule.actionKey.trim(),
+    conditions,
+    actionConfig,
+  });
+}
+
+/**
  * Pure condition matcher — lives in shared so API & web use the same semantics.
  * Conditions within one rule are always AND-ed together.
  */

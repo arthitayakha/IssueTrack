@@ -52,6 +52,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       roleId: payload.roleId,
       roleName,
       positionId: payload.positionId,
+      // แถว `users` ถูกโหลดอยู่แล้วข้างบน — ส่ง company_id ต่อให้ทุก controller
+      // ผ่าน `@CurrentUser()` (ฟอร์มรายงานปัญหากรองแอปตามบริษัทของผู้รายงาน)
+      companyId: user.companyId ?? null,
     };
   }
 }

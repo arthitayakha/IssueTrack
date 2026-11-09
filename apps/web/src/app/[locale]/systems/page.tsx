@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import {
   Box,
@@ -33,7 +33,6 @@ import {
   deleteAppRecord,
   fetchCompanies,
   fetchSystemsApps,
-  toggleAppActive,
   type App,
   type AppCompanyLink,
   type Company,
@@ -45,7 +44,7 @@ import {
   formatDay,
   type ExpiryStatus,
 } from "@/lib/app-expiry";
-import { EMPTY_FILTERS, fetchSummaryRows, type SummaryRow } from "@/lib/reports-api";
+import { fetchAppUsageAllTime } from "@/lib/reports-api";
 
 /**
  * 1 แถวในตาราง = **1 รายการข้อมูล (1 ช่วงเวลาของคู่ แอป×บริษัท)** — แอปที่ยัง
@@ -64,7 +63,8 @@ function round1(n: number): number {
 /**
  * หน้า **ข้อมูลระบบ** — ตารางรายการข้อมูล (**1 แถวต่อ 1 ช่วงเวลา** ของคู่
  * แอป×บริษัท: บริษัท / วันที่เริ่มใช้งาน / วันที่หมดอายุ / ชั่วโมง MA /
- * **คงเหลือ** / สถานะอายุ / การใช้งาน) + ฟอร์มเพิ่ม/แก้ไข/ลบ **เฉพาะรายการนั้น**
+ * **คงเหลือ** / สถานะอายุ) + ฟอร์มเพิ่ม/แก้ไข/ลบ **เฉพาะรายการนั้น**
+ * (คอลัมน์ "การใช้งาน" กับสวิตช์เปิด/ปิด ถูกเอาออกแล้ว — การเปิด/ปิดแอปทำที่แท็บแอปใน `/master-data`)
  *
  * แยกจากแท็บ "แอป" ใน `/master-data` คนละเรื่องกัน — แท็บแอป = ชื่อ + สถานะ
  * (ข้อมูลหลัก) · หน้านี้ = ข้อมูลที่ผูกคู่ แอป×บริษัท แอปที่ยังไม่มีรายการ
@@ -84,11 +84,17 @@ export default function SystemsPage() {
   const [mounted, setMounted] = useState(false);
 
   /**
-   * ตัวเลข "ใช้ไป" ต่อแอป — ดึงคู่กับ `loadApps()` ตอนเปิดหน้า
+   * ตัวเลข "ใช้ไป" ต่อแอป (ชม.) — ดึงคู่กับ `loadApps()` ตอนเปิดหน้า ผ่าน
+   * `fetchAppUsageAllTime()` จุดเดียวกับที่ `/reports` ใช้ (กติกาหัก MA
+   * จะได้ไม่ต่างกันระหว่างสองหน้า)
+   *
    * `error` ต้องแยกจาก `ready` เพราะถ้าดึงไม่ได้แล้วปล่อยให้เหลือ 0
    * ตัวเลข "คงเหลือ" จะเท่ากับ MA ทั้งก้อนซึ่ง**ผิด**
+   *
+   * ตอน `MA_DEDUCTION_PAUSED = true` ฟังก์ชันนั้นคืน map ว่างทันที (ไม่ยิง
+   * request) → ค่า "คงเหลือ" จึงเป็นชั่วโมง MA เต็มก้อนเสมอ
    */
-  const [usageSummary, setUsageSummary] = useState<SummaryRow[]>([]);
+  const [usedByApp, setUsedByApp] = useState<Map<number, number>>(new Map());
   const [usageStatus, setUsageStatus] = useState<"loading" | "ready" | "error">("loading");
 
   useEffect(() => {
@@ -131,30 +137,33 @@ export default function SystemsPage() {
   useEffect(() => {
     // หน้า spinner ผูกกับ apps/companies เท่านั้น — ตัวเลข "ใช้ไป" ดึงแยก
     // เพื่อไม่ให้การช้าของ endpoint รายงานมาค้างหน้าทั้งใบ
+    // (`MA_DEDUCTION_PAUSED` = ไม่มี request ให้รออยู่แล้ว — เปิดกลับเมื่อไหร่
+    // ข้อความนี้กลับมามีผลทันที)
     Promise.all([loadApps(), loadCompanies()]).finally(() => setLoading(false));
     void loadUsage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   /**
-   * ดึง "ชั่วโมงที่ใช้ไป" ต่อแอป — `GET /reports/summary?groupBy=app`
-   * (`hoursEntered` = ผลรวม `actual_fix_duration` ฝั่งเซิร์ฟเวอร์)
+   * ดึง "ชั่วโมงที่ใช้ไป" ต่อแอป — `fetchAppUsageAllTime()` (ตัวเดียวกับที่
+   * หน้ารายงานใช้) ตอนนี้ `MA_DEDUCTION_PAUSED` → คืน map ว่างทันที
    * ล้มเหลวเองได้: คอลัมน์ "คงเหลือ" จะกลายเป็น `—` พร้อมปุ่มลองใหม่
    */
   async function loadUsage() {
     setUsageStatus("loading");
     try {
-      const rows = await fetchSummaryRows("app", EMPTY_FILTERS);
-      // แถว "รวมทั้งหมด" ไม่ใช่แอป — ทิ้งไปก่อนเข้า Map กันรวมผิด
-      setUsageSummary(rows.filter((row) => !row.isTotal));
+      setUsedByApp(await fetchAppUsageAllTime());
       setUsageStatus("ready");
     } catch {
-      setUsageSummary([]);
+      setUsedByApp(new Map());
       setUsageStatus("error");
     }
   }
 
-  /** ปุ่ม "ลองใหม่" ใต้ตาราง — ยิง `loadUsage()` ซ้ำโดยไม่แตะตารางอื่น */
+  /**
+   * ปุ่ม "ลองใหม่" ใต้ตาราง — ยิง `loadUsage()` ซ้ำโดยไม่แตะตารางอื่น
+   * (เข้าไม่ถึงตอน `MA_DEDUCTION_PAUSED = true` เพราะไม่มี request ให้พัง)
+   */
   function retryUsage() {
     void loadUsage();
   }
@@ -168,18 +177,6 @@ export default function SystemsPage() {
   function openEditRecord(row: SystemRow) {
     setEditingRecord(row);
     setAppDialogOpen(true);
-  }
-
-  async function handleToggleAppActive(app: App) {
-    try {
-      await toggleAppActive(app.id, !app.isVisible);
-      setApps((prev) =>
-        prev.map((a) => (a.id === app.id ? { ...a, isVisible: !a.isVisible } : a)),
-      );
-      notify(t("appToggled"));
-    } catch (err) {
-      notify(err instanceof ApiError ? err.message : t("genericError"), "error");
-    }
   }
 
   /**
@@ -206,25 +203,6 @@ export default function SystemsPage() {
       notify(err instanceof ApiError ? err.message : t("genericError"), "error");
     }
   }
-
-  /**
-   * "ใช้ไป" ต่อแอป (ชม.) จาก endpoint รายงาน — join ด้วย `appId`
-   *
-   * คำนวณ**เฉพาะตอนดึงสำเร็จ** (`ready`) เพราะตอน `error` ถ้าปล่อยให้เป็น 0
-   * คอลัมน์ "คงเหลือ" จะเท่ากับ MA เต็มก้อนทั้งที่ยังไม่รู้ค่าจริง
-   *
-   * คิด**ระดับแอป** เพราะ `issues` ไม่มี `company_id` (งานระบุบริษัทไม่ได้ —
-   * เรื่องนี้รอประชุม) จึงต่างจาก `maHours` ที่เป็นรายคู่
-   */
-  const usedByApp = useMemo(() => {
-    const map = new Map<number, number>();
-    if (usageStatus !== "ready") return map;
-    for (const row of usageSummary) {
-      if (row.appId == null) continue; // งานที่ไม่ได้ผูกแอป — ไม่เข้าแถวไหน
-      map.set(row.appId, (map.get(row.appId) ?? 0) + row.hoursEntered);
-    }
-    return map;
-  }, [usageSummary, usageStatus]);
 
   // render nothing on the server: DashboardLayout reads the auth store, which
   // only the client can fill — matching it later would break hydration
@@ -260,8 +238,11 @@ export default function SystemsPage() {
    * - ยังไม่กรอก MA → "ยังไม่กรอก" (key เดิม)
    * - อย่างอื่น → ตัวเลขปัด 1 ตำแหน่ง
    *
-   * "ใช้ไป" ยังเป็น**ระดับแอป** (`issues` ไม่มี `company_id` — งานระบุบริษัท
-   * ไม่ได้) ทุกแถวของแอปเดียวกันจึงหักค่าเดียวกัน
+   * ตอน `MA_DEDUCTION_PAUSED = true` → ใช้ไป = 0 เสมอ จึงเหลือ MA เต็มก้อน
+   * ("ยังไม่กรอก" กับสองกรณีแรกยังแยกไว้เผื่อเปิดหักกลับ)
+   *
+   * "ใช้ไป" เป็น**ระดับแอป** (`issues` ไม่มี `company_id` — งานระบุบริษัทไม่ได้)
+   * ทุกแถวของแอปเดียวกันจึงหักค่าเดียวกัน
    */
   function remainingCell(row: SystemRow) {
     const caption = (text: string) => (
@@ -300,7 +281,6 @@ export default function SystemsPage() {
                 <DataTableCell align="center">{t("columnMaHours")}</DataTableCell>
                 <DataTableCell align="center">{t("columnRemaining")}</DataTableCell>
                 <DataTableCell align="center">{t("columnExpiryStatus")}</DataTableCell>
-                <DataTableCell align="center">{t("columnUsage")}</DataTableCell>
                 <DataTableCell align="right">{t("columnActions")}</DataTableCell>
               </DataTableRow>
             </DataTableHead>
@@ -345,23 +325,12 @@ export default function SystemsPage() {
                           variant="outlined"
                         />
                       </DataTableCell>
-                      {/* การใช้งาน = is_visible ตั้งปิดเอง สลับด้วย switch ที่คอลัมน์การจัดการ
-                          (เป็นระดับแอป → ทุกแถวของแอปเดียวกันโชว์ค่าเดียวกัน) */}
-                      <DataTableCell align="center">
-                        <Chip
-                          label={app.isVisible ? t("active") : t("inactive")}
-                          color={app.isVisible ? "success" : "error"}
-                          size="small"
-                          variant="outlined"
-                        />
-                      </DataTableCell>
                       <DataTableCell align="right">
-                        {/* ปุ่มแก้/ลบ = **ของแถวนั้น** · switch = ของแอป */}
+                        {/* ปุ่มแก้/ลบ = **ของแถวนั้น** — ไม่ส่ง `onToggle` → ไม่มีสวิตช์ (เปิด/ปิดแอปที่แท็บแอปใน /master-data) */}
                         <AppActions
                           app={app}
                           canUpdate={canUpdate}
                           canDelete={canDelete}
-                          onToggle={handleToggleAppActive}
                           onEdit={() => openEditRecord(row)}
                           onDelete={() => handleDeleteRecord(row)}
                         />
@@ -373,7 +342,7 @@ export default function SystemsPage() {
               {/* ยังไม่มีรายการเลย (แอปทุกตัวยังไม่มีข้อมูล หรือเพิ่งลบหมด) */}
               {apps.length === 0 && (
                 <DataTableRow>
-                  <DataTableCell colSpan={9}>
+                  <DataTableCell colSpan={8}>
                     <Typography variant="caption" color="text.disabled">
                       {t("noRows")}
                     </Typography>

@@ -1,10 +1,11 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import * as bcrypt from "bcryptjs";
 import { User } from "../auth/entities/user.entity";
 import { Position } from "../positions/position.entity";
 import { Role } from "../roles/entities/role.entity";
+import { Company } from "../companies/entities/company.entity";
 import { paginate, PaginationParams } from "../../common/pagination";
 
 @Injectable()
@@ -16,6 +17,8 @@ export class UsersService {
     private readonly positions: Repository<Position>,
     @InjectRepository(Role)
     private readonly roles: Repository<Role>,
+    @InjectRepository(Company)
+    private readonly companies: Repository<Company>,
   ) {}
 
   async findAll(params: PaginationParams) {
@@ -23,6 +26,8 @@ export class UsersService {
       .createQueryBuilder("user")
       .leftJoinAndSelect("user.position", "position")
       .leftJoinAndSelect("user.role", "role")
+      // บริษัทของลูกค้า — join มาเพื่อให้ตารางผู้ใช้โชว์ชื่อบริษัทได้ทันที
+      .leftJoinAndSelect("user.company", "company")
       .orderBy("user.id", "ASC")
       .getMany();
 
@@ -34,6 +39,8 @@ export class UsersService {
       roleName: user.role?.name ?? null,
       positionId: user.positionId,
       positionName: user.position?.name ?? null,
+      companyId: user.companyId ?? null,
+      companyName: user.company?.name ?? null,
       isActive: user.isActive,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
@@ -68,16 +75,17 @@ export class UsersService {
     name: string;
     roleId?: number | null;
     positionId?: number | null;
+    companyId?: number | null;
   }) {
     const passwordHash = await bcrypt.hash(data.password, 12);
+    const roleId = data.roleId ?? null;
+    const roleName = await this.roleNameOf(roleId);
+    const companyId = await this.resolveCompanyId(roleName, data.companyId ?? null);
     const user = await this.users.save(
-      this.users.create({ ...data, passwordHash }),
+      this.users.create({ ...data, companyId, passwordHash }),
     );
     const positionName = user.positionId
       ? (await this.positions.findOne({ where: { id: user.positionId } }))?.name ?? null
-      : null;
-    const roleName = user.roleId
-      ? (await this.roles.findOne({ where: { id: user.roleId } }))?.name ?? null
       : null;
     return this.toPublicUser(user, positionName, roleName);
   }
@@ -90,6 +98,7 @@ export class UsersService {
       roleId?: number | null;
       password?: string;
       positionId?: number | null;
+      companyId?: number | null;
     },
   ) {
     const user = await this.users.findOne({ where: { id } });
@@ -105,12 +114,21 @@ export class UsersService {
       user.positionId = data.positionId;
     }
 
+    /**
+     * บริษัทถูกตัดสินจาก **บทบาทที่จะเป็นหลังบันทึก** — การเปลี่ยนจากลูกค้าเป็น
+     * แอดมินในรอบเดียวกันต้องเคลียร์ `company_id` เป็น null ด้วย (คอลัมน์นี้
+     * มีความหมายเฉพาะบทบาท `customer`) และฝั่งฟอร์มก็ส่ง `companyId: null`
+     * มาพร้อม `roleId` ใหม่อยู่แล้ว
+     */
+    const roleName = await this.roleNameOf(user.roleId);
+    user.companyId = await this.resolveCompanyId(
+      roleName,
+      data.companyId !== undefined ? data.companyId : user.companyId,
+    );
+
     await this.users.save(user);
     const positionName = user.positionId
       ? (await this.positions.findOne({ where: { id: user.positionId } }))?.name ?? null
-      : null;
-    const roleName = user.roleId
-      ? (await this.roles.findOne({ where: { id: user.roleId } }))?.name ?? null
       : null;
     return this.toPublicUser(user, positionName, roleName);
   }
@@ -128,7 +146,41 @@ export class UsersService {
     return result.affected !== 0;
   }
 
-  private toPublicUser(user: User, positionName: string | null = null, roleName: string | null = null) {
+  private async roleNameOf(roleId: number | null): Promise<string | null> {
+    if (!roleId) return null;
+    return (await this.roles.findOne({ where: { id: roleId } }))?.name ?? null;
+  }
+
+  /**
+   * **บริษัทเป็นข้อมูลของลูกค้าเท่านั้น** — บทบาทอื่นถูกบังคับเป็น `null`
+   * (แอดมิน/โปรแกรมเมอร์ไม่ได้เป็นของบริษัทไหน) ส่วนลูกค้าที่ไม่ได้เลือก
+   * บริษัทถือว่าบันทึกไม่ผ่าน เพราะคอลัมน์นี้คือตัวรู้ว่าลูกค้าเป็นคนของ
+   * บริษัทไหน ปล่อยว่างไม่ได้ ทั้งนี้ id ต้องชี้ไปยังแถว `companies` จริง
+   * ไม่งั้นจะชน FK แล้วกลายเป็น 500 จึงเช็กก่อนเสมอ
+   */
+  private async resolveCompanyId(
+    roleName: string | null,
+    companyId: number | null,
+  ): Promise<number | null> {
+    if (roleName !== "customer") return null;
+    if (!companyId) {
+      throw new BadRequestException("A customer must belong to a company");
+    }
+    const company = await this.companies.findOne({ where: { id: companyId } });
+    if (!company) {
+      throw new BadRequestException(`Company ${companyId} not found`);
+    }
+    return company.id;
+  }
+
+  private async toPublicUser(
+    user: User,
+    positionName: string | null = null,
+    roleName: string | null = null,
+  ) {
+    const companyName = user.companyId
+      ? (await this.companies.findOne({ where: { id: user.companyId } }))?.name ?? null
+      : null;
     return {
       id: String(user.id),
       email: user.email,
@@ -137,6 +189,8 @@ export class UsersService {
       roleName,
       positionId: user.positionId,
       positionName,
+      companyId: user.companyId ?? null,
+      companyName,
       isActive: user.isActive,
     };
   }

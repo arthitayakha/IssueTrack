@@ -54,8 +54,26 @@ export class AppsService {
     private readonly expiry: AppExpiryService,
   ) {}
 
-  async findAll(params: PaginationParams) {
-    const apps = await this.apps.find({ order: { id: "ASC" } });
+  /**
+   * `myCompanyId` (มาจาก `?mine=1`) — เมื่อมีค่าจะคืนเฉพาะแอปที่บริษัทของผู้เรียก
+   * ผูกอยู่ใน `app_companies` เท่านั้น (ฟอร์มรายงานปัญหา) ค่า `null` = ทุกแอป
+   * ซึ่งเป็นทั้งกรณีไม่ได้ส่ง flag และกรณีผู้เรียกไม่มีบริษัท (**fail-open**:
+   * แอดมิน/โปรแกรมเมอร์ต้องยังรายงานปัญหาได้)
+   *
+   * ใช้ `EXISTS` ไม่ใช้ JOIN — คู่ แอป×บริษัท มีได้หลายแถว (migration 1812)
+   * JOIN จะคูณแอปซ้ำแล้ว `getMany()` ต้องมารอ DISTINCT เอง
+   */
+  async findAll(params: PaginationParams, myCompanyId: number | null = null) {
+    const apps = myCompanyId
+      ? await this.apps
+          .createQueryBuilder("app")
+          .where(
+            "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = app.id AND ac.company_id = :companyId)",
+            { companyId: myCompanyId },
+          )
+          .orderBy("app.id", "ASC")
+          .getMany()
+      : await this.apps.find({ order: { id: "ASC" } });
     const { links, companyName } = await this.loadLinks();
     const linksByApp = this.groupByApp(links);
 

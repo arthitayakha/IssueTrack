@@ -103,7 +103,8 @@ export async function fetchDrilldown(input: {
  */
 export async function fetchDimensionIssues(input: {
   dim: DashboardDim;
-  id: number;
+  /** The slice's row id, or "none" for the no-app / no-category slice. */
+  id: number | "none";
   app?: number;
   scope: DashboardScope;
   statusId?: number | null;

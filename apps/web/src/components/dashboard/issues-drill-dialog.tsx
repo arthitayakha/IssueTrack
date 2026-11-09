@@ -38,7 +38,8 @@ export type DrillSource =
   | {
       kind: "dimension";
       dim: "app" | "category" | "status";
-      id: number;
+      /** The slice's row id, or "none" for the no-app / no-category slice. */
+      id: number | "none";
       /** The app drilled through first (level 2) — omits the extra filter. */
       app?: number;
     };

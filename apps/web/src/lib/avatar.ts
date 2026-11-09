@@ -44,6 +44,10 @@ export function fetchOwnAvatar(token: string, userId: string): Promise<string | 
   if (cached) return Promise.resolve(cached);
   return fetch(`${API_URL}/auth/profile/avatar`, {
     headers: { Authorization: `Bearer ${token}` },
+    // never reuse the browser's HTTP cache: a cached 404 would keep the
+    // initials avatar up long after a picture exists (and a cached picture
+    // would outlive a replace)
+    cache: "no-store",
   })
     .then((res) => (res.ok ? res.blob() : null))
     .then((blob) => {
@@ -87,8 +91,8 @@ export function useOwnAvatar(): string | null {
 
 /**
  * Downscales a picked picture to a 256px square JPEG before upload, so the
- * `uploads/` folder and the 2MB server limit stay comfortable. Draws on a
- * white background first — transparent PNGs would otherwise come out black.
+ * 2MB server limit and the stored row stay comfortable. Draws on a white
+ * background first — transparent PNGs would otherwise come out black.
  */
 export function resizeAvatar(file: File, size = 256, quality = 0.85): Promise<Blob> {
   return new Promise((resolve, reject) => {

@@ -7,7 +7,9 @@ import {
   useCallback,
   useMemo,
   useRef,
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -4619,6 +4621,22 @@ function FolderThumb({
   );
 }
 
+/**
+ * One level of the folder drill path (app → category → priority → status).
+ * `-1` is the "no value" bucket at every level, and `cat` may also be an
+ * `"x:<name>"` string key for a custom category that has no row of its own.
+ *
+ * It lives at module scope — not inside `FolderView` — because the breadcrumb
+ * for this path renders in the **Navbar header** (`DashboardLayout header=`),
+ * one component tree above the folder grid.
+ */
+type FolderPath = {
+  app: number | null;
+  cat: number | string | null;
+  prio: number | null;
+  st: number | null;
+};
+
 function FolderView({
   statuses,
   issues,
@@ -4626,6 +4644,8 @@ function FolderView({
   apps,
   categories,
   priorities,
+  path,
+  setPath,
   selectedStatusIds,
   selectedPriorityIds,
   selectedCategoryIds,
@@ -4647,6 +4667,13 @@ function FolderView({
   apps: App[];
   categories: Category[];
   priorities: IssuePriority[];
+  /**
+   * Current drill path + its setter — **owned by `BoardsPageInner`**, because
+   * the breadcrumb that mirrors it renders up in the Navbar header. The folder
+   * grid below just reads it and drills into it.
+   */
+  path: FolderPath;
+  setPath: Dispatch<SetStateAction<FolderPath>>;
   selectedStatusIds: number[];
   selectedPriorityIds: number[];
   selectedCategoryIds: number[];
@@ -4672,14 +4699,6 @@ function FolderView({
   const t = useTranslations("Boards");
   const theme = useTheme();
   const { can } = usePermissions();
-  /* `cat` may also be a string key ("x:<name>") for a custom category that has
-     no row of its own; -1 is the "no value" bucket at every level. */
-  const [path, setPath] = useState<{
-    app: number | null;
-    cat: number | string | null;
-    prio: number | null;
-    st: number | null;
-  }>({ app: null, cat: null, prio: null, st: null });
   const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null);
   const [visibleCount, setVisibleCount] = useState(FOLDER_PAGE_SIZE);
   const [sort, setSort] = useState<"date" | "prio">("date");
@@ -4899,19 +4918,6 @@ function FolderView({
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const goCrumb = (key: "root" | "app" | "cat" | "prio" | "st") => {
-    if (key === "st") return; // last segment = current folder, not clickable
-    setPath((p) =>
-      key === "root"
-        ? { app: null, cat: null, prio: null, st: null }
-        : key === "app"
-          ? { app: p.app, cat: null, prio: null, st: null }
-          : key === "cat"
-            ? { app: p.app, cat: p.cat, prio: null, st: null }
-            : { app: p.app, cat: p.cat, prio: p.prio, st: null },
-    );
-  };
-
   const handleMove = async (issue: BoardIssue, statusId: number) => {
     if (issue.statusId === statusId) return;
     setMovingId(issue.id);
@@ -4939,31 +4945,6 @@ function FolderView({
     return resolveStatusColor(theme, s?.color, issue.statusName ?? s?.name ?? null);
   };
 
-  const crumbs: { key: "root" | "app" | "cat" | "prio" | "st"; label: string }[] = [
-    { key: "root", label: t("board") },
-  ];
-  if (path.app !== null) {
-    const label = path.app === -1 ? t("folderNoApp") : apps.find((x) => x.id === path.app)?.name;
-    if (label) crumbs.push({ key: "app", label });
-  }
-  if (path.cat !== null) {
-    const label =
-      typeof path.cat === "string"
-        ? path.cat.slice(2)
-        : path.cat === -1
-          ? t("folderNoCat")
-          : categories.find((x) => x.id === path.cat)?.name;
-    if (label) crumbs.push({ key: "cat", label });
-  }
-  if (path.prio !== null) {
-    const label = path.prio === -1 ? t("folderNoPrio") : priorities.find((x) => x.id === path.prio)?.name;
-    if (label) crumbs.push({ key: "prio", label });
-  }
-  if (path.st !== null) {
-    const label = path.st === -1 ? t("folderNoStatus") : statuses.find((x) => x.id === path.st)?.name;
-    if (label) crumbs.push({ key: "st", label });
-  }
-
   return (
     <Box>
       {toolbar}
@@ -4973,44 +4954,21 @@ function FolderView({
         </Alert>
       )}
 
-      {/* breadcrumb: บอร์ด › แอป › หมวด › ความสำคัญ › สถานะ */}
-      <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0.75, mb: 2 }}>
-        {crumbs.map((c, i) => (
-          <Box key={c.key} component="span" sx={{ display: "inline-flex", alignItems: "center", gap: 0.75 }}>
-            {i > 0 && (
-              <Typography component="span" sx={{ color: "text.disabled" }}>
-                ›
-              </Typography>
-            )}
-            {i === crumbs.length - 1 ? (
-              <Typography component="span" fontWeight={700}>
-                {c.label}
-              </Typography>
-            ) : (
-              <Typography
-                component="button"
-                type="button"
-                onClick={() => goCrumb(c.key)}
-                sx={{
-                  border: "none",
-                  background: "none",
-                  p: 0,
-                  font: "inherit",
-                  cursor: "pointer",
-                  color: "text.secondary",
-                  "&:hover": { color: "primary.main", textDecoration: "underline" },
-                }}
-              >
-                {c.label}
-              </Typography>
-            )}
-          </Box>
-        ))}
-      </Box>
+      {/* The breadcrumb (บอร์ด › แอป › หมวด › ความสำคัญ › สถานะ) no longer
+          renders here — it lives in the Navbar header one level up, in place of
+          the page title (see BoardsPageInner's `header`). The mt below replaces
+          the gap those crumbs used to own. */}
 
       {level < 5 ? (
         visibleFolders.length > 0 ? (
-          <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 2 }}>
+          <Box
+            sx={{
+              mt: 2,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))",
+              gap: 2,
+            }}
+          >
             {visibleFolders.map((f) => (
               <Paper
                 key={f.id}
@@ -5059,22 +5017,36 @@ function FolderView({
             ))}
           </Box>
         ) : (
-          <Alert severity="info">{t("filter.noResults")}</Alert>
+          <Alert severity="info" sx={{ mt: 2 }}>
+            {t("filter.noResults")}
+          </Alert>
         )
       ) : (
         <>
-          <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1.5 }}>
-            <FormControl size="small" sx={{ minWidth: 210 }}>
-              <Select value={sort} onChange={(e) => setSort(e.target.value as "date" | "prio")}>
+          <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 2, mb: 1.5 }}>
+            <FormControl size="small" sx={{ minWidth: 180 }}>
+              {/* compact: shorter than MUI's small (32px) so the sort control
+                  doesn't out-shout the cards it sits above */}
+              <Select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as "date" | "prio")}
+                sx={{
+                  height: 28,
+                  fontSize: "0.75rem",
+                  "& .MuiSvgIcon-root": { fontSize: 16 },
+                }}
+              >
                 <MenuItem value="date">{t("folderSortDate")}</MenuItem>
                 <MenuItem value="prio">{t("filter.sectionPriority")}</MenuItem>
               </Select>
             </FormControl>
           </Box>
           {sortedCards.length === 0 ? (
-            <Alert severity="info">{t("noCards")}</Alert>
+            <Alert severity="info" sx={{ mt: 2 }}>
+              {t("noCards")}
+            </Alert>
           ) : (
-            <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 2 }}>
+            <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 2 }}>
               {shownCards.map((issue) => {
                 const assignee =
                   issue.programmerName ?? (canSeeReporter ? issue.customerName : null);
@@ -5093,11 +5065,13 @@ function FolderView({
                     variant="outlined"
                     onClick={() => setDetailIssue(issue)}
                     sx={{
-                      p: 2,
+                      // compact cell: 1.25/0.75 padding+gap (was 2/1.25) — a
+                      // folder row should read as a list of tickets, not posters
+                      p: 1.25,
                       cursor: "pointer",
                       display: "flex",
                       flexDirection: "column",
-                      gap: 1.25,
+                      gap: 0.75,
                       borderRadius: 3,
                       // the card's own outline turns red while it sits past a
                       // stale rule — same rule, same look as the Kanban board
@@ -5124,11 +5098,8 @@ function FolderView({
                         ))}
                       </Box>
                     )}
-                    {issue.issueNumber && (
-                      <Typography variant="caption" color="text.disabled" fontWeight={700}>
-                        #{issue.issueNumber}
-                      </Typography>
-                    )}
+                    {/* No `#issueNumber` line here — the number lives in the
+                        detail dialog; the title is the card's first line now */}
                     <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 1 }}>
                       <Typography variant="subtitle2" fontWeight={700} sx={{ lineHeight: 1.4, flex: 1, minWidth: 0 }}>
                         {issue.title}
@@ -5138,8 +5109,11 @@ function FolderView({
                           label={issue.appName}
                           size="small"
                           sx={{
-                            height: 18,
-                            fontSize: "0.65rem",
+                            // folder-card chip metrics (16px/0.6rem) — one notch
+                            // under the Kanban card's 18px now that the cell is
+                            // compact, so the pill doesn't out-shout the title
+                            height: 16,
+                            fontSize: "0.6rem",
                             fontWeight: 600,
                             flexShrink: 0,
                             ml: 0.5,
@@ -5173,13 +5147,17 @@ function FolderView({
                             // `color="inherit"` keeps the lock readable on the
                             // solid plate — without it MUI paints the icon its
                             // default grey regardless of the chip's text colour
-                            <LockIcon color="inherit" sx={{ fontSize: 14 }} />
+                            <LockIcon color="inherit" sx={{ fontSize: 12 }} />
                           ) : undefined
                         }
                         sx={{
                           ...statusChipSx(statusColor, theme),
-                          height: 22,
-                          fontSize: "0.7rem",
+                          // Folder-card metrics: 16px/0.6rem — one notch under
+                          // the Kanban card's 18px/0.65rem (TrelloCardContent),
+                          // since this cell is compact (220px, p 1.25) and a
+                          // full-size pill out-shouts the title in it.
+                          height: 16,
+                          fontSize: "0.6rem",
                           fontWeight: 600,
                           cursor: statusEditable ? "pointer" : "default",
                           // re-assert the plate: MUI's clickable:hover would
@@ -5195,7 +5173,7 @@ function FolderView({
                           variant="outlined"
                           label={priorityLabel(t, issue.priorityName)}
                           color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
-                          sx={{ height: 22, fontSize: "0.7rem", fontWeight: 600 }}
+                          sx={{ height: 16, fontSize: "0.6rem", fontWeight: 600 }}
                         />
                       )}
                       <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 0.75 }}>
@@ -5218,21 +5196,9 @@ function FolderView({
                       </Box>
                     </Box>
 
-                    {issue.description?.trim() && (
-                      <Typography
-                        variant="body2"
-                        color="text.secondary"
-                        sx={{
-                          display: "-webkit-box",
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: "vertical",
-                          overflow: "hidden",
-                        }}
-                      >
-                        {issue.description}
-                      </Typography>
-                    )}
-                    {/* pinned to the cell floor so footers line up across a
+                    {/* No description preview either — the full text (editable)
+                        lives in the detail dialog, which a card click opens.
+                        Pinned to the cell floor so footers line up across a
                         mixed row — a card with a thumb is taller than one without */}
                     <Divider sx={{ mt: "auto" }} />
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -5357,6 +5323,14 @@ function BoardsPageInner() {
   const isBoardView = view === "board";
   const isTableView = view === "table";
   const isFolderView = view === "folder";
+  /**
+   * Folder drill path (app → category → priority → status) — owned **here**,
+   * not inside `FolderView`, so the breadcrumb that mirrors it can render in
+   * the Navbar header (in place of the "บอร์ด" title) while the grid drills.
+   * `-1` is the "no value" bucket; `cat` may also be `"x:<name>"` (a custom
+   * category with no row of its own).
+   */
+  const [path, setPath] = useState<FolderPath>({ app: null, cat: null, prio: null, st: null });
   const [issues, setIssues] = useState<BoardIssue[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
@@ -5588,26 +5562,20 @@ function BoardsPageInner() {
    * company that no app is linked to, which must match nothing (an empty
    * array without the null would read as "no filter" and show every card).
    *
-   * TODO(company-design): **ปิดชั่วคราว** — ยังไม่ตัดสินใจเรื่อง company ↔
-   * user กับพี่ (ตาราง `users` ไม่มี `company_id`) เลือกบริษัทแล้วจึงต้อง
-   * **ไม่ตรงอะไรเลย** (`[]` ตาม semantics ข้างบน) ห้ามโชว์ผลจากเส้น
-   * "งาน → แอป → บริษัท" · **ตรงกับ backend ที่ `issues.service.ts` ปิดไว้**
-   *
-   * **เปิดใหม่:** ลบ `return []` แล้วคืน logic เดิมข้างล่าง
-   * (อย่าลืมใส่ `apps` กลับใน deps)
-   * ```ts
-   * const wanted = new Set(selectedCompanyIds);
-   * const ids = new Set<number>();
-   * for (const app of apps) {
-   *   if (app.companies?.some((link) => wanted.has(link.id))) ids.add(app.id);
-   * }
-   * return [...ids];
-   * ```
+   * Follows the same path as the API side — **งาน → แอป → บริษัท**
+   * (`app_companies`; `issues` has no `company_id`). Still not "user ↔
+   * company": `users` has no `company_id` yet, so this only narrows cards by
+   * their app's linked companies.
    */
   const companyAppIds = useMemo<number[] | null>(() => {
     if (selectedCompanyIds.length === 0) return null;
-    return []; // TODO(company-design) — ดู comment ด้านบน
-  }, [selectedCompanyIds]);
+    const wanted = new Set(selectedCompanyIds);
+    const ids = new Set<number>();
+    for (const app of apps) {
+      if (app.companies?.some((link) => wanted.has(link.id))) ids.add(app.id);
+    }
+    return [...ids];
+  }, [selectedCompanyIds, apps]);
 
   const activeFilterChips = useMemo(() => {
     type FilterChipEntry = {
@@ -5711,6 +5679,109 @@ function BoardsPageInner() {
   ]);
 
   const filterCount = activeFilterChips.length;
+
+  /* ---------- folder breadcrumb: บอร์ด › แอป › หมวด › ความสำคัญ › สถานะ ----------
+     Derived from `path` here so it can render up in the Navbar header — the
+     crumbs used to sit under the search box inside FolderView. Same logic, same
+     labels (`-1` = the "no value" bucket, `x:<name>` = custom category). */
+  const crumbs: { key: "root" | "app" | "cat" | "prio" | "st"; label: string }[] = [
+    { key: "root", label: t("board") },
+  ];
+  if (path.app !== null) {
+    const label = path.app === -1 ? t("folderNoApp") : apps.find((x) => x.id === path.app)?.name;
+    if (label) crumbs.push({ key: "app", label });
+  }
+  if (path.cat !== null) {
+    const label =
+      typeof path.cat === "string"
+        ? path.cat.slice(2)
+        : path.cat === -1
+          ? t("folderNoCat")
+          : categories.find((x) => x.id === path.cat)?.name;
+    if (label) crumbs.push({ key: "cat", label });
+  }
+  if (path.prio !== null) {
+    const label = path.prio === -1 ? t("folderNoPrio") : priorities.find((x) => x.id === path.prio)?.name;
+    if (label) crumbs.push({ key: "prio", label });
+  }
+  if (path.st !== null) {
+    const label = path.st === -1 ? t("folderNoStatus") : statuses.find((x) => x.id === path.st)?.name;
+    if (label) crumbs.push({ key: "st", label });
+  }
+
+  const goCrumb = (key: "root" | "app" | "cat" | "prio" | "st") => {
+    if (key === "st") return; // last segment = current folder, not clickable
+    setPath((p) =>
+      key === "root"
+        ? { app: null, cat: null, prio: null, st: null }
+        : key === "app"
+          ? { app: p.app, cat: null, prio: null, st: null }
+          : key === "cat"
+            ? { app: p.app, cat: p.cat, prio: null, st: null }
+            : { app: p.app, cat: p.cat, prio: p.prio, st: null },
+    );
+  };
+
+  /**
+   * The trail replaces the Navbar's page title — but only **after drilling**
+   * (2+ crumbs). At the folder root `crumbs.length === 1`, so we hand the slot
+   * back to the Navbar's default title ("บอร์ด") — same as before. The Kanban/
+   * table views have no folder path at all and keep that title too.
+   * `nowrap` + `overflow: hidden` keep a long path from growing the AppBar row.
+   */
+  const header = isFolderView && crumbs.length > 1 ? (
+    <Box
+      aria-label={t("folderView")}
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 0.75,
+        flexWrap: "nowrap",
+        overflow: "hidden",
+        minWidth: 0,
+      }}
+    >
+      {crumbs.map((c, i) => (
+        <Box
+          key={c.key}
+          component="span"
+          sx={{ display: "inline-flex", alignItems: "center", gap: 0.75, minWidth: 0, overflow: "hidden" }}
+        >
+          {i > 0 && (
+            <Typography component="span" sx={{ color: "text.disabled", flexShrink: 0 }}>
+              ›
+            </Typography>
+          )}
+          {i === crumbs.length - 1 ? (
+            <Typography component="span" fontWeight={700} noWrap sx={{ minWidth: 0 }}>
+              {c.label}
+            </Typography>
+          ) : (
+            <Typography
+              component="button"
+              type="button"
+              onClick={() => goCrumb(c.key)}
+              sx={{
+                border: "none",
+                background: "none",
+                p: 0,
+                font: "inherit",
+                cursor: "pointer",
+                color: "text.secondary",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                maxWidth: "100%",
+                "&:hover": { color: "primary.main", textDecoration: "underline" },
+              }}
+            >
+              {c.label}
+            </Typography>
+          )}
+        </Box>
+      ))}
+    </Box>
+  ) : undefined;
 
   const toolbar = (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -5868,7 +5939,7 @@ function BoardsPageInner() {
 
   return (
     <RequirePermission permission="board.view">
-      <DashboardLayout>
+      <DashboardLayout header={header}>
         <Box sx={{ pb: 2 }}>
           {error && (
             <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -5888,6 +5959,8 @@ function BoardsPageInner() {
                 apps={apps}
                 categories={categories}
                 priorities={priorities}
+                path={path}
+                setPath={setPath}
                 selectedStatusIds={selectedStatusIds}
                 selectedPriorityIds={selectedPriorityIds}
                 selectedCategoryIds={selectedCategoryIds}

@@ -36,7 +36,15 @@ export class UsersController {
   @Post()
   @Permissions("user.create")
   create(
-    @Body() body: { email: string; password: string; name: string; roleId?: number | null; positionId?: number | null },
+    @Body()
+    body: {
+      email: string;
+      password: string;
+      name: string;
+      roleId?: number | null;
+      positionId?: number | null;
+      companyId?: number | null;
+    },
   ) {
     return this.users.create(body);
   }
@@ -45,7 +53,15 @@ export class UsersController {
   @Permissions("user.update")
   update(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { email?: string; name?: string; roleId?: number | null; password?: string; positionId?: number | null },
+    @Body()
+    body: {
+      email?: string;
+      name?: string;
+      roleId?: number | null;
+      password?: string;
+      positionId?: number | null;
+      companyId?: number | null;
+    },
   ) {
     return this.users.update(id, body);
   }

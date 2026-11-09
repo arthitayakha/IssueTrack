@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Between, FindOptionsWhere, LessThanOrEqual, Like, MoreThanOrEqual, Repository } from "typeorm";
 import type {
@@ -7,6 +7,7 @@ import type {
   RuleDto,
   RuleOperator,
 } from "@kanban/shared";
+import { ruleSignature, type RuleSignatureInput } from "@kanban/shared";
 import { normalizePagination, type Paginated } from "../../common/pagination";
 import { Rule, type RuleConditionEntry } from "./entities/rule.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
@@ -138,9 +139,39 @@ export class RulesService {
     }
   }
 
+  /**
+   * Duplicate guard — a rule is a copy of another when its trigger, template,
+   * picked condition values (the status in `to_status`, the chosen user, …)
+   * and its action + config all match, i.e. when `ruleSignature()` agrees.
+   *
+   * Paused rules count too: the row still exists, so a second copy would just
+   * be noise — edit or delete the original instead. `excludeId` lets PUT save
+   * a rule without colliding with itself (name-only edits stay legal).
+   *
+   * The rules table is small and hand-maintained, so a full read beats a
+   * JSONB query we would have to keep in sync with the normalisation rules.
+   */
+  private async assertNotDuplicate(rule: RuleSignatureInput, excludeId?: number): Promise<void> {
+    const signature = ruleSignature(rule);
+    const existing = await this.rules.find();
+    const duplicate = existing.find((r) => r.id !== excludeId && ruleSignature(r) === signature);
+    if (duplicate) {
+      throw new ConflictException(
+        `Duplicate rule: same trigger, conditions and action as rule #${duplicate.id}`,
+      );
+    }
+  }
+
   async create(input: RuleInput, actor: ActorInfo): Promise<RuleDto> {
     if (!input.triggerKey?.trim()) throw new BadRequestException("triggerKey is required");
     if (!input.actionKey?.trim()) throw new BadRequestException("actionKey is required");
+    await this.assertNotDuplicate({
+      triggerKey: input.triggerKey,
+      templateKey: input.templateKey ?? null,
+      actionKey: input.actionKey,
+      actionConfig: input.actionConfig ?? {},
+      conditions: input.conditions ?? [],
+    });
 
     const rule = this.rules.create({
       name: (input.name?.trim() || "Untitled rule").slice(0, 150),
@@ -169,6 +200,19 @@ export class RulesService {
     if (input.actionKey !== undefined && !input.actionKey.trim()) {
       throw new BadRequestException("actionKey is required");
     }
+    // A partial body must still be checked as the rule it WILL be — fall back
+    // to the stored values exactly the way the assignments below do, and never
+    // compare the rule against itself (a rename alone must not 409).
+    await this.assertNotDuplicate(
+      {
+        triggerKey: input.triggerKey !== undefined ? input.triggerKey : existing.triggerKey,
+        templateKey: input.templateKey !== undefined ? input.templateKey : existing.templateKey,
+        actionKey: input.actionKey !== undefined ? input.actionKey : existing.actionKey,
+        actionConfig: input.actionConfig ?? existing.actionConfig,
+        conditions: input.conditions !== undefined ? input.conditions : existing.conditions,
+      },
+      id,
+    );
 
     existing.name = (input.name ?? existing.name).slice(0, 150);
     existing.triggerKey = input.triggerKey?.trim() ?? existing.triggerKey;

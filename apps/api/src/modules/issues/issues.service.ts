@@ -14,6 +14,7 @@ import { User } from "../auth/entities/user.entity";
 import { IssueStatus } from "../issue-statuses/entities/issue-status.entity";
 import { Category } from "../categories/entities/category.entity";
 import { Label } from "../labels/entities/label.entity";
+import { AppCompany } from "../apps/entities/app-company.entity";
 import { WorkSessionsService } from "../work-sessions/work-sessions.service";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
@@ -97,6 +98,12 @@ export class IssuesService {
     private readonly permissions: PermissionsService,
     private readonly rulesEngine: RulesEngineService,
     private readonly notifications: NotificationsService,
+    // **Last on purpose**: `issues.service.spec.ts` builds this service with one
+    // positional stub per dependency, so appending keeps every existing slot in
+    // place. Used by the create-time guard "the picked app belongs to the
+    // reporter's company" (`app_companies`, see `create()`)
+    @InjectRepository(AppCompany)
+    private readonly appCompanies: Repository<AppCompany>,
   ) {}
 
   async findAll(
@@ -164,21 +171,18 @@ export class IssuesService {
      * and a join would multiply every card once per linked company.
      * Cards with no app are excluded, exactly like the app filter above.
      *
-     * TODO(company-design): **ปิดชั่วคราว** — ยังไม่ตัดสินใจเรื่อง company ↔ user
-     * กับพี่ (ตาราง `users` ไม่มี `company_id`) ดังนั้นตัวกรองนี้ต้องไม่ตรง
-     * อะไรเลย ห้ามโชว์ผลที่ได้จากเส้น "งาน → แอป → บริษัท" เพราะดูเหมือน
-     * feature พร้อมใช้ทั้งที่ยังไม่ได้กรองตามความหมายที่ตั้งใจ
-     *
-     * **เปิดใหม่:** ลบ `1 = 0` แล้วคืน SQL เดิมข้างล่าง
-     * ```ts
-     * qb.andWhere(
-     *   "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
-     *   { companyIds: filters.companyIds },
-     * );
-     * ```
+     * Still an **app-level** filter, not a user-level one: it narrows cards by
+     * their app's linked companies (the web side does the same in
+     * `boards/page.tsx` → `companyAppIds`). The user ↔ company link does exist
+     * now (`users.company_id`, migration 1816) but it drives the *report* form's
+     * app picker (`GET /apps?mine=1`) and the create-time guard instead of this
+     * query — a customer's own tickets are scoped by assignee/reporter above.
      */
     if (filters.companyIds && filters.companyIds.length > 0) {
-      qb.andWhere("1 = 0"); // TODO(company-design) — ดู comment ด้านบน
+      qb.andWhere(
+        "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
+        { companyIds: filters.companyIds },
+      );
     }
     if (filters.assigneeIds && filters.assigneeIds.length > 0) {
       qb.andWhere("issue.programmer_id IN (:...assigneeIds)", { assigneeIds: filters.assigneeIds });
@@ -379,12 +383,31 @@ export class IssuesService {
       labelId?: number;
     },
     actor?: ActorInfo | null,
+    actorCompanyId?: number | null,
   ) {
     const status = await this.issueStatuses.findOne({
       where: { id: data.statusId },
     });
     if (!status) {
       throw new NotFoundException(`Status ${data.statusId} not found`);
+    }
+
+    /**
+     * **ตาข่ายของเซิร์ฟเวอร์สำหรับ "แอปต้องเป็นของบริษัทผู้รายงาน"** —
+     * ฟอร์มรายงานปัญหากรอง dropdown ให้เหลือเฉพาะแอปของบริษัทผู้รายงานอยู่แล้ว
+     * (`GET /apps?mine=1`) จุดนี้กันคนที่ยิง `POST /issues` ตรง ๆ ข้ามบริษัท
+     * Fail-open เมื่อผู้รายงานไม่มีบริษัท (`users.company_id` null — แอดมิน/
+     * โปรแกรมเมอร์/ลูกค้าที่ยังไม่ถูกผูก) หรือไม่ได้ส่ง `appId` มาเลย
+     */
+    if (actorCompanyId && data.appId) {
+      const link = await this.appCompanies.findOne({
+        where: { appId: data.appId, companyId: actorCompanyId },
+      });
+      if (!link) {
+        throw new BadRequestException(
+          "The selected app does not belong to your company",
+        );
+      }
     }
     const issueNumber = await this.generateIssueNumber();
     const resolvedCustomerId =

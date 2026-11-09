@@ -45,6 +45,8 @@ import {
   type PositionSummary,
   type UserSummary,
 } from "@/lib/board-api";
+import { fetchLabels, type Label } from "@/lib/labels-api";
+import { getParamLabel } from "./param-labels";
 
 interface RuleListProps {
   rules: RuleDto[];
@@ -62,6 +64,9 @@ type StatusFilter = "all" | "active" | "inactive";
 
 export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }: RuleListProps) {
   const t = useTranslations("Automation");
+  // param labels (ย้ายไปสถานะ / มอบหมายตำแหน่ง / ป้ายกำกับ …) live under the
+  // wizard namespace — same source the action picker & step ③ review use
+  const tWizard = useTranslations("Automation.wizard");
   const theme = useTheme();
 
   const [search, setSearch] = useState("");
@@ -74,6 +79,7 @@ export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }
   const [positions, setPositions] = useState<PositionSummary[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [labels, setLabels] = useState<Label[]>([]);
 
   const [deleteTarget, setDeleteTarget] = useState<RuleDto | null>(null);
 
@@ -104,6 +110,15 @@ export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }
       .catch(() => {
         // no permission / endpoint down — position columns fall back to raw ids
       });
+    // same fail-open deal as positions: `label.view` may be missing, and an
+    // add/remove-label rule must still render (raw id) without the list
+    fetchLabels()
+      .then((res) => {
+        if (!cancelled) setLabels(res.data);
+      })
+      .catch(() => {
+        // no permission / endpoint down — label params fall back to raw ids
+      });
     return () => {
       cancelled = true;
     };
@@ -120,7 +135,10 @@ export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }
         if (actionFilter !== "all" && rule.actionKey !== actionFilter) return false;
         if (keyword) {
           const sentence = buildRuleSentence(rule.triggerKey, rule.templateKey, rule.conditions, resolveValue);
-          const haystack = [rule.name, sentence.th, sentence.en, rule.triggerKey, rule.actionKey]
+          // param values join the haystack so "เสร็จสิ้น" / "Frontend" finds
+          // the rule that moves/assigns *to* that value
+          const paramText = actionParams(rule).map((p) => `${p.label} ${p.value}`).join(" ");
+          const haystack = [rule.name, sentence.th, sentence.en, rule.triggerKey, rule.actionKey, paramText]
             .join(" ")
             .toLowerCase();
           if (!haystack.includes(keyword)) return false;
@@ -128,8 +146,10 @@ export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }
         return true;
       })
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    // reference lists are deps on purpose: search matches RESOLVED names, so a
+    // haystack built before they arrive would only ever see raw ids
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rules, search, statusFilter, categoryFilter, actionFilter]);
+  }, [rules, search, statusFilter, categoryFilter, actionFilter, statuses, positions, priorities, categories, labels, users]);
 
   async function handleDelete() {
     if (!deleteTarget) return;
@@ -169,6 +189,65 @@ export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }
       return category?.name ?? strValue;
     }
     return strValue;
+  }
+
+  /**
+   * Action **config** values as human text — the mirror of the wizard's
+   * `resolveConfigValue`. The keys here are actionConfig keys (`targetStatus`),
+   * NOT condition-field names (`to_status`), which is why `resolveValue` above
+   * cannot be reused for them. Unknown key / missing ref → raw value.
+   */
+  function resolveConfigValue(key: string, value: unknown): string {
+    if (value == null) return "";
+    const raw = String(value);
+    if (key === "targetStatus") {
+      return statuses.find((s) => s.id === Number(value))?.name ?? raw;
+    }
+    if (key === "position") {
+      return positions.find((p) => p.id === Number(value))?.name ?? raw;
+    }
+    if (key === "priority") {
+      return priorities.find((p) => p.id === Number(value))?.name ?? raw;
+    }
+    if (key === "category") {
+      return categories.find((c) => c.id === Number(value))?.name ?? raw;
+    }
+    if (key === "label") {
+      return labels.find((l) => String(l.id) === raw)?.name ?? raw;
+    }
+    return raw;
+  }
+
+  /**
+   * The rule's action params, resolved and ready to display — this is what
+   * tells the reader *which* status / position / label the action actually
+   * uses; the action label alone ("ย้ายการ์ดไปสถานะอื่น") never says.
+   * Returns `[]` for actions without a configSchema (move_step_only,
+   * notify_stale, hide_from_board …) so their chip stays exactly as before.
+   */
+  function actionParams(rule: RuleDto): Array<{ label: string; value: string }> {
+    const action = getActionByKey(rule.actionKey);
+    if (!action?.configSchema) return [];
+    return Object.keys(action.configSchema)
+      .map((key) => {
+        const value = resolveConfigValue(key, rule.actionConfig?.[key]);
+        return { label: getParamLabel(tWizard, key), value };
+      })
+      .filter((param) => param.value.trim() !== "");
+  }
+
+  /**
+   * Chip text = action label, then the params: one param reads as
+   * "ย้ายการ์ดไปสถานะอื่น · เสร็จสิ้น"; several as "action · label: value, …".
+   * The full text stays on the row's tooltip — the chip itself ellipsizes.
+   */
+  function chipLabel(rule: RuleDto): string {
+    const action = getActionByKey(rule.actionKey);
+    const base = action?.label.th ?? rule.actionKey;
+    const params = actionParams(rule);
+    if (params.length === 0) return base;
+    if (params.length === 1) return `${base} · ${params[0].value}`;
+    return `${base} · ${params.map((p) => `${p.label}: ${p.value}`).join(", ")}`;
   }
 
   const filteredRules = filtered;
@@ -251,7 +330,8 @@ export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }
           {filteredRules.map((rule) => {
             const sentence = buildRuleSentence(rule.triggerKey, rule.templateKey, rule.conditions, resolveValue);
             const sentenceText = sentence.th || sentence.en;
-            const action = getActionByKey(rule.actionKey);
+            // action label + resolved params (target status, position, label …)
+            const chipText = chipLabel(rule);
             return (
               <ListItem key={rule.id} disableGutters sx={{ py: 0.5 }}>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 2, width: "100%" }}>
@@ -264,12 +344,26 @@ export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }
                       {sentenceText}
                     </Typography>
                   </Box>
-                  <Chip
-                    label={action?.label.th ?? rule.actionKey}
-                    size="small"
-                    variant="outlined"
-                    sx={{ height: 22, fontSize: 11, flexShrink: 0 }}
-                  />
+                  <Tooltip title={actionParams(rule).length > 0 ? chipText : ""}>
+                    <Chip
+                      label={chipText}
+                      size="small"
+                      variant="outlined"
+                      sx={{
+                        height: 22,
+                        fontSize: 11,
+                        flexShrink: 0,
+                        // params (reason 500 / comment 1000 chars) must never
+                        // push the switch & icons off the row
+                        maxWidth: 320,
+                        "& .MuiChip-label": {
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        },
+                      }}
+                    />
+                  </Tooltip>
                   {canUpdate && (
                     <>
                       <Tooltip title={rule.isActive ? t("enabled") : t("disabled")}>

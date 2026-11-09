@@ -275,7 +275,6 @@ export default function Navbar({
             }}
             onMarkRead={handleMarkRead}
             onMarkAllRead={handleMarkAllRead}
-            onOpenProfile={() => setProfileOpen(true)}
           />
           <LanguageSwitcher />
           {/* Account actions — no dropdown: the avatar opens the profile popup */}

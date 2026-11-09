@@ -221,21 +221,15 @@ export class ReportsService {
      * every card once per linked company. Cards with no app never match,
      * same as the app filter above.
      *
-     * TODO(company-design): **ปิดชั่วคราว** — ยังไม่ตัดสินใจเรื่อง company ↔
-     * user กับพี่ (ตาราง `users` ไม่มี `company_id`) ตัวกรองนี้จึงต้องไม่
-     * ตรงอะไรเลย ห้ามโชว์ผลจากเส้น "งาน → แอป → บริษัท" (ดูเหตุผลเต็มที่
-     * `issues.service.ts` — สองจุดนี้ต้องเปิด/ปิดพร้อมกัน)
-     *
-     * **เปิดใหม่:** ลบ `1 = 0` แล้วคืน SQL เดิมข้างล่าง
-     * ```ts
-     * qb.andWhere(
-     *   "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
-     *   { companyIds: f.companyIds },
-     * );
-     * ```
+     * Still not "user ↔ company" — `users` has no `company_id`, so this only
+     * narrows cards by their app's linked companies (same as
+     * `issues.service.ts` and the web's `companyAppIds`).
      */
     if (f.companyIds?.length) {
-      qb.andWhere("1 = 0"); // TODO(company-design) — ดู comment ด้านบน
+      qb.andWhere(
+        "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
+        { companyIds: f.companyIds },
+      );
     }
   }
 

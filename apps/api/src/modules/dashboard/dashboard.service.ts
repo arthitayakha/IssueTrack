@@ -286,7 +286,7 @@ export class DashboardService {
     return raw.map((r) => ({ id: r.id == null ? null : Number(r.id), name: r.name, count: num(r.count) }));
   }
 
-  /** Counts per app — only cards that carry one; busiest app first. */
+  /** Counts per app — cards with no app land in the `id: null` slice; busiest first. */
   private async appCounts(
     scope: DashboardScope,
     uid: number,
@@ -295,7 +295,7 @@ export class DashboardService {
     return this.namedCounts(scope, uid, "app", undefined, statusId);
   }
 
-  /** Counts per category — only cards that carry one; busiest first. */
+  /** Counts per category — cards with no category land in the `id: null` slice. */
   private async categoryCounts(
     scope: DashboardScope,
     uid: number,
@@ -306,6 +306,13 @@ export class DashboardService {
 
   /**
    * Shared GROUP BY over a named dimension (app / category).
+   *
+   * Cards whose `*_id` is NULL are **not** filtered out: the LEFT JOIN makes
+   * SQL return one `id: null, name: null` group for them, which the client
+   * labels "ไม่มีหมวดหมู่" / "ไม่มีแอป". Dropping them silently made the ring
+   * disagree with `total` (and with the folder counts on the board) — e.g. a
+   * free-text "อื่น ๆ" report stores `custom_category` with `category_id`
+   * NULL, so that whole bucket used to vanish from the chart.
    *
    * `parentAppId` narrows the ring to one app's cards — that is level 2 of the
    * usage donut (categories inside the app the user clicked). Same scope, same
@@ -321,9 +328,7 @@ export class DashboardService {
     parentAppId?: number,
     statusId?: number,
   ): Promise<DashboardCountRow[]> {
-    const qb = this.baseQb(scope, uid, statusId)
-      .leftJoin(`issue.${dim}`, "dim")
-      .andWhere(`issue.${dim}_id IS NOT NULL`);
+    const qb = this.baseQb(scope, uid, statusId).leftJoin(`issue.${dim}`, "dim");
     if (parentAppId != null) {
       qb.andWhere("issue.app_id = :parentAppId", { parentAppId });
     }
@@ -335,7 +340,12 @@ export class DashboardService {
       .addGroupBy("dim.name")
       .orderBy("COUNT(*)", "DESC")
       .getRawMany();
-    return raw.map((r) => ({ id: Number(r.id), name: r.name as string, count: num(r.count) }));
+    // Number(null) is 0 — a NULL group must stay `id: null`, never id 0
+    return raw.map((r) => ({
+      id: r.id == null ? null : Number(r.id),
+      name: (r.name as string | null) ?? null,
+      count: num(r.count),
+    }));
   }
 
   /**
@@ -446,6 +456,8 @@ export class DashboardService {
    * `dim` is the dimension the slice was cut from (`id` = that row's id) and
    * `app` is the app the caller drilled through first, so a level-2 slice's
    * list adds up to the number printed on it (`app_id AND category_id`).
+   * `id=none` is the "no app / no category" slice (`*_id IS NULL`) — it has
+   * no id, and a dead legend button would hide the very cards the slice counts.
    * `statusId` is the page's cross-filter and rides along for the same reason
    * — the list must match the filtered slice it came from (the client leaves
    * it out when `dim` itself is the status filter, so the two never conflict).
@@ -461,12 +473,16 @@ export class DashboardService {
     statusId?: number,
   ): Promise<DashboardTrendIssue[]> {
     const dimName = parseDim(dim);
-    const dimId = parsePositiveId(id, "id");
+    const none = id === "none";
+    const dimId = none ? null : parsePositiveId(id, "id");
     const parentAppId = app == null || app === "" ? null : parsePositiveId(app, "app");
     const scope = await this.effectiveScope(requestedScope, user);
     const uid = Number(user?.id ?? 0);
 
-    const qb = this.baseQb(scope, uid, statusId).andWhere(`issue.${dimName}_id = :dimId`, { dimId });
+    // `id=none` → the NULL slice; dimName is already validated by parseDim
+    const qb = none
+      ? this.baseQb(scope, uid, statusId).andWhere(`issue.${dimName}_id IS NULL`)
+      : this.baseQb(scope, uid, statusId).andWhere(`issue.${dimName}_id = :dimId`, { dimId });
     if (parentAppId != null) {
       qb.andWhere("issue.app_id = :appId", { appId: parentAppId });
     }

@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, NotFoundException } from "@nestjs/common";
 import { RulesService, type RuleInput } from "../modules/rules/rules.service";
 
 /**
@@ -173,6 +173,99 @@ describe("RulesService", () => {
       expect(created.conditions).toEqual([
         { field: "to_status", operator: "=", value: "4", position: 0 },
       ]);
+    });
+  });
+
+  describe("duplicate guard", () => {
+    /** Shape of the rule already sitting in the DB (default: switched ON). */
+    function storedRule(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return ruleRecord({
+        id: 11,
+        name: "ย้ายไป เสร็จสิ้น → ล็อก",
+        triggerKey: "issue.moved",
+        templateKey: "moved_to",
+        actionKey: "issue.lock",
+        actionConfig: {},
+        conditions: [{ field: "to_status", operator: "=", value: "4", position: 0 }],
+        ...overrides,
+      });
+    }
+
+    /** Same rule, other name — a copy is a copy whatever it is called. */
+    const copy: RuleInput = {
+      name: "อีกชื่อหนึ่ง",
+      triggerKey: "issue.moved",
+      templateKey: "moved_to",
+      actionKey: "issue.lock",
+      actionConfig: {},
+      conditions: [{ field: "to_status", operator: "=", value: "4" }],
+    };
+
+    it("rejects a create whose trigger, conditions and action already exist", async () => {
+      const { service, rules } = makeService();
+      rules.find.mockResolvedValue([storedRule()]);
+
+      await expect(service.create(copy, ACTOR)).rejects.toBeInstanceOf(ConflictException);
+      expect(rules.create).not.toHaveBeenCalled();
+    });
+
+    it("counts a paused rule as a duplicate — it still exists", async () => {
+      const { service, rules } = makeService();
+      rules.find.mockResolvedValue([storedRule({ isActive: false })]);
+
+      await expect(service.create(copy, ACTOR)).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it("allows the same trigger and action when another status is picked", async () => {
+      const { service, rules } = makeService();
+      rules.find.mockResolvedValue([storedRule()]);
+      rules.findOne.mockResolvedValue(ruleRecord({ id: 12 }));
+
+      const created = await service.create(
+        {
+          ...copy,
+          conditions: [{ field: "to_status", operator: "=", value: "5" }],
+        },
+        ACTOR,
+      );
+
+      expect(created.id).toBe(12);
+    });
+
+    it("allows the same rule with a different action config", async () => {
+      const { service, rules } = makeService();
+      rules.find.mockResolvedValue([storedRule()]);
+      rules.findOne.mockResolvedValue(ruleRecord({ id: 13 }));
+
+      const created = await service.create(
+        { ...copy, actionKey: "issue.set_priority", actionConfig: { priority: "2" } },
+        ACTOR,
+      );
+
+      expect(created.id).toBe(13);
+    });
+
+    it("rejects an edit that would turn a rule into someone else's copy", async () => {
+      const { service, rules } = makeService();
+      const me = storedRule({ id: 5 });
+      rules.findOne.mockResolvedValue(me);
+      rules.find.mockResolvedValue([storedRule({ id: 99 })]);
+
+      // only the name arrives — the check uses the rule as it WILL be
+      await expect(service.update(5, { name: "whatever" }, ACTOR)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(rules.save).not.toHaveBeenCalled();
+    });
+
+    it("lets a rule be saved without colliding with itself", async () => {
+      const { service, rules } = makeService();
+      const me = storedRule({ id: 5 });
+      rules.findOne.mockResolvedValue(me);
+      rules.find.mockResolvedValue([me]);
+
+      await expect(service.update(5, { name: "Renamed" }, ACTOR)).resolves.toBeDefined();
+      expect(rules.save).toHaveBeenCalledWith(me);
     });
   });
 

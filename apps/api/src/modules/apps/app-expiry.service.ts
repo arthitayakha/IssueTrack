@@ -23,9 +23,9 @@ const STAGE_RANK: Record<AppExpiryStage, number> = {
 
 /** ชื่อที่ต้องมีตอนแจ้งเตือน — แถวเชื่อมไม่มี relation จึงส่งมากับแถว */
 export interface ExpiryNames {
-  /** ชื่อแอป (title ของ notification) */
+  /** ชื่อแอป — ส่วนแรกของ title ของ notification */
   appName: string;
-  /** ชื่อบริษัทของคู่นี้ (context) — 1 แอปผูกหลายเจ้า ต้องบอกว่าเจ้าไหน */
+  /** ชื่อบริษัทของคู่นี้ — ต่อท้ายชื่อแอปใน title (1 แอปผูกหลายเจ้า ต้องบอกว่าเจ้าไหน) */
   companyName: string;
 }
 
@@ -172,9 +172,10 @@ export class AppExpiryService {
    *
    * The pair *is* the subject now, so the company name is not decoration: one
    * app can be due on three different dates for three different companies and
-   * each one rings on its own day. The popover renders "label + title +
-   * context", so the day count rides in `context` next to the company:
-   * `ใกล้หมดอายุ POS เหลือ 5 วัน · มามี่ฟู้ด`.
+   * each one rings on its own day. The inbox renders `{title} {label}` on the
+   * first line (no actor — the row comes from the system), so the subject
+   * carries both names and `context` is the day count alone:
+   * `POS ครัวบ้านสวย ใกล้หมดอายุ` / `• เหลือ 5 วัน`.
    */
   private async announce(
     link: AppCompany,
@@ -182,14 +183,19 @@ export class AppExpiryService {
     stage: AppExpiryStage,
   ): Promise<void> {
     const left = this.daysLeft(link.expiresAt);
+    // "แอป + บริษัท" เป็นหัวข้อเดียวกัน — เคยอยู่ใน context แต่แถวแจ้งเตือน
+    // ขึ้น title ตัวหนาก่อน label จึงย้ายมาไว้ตรงนี้ (คู่เดียวกันคนละบริษัทต้องแยกกันรู้)
+    const title = [names.appName, names.companyName].filter(Boolean).join(" ");
     const context =
-      stage === "expired" || left === null
-        ? names.companyName
-        : `เหลือ ${left} วัน${names.companyName ? ` · ${names.companyName}` : ""}`;
+      stage === "expired"
+        ? `เลยกำหนด ${left === null ? 0 : Math.abs(left)} วัน`
+        : left === null
+          ? null
+          : `เหลือ ${left} วัน`;
     await this.notifications.notifyAdmins({
       action: stage === "expired" ? "app_expired" : "app_expiring",
-      title: names.appName,
-      context: context.slice(0, 100) || null,
+      title,
+      context: context ? context.slice(0, 100) : null,
       // วันที่รายคู่อยู่ที่หน้า `/systems` (ข้อมูลระบบ) — ไม่ใช่ที่แท็บแอป
       link: "/systems",
     });

@@ -191,6 +191,9 @@ export interface AppContract {
  * (`issues` has no `company_id`, so hours cannot be attributed to a pair) and
  * only become known once `fetchAppUsageAllTime()` resolves — the cells read
  * them from the `usage` prop at render time instead.
+ *
+ * MA ยัง **ไม่ถูกหัก** (`MA_DEDUCTION_PAUSED`) → ค่าสองตัวนั้นตอนนี้คือ 0 กับ
+ * `maHours` เต็มก้อนเสมอ; `maHours == null` ยังแปลว่า "ยังไม่กรอก" เหมือนเดิม
  */
 export interface CompanyRow {
   appId: number;
@@ -635,14 +638,38 @@ export async function loadFilterOptions(): Promise<FilterOptions> {
 }
 
 /**
+ * **การหักชั่วโมง MA — ยังไม่เปิด** (`true` = ยังไม่หักสักบาท)
+ *
+ * ตาม migration `1811` กับ `app-company.entity.ts`: `app_companies.ma_hours`
+ * เป็นแค่ "เพดานที่กรอกได้ก่อน" ส่วนการหักเวลาจริง (`issues.actual_fix_duration`
+ * ของงานที่ปิดแล้ว) **รอตัดสินใจรอบถัดไป** — แต่โค้ดฝั่งเว็บเดินหน้าหักไปแล้ว
+ * งาน test งานเดียวที่กรอกเวลาจึงหัก MA ทุกแถวของแอปนั้น (ทุกบริษัทที่ผูกแอปเดียว)
+ *
+ * `true` → `fetchAppUsageAllTime()` คืน `Map` ว่าง**ทันที ไม่ยิง API** →
+ * "ชั่วโมงที่ใช้ทั้งหมด" = 0 และ "คงเหลือ" = ชั่วโมง MA เต็มก้อน ทั้ง `/reports`
+ * (จอ + CSV + PDF เพราะทุกอย่างอ่านจากตัวเลขนี้) และ `/systems`
+ *
+ * **เปิดกลับ = เปลี่ยนเป็น `false` ตรงนี้จุดเดียว** — แล้วอย่าลืมกำหนดกติกา
+ * ที่ยังค้าง: หักเฉพาะงานในช่วงสัญญาของแถวนั้น? เฉพาะสถานะปิดแล้ว? ระบุ
+ * บริษัทเป็นรายงาน (`issues` ยังไม่มี `company_id`)?
+ */
+export const MA_DEDUCTION_PAUSED = true;
+
+/**
  * "ใช้ไป" ต่อแอป **แบบไม่กรองอะไรเลย** (`EMPTY_FILTERS`) — ตัวส่วนของสูตร
- * คงเหลือ = MA − ใช้ไป ในมุมมอง "ตามแอป"
+ * คงเหลือ = MA − ใช้ไป ในมุมมอง "ตามบริษัท"
  *
  * ต้องเป็น all-time เพราะ `hoursEntered` ของแถวบนจอ **ผ่านตัวกรองวันที่/
  * ค้นหา** อยู่แล้ว — ถ้าเอาตัวนั้นไปลบ MA พอผู้ใช้เลือกช่วงวันที่ ตัวเลข
  * คงเหลือจะขยับทั้งที่สัญญาไม่ได้เปลี่ยน (คนละค่ากับ `/systems` ด้วย)
+ *
+ * ตอน `MA_DEDUCTION_PAUSED = true` → คืน map ว่างทันที (ดูเหตุผลที่ const นั้น)
  */
 export async function fetchAppUsageAllTime(): Promise<Map<number, number>> {
+  // ยังไม่หัก → ค่าที่จะได้จาก `/reports/summary` ไม่มีทางถูกใช้อยู่แล้ว
+  // จึงไม่ยิง request เปล่า ๆ ให้สองหน้าเห็น `ready` พร้อมตัวเลข 0/MA เต็ม
+  if (MA_DEDUCTION_PAUSED) return new Map<number, number>();
+
   const rows = await fetchSummaryRows("app", EMPTY_FILTERS);
   const used = new Map<number, number>();
   for (const row of rows) {
@@ -677,16 +704,14 @@ export function buildCompanyRows(
   sort: SortState,
 ): CompanyRow[] {
   /**
-   * TODO(company-design): **ปิดชั่วคราว** — ยังไม่ตัดสินใจเรื่อง company ↔
-   * user กับพี่ (ตาราง `users` ไม่มี `company_id`) เลือกบริษัทแล้วมุมมองนี้
-   * จึงต้องคืน **0 แถว** ห้ามโชว์ผลจากเส้น "งาน → แอป → บริษัท" ·
-   * **ตรงกับอีก 3 จุด** (`issues.service.ts` / `reports.service.ts` /
-   * `boards/page.tsx`) ที่ปิดไว้เหมือนกัน — เปิดต้องเปิดพร้อมกันทั้ง 4
+   * ตัวกรองบริษัทในมุมมองนี้เดินตามเส้น **งาน → แอป → บริษัท** (`app_companies`)
+   * — `issues` ไม่มี `company_id` จึงระบุคู่ไม่ได้โดยตรง (ดูเงื่อนไข
+   * `wantedCompanies` ด้านล่าง; แอปที่ยังไม่ผูกบริษัท = แถว `[null]` ที่ถูก
+   * ตัดออกเมื่อมี filter บริษัท บรรทัดถัดไป)
    *
-   * **เปิดใหม่:** ลบ 3 บรรทัดนี้ทิ้ง — logic ด้านล่างยังกรองต่อได้ตามเดิม
+   * ยัง**ไม่**ผูก "คนกับบริษัท" — ตาราง `users` ยังไม่มี `company_id`
+   * (ประเด็น company ↔ user ยังค้างตัดสินใจอยู่)
    */
-  if (filters.companyIds.length > 0) return [];
-
   const q = filters.search.trim().toLocaleLowerCase();
   const wantedCompanies = new Set(filters.companyIds);
   const wantedApps = new Set(filters.appIds);

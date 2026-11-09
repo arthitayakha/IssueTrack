@@ -9,14 +9,11 @@ import {
   Button,
   CircularProgress,
   Divider,
-  IconButton,
   ListItemButton,
   Popover,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
-import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { useRouter } from "@/i18n/navigation";
 import { timeAgo } from "@/lib/time-ago";
 import type { AppNotification, NotificationPage } from "@/lib/notifications-api";
@@ -38,8 +35,6 @@ interface NotificationPopoverProps {
   onClose: () => void;
   onMarkRead: (id: number) => void;
   onMarkAllRead: () => void;
-  /** Opens the account popup (the old notification-settings gear). */
-  onOpenProfile: () => void;
 }
 
 /**
@@ -90,10 +85,8 @@ export default function NotificationPopover({
   onClose,
   onMarkRead,
   onMarkAllRead,
-  onOpenProfile,
 }: NotificationPopoverProps) {
   const t = useTranslations("Notifications");
-  const navT = useTranslations("Nav");
   const locale = useLocale();
   const theme = useTheme();
   const router = useRouter();
@@ -256,12 +249,6 @@ export default function NotificationPopover({
             {status === "loading" ? "\u2026" : data.total}
           </Box>
         </Box>
-        <Box sx={{ flex: 1 }} />
-        <Tooltip title={navT("profile")}>
-          <IconButton size="small" onClick={onOpenProfile} sx={{ mb: 0.5 }}>
-            <SettingsOutlinedIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
       </Box>
 
       {/* List — first open shows a spinner, a failed load offers a retry */}
@@ -302,6 +289,9 @@ export default function NotificationPopover({
           </Box>
         ) : (
           visibleItems.map((item, index) => {
+            // แถวหมดอายุไม่มีคนกระทำ (ระบบเป็นคนส่ง) — หัวข้อคือ "ชื่อแอป + บริษัท"
+            // ขึ้นต้นด้วยสิ่งนั้นแทน "System" แล้วตามด้วย label: **POS ครัวบ้านสวย** ใกล้หมดอายุ
+            const isExpiryRow = item.action === "app_expiring" || item.action === "app_expired";
             return (
               <Box key={item.id}>
                 {index > 0 && <Divider />}
@@ -327,7 +317,7 @@ export default function NotificationPopover({
                       flexShrink: 0,
                     }}
                   >
-                    {getInitials(item.actorName ?? "System")}
+                    {getInitials(isExpiryRow ? item.target : (item.actorName ?? "System"))}
                   </Avatar>
 
                   <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -340,29 +330,40 @@ export default function NotificationPopover({
                         whiteSpace: "nowrap",
                       }}
                     >
-                      <Box
-                        component="span"
-                        sx={{
-                          fontWeight: 700,
-                          ...(item.action === "deleted"
-                            ? { color: "text.secondary", textDecoration: "line-through" }
-                            : {}),
-                        }}
-                      >
-                        {item.actorName ?? "System"}
-                      </Box>{" "}
-                      {actionLabels[item.action] ?? item.action}{" "}
-                      <Box
-                        component="span"
-                        sx={{
-                          fontWeight: 700,
-                          ...(item.action === "deleted"
-                            ? { color: "text.secondary", textDecoration: "line-through" }
-                            : {}),
-                        }}
-                      >
-                        {item.target}
-                      </Box>
+                      {isExpiryRow ? (
+                        <>
+                          <Box component="span" sx={{ fontWeight: 700 }}>
+                            {item.target}
+                          </Box>{" "}
+                          {actionLabels[item.action] ?? item.action}
+                        </>
+                      ) : (
+                        <>
+                          <Box
+                            component="span"
+                            sx={{
+                              fontWeight: 700,
+                              ...(item.action === "deleted"
+                                ? { color: "text.secondary", textDecoration: "line-through" }
+                                : {}),
+                            }}
+                          >
+                            {item.actorName ?? "System"}
+                          </Box>{" "}
+                          {actionLabels[item.action] ?? item.action}{" "}
+                          <Box
+                            component="span"
+                            sx={{
+                              fontWeight: 700,
+                              ...(item.action === "deleted"
+                                ? { color: "text.secondary", textDecoration: "line-through" }
+                                : {}),
+                            }}
+                          >
+                            {item.target}
+                          </Box>
+                        </>
+                      )}
                     </Typography>
                     <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
                       {timeAgo(item.createdAt, locale)}

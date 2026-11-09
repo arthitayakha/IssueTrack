@@ -52,6 +52,7 @@ import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermissions, roleLabel } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
+import { fetchCompanies, type Company } from "@/lib/apps-api";
 import { PERMISSION_LABELS, ALL_PERMISSIONS, permissionsForRole, PERMISSION_DEPENDENCIES } from "@kanban/shared";
 import { useNotification } from "@/components/notification";
 import { useRouter } from "@/i18n/navigation";
@@ -221,6 +222,9 @@ interface User {
   roleName: string | null;
   positionId: number | null;
   positionName: string | null;
+  /** บริษัทของลูกค้าคนนี้ (`users.company_id`) — บทบาทอื่นเป็น `null` เสมอ */
+  companyId: number | null;
+  companyName: string | null;
   isActive: boolean;
 }
 
@@ -256,6 +260,8 @@ export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
+  /** รายการบริษัทให้ dropdown ในฟอร์มผู้ใช้ — โหลดเฉพาะตอนเห็นแท็บผู้ใช้ */
+  const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -264,8 +270,11 @@ export default function UsersPage() {
     name: "",
     roleId: null as number | null,
     positionId: null as number | null,
+    companyId: null as number | null,
     password: "",
   });
+  /** ข้อความใต้ dropdown บริษัท — ลูกค้าบันทึกไม่ได้ถ้ายังไม่เลือก */
+  const [companyError, setCompanyError] = useState<string | null>(null);
   const [positionDialogOpen, setPositionDialogOpen] = useState(false);
   const [editingPosition, setEditingPosition] = useState<Position | null>(null);
   const [positionForm, setPositionForm] = useState({ name: "", roleId: null as number | null, permissions: [] as string[] });
@@ -323,6 +332,13 @@ export default function UsersPage() {
             if (err instanceof ApiError && err.status === 403) setUsersError(true);
           })
       );
+      // `GET /companies` ตั้งใจเปิดให้ทุกคนที่ล็อกอิน (ฟอร์มแอปใช้ที่เดียวกัน)
+      // จึงไม่มี 403 ให้กังวล — ถ้าล้มจริงก็แค่ dropdown โชว์ว่ายังไม่มีบริษัท
+      requests.push(
+        fetchCompanies()
+          .then(r => setCompanies(r.data))
+          .catch(() => { /* fail-open: ฟอร์มยังเปิดแก้ข้อมูลอื่นได้ตามเดิม */ })
+      );
     }
     if (canViewRoles) {
       requests.push(
@@ -348,7 +364,8 @@ export default function UsersPage() {
 
   function openAdd() {
     setEditingUser(null);
-    setForm({ email: "", name: "", roleId: null, positionId: null, password: "" });
+    setForm({ email: "", name: "", roleId: null, positionId: null, companyId: null, password: "" });
+    setCompanyError(null);
     setDialogOpen(true);
   }
 
@@ -359,16 +376,29 @@ export default function UsersPage() {
       name: user.name,
       roleId: user.roleId,
       positionId: user.positionId,
+      companyId: user.companyId,
       password: "",
     });
+    setCompanyError(null);
     setDialogOpen(true);
   }
 
   async function handleSave() {
+    // บริษัทเป็นข้อมูลของ "ลูกค้า" เท่านั้น — เทียบด้วยชื่อบทบาท (ไม่ใช่เลข id)
+    // เหมือนที่หน้าบอร์ดเช็ก `roleName === "programmer"`
+    const isCustomerRole =
+      roles.find((r) => r.id === form.roleId)?.name === "customer";
+    if (isCustomerRole && !form.companyId) {
+      setCompanyError(t("companyRequired"));
+      return;
+    }
     try {
       const payload = {
         ...form,
         positionId: form.roleId === 2 ? form.positionId : null,
+        // บทบาทอื่นถูกล้างเป็น null ที่เซิร์ฟเวอร์อยู่แล้ว ส่งตรงไปเลยจะได้
+        // ฟอร์มกับ API ตรงกันตั้งแต่ฝั่งแรก
+        companyId: isCustomerRole ? form.companyId : null,
       };
       if (editingUser) {
         await apiFetch(`/users/${editingUser.id}`, { method: "PATCH", body: JSON.stringify(payload) }, token);
@@ -697,6 +727,10 @@ export default function UsersPage() {
     ...(effectiveCanViewPositions ? [{ label: t("tabPositions"), content: "positions" }] : []),
   ];
 
+  // "ลูกค้า" ตัวเดียวที่ฟอร์มผู้ใช้โชว์ dropdown บริษัท — เทียบด้วยชื่อบทบาท
+  // (ไม่ใช่เลข id) แบบเดียวกับที่หน้าบอร์ดเช็ก `roleName === "programmer"`
+  const isCustomerRole = roles.find((r) => r.id === form.roleId)?.name === "customer";
+
   return (
     <RequirePermission permissions={["user.view", "role.view", "position.view"]}>
       <DashboardLayout>
@@ -727,6 +761,7 @@ export default function UsersPage() {
                   <DataTableCell>{t("columnEmail")}</DataTableCell>
                   <DataTableCell>{t("columnRole")}</DataTableCell>
                   <DataTableCell>{t("columnPosition")}</DataTableCell>
+                  <DataTableCell>{t("columnCompany")}</DataTableCell>
                   <DataTableCell align="center">{t("columnStatus")}</DataTableCell>
                   <DataTableCell align="right">{t("columnActions")}</DataTableCell>
                 </DataTableRow>
@@ -740,6 +775,7 @@ export default function UsersPage() {
                       <Typography>{roleLabel(user.roleName)}</Typography>
                     </DataTableCell>
                     <DataTableCell>{user.positionName ?? "—"}</DataTableCell>
+                    <DataTableCell>{user.companyName ?? "—"}</DataTableCell>
                     <DataTableCell align="center">
                       <Chip
                         label={user.isActive ? t("active") : t("inactive")}
@@ -941,7 +977,18 @@ export default function UsersPage() {
                 <Select
                   value={form.roleId ?? ""}
                   label={t("columnRole")}
-                  onChange={(e) => setForm({ ...form, roleId: e.target.value ? Number(e.target.value) : null, positionId: null })}
+                  onChange={(e) => {
+                    const nextRoleId = e.target.value ? Number(e.target.value) : null;
+                    setForm({
+                      ...form,
+                      roleId: nextRoleId,
+                      positionId: null,
+                      // บริษัทเป็นของ "ลูกค้า" เท่านั้น — เปลี่ยนบทบาทแล้วค่าเดิม
+                      // ใช้ไม่ได้ ล้างทิ้งเลยพร้อมกับข้อความ error
+                      companyId: null,
+                    });
+                    setCompanyError(null);
+                  }}
                 >
                   {roles.filter(r => r.isActive).map((role) => (
                     <MenuItem key={role.id} value={role.id}>
@@ -950,6 +997,37 @@ export default function UsersPage() {
                   ))}
                 </Select>
               </FormControl>
+              {/* ลูกค้าต้องเลือกบริษัท — `users.company_id` คือตัวรู้ว่าคนนี้เป็นคน
+                 ของบริษัทไหน บทบาทอื่นไม่โชว์ช่องนี้เลย (ค่าถูกบังคับเป็น null) */}
+              {isCustomerRole && (
+                <FormControl fullWidth error={!!companyError}>
+                  <InputLabel>{t("columnCompany")}</InputLabel>
+                  <Select
+                    value={form.companyId ?? ""}
+                    label={t("columnCompany")}
+                    onChange={(e) => {
+                      setForm({ ...form, companyId: e.target.value ? Number(e.target.value) : null });
+                      setCompanyError(null);
+                    }}
+                  >
+                    <MenuItem value="" disabled>
+                      <em>{t("selectCompany")}</em>
+                    </MenuItem>
+                    {/* จงใจโชว์ครบทุกบริษัทรวมที่ถูกปิดสถานะ — กันเคสลูกค้าผูกอยู่กับ
+                        บริษัทที่ admin เพิ่ง toggle ปิด แล้ว dropdown โชว์ช่องว่างทั้งที่มีค่า */}
+                    {companies.map((company) => (
+                      <MenuItem key={company.id} value={company.id}>
+                        {company.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                  {companyError && (
+                    <Typography variant="caption" color="error" sx={{ mt: 0.5, ml: 1.75 }}>
+                      {companyError}
+                    </Typography>
+                  )}
+                </FormControl>
+              )}
               {form.roleId === 2 && (
                 <FormControl fullWidth>
                   <InputLabel>{t("columnPosition")}</InputLabel>

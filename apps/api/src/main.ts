@@ -1,11 +1,15 @@
 import { NestFactory } from "@nestjs/core";
-import { ValidationPipe } from "@nestjs/common";
+import { Logger, ValidationPipe } from "@nestjs/common";
 import { AppModule } from "./app.module";
+import { UPLOADS_DIR } from "./lib/uploads-path";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   app.enableCors();
+  // printed on every boot: if this line ever moves, files written earlier are
+  // in the *other* folder and every download would 404 (see lib/uploads-path)
+  new Logger("Bootstrap").log(`uploads folder: ${UPLOADS_DIR}`);
   await app.listen(process.env.PORT ?? 3002);
 }
 

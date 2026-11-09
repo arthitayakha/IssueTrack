@@ -32,6 +32,7 @@ const USER: AuthUser = {
   roleId: 2,
   roleName: "customer",
   positionId: null,
+  companyId: null,
 };
 
 interface BuilderStub {
@@ -250,6 +251,35 @@ describe("DashboardService.summary", () => {
     ]);
   });
 
+  it("keeps the no-app / no-category group as an id:null slice (not Number(null) = 0)", async () => {
+    const { service, builders } = makeService(
+      [
+        statusesRaw(),
+        [],                                                        // priorities
+        [{ id: null, name: null, count: "62" }, { id: "4", name: "POS", count: "13" }],
+        [{ id: null, name: null, count: "5" }, { id: "1", name: "เข้าสู่ระบบไม่ได้", count: "36" }],
+        [],                                                        // trend
+      ],
+      [75],
+    );
+
+    const result = await service.summary("assigned", "week", USER);
+
+    expect(result.apps).toEqual([
+      { id: null, name: null, count: 62 },
+      { id: 4, name: "POS", count: 13 },
+    ]);
+    expect(result.categories).toEqual([
+      { id: null, name: null, count: 5 },
+      { id: 1, name: "เข้าสู่ระบบไม่ได้", count: 36 },
+    ]);
+    // the ring counts every live card — no NOT NULL filter may sneak back in
+    for (const b of [builders[3], builders[4]]) {
+      expect(b.leftJoin).toHaveBeenCalledWith(expect.stringContaining("issue."), "dim");
+      expect(b.conditions.join(" ")).not.toMatch(/_id IS NOT NULL/);
+    }
+  });
+
   it("workload counts unfinished cards only, busiest first, with the position", async () => {
     const { service, permissions, builders } = makeService(allScopeQueue(), [0]);
     permissions.getUserPermissions.mockResolvedValue([OWN, OVERVIEW]);
@@ -411,16 +441,22 @@ describe("DashboardService.trendIssues", () => {
 describe("DashboardService.drilldown", () => {
   it("counts one dimension inside a parent app, busiest first", async () => {
     const { service, permissions, builders } = makeService([
-      [{ id: "3", name: "บั๊ก", count: "5" }],
+      [{ id: "3", name: "บั๊ก", count: "5" }, { id: null, name: null, count: "2" }],
     ]);
     permissions.getUserPermissions.mockResolvedValue([OWN, OVERVIEW]);
 
     const rows = await service.drilldown("all", "category", "12", ADMIN_USER);
 
-    expect(rows).toEqual([{ id: 3, name: "บั๊ก", count: 5 }]);
+    // the NULL group is kept as id: null — Number(null) === 0 must not win
+    expect(rows).toEqual([
+      { id: 3, name: "บั๊ก", count: 5 },
+      { id: null, name: null, count: 2 },
+    ]);
     const sql = builders[0].conditions.join(" ");
-    // same grouping as the top-level ring + the parent's filter on top
-    expect(sql).toContain("issue.category_id IS NOT NULL");
+    // same grouping as the top-level ring (no NOT NULL filter — cards without
+    // a category are their own slice) + the parent's filter on top
+    expect(sql).not.toContain("issue.category_id IS NOT NULL");
+    expect(builders[0].leftJoin).toHaveBeenCalledWith("issue.category", "dim");
     expect(builders[0].andWhere).toHaveBeenCalledWith("issue.app_id = :parentAppId", {
       parentAppId: 12,
     });
@@ -511,6 +547,17 @@ describe("DashboardService.dimensionIssues", () => {
     expect(sql).toContain("issue.app_id = :dimId");
     expect(sql).not.toContain("issue.app_id = :appId");
     expect(sql).toContain("issue.programmer_id = :uid");
+  });
+
+  it("lists the no-app / no-category slice when id=none", async () => {
+    const { service, builders } = makeService([], [], [[]]);
+
+    await service.dimensionIssues("all", "category", "none", "12", ADMIN_USER);
+
+    const sql = builders[0].conditions.join(" ");
+    expect(sql).toContain("issue.category_id IS NULL");
+    expect(sql).not.toContain("issue.category_id = :dimId");
+    expect(builders[0].andWhere).toHaveBeenCalledWith("issue.app_id = :appId", { appId: 12 });
   });
 
   it("rejects an unusable dimension or id instead of listing the wrong cards", async () => {

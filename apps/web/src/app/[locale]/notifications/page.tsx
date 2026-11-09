@@ -192,6 +192,9 @@ export default function NotificationsPage() {
           <List disablePadding>
             {items.map((item) => {
               const stricken = item.action === "deleted";
+              // แถวหมดอายุไม่มีคนกระทำ (ระบบเป็นคนส่ง) — ขึ้นต้นด้วย "ชื่อแอป + บริษัท"
+              // แทนคำว่า "System" แล้วตามด้วย label: **POS ครัวบ้านสวย** ใกล้หมดอายุ
+              const isExpiryRow = item.action === "app_expiring" || item.action === "app_expired";
               return (
                 <ListItem
                   key={item.id}
@@ -214,7 +217,7 @@ export default function NotificationsPage() {
                         fontSize: "0.875rem",
                       }}
                     >
-                      {initials(item.actorName ?? "System")}
+                      {initials(isExpiryRow ? item.target : (item.actorName ?? "System"))}
                     </Avatar>
                   </ListItemAvatar>
                   <ListItemText
@@ -227,13 +230,24 @@ export default function NotificationsPage() {
                           textDecoration: stricken ? "line-through" : "none",
                         }}
                       >
-                        <Box component="span" sx={{ fontWeight: 700 }}>
-                          {item.actorName ?? "System"}
-                        </Box>{" "}
-                        {actionLabels[item.action] ?? item.action}{" "}
-                        <Box component="span" sx={{ fontWeight: 700 }}>
-                          {item.target}
-                        </Box>
+                        {isExpiryRow ? (
+                          <>
+                            <Box component="span" sx={{ fontWeight: 700 }}>
+                              {item.target}
+                            </Box>{" "}
+                            {actionLabels[item.action] ?? item.action}
+                          </>
+                        ) : (
+                          <>
+                            <Box component="span" sx={{ fontWeight: 700 }}>
+                              {item.actorName ?? "System"}
+                            </Box>{" "}
+                            {actionLabels[item.action] ?? item.action}{" "}
+                            <Box component="span" sx={{ fontWeight: 700 }}>
+                              {item.target}
+                            </Box>
+                          </>
+                        )}
                       </Typography>
                     }
                     secondary={

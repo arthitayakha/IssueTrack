@@ -508,6 +508,22 @@ export async function fetchApps(): Promise<PaginatedResponse<App>> {
   );
 }
 
+/**
+ * **เฉพาะแอปของบริษัทผู้เรียก** — `?mine=1` ให้เซิร์ฟเวอร์กรองผ่าน
+ * `users.company_id` → `app_companies` ใช้ที่ฟอร์มรายงานปัญหา (`/issues/new`)
+ * เพื่อให้ dropdown เหลือเฉพาะแอปที่บริษัทของผู้รายงานใช้จริง
+ *
+ * Fail-open ที่ฝั่งเซิร์ฟเวอร์: ผู้เรียกไม่มีบริษัท (แอดมิน/โปรแกรมเมอร์)
+ * หรือไม่ได้ส่ง flag → ได้ทุกแอปเหมือน `fetchApps()` เดิม
+ */
+export async function fetchMyCompanyApps(): Promise<PaginatedResponse<App>> {
+  return apiFetch<PaginatedResponse<App>>(
+    "/apps?page=1&limit=100&mine=1",
+    {},
+    getToken(),
+  );
+}
+
 export async function fetchTrashedIssues(): Promise<TrashedIssue[]> {
   return apiFetch<TrashedIssue[]>("/issues/trash", {}, getToken());
 }

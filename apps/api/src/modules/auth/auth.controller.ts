@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  Logger,
   NotFoundException,
   Patch,
   Post,
@@ -13,10 +14,7 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { diskStorage } from "multer";
-import { extname, join, normalize, resolve, sep } from "path";
-import { randomBytes } from "crypto";
-import { existsSync, unlink } from "fs";
+import { memoryStorage } from "multer";
 import type { Response } from "express";
 import { AuthService } from "./auth.service";
 import { LoginDto } from "./dto/login.dto";
@@ -32,11 +30,10 @@ import { CurrentUser } from "./current-user.decorator";
 import { Public } from "./public.decorator";
 import { User } from "./entities/user.entity";
 
-/** Same folder the issue attachments land in — one place to look for uploads. */
-const UPLOADS_DIR = join(process.cwd(), "uploads");
-
 @Controller("auth")
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(private readonly auth: AuthService) {}
 
   @Public()
@@ -107,17 +104,19 @@ export class AuthController {
     return this.auth.resetOwnPassword(user.id, dto.newPassword);
   }
 
-  /** Upload (or replace) your profile picture; the old file is deleted. */
+  /**
+   * Upload (or replace) your profile picture. The bytes go straight into the
+   * row (`users.avatar_data`) — multer runs from memory, so nothing lands in
+   * `uploads/` any more: a file there used to vanish whenever the API was
+   * started from a different working directory, and the row outlived it, so
+   * the picture silently 404'd the next day. A replace simply overwrites the
+   * same row — no old file to delete, no window where the row points at
+   * something that is already gone.
+   */
   @Post("profile/avatar")
   @UseInterceptors(
     FileInterceptor("file", {
-      storage: diskStorage({
-        destination: UPLOADS_DIR,
-        filename: (_req, file, cb) => {
-          const ext = (extname(file.originalname) || ".jpg").toLowerCase();
-          cb(null, `avatar-${randomBytes(16).toString("hex")}${ext}`);
-        },
-      }),
+      storage: memoryStorage(),
       limits: { fileSize: 2 * 1024 * 1024 },
       fileFilter: (_req, file, cb) => {
         if (!file.mimetype.startsWith("image/")) {
@@ -134,58 +133,41 @@ export class AuthController {
     @UploadedFile() file: Express.Multer.File,
   ) {
     if (!file) throw new BadRequestException("No file uploaded");
-    const previous = await this.auth.getAvatarPath(user.id);
-    await this.auth.setAvatar(user.id, file.filename);
-    if (previous && previous !== file.filename) this.deleteUpload(previous);
-    return { avatar: file.filename };
+    await this.auth.setAvatar(user.id, file.buffer, file.mimetype);
+    this.logger.log(
+      `profile picture updated for user #${user.id} (${file.mimetype}, ${file.buffer.length} bytes)`,
+    );
+    return { ok: true };
   }
 
   /** Remove the picture — the navbar falls back to the initials avatar. */
   @Delete("profile/avatar")
   async removeAvatar(@CurrentUser() user: User) {
-    const previous = await this.auth.getAvatarPath(user.id);
     await this.auth.clearAvatar(user.id);
-    if (previous) this.deleteUpload(previous);
-    return { avatar: null };
+    this.logger.log(`profile picture removed for user #${user.id}`);
+    return { ok: true };
   }
 
-  /** Serves the stored file; 404 when none was ever uploaded. */
+  /**
+   * Serves the stored bytes; 404 when the user never uploaded one.
+   * `no-store` on the miss matters as much as `max-age` on the hit — a cached
+   * 404 keeps rendering the initials avatar long after a picture exists.
+   */
   @Get("profile/avatar")
   async serveAvatar(@CurrentUser() user: User, @Res() res: Response) {
-    const filename = await this.auth.getAvatarPath(user.id);
-    if (!filename) throw new NotFoundException("No avatar");
-    this.sendUpload(res, filename);
-  }
-
-  /** Resolves a stored filename inside `uploads/` — refuses anything else. */
-  private resolveUpload(filename: string): string | null {
-    const full = resolve(UPLOADS_DIR, normalize(filename));
-    if (full !== resolve(UPLOADS_DIR) && !full.startsWith(resolve(UPLOADS_DIR) + sep)) {
-      return null; // path traversal attempt
+    const picture = await this.auth.getAvatar(user.id);
+    if (!picture) {
+      res.setHeader("Cache-Control", "no-store");
+      throw new NotFoundException("No avatar");
     }
-    return existsSync(full) ? full : null;
-  }
-
-  private sendUpload(res: Response, filename: string) {
-    const full = this.resolveUpload(filename);
-    if (!full) throw new NotFoundException("No avatar");
-    const ext = extname(full).toLowerCase();
-    const types: Record<string, string> = {
-      ".jpg": "image/jpeg",
-      ".jpeg": "image/jpeg",
-      ".png": "image/png",
-      ".gif": "image/gif",
-      ".webp": "image/webp",
-    };
-    res.setHeader("Content-Type", types[ext] ?? "application/octet-stream");
+    // the upload filter only accepts image/* — the guard covers older rows too
+    res.setHeader(
+      "Content-Type",
+      picture.mime.startsWith("image/") ? picture.mime : "application/octet-stream",
+    );
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Cache-Control", "private, max-age=3600");
-    res.sendFile(full);
-  }
-
-  /** Best-effort cleanup — a missing file must never fail the request. */
-  private deleteUpload(filename: string) {
-    const full = this.resolveUpload(filename);
-    if (!full) return;
-    unlink(full, () => undefined);
+    res.setHeader("Content-Length", String(picture.data.length));
+    res.end(picture.data);
   }
 }

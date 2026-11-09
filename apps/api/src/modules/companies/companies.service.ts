@@ -3,6 +3,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Company } from "./entities/company.entity";
 import { AppCompany } from "../apps/entities/app-company.entity";
+import { User } from "../auth/entities/user.entity";
 import { paginate, PaginationParams } from "../../common/pagination";
 
 /**
@@ -13,6 +14,9 @@ import { paginate, PaginationParams } from "../../common/pagination";
  *
  * นับด้วย `COUNT(DISTINCT app_id)` เพราะหลัง migration 1812 แถว = 1 ช่วงเวลา
  * ไม่ใช่ 1 คู่ — คู่เดิมมีได้หลายแถว และการนับแถวตรง ๆ จะปลอมเป็น "หลายแอป"
+ *
+ * เพิ่ม `userCount()` (migration 1816): `users.company_id` ชี้กลับมาที่ตารางนี้
+ * ลบบริษัทที่ยังมีลูกค้าผูกอยู่จึงต้องถูกบล็อกด้วย — `canDelete` ต้องเป็น 0 ทั้งคู่
  */
 @Injectable()
 export class CompaniesService {
@@ -21,6 +25,8 @@ export class CompaniesService {
     private readonly companies: Repository<Company>,
     @InjectRepository(AppCompany)
     private readonly appCompanies: Repository<AppCompany>,
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
   ) {}
 
   async findAll(params: PaginationParams) {
@@ -97,7 +103,8 @@ export class CompaniesService {
       throw new NotFoundException(`Company with id ${id} not found`);
     }
     const appCount = await this.appCount(id);
-    return { canDelete: appCount === 0, appCount };
+    const userCount = await this.userCount(id);
+    return { canDelete: appCount === 0 && userCount === 0, appCount, userCount };
   }
 
   async remove(id: number) {
@@ -109,6 +116,14 @@ export class CompaniesService {
     if (appCount > 0) {
       throw new ConflictException(
         `Cannot delete company "${company.name}" because ${appCount} app(s) still use it`,
+      );
+    }
+    // ลูกค้าผูกบริษัทไว้ (`users.company_id`, migration 1816) — ตาข่ายเดียวกับ
+    // ฝั่งแอป: บล็อกไว้ก่อนเสมอ ไม่งั้นจะชน `ON DELETE RESTRICT` แล้วกลายเป็น 500
+    const userCount = await this.userCount(id);
+    if (userCount > 0) {
+      throw new ConflictException(
+        `Cannot delete company "${company.name}" because ${userCount} user(s) still belong to it`,
       );
     }
     await this.companies.delete(id);
@@ -125,6 +140,19 @@ export class CompaniesService {
       .createQueryBuilder("ac")
       .select("COUNT(DISTINCT ac.app_id)", "n")
       .where("ac.company_id = :companyId", { companyId })
+      .getRawOne<{ n: string }>();
+    return Number(row?.n ?? 0);
+  }
+
+  /**
+   * จำนวนผู้ใช้ที่ยังผูกกับบริษัทนี้ (`users.company_id`, migration 1816) —
+   * แถว = ผู้ใช้ 1 คน จึงนับตรง ๆ ได้ ไม่ต้อง DISTINCT
+   */
+  private async userCount(companyId: number): Promise<number> {
+    const row = await this.users
+      .createQueryBuilder("u")
+      .select("COUNT(*)", "n")
+      .where("u.company_id = :companyId", { companyId })
       .getRawOne<{ n: string }>();
     return Number(row?.n ?? 0);
   }

@@ -32,8 +32,8 @@ import { isApiError } from "@/lib/api";
 import { useNotification } from "@/components/notification";
 import {
   createIssue,
-  fetchApps,
   fetchCategories,
+  fetchMyCompanyApps,
   fetchStatuses,
   uploadAttachment,
   type App,
@@ -77,7 +77,9 @@ export default function ReportIssuePage() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.allSettled([fetchStatuses(), fetchCategories(), fetchApps()])
+    // `?mine=1` — dropdown แอปมีเฉพาะแอปที่บริษัทของผู้รายงานใช้จริง
+    // (ผู้ใช้ไม่มีบริษัท → เซิร์ฟเวอร์คืนทุกแอปตามเดิม = fail-open)
+    Promise.allSettled([fetchStatuses(), fetchCategories(), fetchMyCompanyApps()])
       .then(([sts, cats, appsRes]) => {
         if (cancelled) return;
         const stsData = sts.status === "fulfilled" ? sts.value.data : [];
@@ -161,7 +163,11 @@ export default function ReportIssuePage() {
         description: description.trim(),
         statusId: statusId as number,
         appId: appId ?? undefined,
-        categoryId: selectedCategory && !isOtherSelected ? selectedCategory.id : undefined,
+        // "อื่น ๆ" keeps its free text AND binds the real category row when the
+        // system has one (id > 0) — sending only the text left `category_id`
+        // NULL, so those reports never appeared in the dashboard's category
+        // donut. id -1 is the synthetic entry added when no such row exists.
+        categoryId: selectedCategory && selectedCategory.id > 0 ? selectedCategory.id : undefined,
         customCategory: isOtherSelected ? customCategory.trim() : undefined,
       });
       if (files.length > 0) {
@@ -283,6 +289,13 @@ export default function ReportIssuePage() {
                       </MenuItem>
                     ))}
                   </TextField>
+                  {/* แอปถูกกรองตามบริษัทของผู้รายงาน — ถ้าบริษัทยังไม่ผูกแอปเลย
+                      dropdown จะว่างและกดส่งไม่ได้ (แอปเป็นช่องบังคับ) จึงต้องบอกให้รู้ */}
+                  {visibleApps.length === 0 && (
+                    <Alert severity="info" sx={{ mt: 1 }}>
+                      {t("noCompanyApps")}
+                    </Alert>
+                  )}
                 </Box>
 
                 <ClickAwayListener onClickAway={() => setCatDropOpen(false)}>

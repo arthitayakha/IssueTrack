@@ -243,11 +243,16 @@ function ReportsScreen() {
 
   const [options, setOptions] = useState<FilterOptions>(EMPTY_FILTER_OPTIONS);
   /**
-   * "ใช้ไป" ต่อแอป (all-time) — ตัวส่วนของ คงเหลือ = MA − ใช้ไป ใน view ตามแอป
+   * "ใช้ไป" ต่อแอป (all-time) — ตัวส่วนของ คงเหลือ = MA − ใช้ไป ใน view
+   * **ตามบริษัท**
    *
-   * ดึง **เฉพาะตอนเปิด view ตามแอป** เพราะเป็นคนละ query กับตารางบนจอ
+   * ดึง **เฉพาะตอนเปิด view ตามบริษัท** เพราะเป็นคนละ query กับตารางบนจอ
    * (ตารางใช้ตัวกรองของผู้ใช้ ส่วนตัวเลขนี้ต้องคงที่เสมอ — ดูเหตุผลใน
    * `fetchAppUsageAllTime`) · `status` แยกโหลด/ผิดพลาดให้ตารางโชว์ `—` ได้ถูก
+   *
+   * **MA ยังไม่ถูกหัก** (`MA_DEDUCTION_PAUSED` ใน `reports-api.ts`) → ฟังก์ชัน
+   * นั้นคืน map ว่างทันทีไม่ยิง request → "ใช้ไป" = 0 กับ "คงเหลือ" = ชั่วโมง MA
+   * เต็มก้อนทุกแถว (จอ + CSV + PDF อ่านจากตัวเลขนี้ชุดเดียว)
    */
   const [usage, setUsage] = useState<{
     status: "loading" | "ready" | "error";
@@ -289,6 +294,8 @@ function ReportsScreen() {
   }, [reloadKey]);
 
   // "ใช้ไป" = ของ view ตามบริษัท เท่านั้น (view ตามแอปถอดคอลัมน์คงเหลือไปแล้ว)
+  // ตอน `MA_DEDUCTION_PAUSED` → `fetchAppUsageAllTime()` คืน map ว่างทันที
+  // ไม่มี request → สอง .then/.catch ล่างนี้ยังอยู่ครบ เผื่อตอนเปิดหักกลับ
   useEffect(() => {
     if (view !== "company") return;
     let cancelled = false;
@@ -299,6 +306,7 @@ function ReportsScreen() {
       })
       .catch(() => {
         // ล้มเหลว = คงเหลือทุกแถวเป็น `—` — ห้ามเดาค่า (ดู remainingCell)
+        // (ตอน pause ฟังก์ชันไม่ reject → เส้นทางนี้เข้าไม่ถึง)
         if (!cancelled) setUsage({ status: "error", byApp: new Map() });
       });
     return () => {
@@ -556,6 +564,9 @@ function ReportsScreen() {
        * - 3 ตัวล่าง (view ตามบริษัท): **per-pair** — ค่าของคู่นั้น ๆ
        * - คงเหลือ ใช้ "ใช้ไป" all-time เหมือนจอ; ยังโหลด/พัง → ""
        *   (ห้ามโชว์ MA เต็มก้อนเพราะยังไม่รู้ค่าจริง — ตรงกับ cell)
+       *
+       * ตอน `MA_DEDUCTION_PAUSED` → ใช้ไป = 0 / คงเหลือ = `maHours` เต็ม
+       * (ยังไม่กรอก MA → "" เหมือนเดิม)
        */
       const companiesOf = (appId: number | null) =>
         appId == null

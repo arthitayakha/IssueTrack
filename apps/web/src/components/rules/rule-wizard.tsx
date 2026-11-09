@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Box, Button, Step, StepLabel, Stepper } from "@mui/material";
+import { Box, Alert, Button, Step, StepLabel, Stepper } from "@mui/material";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, isApiError } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import {
   buildRuleSentence,
@@ -13,13 +13,14 @@ import {
   getFieldLabel,
   isActionCompatible,
   isDropdownFieldType,
+  ruleSignature,
   type RuleDto,
   type RuleOperator,
 } from "@kanban/shared";
 import { fetchCategories, fetchPositions, fetchPriorities, fetchStatuses, fetchUsers } from "@/lib/board-api";
 import { fetchLabels } from "@/lib/labels-api";
 import { useNotification } from "@/components/notification";
-import { createRule, updateRule, type RulePayload } from "@/lib/rules-api";
+import { createRule, fetchRules, updateRule, type RulePayload } from "@/lib/rules-api";
 import TriggerPicker, { slotKey, type SlotValues } from "./trigger-picker";
 import ActionPicker from "./action-picker";
 import RuleReview from "./rule-review";
@@ -68,6 +69,9 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
   const { notify } = useNotification();
 
   const [refs, setRefs] = useState<ReferenceData>(EMPTY_REFERENCES);
+  // the stored rules, used to spot a copy before Save (GET /rules — needs
+  // automation.view; an empty list just means we fall back to the API's 409)
+  const [existingRules, setExistingRules] = useState<RuleDto[]>([]);
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
 
@@ -90,9 +94,10 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
       fetchCategories(),
       fetchLabels(),
       fetchRoleNames(token),
+      fetchRules(),
     ]).then((results) => {
       if (cancelled) return;
-      const [statuses, users, positions, priorities, categories, labels, roles] = results;
+      const [statuses, users, positions, priorities, categories, labels, roles, rules] = results;
       setRefs({
         statuses: statuses.status === "fulfilled" ? statuses.value.data : [],
         users: users.status === "fulfilled" ? users.value.data : [],
@@ -102,6 +107,10 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
         labels: labels.status === "fulfilled" ? labels.value.data : [],
         roles: roles.status === "fulfilled" ? roles.value : EMPTY_REFERENCES.roles,
       });
+      // fail-open: no `automation.view` (or a flaky call) leaves the list empty
+      // and the duplicate check below simply does not fire — POST /rules still
+      // answers 409, so a copy can never be stored either way
+      setExistingRules(rules.status === "fulfilled" ? rules.value : []);
     });
     return () => {
       cancelled = true;
@@ -209,6 +218,24 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
   }
 
   const builtConditions = buildConditions();
+
+  /**
+   * What we are about to save, stamped against the stored rules. Everything
+   * that makes a rule itself goes into the signature — including the value
+   * picked in the sentence's dropdown (`to_status` etc.), which is why the
+   * same trigger + action with ANOTHER status is not a copy and can be added.
+   * A rule never collides with the one being edited (`initialRule`).
+   */
+  const payloadSignature = ruleSignature({
+    triggerKey: triggerKey ?? "",
+    templateKey,
+    actionKey: actionKey ?? "",
+    actionConfig,
+    conditions: builtConditions,
+  });
+  const duplicateRule = existingRules.find(
+    (rule) => rule.id !== initialRule?.id && ruleSignature(rule) === payloadSignature,
+  );
   const conditionRows = builtConditions.map((c) => ({
     label: getFieldLabel(c.field),
     operator: String(c.operator),
@@ -290,7 +317,16 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
       notify(t("saved"), "success");
       router.push("/automation");
     } catch (err) {
-      notify(err instanceof Error ? err.message : t("saveError"), "error");
+      // 409 = the API found the same rule again (the list above could not be
+      // read, e.g. no automation.view) — say it in Thai instead of server text
+      notify(
+        isApiError(err, 409)
+          ? t("duplicateError")
+          : err instanceof Error
+            ? err.message
+            : t("saveError"),
+        "error",
+      );
       setSaving(false);
     }
   }
@@ -344,6 +380,12 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
         )}
       </Box>
 
+      {duplicateRule && (
+        <Alert severity="warning" sx={{ mt: 2 }}>
+          {t("duplicate", { name: duplicateRule.name })}
+        </Alert>
+      )}
+
       <Box
         sx={{
           display: "flex",
@@ -368,7 +410,8 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
         ) : (
           <Button
             variant="contained"
-            disabled={saving}
+            // a copy cannot be saved — the Alert above says which rule it is
+            disabled={saving || Boolean(duplicateRule)}
             onClick={handleSave}
           >
             {initialRule ? t("saveEdit") : t("save")}

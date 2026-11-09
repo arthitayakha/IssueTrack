@@ -9,6 +9,7 @@ import {
 } from "typeorm";
 import { Position } from "../../positions/position.entity";
 import { Role } from "../../roles/entities/role.entity";
+import { Company } from "../../companies/entities/company.entity";
 
 @Entity("users")
 export class User {
@@ -34,13 +35,39 @@ export class User {
   @Column({ name: "position_id", type: "int", nullable: true })
   positionId!: number | null;
 
-  /** Path of the uploaded profile picture inside `uploads/` (null = initials avatar). */
-  @Column({ type: "varchar", length: 255, nullable: true })
-  avatar!: string | null;
+  /**
+   * Raw bytes of the profile picture (null = the initials avatar).
+   *
+   * Kept in the row, not on disk: the file used to live in `uploads/`, whose
+   * location followed `process.cwd()` — start the API from another directory
+   * (or lose the gitignored folder) and the picture silently 404'd the next
+   * day. `select: false` keeps the blob out of every list/login query.
+   */
+  @Column({ name: "avatar_data", type: "bytea", nullable: true, select: false })
+  avatarData?: Buffer | null;
+
+  /** MIME of `avatar_data` (image/jpeg, image/png, …) so GET can label it. */
+  @Column({ name: "avatar_mime", type: "varchar", length: 50, nullable: true, select: false })
+  avatarMime?: string | null;
 
   @ManyToOne(() => Position, { nullable: true })
   @JoinColumn({ name: "position_id" })
   position?: Position;
+
+  /**
+   * บริษัทของผู้ใช้คนนี้ — **มีเฉพาะบทบาท `customer`** (ฟอร์มผู้ใช้บังคับตอน
+   * บันทึก และ `UsersService` ล้างค่าทิ้งเองเมื่อบทบาทไม่ใช่ลูกค้า) คอลัมน์นี้คือ
+   * ตัวบอกว่าลูกค้าเป็นคนของบริษัทไหน ซึ่งฟอร์มรายงานปัญหาใช้กรอง dropdown
+   * แอปให้เหลือเฉพาะแอปที่บริษัทนั้นใช้ (`GET /apps?mine=1` → `app_companies`)
+   *
+   * Nullable ทุกบทบาทอื่นเป็น `null` — fail-open ทุกจุดที่อ่านค่านี้
+   */
+  @Column({ name: "company_id", type: "int", nullable: true })
+  companyId!: number | null;
+
+  @ManyToOne(() => Company, { nullable: true })
+  @JoinColumn({ name: "company_id" })
+  company?: Company;
 
   @Column({ name: "is_active", default: true })
   isActive!: boolean;
