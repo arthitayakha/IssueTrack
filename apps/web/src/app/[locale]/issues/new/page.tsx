@@ -33,7 +33,7 @@ import { useNotification } from "@/components/notification";
 import {
   createIssue,
   fetchCategories,
-  fetchMyCompanyApps,
+  fetchVisibleApps,
   fetchStatuses,
   uploadAttachment,
   type App,
@@ -77,9 +77,10 @@ export default function ReportIssuePage() {
 
   useEffect(() => {
     let cancelled = false;
-    // `?mine=1` — dropdown แอปมีเฉพาะแอปที่บริษัทของผู้รายงานใช้จริง
-    // (ผู้ใช้ไม่มีบริษัท → เซิร์ฟเวอร์คืนทุกแอปตามเดิม = fail-open)
-    Promise.allSettled([fetchStatuses(), fetchCategories(), fetchMyCompanyApps()])
+    // `?visible=1` — dropdown แอปโชว์**ทุกแอป** ไม่ว่าจะผูกกับบริษัทไหนหรือไม่ผูก
+    // เลยก็ตาม (ข้อสรุปจากพี่: เชื่อมหรือไม่เชื่อม ลูกค้าก็เห็นแอปทุกตัว);
+    // เซิร์ฟเวอร์กรองเหลือเฉพาะแอปที่เปิดใช้งาน (`is_visible`) ให้
+    Promise.allSettled([fetchStatuses(), fetchCategories(), fetchVisibleApps()])
       .then(([sts, cats, appsRes]) => {
         if (cancelled) return;
         const stsData = sts.status === "fulfilled" ? sts.value.data : [];
@@ -289,8 +290,8 @@ export default function ReportIssuePage() {
                       </MenuItem>
                     ))}
                   </TextField>
-                  {/* แอปถูกกรองตามบริษัทของผู้รายงาน — ถ้าบริษัทยังไม่ผูกแอปเลย
-                      dropdown จะว่างและกดส่งไม่ได้ (แอปเป็นช่องบังคับ) จึงต้องบอกให้รู้ */}
+                  {/* เซิร์ฟเวอร์คืนเฉพาะแอปที่เปิดใช้งาน — ถ้าไม่มีแอปที่เปิดใช้
+                      เลย dropdown จะว่างและกดส่งไม่ได้ (แอปเป็นช่องบังคับ) จึงต้องบอกให้รู้ */}
                   {visibleApps.length === 0 && (
                     <Alert severity="info" sx={{ mt: 1 }}>
                       {t("noCompanyApps")}

@@ -70,8 +70,9 @@ export class AppCompany {
    * **ชั่วโมง MA** ที่ตกลงให้คู่นี้ (เช่น "POS ให้ลูกค้า 60 ชม.") — `null` =
    * ยังไม่กำหนด/ยังไม่ได้กรอก (ตั้งใจแยกจาก `0` ซึ่งหมายถึงตกลงให้ 0 ชม.)
    *
-   * รอบนี้เก็บไว้เป็น **เพดานที่กรอกได้ก่อน** — การหักเวลาจริง
-   * (`issues.actual_fix_duration` ของงานที่ปิดแล้ว) ยังไม่ทำ รอตัดสินใจรอบถัดไป
+   * ฝั่งเว็บหักจาก `issues.actual_fix_duration` แล้ว (ดู `MA_DEDUCTION_PAUSED`
+   * ใน `reports-api.ts`) — นับเฉพาะงาน type `feature`/`requirement`
+   * (`bug` กับ NULL ไม่หัก) ระดับ**แอป** (ทุกแถวของแอปเดียวกันหักค่าเดียวกัน)
    */
   @Column({ name: "ma_hours", type: "int", nullable: true })
   maHours!: number | null;

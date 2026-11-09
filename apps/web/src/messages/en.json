@@ -287,6 +287,11 @@
     "created": "Created",
     "actions": "Actions",
     "id": "ID",
+    "taskType": {
+      "bug": "Bug",
+      "feature": "Feature",
+      "requirement": "Requirement"
+    },
     "detail": {
       "app": "App",
       "category": "Category",
@@ -294,6 +299,8 @@
       "reporter": "Reporter",
       "assignee": "Assignee",
       "priority": "Priority",
+      "taskType": "Task type",
+      "taskTypeUnset": "Not set",
       "labels": "Labels",
       "description": "Description",
       "descriptionPlaceholder": "Add a detailed description...",
@@ -646,6 +653,8 @@
     "createdAtOnSave": "Shown after saving",
     "notSetYet": "Not set",
     "noRows": "No system data yet",
+    "noMatch": "No data matches the filters",
+    "searchPlaceholder": "Search app or company...",
     "expiryNone": "No expiry",
     "expiryNormal": "Valid",
     "expiryExpiringSoon": "Expiring soon",
@@ -860,6 +869,15 @@
     "automation": "Automation",
     "notifications": "Notifications",
     "menu": "Menu"
+  },
+  "Filters": {
+    "title": "Filters",
+    "selectedCount": "{count} selected",
+    "clearAll": "Clear all",
+    "search": "Search...",
+    "noResults": "No results",
+    "viewAll": "View all…",
+    "showLess": "Show less"
   },
   "pagination": {
     "showing": "Showing {start}-{end} of {total}"

@@ -31,7 +31,18 @@ function parseFilters(query: Record<string, string | undefined>): ReportIssueFil
     priorityIds: parseIdList(query.priorityIds),
     appIds: parseIdList(query.appIds),
     companyIds: parseIdList(query.companyIds),
+    taskTypes: parseTaskTypes(query.taskTypes),
   };
+}
+
+/** `?taskTypes=feature,requirement` → whitelist the 3 known values, drop the rest. */
+const TASK_TYPES = new Set(["bug", "feature", "requirement"]);
+function parseTaskTypes(value?: string): string[] | undefined {
+  const list = (value ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => TASK_TYPES.has(s));
+  return list.length ? list : undefined;
 }
 
 /**

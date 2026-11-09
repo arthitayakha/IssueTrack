@@ -288,6 +288,11 @@
     "created": "สร้างเมื่อ",
     "actions": "จัดการ",
     "id": "ID",
+    "taskType": {
+      "bug": "บั๊ก",
+      "feature": "เพิ่มฟีเจอร์",
+      "requirement": "Requirement"
+    },
     "detail": {
       "app": "แอป",
       "category": "หมวดหมู่",
@@ -295,6 +300,8 @@
       "reporter": "ผู้แจ้ง",
       "assignee": "ผู้รับผิดชอบ",
       "priority": "ความสำคัญ",
+      "taskType": "ประเภทงาน",
+      "taskTypeUnset": "ยังไม่ระบุ",
       "labels": "ป้ายกำกับ",
       "description": "คำอธิบาย",
       "descriptionPlaceholder": "เพิ่มคำอธิบายโดยละเอียด...",
@@ -607,6 +614,8 @@
     "createdAtOnSave": "จะแสดงหลังบันทึก",
     "notSetYet": "ยังไม่กรอก",
     "noRows": "ยังไม่มีข้อมูลระบบ",
+    "noMatch": "ไม่พบข้อมูลที่ตรงกับตัวกรอง",
+    "searchPlaceholder": "ค้นหาชื่อแอปหรือบริษัท...",
     "expiryNone": "ไม่กำหนด",
     "expiryNormal": "ปกติ",
     "expiryExpiringSoon": "ใกล้หมดอายุ",
@@ -826,6 +835,15 @@
     "automation": "กฎอัตโนมัติ",
     "notifications": "การแจ้งเตือน",
     "menu": "เมนู"
+  },
+  "Filters": {
+    "title": "ตัวกรอง",
+    "selectedCount": "{count} รายการ",
+    "clearAll": "ล้างทั้งหมด",
+    "search": "ค้นหา...",
+    "noResults": "ไม่พบรายการ",
+    "viewAll": "ดูทั้งหมด…",
+    "showLess": "ย่อลง"
   },
   "pagination": {
     "showing": "แสดง {start}-{end} จาก {total}"

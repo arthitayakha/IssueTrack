@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { PaginatedResponse } from "@kanban/shared";
+import { PaginatedResponse, type IssueTaskType } from "@kanban/shared";
 import { apiFetch } from "./api";
 import { useAuthStore } from "./auth-store";
 
@@ -81,6 +81,11 @@ export interface BoardIssue {
   attachmentCount: number;
   trackedDuration?: number;
   actualFixDuration?: number | null;
+  /**
+   * ประเภทงาน (`bug` | `feature` | `requirement` | null = ยังไม่ระบุ) —
+   * แอดมิน/โปรแกรมเมอร์ตั้งที่แผงรายละเอียดการ์ด ขับกฎหักชั่วโมง MA
+   */
+  taskType?: IssueTaskType | null;
   /** An active start-timer rule covers this card's status (computed). */
   timerRuleApplies?: boolean;
   /** "Actual fix time" field states: editable now / shown at least once. */
@@ -271,6 +276,8 @@ export async function updateIssue(
     labelIds?: number[];
     analysisCause?: string | null;
     resolution?: string | null;
+    /** ประเภทงาน — null = ล้างกลับเป็น "ยังไม่ระบุ" (ไม่หัก MA) */
+    taskType?: IssueTaskType | null;
   },
 ): Promise<BoardIssue> {
   return apiFetch<BoardIssue>(`/issues/${id}`, {
@@ -509,16 +516,19 @@ export async function fetchApps(): Promise<PaginatedResponse<App>> {
 }
 
 /**
- * **เฉพาะแอปของบริษัทผู้เรียก** — `?mine=1` ให้เซิร์ฟเวอร์กรองผ่าน
- * `users.company_id` → `app_companies` ใช้ที่ฟอร์มรายงานปัญหา (`/issues/new`)
- * เพื่อให้ dropdown เหลือเฉพาะแอปที่บริษัทของผู้รายงานใช้จริง
+ * **รายการแอปสำหรับฟอร์มรายงานปัญหา** (`/issues/new`) — `?visible=1` ให้
+ * เซิร์ฟเวอร์คืนเฉพาะแอปที่เปิดใช้งาน (`is_visible = true`) **ไม่ว่าจะผูกกับ
+ * บริษัทของผู้เรียกหรือไม่ก็ตาม** (ข้อสรุปจากพี่: เชื่อมหรือไม่เชื่อม ลูกค้าก็
+ * เห็นแอปทุกตัว — จึงไม่มีการกรองด้วย `users.company_id` และไม่มี guard
+ * ตอนสร้างงานอีกแล้ว)
  *
- * Fail-open ที่ฝั่งเซิร์ฟเวอร์: ผู้เรียกไม่มีบริษัท (แอดมิน/โปรแกรมเมอร์)
- * หรือไม่ได้ส่ง flag → ได้ทุกแอปเหมือน `fetchApps()` เดิม
+ * แอปที่ปิดสถานะใน /master-data ถูกฝั่งเซิร์ฟเวอร์กรองตอน query แล้ว (หน้านี้
+ * ยังกรอง `a.isVisible` ซ้ำก็ได้ ไร้พิษภัย) ส่วนการไม่ส่ง flag เลย = ทุกแอป
+ * รวมที่ปิดสถานะ (เส้นทาง /master-data, /reports, ชิปบนบอร์ด ใช้ `fetchApps()`)
  */
-export async function fetchMyCompanyApps(): Promise<PaginatedResponse<App>> {
+export async function fetchVisibleApps(): Promise<PaginatedResponse<App>> {
   return apiFetch<PaginatedResponse<App>>(
-    "/apps?page=1&limit=100&mine=1",
+    "/apps?page=1&limit=100&visible=1",
     {},
     getToken(),
   );

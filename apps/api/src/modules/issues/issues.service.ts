@@ -14,7 +14,6 @@ import { User } from "../auth/entities/user.entity";
 import { IssueStatus } from "../issue-statuses/entities/issue-status.entity";
 import { Category } from "../categories/entities/category.entity";
 import { Label } from "../labels/entities/label.entity";
-import { AppCompany } from "../apps/entities/app-company.entity";
 import { WorkSessionsService } from "../work-sessions/work-sessions.service";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
@@ -33,6 +32,14 @@ const ISSUE_DETAIL_RELATIONS = [
   "programmer",
   "customer",
 ];
+
+/**
+ * ค่าที่ `issues.task_type` รับได้ — whitelist ตอนรับจาก client (400 ถ้าอื่น)
+ * `null` = ล้างค่ากลับเป็น "ยังไม่ระบุ" (ไม่หัก MA) ซึ่ง `update()` รับผ่าน
+ * เงื่อนไข `!== undefined` ด้านล่าง ไม่ต้องอยู่ในลิสต์นี้
+ */
+const TASK_TYPES = ["bug", "feature", "requirement"] as const;
+type TaskType = (typeof TASK_TYPES)[number];
 
 /** Work-session aggregates attached per page by `?withTimeline=1`. */
 interface WorkTimeline {
@@ -98,12 +105,6 @@ export class IssuesService {
     private readonly permissions: PermissionsService,
     private readonly rulesEngine: RulesEngineService,
     private readonly notifications: NotificationsService,
-    // **Last on purpose**: `issues.service.spec.ts` builds this service with one
-    // positional stub per dependency, so appending keeps every existing slot in
-    // place. Used by the create-time guard "the picked app belongs to the
-    // reporter's company" (`app_companies`, see `create()`)
-    @InjectRepository(AppCompany)
-    private readonly appCompanies: Repository<AppCompany>,
   ) {}
 
   async findAll(
@@ -173,10 +174,11 @@ export class IssuesService {
      *
      * Still an **app-level** filter, not a user-level one: it narrows cards by
      * their app's linked companies (the web side does the same in
-     * `boards/page.tsx` → `companyAppIds`). The user ↔ company link does exist
-     * now (`users.company_id`, migration 1816) but it drives the *report* form's
-     * app picker (`GET /apps?mine=1`) and the create-time guard instead of this
-     * query — a customer's own tickets are scoped by assignee/reporter above.
+     * `boards/page.tsx` → `companyAppIds`). `users.company_id` (migration 1816)
+     * is deliberately **not** wired to any filter: the report form's picker shows
+     * every app regardless of company (senior's call), so nothing here keys off
+     * who the reporter is — a customer's own tickets are scoped by the
+     * assignee/reporter filters above.
      */
     if (filters.companyIds && filters.companyIds.length > 0) {
       qb.andWhere(
@@ -383,7 +385,6 @@ export class IssuesService {
       labelId?: number;
     },
     actor?: ActorInfo | null,
-    actorCompanyId?: number | null,
   ) {
     const status = await this.issueStatuses.findOne({
       where: { id: data.statusId },
@@ -392,23 +393,6 @@ export class IssuesService {
       throw new NotFoundException(`Status ${data.statusId} not found`);
     }
 
-    /**
-     * **ตาข่ายของเซิร์ฟเวอร์สำหรับ "แอปต้องเป็นของบริษัทผู้รายงาน"** —
-     * ฟอร์มรายงานปัญหากรอง dropdown ให้เหลือเฉพาะแอปของบริษัทผู้รายงานอยู่แล้ว
-     * (`GET /apps?mine=1`) จุดนี้กันคนที่ยิง `POST /issues` ตรง ๆ ข้ามบริษัท
-     * Fail-open เมื่อผู้รายงานไม่มีบริษัท (`users.company_id` null — แอดมิน/
-     * โปรแกรมเมอร์/ลูกค้าที่ยังไม่ถูกผูก) หรือไม่ได้ส่ง `appId` มาเลย
-     */
-    if (actorCompanyId && data.appId) {
-      const link = await this.appCompanies.findOne({
-        where: { appId: data.appId, companyId: actorCompanyId },
-      });
-      if (!link) {
-        throw new BadRequestException(
-          "The selected app does not belong to your company",
-        );
-      }
-    }
     const issueNumber = await this.generateIssueNumber();
     const resolvedCustomerId =
       actor?.actorRole === "customer"
@@ -510,12 +494,23 @@ export class IssuesService {
       labelIds?: number[];
       analysisCause?: string | null;
       resolution?: string | null;
+      taskType?: TaskType | null;
     },
     actor?: ActorInfo | null,
   ) {
     const issue = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
+    }
+    // validate before any write — unknown values are a client bug, not data
+    if (
+      data.taskType !== undefined &&
+      data.taskType !== null &&
+      !TASK_TYPES.includes(data.taskType)
+    ) {
+      throw new BadRequestException(
+        `taskType must be one of: ${TASK_TYPES.join(", ")} (or null to clear)`,
+      );
     }
     const previous = {
       title: issue.title,
@@ -574,6 +569,14 @@ export class IssuesService {
         : [];
       await this.issues.save({ id, labels } as Issue);
       changes.push("labels");
+    }
+
+    if (data.taskType !== undefined) {
+      const next = data.taskType ?? null;
+      if (next !== (issue.taskType ?? null)) {
+        updates.taskType = next;
+        changes.push("taskType");
+      }
     }
 
     if (changes.length === 0) return this.toResponse(issue);
@@ -1147,6 +1150,7 @@ export class IssuesService {
       attachmentCount: issue.attachments?.length ?? 0,
       trackedDuration: issue.trackedDuration,
       actualFixDuration: issue.actualFixDuration,
+      taskType: issue.taskType ?? null,
       timeEntryUnlocked: issue.timeEntryUnlocked ?? false,
       timeEntryEverGranted: issue.timeEntryEverGranted ?? false,
       timerRuleApplies: covered(gates.timer),

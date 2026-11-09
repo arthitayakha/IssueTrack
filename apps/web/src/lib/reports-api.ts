@@ -1,5 +1,6 @@
 "use client";
 
+import type { IssueTaskType } from "@kanban/shared";
 import { apiFetch } from "./api";
 import { getToken } from "./rules-api";
 import { fetchCategories, fetchPriorities, fetchStatuses } from "./board-api";
@@ -46,6 +47,13 @@ export interface ReportFilters {
   priorityIds: number[];
   appIds: number[];
   companyIds: number[];
+  /**
+   * ประเภทงาน (`IssueTaskType[]`) — ใช้ตอนคำนวณ "ใช้ไป" ของ MA
+   * (`fetchAppUsageAllTime` ส่ง `["feature","requirement"]` เพื่อไม่นับเวลา
+   * ของ bug/NULL เข้าการหัก). ตัวกรองของหน้ารายงานไม่ได้ตั้งค่านี้ →
+   * จอรายงานเห็นเวลาครบทุก type เสมอ
+   */
+  taskTypes?: IssueTaskType[];
 }
 
 export const EMPTY_FILTERS: ReportFilters = {
@@ -192,8 +200,9 @@ export interface AppContract {
  * only become known once `fetchAppUsageAllTime()` resolves — the cells read
  * them from the `usage` prop at render time instead.
  *
- * MA ยัง **ไม่ถูกหัก** (`MA_DEDUCTION_PAUSED`) → ค่าสองตัวนั้นตอนนี้คือ 0 กับ
- * `maHours` เต็มก้อนเสมอ; `maHours == null` ยังแปลว่า "ยังไม่กรอก" เหมือนเดิม
+ * MA **ถูกหักแล้ว** (`MA_DEDUCTION_PAUSED = false`) — แต่ "ใช้ไป" นับเฉพาะงาน
+ * type `feature`/`requirement` (bug กับ NULL ไม่หัก); `maHours == null` ยัง
+ * แปลว่า "ยังไม่กรอก" เหมือนเดิม
  */
 export interface CompanyRow {
   appId: number;
@@ -465,6 +474,7 @@ function filterParams(f: ReportFilters): URLSearchParams {
   if (f.priorityIds.length) p.set("priorityIds", f.priorityIds.join(","));
   if (f.appIds.length) p.set("appIds", f.appIds.join(","));
   if (f.companyIds.length) p.set("companyIds", f.companyIds.join(","));
+  if (f.taskTypes?.length) p.set("taskTypes", f.taskTypes.join(","));
   return p;
 }
 
@@ -638,39 +648,43 @@ export async function loadFilterOptions(): Promise<FilterOptions> {
 }
 
 /**
- * **การหักชั่วโมง MA — ยังไม่เปิด** (`true` = ยังไม่หักสักบาท)
+ * **การหักชั่วโมง MA — เปิดแล้ว** (`false` = หักจริงตามกฎด้านล่าง)
  *
- * ตาม migration `1811` กับ `app-company.entity.ts`: `app_companies.ma_hours`
- * เป็นแค่ "เพดานที่กรอกได้ก่อน" ส่วนการหักเวลาจริง (`issues.actual_fix_duration`
- * ของงานที่ปิดแล้ว) **รอตัดสินใจรอบถัดไป** — แต่โค้ดฝั่งเว็บเดินหน้าหักไปแล้ว
- * งาน test งานเดียวที่กรอกเวลาจึงหัก MA ทุกแถวของแอปนั้น (ทุกบริษัทที่ผูกแอปเดียว)
+ * กติกาที่เคาะไว้ (ตามตาราง "กฎการหักชั่วโมง MA"):
+ * - `feature` / `requirement` → **หัก** (เอา `actual_fix_duration` เข้า "ใช้ไป")
+ * - `bug` → **ไม่หัก** / ยังไม่ระบุ type (`NULL`, รวมงานเก่า) → **ไม่หัก**
+ * - หัก **ตอนกรอกเวลาจริง** — ไม่ต้องรอสถานะปิดงาน: ตัวเลขเป็นผลรวมที่
+ *   อ่านตอนโหลด พอกรอกเวลาปุ๊บ รอบโหลดถัดไป "คงเหลือ" ลดเองทันที
  *
- * `true` → `fetchAppUsageAllTime()` คืน `Map` ว่าง**ทันที ไม่ยิง API** →
- * "ชั่วโมงที่ใช้ทั้งหมด" = 0 และ "คงเหลือ" = ชั่วโมง MA เต็มก้อน ทั้ง `/reports`
- * (จอ + CSV + PDF เพราะทุกอย่างอ่านจากตัวเลขนี้) และ `/systems`
+ * คอลัมน์ "ชั่วโมงกรอก" ในรายงาน (จอ + CSV + PDF) **ยังโชว์เวลาครบทุก type**
+ * — การหักมีผลเฉพาะ "ใช้ไป / คงเหลือ" ของ MA เท่านั้น
  *
- * **เปิดกลับ = เปลี่ยนเป็น `false` ตรงนี้จุดเดียว** — แล้วอย่าลืมกำหนดกติกา
- * ที่ยังค้าง: หักเฉพาะงานในช่วงสัญญาของแถวนั้น? เฉพาะสถานะปิดแล้ว? ระบุ
- * บริษัทเป็นรายงาน (`issues` ยังไม่มี `company_id`)?
+ * **ปิดกลับ = เปลี่ยนเป็น `true` ตรงนี้จุดเดียว** (แล้ว `fetchAppUsageAllTime()`
+ * จะคืน Map ว่างทันที — คงเหลือกลับเป็น MA เต็มก้อน)
+ *
+ * ยังคงไม่กรองช่วงสัญญา / ไม่กรองเฉพาะงานปิดแล้ว (all-time ต่อแอป เหมือน
+ * เดิม) — ถ้าจะเพิ่มเงื่อนไขพวกนั้นค่อยว่ากันรอบหน้า
  */
-export const MA_DEDUCTION_PAUSED = true;
+export const MA_DEDUCTION_PAUSED = false;
 
 /**
- * "ใช้ไป" ต่อแอป **แบบไม่กรองอะไรเลย** (`EMPTY_FILTERS`) — ตัวส่วนของสูตร
- * คงเหลือ = MA − ใช้ไป ในมุมมอง "ตามบริษัท"
+ * "ใช้ไป" ต่อแอป — ตัวส่วนของสูตร คงเหลือ = MA − ใช้ไป ในมุมมอง "ตามบริษัท"
  *
- * ต้องเป็น all-time เพราะ `hoursEntered` ของแถวบนจอ **ผ่านตัวกรองวันที่/
- * ค้นหา** อยู่แล้ว — ถ้าเอาตัวนั้นไปลบ MA พอผู้ใช้เลือกช่วงวันที่ ตัวเลข
- * คงเหลือจะขยับทั้งที่สัญญาไม่ได้เปลี่ยน (คนละค่ากับ `/systems` ด้วย)
- *
- * ตอน `MA_DEDUCTION_PAUSED = true` → คืน map ว่างทันที (ดูเหตุผลที่ const นั้น)
+ * - **all-time** (`EMPTY_FILTERS`) เพราะ `hoursEntered` ของแถวบนจอ **ผ่านตัว
+ *   กรองวันที่/ค้นหา** อยู่แล้ว — ถ้าเอาตัวนั้นไปลบ MA พอผู้ใช้เลือกช่วงวันที่
+ *   ตัวเลขคงเหลือจะขยับทั้งที่สัญญาไม่ได้เปลี่ยน (คนละค่ากับ `/systems` ด้วย)
+ * - **`taskTypes: ["feature","requirement"]`** — ไม่นับเวลาของงาน bug และ
+ *   งานที่ยังไม่ระบุ type (NULL) เข้าการหัก (ดูกติกาที่ `MA_DEDUCTION_PAUSED`)
  */
 export async function fetchAppUsageAllTime(): Promise<Map<number, number>> {
-  // ยังไม่หัก → ค่าที่จะได้จาก `/reports/summary` ไม่มีทางถูกใช้อยู่แล้ว
+  // ปิดหัก → ค่าที่จะได้จาก `/reports/summary` ไม่มีทางถูกใช้อยู่แล้ว
   // จึงไม่ยิง request เปล่า ๆ ให้สองหน้าเห็น `ready` พร้อมตัวเลข 0/MA เต็ม
   if (MA_DEDUCTION_PAUSED) return new Map<number, number>();
 
-  const rows = await fetchSummaryRows("app", EMPTY_FILTERS);
+  const rows = await fetchSummaryRows("app", {
+    ...EMPTY_FILTERS,
+    taskTypes: ["feature", "requirement"],
+  });
   const used = new Map<number, number>();
   for (const row of rows) {
     if (row.isTotal || row.appId == null) continue;
@@ -709,8 +723,8 @@ export function buildCompanyRows(
    * `wantedCompanies` ด้านล่าง; แอปที่ยังไม่ผูกบริษัท = แถว `[null]` ที่ถูก
    * ตัดออกเมื่อมี filter บริษัท บรรทัดถัดไป)
    *
-   * ยัง**ไม่**ผูก "คนกับบริษัท" — ตาราง `users` ยังไม่มี `company_id`
-   * (ประเด็น company ↔ user ยังค้างตัดสินใจอยู่)
+   * `users.company_id` (migration 1816) มีค่าแล้วแต่**ไม่ได้ถูกใช้กรองอะไร** —
+   * มุมนี้จึงยังเดินตามเส้นงาน → แอป → บริษัท แต่เพียงอย่างเดียว
    */
   const q = filters.search.trim().toLocaleLowerCase();
   const wantedCompanies = new Set(filters.companyIds);

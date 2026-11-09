@@ -34,6 +34,12 @@ export interface ReportIssueFilters {
   priorityIds?: number[];
   appIds?: number[];
   companyIds?: number[];
+  /**
+   * ประเภทงาน (`issues.task_type`) — ใช้ตอนคำนวณ "ใช้ไป" ของชั่วโมง MA:
+   * ส่ง `["feature","requirement"]` เพื่อไม่นับเวลาของงาน bug (และ NULL)
+   * เข้าการหัก MA. รายงานจออื่น ๆ ไม่ส่ง filter นี้ → เห็นเวลาครบทุก type
+   */
+  taskTypes?: string[];
 }
 
 /** Median minutes per issue (1 decimal); null = no task in the group has a recorded time. */
@@ -230,6 +236,14 @@ export class ReportsService {
         "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
         { companyIds: f.companyIds },
       );
+    }
+    /**
+     * ประเภทงาน — whitelist ฝั่ง controller กรอกมาเฉพาะ 3 ค่าแล้ว; NULL
+     * (ยังไม่ระบุ) ไม่เข้า IN เลยจึงไม่ถูกนับ — ตรงกับกฎหัก MA ที่ว่า
+     * "ยังไม่ระบุ = ยังไม่หัก"
+     */
+    if (f.taskTypes?.length) {
+      qb.andWhere("issue.task_type IN (:...taskTypes)", { taskTypes: f.taskTypes });
     }
   }
 

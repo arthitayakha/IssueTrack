@@ -250,9 +250,9 @@ function ReportsScreen() {
    * (ตารางใช้ตัวกรองของผู้ใช้ ส่วนตัวเลขนี้ต้องคงที่เสมอ — ดูเหตุผลใน
    * `fetchAppUsageAllTime`) · `status` แยกโหลด/ผิดพลาดให้ตารางโชว์ `—` ได้ถูก
    *
-   * **MA ยังไม่ถูกหัก** (`MA_DEDUCTION_PAUSED` ใน `reports-api.ts`) → ฟังก์ชัน
-   * นั้นคืน map ว่างทันทีไม่ยิง request → "ใช้ไป" = 0 กับ "คงเหลือ" = ชั่วโมง MA
-   * เต็มก้อนทุกแถว (จอ + CSV + PDF อ่านจากตัวเลขนี้ชุดเดียว)
+   * **MA ถูกหักแล้ว** (`MA_DEDUCTION_PAUSED = false` ใน `reports-api.ts`) →
+   * "ใช้ไป" = ผลรวมเวลาจริงเฉพาะงาน type feature/requirement (bug/NULL ไม่หัก)
+   * (จอ + CSV + PDF อ่านจากตัวเลขนี้ชุดเดียว)
    */
   const [usage, setUsage] = useState<{
     status: "loading" | "ready" | "error";
@@ -294,8 +294,8 @@ function ReportsScreen() {
   }, [reloadKey]);
 
   // "ใช้ไป" = ของ view ตามบริษัท เท่านั้น (view ตามแอปถอดคอลัมน์คงเหลือไปแล้ว)
-  // ตอน `MA_DEDUCTION_PAUSED` → `fetchAppUsageAllTime()` คืน map ว่างทันที
-  // ไม่มี request → สอง .then/.catch ล่างนี้ยังอยู่ครบ เผื่อตอนเปิดหักกลับ
+  // (`MA_DEDUCTION_PAUSED = false` → ยิง request จริง; สอง .then/.catch ล่างนี้
+  // ยังอยู่ครบ เผื่อตอนปิดหักกลับเป็น true ที่ฟังก์ชันจะคืน map ว่างทันที)
   useEffect(() => {
     if (view !== "company") return;
     let cancelled = false;
@@ -565,8 +565,8 @@ function ReportsScreen() {
        * - คงเหลือ ใช้ "ใช้ไป" all-time เหมือนจอ; ยังโหลด/พัง → ""
        *   (ห้ามโชว์ MA เต็มก้อนเพราะยังไม่รู้ค่าจริง — ตรงกับ cell)
        *
-       * ตอน `MA_DEDUCTION_PAUSED` → ใช้ไป = 0 / คงเหลือ = `maHours` เต็ม
-       * (ยังไม่กรอก MA → "" เหมือนเดิม)
+       * (`MA_DEDUCTION_PAUSED = false` → "ใช้ไป" มาจริง นับเฉพาะ type
+       * feature/requirement; ยังไม่กรอก MA → "" เหมือนเดิม)
        */
       const companiesOf = (appId: number | null) =>
         appId == null

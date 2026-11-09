@@ -44,8 +44,6 @@ import {
   useTheme,
   type Theme,
   Checkbox,
-  FormControlLabel,
-  InputAdornment,
   Popover,
   ListItemButton,
   List,
@@ -119,6 +117,7 @@ import { useRouter } from "@/i18n/navigation";
 import { usePermissions } from "@/lib/permissions";
 import { useAuthStore } from "@/lib/auth-store";
 import { isApiError } from "@/lib/api";
+import type { IssueTaskType } from "@kanban/shared";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
@@ -171,6 +170,7 @@ import { fetchCompanies, type Company } from "@/lib/apps-api";
 import { resolveStatusColor } from "@/lib/status-color";
 import { Pagination } from "@/components/pagination";
 import AttachmentPreviewDialog from "@/components/attachment-preview-dialog";
+import { FilterPanel, type FilterOption, type FilterSectionData } from "@/components/filter-panel";
 
 function getErrorMessage(e: unknown, fallback: string): string | null {
   if (isApiError(e, 403)) return null;
@@ -310,6 +310,7 @@ const FIELD_LABELS: Record<string, string> = {
   category: "หมวดหมู่",
   label: "ป้าย",
   labels: "ป้าย",
+  taskType: "ประเภทงาน",
 };
 
 function formatActivityAction(log: ActivityLog): string {
@@ -1391,11 +1392,14 @@ function IssueDetailDialog({
   const [draftPriorityId, setDraftPriorityId] = useState<number | null>(null);
   const [draftProgrammerId, setDraftProgrammerId] = useState<number | null>(null);
   const [draftLabelIds, setDraftLabelIds] = useState<number[]>([]);
+  /** ประเภทงาน draft (null = ยังไม่ระบุ) — บันทึกพร้อมกันตอนกด "บันทึก" */
+  const [draftTaskType, setDraftTaskType] = useState<IssueTaskType | null>(null);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [users, setUsers] = useState<BoardMember[]>([]);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [priorityAnchor, setPriorityAnchor] = useState<HTMLElement | null>(null);
+  const [taskTypeAnchor, setTaskTypeAnchor] = useState<HTMLElement | null>(null);
   const [labelAnchor, setLabelAnchor] = useState<HTMLElement | null>(null);
   const [memberAnchor, setMemberAnchor] = useState<HTMLElement | null>(null);
   const [memberSearch, setMemberSearch] = useState("");
@@ -1456,6 +1460,7 @@ function IssueDetailDialog({
     setDraftPriorityId(issue?.priorityId ?? null);
     setDraftProgrammerId(issue?.programmerId ?? null);
     setDraftLabelIds(issue?.labelIds ?? []);
+    setDraftTaskType(issue?.taskType ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issue?.id]);
 
@@ -1623,6 +1628,12 @@ function IssueDetailDialog({
     setDraftPriorityId(priorityId);
   };
 
+  /** เลือก/ล้างประเภทงาน — null = กลับเป็น "ยังไม่ระบุ" (ไม่หัก MA) */
+  const handleSetTaskType = (taskType: IssueTaskType | null) => {
+    setTaskTypeAnchor(null);
+    setDraftTaskType(taskType);
+  };
+
   const handleAssign = (programmerId: number | null) => {
     setMemberAnchor(null);
     setMemberSearch("");
@@ -1662,12 +1673,14 @@ function IssueDetailDialog({
   const hasDraftChanges =
     (localIssue?.priorityId ?? null) !== draftPriorityId ||
     (localIssue?.programmerId ?? null) !== draftProgrammerId ||
+    (localIssue?.taskType ?? null) !== draftTaskType ||
     !sortedEqual(localIssue?.labelIds ?? [], draftLabelIds);
 
   const resetDrafts = () => {
     setDraftPriorityId(localIssue?.priorityId ?? null);
     setDraftProgrammerId(localIssue?.programmerId ?? null);
     setDraftLabelIds(localIssue?.labelIds ?? []);
+    setDraftTaskType(localIssue?.taskType ?? null);
   };
 
   const handleCancel = () => {
@@ -1679,12 +1692,15 @@ function IssueDetailDialog({
     if (!localIssue || saving) return;
     setSaving(true);
     try {
-      const data: { priorityId?: number | null; labelIds?: number[] } = {};
+      const data: { priorityId?: number | null; labelIds?: number[]; taskType?: IssueTaskType | null } = {};
       if ((localIssue.priorityId ?? null) !== draftPriorityId) {
         data.priorityId = draftPriorityId;
       }
       if (!sortedEqual(localIssue.labelIds ?? [], draftLabelIds)) {
         data.labelIds = draftLabelIds;
+      }
+      if ((localIssue.taskType ?? null) !== draftTaskType) {
+        data.taskType = draftTaskType;
       }
       if (Object.keys(data).length > 0) {
         await updateIssue(localIssue.id, data);
@@ -1746,6 +1762,12 @@ function IssueDetailDialog({
   const categoryName = current ? getCategoryLabel(current) : "—";
   const draftPriority = priorities.find((p) => p.id === draftPriorityId) ?? null;
   const draftPriorityName = draftPriority?.name ?? null;
+  // Viewers never load that list (the fetch above is gated by canSetPriority),
+  // so the read-only branch must fall back to the name the API already sent —
+  // otherwise every card a customer opens shows "—" while the table column
+  // right next to it shows the real priority. Only the read-only branch uses
+  // this: the editable one must keep the draft alone so "ล้าง" really clears it.
+  const displayPriorityName = draftPriorityName ?? current?.priorityName ?? null;
   const programmers = users.filter((u) => u.isActive && u.roleName === "programmer");
   const member = draftProgrammerId
     ? programmers.find((u) => Number(u.id) === draftProgrammerId) ?? null
@@ -1929,9 +1951,46 @@ function IssueDetailDialog({
                   </Typography>
                   <ExpandMoreIcon sx={{ fontSize: 16, color: "text.secondary" }} />
                 </Box>
-              ) : draftPriorityName ? (
+              ) : displayPriorityName ? (
                 <Typography variant="body2" sx={{ mt: 0.5 }}>
-                  {priorityLabel(t, draftPriorityName)}
+                  {priorityLabel(t, displayPriorityName)}
+                </Typography>
+              ) : (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>—</Typography>
+              )}
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {t("detail.taskType")}
+              </Typography>
+              {canEditIssue ? (
+                <Box
+                  onClick={saving ? undefined : (e) => setTaskTypeAnchor(e.currentTarget)}
+                  sx={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 0.5,
+                    mt: 0.5,
+                    px: 1,
+                    py: 0.25,
+                    border: "1px solid",
+                    borderColor: "divider",
+                    borderRadius: 1.5,
+                    cursor: saving ? "default" : "pointer",
+                    "&:hover": { bgcolor: "action.hover" },
+                  }}
+                >
+                  <Typography
+                    variant="body2"
+                    color={draftTaskType ? "text.primary" : "text.secondary"}
+                  >
+                    {draftTaskType ? t(`taskType.${draftTaskType}`) : t("detail.taskTypeUnset")}
+                  </Typography>
+                  <ExpandMoreIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+                </Box>
+              ) : current?.taskType ? (
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  {t(`taskType.${current.taskType}`)}
                 </Typography>
               ) : (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>—</Typography>
@@ -2424,6 +2483,50 @@ function IssueDetailDialog({
               })}
             {draftPriorityId && (
               <Button size="small" disabled={saving} onClick={() => handleSetPriority(null)} sx={{ mt: 0.5 }}>
+                {t("detail.clear")}
+              </Button>
+            )}
+          </Popover>
+          <Popover
+            open={Boolean(taskTypeAnchor)}
+            anchorEl={taskTypeAnchor}
+            onClose={() => setTaskTypeAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+            transformOrigin={{ vertical: "top", horizontal: "left" }}
+            PaperProps={{ sx: { p: 0.5, minWidth: 180 } }}
+          >
+            {(["bug", "feature", "requirement"] as const).map((tt) => {
+              const selected = draftTaskType === tt;
+              return (
+                <Box
+                  key={tt}
+                  onClick={saving ? undefined : () => handleSetTaskType(tt)}
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    px: 1.5,
+                    py: 0.5,
+                    borderRadius: 1,
+                    cursor: saving ? "default" : "pointer",
+                    "&:hover": { bgcolor: "action.hover" },
+                  }}
+                >
+                  <Box sx={{ width: 16, display: "flex", alignItems: "center" }}>
+                    {selected && <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />}
+                  </Box>
+                  <Typography
+                    variant="body2"
+                    fontWeight={selected ? 600 : 400}
+                    color={selected ? "text.primary" : "text.secondary"}
+                  >
+                    {t(`taskType.${tt}`)}
+                  </Typography>
+                </Box>
+              );
+            })}
+            {draftTaskType && (
+              <Button size="small" disabled={saving} onClick={() => handleSetTaskType(null)} sx={{ mt: 0.5 }}>
                 {t("detail.clear")}
               </Button>
             )}
@@ -2966,191 +3069,7 @@ function getInitials(name: string): string {
     .join("");
 }
 
-type FilterOption = {
-  id: number | string;
-  label: string;
-  checked: boolean;
-  onToggle: () => void;
-  start?: ReactNode;
-};
-
-const FILTER_VISIBLE_ITEMS = 6;
-
-function FilterSection({
-  title,
-  icon,
-  count,
-  options,
-  initialOpen,
-}: {
-  title: string;
-  icon: ReactNode;
-  count: number;
-  options: FilterOption[];
-  initialOpen: boolean;
-}) {
-  const t = useTranslations("Boards");
-  const [open, setOpen] = useState(initialOpen);
-  const [query, setQuery] = useState("");
-  const [showAll, setShowAll] = useState(false);
-
-  const trimmed = query.trim().toLowerCase();
-  const filtered = trimmed
-    ? options.filter((option) => option.label.toLowerCase().includes(trimmed))
-    : options;
-  const canExpand = options.length > FILTER_VISIBLE_ITEMS;
-  const expanded = showAll || Boolean(trimmed);
-  const visible = canExpand && !expanded ? filtered.slice(0, FILTER_VISIBLE_ITEMS) : filtered;
-  const isEmpty = options.length === 0;
-
-  return (
-    <Box sx={{ borderBottom: "1px solid", borderColor: "divider", "&:last-of-type": { borderBottom: 0 } }}>
-      <Box sx={{ display: "flex", alignItems: "center", pr: 1.25 }}>
-        <Box
-          component="button"
-          type="button"
-          onClick={() => setOpen((value) => !value)}
-          aria-expanded={open}
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-            px: 2,
-            py: 1.25,
-            border: 0,
-            bgcolor: "transparent",
-            color: "text.primary",
-            textAlign: "left",
-            fontFamily: "inherit",
-            cursor: "pointer",
-            "&:hover": { bgcolor: "action.hover" },
-          }}
-        >
-          <ExpandMoreIcon
-            sx={{
-              fontSize: 20,
-              color: "text.secondary",
-              transition: "transform 0.15s ease",
-              transform: open ? "rotate(0deg)" : "rotate(-90deg)",
-            }}
-          />
-          <Box
-            sx={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 26,
-              height: 26,
-              flexShrink: 0,
-              borderRadius: "8px",
-              bgcolor: "action.selected",
-              color: "primary.main",
-            }}
-          >
-            {icon}
-          </Box>
-          <Typography variant="subtitle2" fontWeight={700} noWrap sx={{ flex: 1 }}>
-            {title}
-          </Typography>
-          {count > 0 && (
-            <Chip
-              size="small"
-              color="primary"
-              label={count}
-              sx={{ height: 20, minWidth: 20, fontSize: 11, fontWeight: 700 }}
-            />
-          )}
-        </Box>
-      </Box>
-
-      {open && (
-        <Box sx={{ px: 2, pb: 1.75 }}>
-          {canExpand && (
-            <TextField
-              fullWidth
-              size="small"
-              placeholder={t("filter.search")}
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setShowAll(false);
-              }}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon sx={{ fontSize: 16, color: "text.secondary" }} />
-                  </InputAdornment>
-                ),
-                endAdornment: query ? (
-                  <InputAdornment position="end">
-                    <IconButton size="small" onClick={() => setQuery("")} aria-label="clear">
-                      <CloseIcon sx={{ fontSize: 14 }} />
-                    </IconButton>
-                  </InputAdornment>
-                ) : null,
-              }}
-              sx={{ mb: 1.25, "& .MuiOutlinedInput-root": { borderRadius: "10px" } }}
-            />
-          )}
-
-          {isEmpty || filtered.length === 0 ? (
-            <Typography variant="body2" color="text.secondary" sx={{ py: 0.5 }}>
-              {t("filter.noResults")}
-            </Typography>
-          ) : (
-            <Box component="ul" sx={{ listStyle: "none", m: 0, p: 0 }}>
-              {visible.map((option) => (
-                <li key={option.id}>
-                  <FormControlLabel
-                    sx={{
-                      m: 0,
-                      width: "100%",
-                      px: 0.5,
-                      py: 0.25,
-                      borderRadius: 1,
-                      alignItems: "center",
-                      "&:hover": { bgcolor: "action.hover" },
-                    }}
-                    control={
-                      <Checkbox
-                        size="small"
-                        color="primary"
-                        checked={option.checked}
-                        onChange={option.onToggle}
-                      />
-                    }
-                    label={
-                      <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
-                        {option.start}
-                        <Typography variant="body2" noWrap>
-                          {option.label}
-                        </Typography>
-                      </Box>
-                    }
-                  />
-                </li>
-              ))}
-            </Box>
-          )}
-
-          {canExpand && !trimmed && (
-            <Button
-              size="small"
-              onClick={() => setShowAll((value) => !value)}
-              sx={{ mt: 0.5, px: 1, textTransform: "none", fontWeight: 600 }}
-            >
-              {showAll ? t("filter.showLess") : t("filter.viewAll")}
-            </Button>
-          )}
-        </Box>
-      )}
-    </Box>
-  );
-}
-
-function FilterPanel({
+function BoardFilterPanel({
   anchorEl,
   open,
   onClose,
@@ -3297,144 +3216,81 @@ function FilterPanel({
     ),
   }));
 
+  /**
+   * หน้าที่ของหน้านี้เหลือแค่ **เรียงลำดับ section + คำนวณ `initialOpen`** —
+   * ส่วน chrome (หัว panel / chip นับจำนวน / ปุ่ม "ล้างทั้งหมด") อยู่ที่
+   * `components/filter-panel.tsx` แชร์กับทุกหน้า
+   */
+  const sections: FilterSectionData[] = [
+    {
+      key: "status",
+      title: t("filter.sectionStatus"),
+      icon: <ViewKanbanIcon sx={{ fontSize: 18 }} />,
+      count: selectedStatusIds.length,
+      options: statusOptions,
+      initialOpen: startsOpen(selectedStatusIds.length, true),
+    },
+    {
+      key: "app",
+      title: t("filter.sectionApp"),
+      icon: <AppsIcon sx={{ fontSize: 18 }} />,
+      count: selectedAppIds.length,
+      options: appOptions,
+      initialOpen: startsOpen(selectedAppIds.length, false),
+    },
+    {
+      key: "company",
+      title: t("filter.sectionCompany"),
+      icon: <BusinessIcon sx={{ fontSize: 18 }} />,
+      count: selectedCompanyIds.length,
+      options: companyOptions,
+      initialOpen: startsOpen(selectedCompanyIds.length, false),
+    },
+    {
+      key: "priority",
+      title: t("filter.sectionPriority"),
+      icon: <FlagIcon sx={{ fontSize: 18 }} />,
+      count: selectedPriorityIds.length,
+      options: priorityOptions,
+      initialOpen: startsOpen(selectedPriorityIds.length, false),
+    },
+    {
+      key: "category",
+      title: t("filter.sectionCategory"),
+      icon: <CategoryIcon sx={{ fontSize: 18 }} />,
+      count: selectedCategoryIds.length,
+      options: categoryOptions,
+      initialOpen: startsOpen(selectedCategoryIds.length, false),
+    },
+    {
+      key: "assignee",
+      title: t("filter.sectionAssignee"),
+      icon: <PersonIcon sx={{ fontSize: 18 }} />,
+      count: selectedAssigneeIds.length,
+      options: assigneeOptions,
+      initialOpen: startsOpen(selectedAssigneeIds.length, false),
+    },
+  ];
+  // section "ผู้แจ้ง" ซ่อนจากลูกค้า — เดิมก็เป็นเงื่อนไขเดียวกันนี้
+  if (!isCustomer) {
+    sections.push({
+      key: "reporter",
+      title: t("filter.sectionReporter"),
+      icon: <ChatBubbleOutlineIcon sx={{ fontSize: 18 }} />,
+      count: selectedReporterIds.length,
+      options: reporterOptions,
+      initialOpen: startsOpen(selectedReporterIds.length, false),
+    });
+  }
+
   return (
-    <Popover
+    <FilterPanel
       open={open}
       anchorEl={anchorEl}
       onClose={onClose}
-      anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-      transformOrigin={{ vertical: "top", horizontal: "left" }}
-      slotProps={{
-        paper: {
-          sx: {
-            width: 360,
-            maxWidth: "calc(100vw - 24px)",
-            maxHeight: "72vh",
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            borderRadius: 2,
-            border: "1px solid",
-            borderColor: "divider",
-            boxShadow: theme.custom.cardShadow,
-          },
-        },
-      }}
-    >
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1.5,
-          px: 2,
-          py: 1.5,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        <Box
-          sx={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 30,
-            height: 30,
-            borderRadius: "8px",
-            bgcolor: "primary.main",
-            color: "primary.contrastText",
-          }}
-        >
-          <FilterListIcon fontSize="small" />
-        </Box>
-        <Typography variant="subtitle1" fontWeight={700} sx={{ flex: 1 }}>
-          {t("filter.title")}
-        </Typography>
-        {totalSelected > 0 && (
-          <Chip
-            size="small"
-            color="primary"
-            label={t("filter.selectedCount", { count: totalSelected })}
-            sx={{ height: 22, fontSize: 11, fontWeight: 700 }}
-          />
-        )}
-      </Box>
-
-      <Box sx={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
-        <FilterSection
-          title={t("filter.sectionStatus")}
-          icon={<ViewKanbanIcon sx={{ fontSize: 18 }} />}
-          count={selectedStatusIds.length}
-          options={statusOptions}
-          initialOpen={startsOpen(selectedStatusIds.length, true)}
-        />
-        <FilterSection
-          title={t("filter.sectionApp")}
-          icon={<AppsIcon sx={{ fontSize: 18 }} />}
-          count={selectedAppIds.length}
-          options={appOptions}
-          initialOpen={startsOpen(selectedAppIds.length, false)}
-        />
-        <FilterSection
-          title={t("filter.sectionCompany")}
-          icon={<BusinessIcon sx={{ fontSize: 18 }} />}
-          count={selectedCompanyIds.length}
-          options={companyOptions}
-          initialOpen={startsOpen(selectedCompanyIds.length, false)}
-        />
-        <FilterSection
-          title={t("filter.sectionPriority")}
-          icon={<FlagIcon sx={{ fontSize: 18 }} />}
-          count={selectedPriorityIds.length}
-          options={priorityOptions}
-          initialOpen={startsOpen(selectedPriorityIds.length, false)}
-        />
-        <FilterSection
-          title={t("filter.sectionCategory")}
-          icon={<CategoryIcon sx={{ fontSize: 18 }} />}
-          count={selectedCategoryIds.length}
-          options={categoryOptions}
-          initialOpen={startsOpen(selectedCategoryIds.length, false)}
-        />
-        <FilterSection
-          title={t("filter.sectionAssignee")}
-          icon={<PersonIcon sx={{ fontSize: 18 }} />}
-          count={selectedAssigneeIds.length}
-          options={assigneeOptions}
-          initialOpen={startsOpen(selectedAssigneeIds.length, false)}
-        />
-        {!isCustomer && (
-          <FilterSection
-            title={t("filter.sectionReporter")}
-            icon={<ChatBubbleOutlineIcon sx={{ fontSize: 18 }} />}
-            count={selectedReporterIds.length}
-            options={reporterOptions}
-            initialOpen={startsOpen(selectedReporterIds.length, false)}
-          />
-        )}
-      </Box>
-
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          px: 2,
-          py: 1.25,
-          borderTop: "1px solid",
-          borderColor: "divider",
-          bgcolor: "background.paper",
-        }}
-      >
-        <Button
-          size="small"
-          onClick={onClearAll}
-          disabled={totalSelected === 0}
-          startIcon={<DeleteOutlineIcon fontSize="small" />}
-          sx={{ textTransform: "none", fontWeight: 600 }}
-        >
-          {t("filter.clearAll")}
-        </Button>
-      </Box>
-    </Popover>
+      sections={sections}
+      onClearAll={onClearAll}
+    />
   );
 }
 
@@ -6030,7 +5886,7 @@ function BoardsPageInner() {
               />
             ))}
 
-          <FilterPanel
+          <BoardFilterPanel
             open={Boolean(filterAnchor)}
             anchorEl={filterAnchor}
             statuses={statuses}

@@ -18,6 +18,7 @@ import { Permissions } from "../auth/permissions.decorator";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { AuthUser, actorInfo } from "../auth/auth-user";
 import { ActorInfo, ActivityLogsService } from "../activity-logs/activity-logs.service";
+import type { IssueTaskType } from "@kanban/shared";
 
 function parseIdList(value?: string): number[] {
   return (value ?? "")
@@ -125,7 +126,7 @@ export class IssuesController {
     },
     @CurrentUser() user: AuthUser,
   ) {
-    return this.issues.create(body, this.actor(user), user?.companyId ?? null);
+    return this.issues.create(body, this.actor(user));
   }
 
   @Put("issues/:id")
@@ -142,6 +143,8 @@ export class IssuesController {
       labelIds?: number[];
       analysisCause?: string | null;
       resolution?: string | null;
+      /** ประเภทงาน — service whitelists the 3 values (400 otherwise), null = clear */
+      taskType?: IssueTaskType | null;
     },
     @CurrentUser() user: AuthUser,
   ) {

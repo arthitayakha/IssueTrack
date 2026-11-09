@@ -92,6 +92,16 @@ export class Issue {
   actualFixDuration!: number | null;
 
   /**
+   * ประเภทงาน — `bug` | `feature` | `requirement` | NULL (ยังไม่ระบุ)
+   *
+   * ป้ายฝั่งแอดมิน/โปรแกรมเมอร์ตั้งที่แผงรายละเอียดการ์ด (ลูกค้าไม่ได้เลือก)
+   * ขับกฎหักชั่วโมง MA: หักเฉพาะ `feature`/`requirement` — `bug` กับ NULL
+   * ไม่นับเข้า "ใช้ไป" ดูรายละเอียดเพิ่มที่ migration 1818
+   */
+  @Column({ name: "task_type", type: "varchar", length: 16, nullable: true })
+  taskType!: "bug" | "feature" | "requirement" | null;
+
+  /**
    * The three states of the "actual fix time" field:
    * - `timeEntryUnlocked` — an `issue.allow_time_entry` rule granted it for
    *   the card's current status (moving/creating the card clears it again, so

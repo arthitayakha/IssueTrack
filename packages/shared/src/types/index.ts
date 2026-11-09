@@ -53,6 +53,14 @@ export interface Issue {
   updatedAt: Date;
 }
 
+/**
+ * ประเภทงาน — 1 ใน 3 ค่า (เก็บใน `issues.task_type`, NULL = ยังไม่ระบุ)
+ *
+ * ขับกฎหักชั่วโมง MA: `feature` / `requirement` หัก, `bug` ไม่หัก,
+ * NULL ไม่หัก (งานเก่าปลอดภัยจนกว่าแอดมิน/โปรแกรมเมอร์จะมาตั้ง)
+ */
+export type IssueTaskType = "bug" | "feature" | "requirement";
+
 export interface Comment {
   id: string;
   content: string;

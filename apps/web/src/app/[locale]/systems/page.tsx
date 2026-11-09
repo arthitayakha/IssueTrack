@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import {
+  Badge,
   Box,
   Button,
   Chip,
@@ -11,9 +12,17 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  IconButton,
+  InputAdornment,
+  TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import BusinessIcon from "@mui/icons-material/Business";
+import FilterListIcon from "@mui/icons-material/FilterList";
+import ScheduleIcon from "@mui/icons-material/Schedule";
+import SearchIcon from "@mui/icons-material/Search";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, {
   DataTableBody,
@@ -23,6 +32,11 @@ import DataTable, {
 } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
 import { Pagination } from "@/components/pagination";
+import {
+  FilterPanel,
+  type FilterOption,
+  type FilterSectionData,
+} from "@/components/filter-panel";
 import { ApiError } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermissions } from "@/lib/permissions";
@@ -42,6 +56,7 @@ import {
   expiryChipLabel,
   expiryColor,
   formatDay,
+  type ExpiryLabelKey,
   type ExpiryStatus,
 } from "@/lib/app-expiry";
 import { fetchAppUsageAllTime } from "@/lib/reports-api";
@@ -60,6 +75,41 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
+/** จำนวนแถวต่อหน้า — แถบ pagination ซ่อนตัวเองเมื่อไม่เกินนี้ (`totalPages <= 1`) */
+const PAGE_SIZE = 10;
+
+/**
+ * ค่าของตัวกรอง "สถานะอายุ" — **`near` รวม `expiring_soon` + `critical`** เพราะ
+ * chip ในตารางขึ้นข้อความ**ตามจำนวนวัน** สองสถานะนี้จึงโชว์ "เหลือ N วัน ใกล้หมดอายุ"
+ * เหมือนกัน ผู้ใช้จึงต้องเห็นทั้งคู่เมื่อ tick "ใกล้หมดอายุ" (เลือกหลายค่า = OR)
+ */
+type ExpiryFilterValue = "normal" | "near" | "expired" | "none";
+
+/** ตัวเลือกใน section (เรียงตามที่โชว์ใน popover) */
+const EXPIRY_FILTERS: ExpiryFilterValue[] = ["normal", "near", "expired", "none"];
+
+/** label ของแต่ละตัวกรอง — ยืม key ที่มีอยู่แล้วใน `Settings` (ไม่ต้องเพิ่ม key ใหม่) */
+const EXPIRY_FILTER_LABEL: Record<ExpiryFilterValue, ExpiryLabelKey> = {
+  normal: "expiryNormal",
+  near: "expiryExpiringSoon",
+  expired: "expiryExpired",
+  none: "expiryNone",
+};
+
+/** สีไอคอนหน้าตัวเลือก — ไล่ตามความรุนแรงเหมือนชิปในตาราง */
+const EXPIRY_FILTER_COLOR: Record<ExpiryFilterValue, string> = {
+  normal: "success.main",
+  near: "warning.main",
+  expired: "error.main",
+  none: "text.disabled",
+};
+
+/** แถวผ่านตัวกรองสถานะอายุหรือไม่ — เงื่อนไขเดียวที่ต้องแตก branch คือ `near` */
+function matchesExpiryFilter(status: ExpiryStatus, filter: ExpiryFilterValue): boolean {
+  if (filter === "near") return status === "expiring_soon" || status === "critical";
+  return status === filter;
+}
+
 /**
  * หน้า **ข้อมูลระบบ** — ตารางรายการข้อมูล (**1 แถวต่อ 1 ช่วงเวลา** ของคู่
  * แอป×บริษัท: บริษัท / วันที่เริ่มใช้งาน / วันที่หมดอายุ / ชั่วโมง MA /
@@ -72,6 +122,8 @@ function round1(n: number): number {
  */
 export default function SystemsPage() {
   const t = useTranslations("Settings");
+  /** ข้อความ chrome ของ popover ตัวกรอง (หัวเรื่อง / ปุ่มล้าง) — namespace แชร์ */
+  const tf = useTranslations("Filters");
   const locale = useLocale();
   const { can } = usePermissions();
   const token = useAuthStore((s) => s.token);
@@ -84,6 +136,20 @@ export default function SystemsPage() {
   const [mounted, setMounted] = useState(false);
 
   /**
+   * ตัวกรอง 3 ตัว — **ทั้งหมดฝั่ง client** เพราะหน้านี้โหลดทุกแถวมาครบอยู่แล้ว
+   * (`fetchSystemsApps` limit=100 = `MAX_PAGE_SIZE`) จึงไม่ต้องยิง request ใหม่
+   *
+   * สองตัวหลังเป็น **array (multi-select)** แบบ popover ตัวกรองของบอร์ด —
+   * เลือกหลายค่าใน section เดียวกัน = OR, ข้าม section = AND ·  array ว่าง = ไม่กรอง
+   */
+  const [search, setSearch] = useState("");
+  /** ค่าคือ `company_id` (ฟิลด์ `link.id`) */
+  const [companyIds, setCompanyIds] = useState<number[]>([]);
+  const [expiryFilters, setExpiryFilters] = useState<ExpiryFilterValue[]>([]);
+  /** anchor ของ popover ตัวกรอง */
+  const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
+
+  /**
    * ตัวเลข "ใช้ไป" ต่อแอป (ชม.) — ดึงคู่กับ `loadApps()` ตอนเปิดหน้า ผ่าน
    * `fetchAppUsageAllTime()` จุดเดียวกับที่ `/reports` ใช้ (กติกาหัก MA
    * จะได้ไม่ต่างกันระหว่างสองหน้า)
@@ -91,8 +157,8 @@ export default function SystemsPage() {
    * `error` ต้องแยกจาก `ready` เพราะถ้าดึงไม่ได้แล้วปล่อยให้เหลือ 0
    * ตัวเลข "คงเหลือ" จะเท่ากับ MA ทั้งก้อนซึ่ง**ผิด**
    *
-   * ตอน `MA_DEDUCTION_PAUSED = true` ฟังก์ชันนั้นคืน map ว่างทันที (ไม่ยิง
-   * request) → ค่า "คงเหลือ" จึงเป็นชั่วโมง MA เต็มก้อนเสมอ
+   * (`MA_DEDUCTION_PAUSED = false` → ฟังก์ชันนั้นยิง request จริง; ถ้าปิด
+   * กลับเป็น `true` จะคืน map ว่างทันที → "คงเหลือ" = MA เต็มก้อน)
    */
   const [usedByApp, setUsedByApp] = useState<Map<number, number>>(new Map());
   const [usageStatus, setUsageStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -136,9 +202,8 @@ export default function SystemsPage() {
 
   useEffect(() => {
     // หน้า spinner ผูกกับ apps/companies เท่านั้น — ตัวเลข "ใช้ไป" ดึงแยก
-    // เพื่อไม่ให้การช้าของ endpoint รายงานมาค้างหน้าทั้งใบ
-    // (`MA_DEDUCTION_PAUSED` = ไม่มี request ให้รออยู่แล้ว — เปิดกลับเมื่อไหร่
-    // ข้อความนี้กลับมามีผลทันที)
+    // เพื่อไม่ให้การช้าของ endpoint รายงานมาค้างหน้าทั้งใบ (ถ้าปิดหัก MA
+    // กลับเป็น `true` จะไม่มี request ให้รออยู่แล้ว — ข้อความนี้ไม่กระทบ)
     Promise.all([loadApps(), loadCompanies()]).finally(() => setLoading(false));
     void loadUsage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -146,7 +211,7 @@ export default function SystemsPage() {
 
   /**
    * ดึง "ชั่วโมงที่ใช้ไป" ต่อแอป — `fetchAppUsageAllTime()` (ตัวเดียวกับที่
-   * หน้ารายงานใช้) ตอนนี้ `MA_DEDUCTION_PAUSED` → คืน map ว่างทันที
+   * หน้ารายงานใช้, นับเฉพาะงาน type feature/requirement)
    * ล้มเหลวเองได้: คอลัมน์ "คงเหลือ" จะกลายเป็น `—` พร้อมปุ่มลองใหม่
    */
   async function loadUsage() {
@@ -162,10 +227,18 @@ export default function SystemsPage() {
 
   /**
    * ปุ่ม "ลองใหม่" ใต้ตาราง — ยิง `loadUsage()` ซ้ำโดยไม่แตะตารางอื่น
-   * (เข้าไม่ถึงตอน `MA_DEDUCTION_PAUSED = true` เพราะไม่มี request ให้พัง)
+   * (ใช้ได้จริงตอนนี้ เพราะ `MA_DEDUCTION_PAUSED = false` มี request ให้พัง)
    */
   function retryUsage() {
     void loadUsage();
+  }
+
+  /** ล้างตัวกรองทั้ง 3 แล้วกลับไปหน้าแรก — เรียกจากปุ่ม "ล้างทั้งหมด" ใน popover */
+  function resetFilters() {
+    setSearch("");
+    setCompanyIds([]);
+    setExpiryFilters([]);
+    setPage(1);
   }
 
   function openAddApp() {
@@ -204,6 +277,123 @@ export default function SystemsPage() {
     }
   }
 
+  /**
+   * ตาราง = **1 แถวต่อ 1 ช่วงเวลา** ของคู่ แอป×บริษัท — flatten ออกมาก่อน
+   * แล้วค่อยกรอง/แบ่งหน้า (ของเดิม render ทุกแถวผ่าน `flatMap` ทำให้
+   * pagination ที่มีอยู่ไม่เคยมีผลจริง)
+   */
+  const rows = useMemo<SystemRow[]>(
+    () => apps.flatMap((app) => app.companies.map((link) => ({ app, link }))),
+    [apps],
+  );
+
+  /**
+   * รายชื่อบริษัทที่**มีข้อมูลจริง**ในตาราง (distinct จากแถวที่โหลดมา) — ไม่ยิง
+   * API เพิ่ม และกันไม่ให้ section "บริษัท" มีตัวเลือกที่กดแล้วได้ตารางว่าง
+   */
+  const companyList = useMemo(() => {
+    const seen = new Map<number, string>();
+    for (const { link } of rows) if (!seen.has(link.id)) seen.set(link.id, link.name);
+    return [...seen.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [rows]);
+
+  /** กรองแบบ AND ทั้ง 3 เงื่อนไข — ค้นหาชื่อแอป**หรือ**ชื่อบริษัท (ไม่สนตัวพิมพ์) */
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return rows.filter(({ app, link }) => {
+      const matchesSearch =
+        !query ||
+        app.name.toLowerCase().includes(query) ||
+        link.name.toLowerCase().includes(query);
+      if (!matchesSearch) return false;
+      if (companyIds.length > 0 && !companyIds.includes(link.id)) return false;
+      if (
+        expiryFilters.length > 0 &&
+        !expiryFilters.some((value) => matchesExpiryFilter(link.expiryStatus, value))
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [rows, search, companyIds, expiryFilters]);
+
+  /**
+   * แบ่งหน้าแบบ `safePage` — รูปแบบเดียวกับหน้า `/labels` กัน pagination ชี้เกิน
+   * หน้าหลังลบแถวสุดท้ายหรือหลังตัวกรองแคบลง
+   *
+   * `totalPages = 1` เมื่อข้อมูลไม่เกิน `PAGE_SIZE` → แถบ pagination ซ่อนตัวเอง
+   * (กติกาอยู่ใน `components/pagination.tsx`: `if (totalPages <= 1) return null`)
+   */
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  /**
+   * จำนวน filter ที่เปิดใช้งาน — **ตัวเลขเดียว**ใช้ทั้ง badge บนปุ่ม trigger และ
+   * chip ที่หัว popover (ส่งเข้า `selectedCount` ให้สองจุดตรงกันเป๊ะ) · ค้นหา = นับ 1
+   * เหมือนที่ `activeFilterCount()` ของ `/reports` ทำ
+   */
+  const totalSelected =
+    companyIds.length + expiryFilters.length + (search.trim() ? 1 : 0);
+
+  function toggleCompany(id: number) {
+    setCompanyIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    setPage(1);
+  }
+
+  function toggleExpiry(value: ExpiryFilterValue) {
+    setExpiryFilters((prev) =>
+      prev.includes(value) ? prev.filter((x) => x !== value) : [...prev, value],
+    );
+    setPage(1);
+  }
+
+  /** ตัวเลือกของทั้ง 2 section — สร้างจาก state ปัจจุบัน (`checked` = tick ไว้) */
+  const companyFilterOptions: FilterOption[] = companyList.map((company) => ({
+    id: company.id,
+    label: company.name,
+    checked: companyIds.includes(company.id),
+    onToggle: () => toggleCompany(company.id),
+    start: <BusinessIcon sx={{ fontSize: 16, flexShrink: 0, color: "warning.main" }} />,
+  }));
+
+  const expiryFilterOptions: FilterOption[] = EXPIRY_FILTERS.map((value) => ({
+    id: value,
+    label: t(EXPIRY_FILTER_LABEL[value]),
+    checked: expiryFilters.includes(value),
+    onToggle: () => toggleExpiry(value),
+    start: (
+      <ScheduleIcon sx={{ fontSize: 16, flexShrink: 0, color: EXPIRY_FILTER_COLOR[value] }} />
+    ),
+  }));
+
+  /**
+   * section ที่ส่งเข้า popover — เรียง "บริษัท" ก่อน "สถานะอายุ"
+   *
+   * `initialOpen`: section แรกเปิดค้างไว้เหมือนบอร์ด · แต่ถ้ามี filter ค้างอยู่
+   * แล้วให้เปิด**เฉพาะ** section ที่มีการเลือก (กัน panel ยาวฟรี)
+   */
+  const filterSections: FilterSectionData[] = [
+    {
+      key: "company",
+      title: t("columnCompany"),
+      icon: <BusinessIcon sx={{ fontSize: 18 }} />,
+      count: companyIds.length,
+      options: companyFilterOptions,
+      initialOpen: totalSelected > 0 ? companyIds.length > 0 : true,
+    },
+    {
+      key: "expiry",
+      title: t("columnExpiryStatus"),
+      icon: <ScheduleIcon sx={{ fontSize: 18 }} />,
+      count: expiryFilters.length,
+      options: expiryFilterOptions,
+      initialOpen: totalSelected > 0 ? expiryFilters.length > 0 : false,
+    },
+  ];
+
   // render nothing on the server: DashboardLayout reads the auth store, which
   // only the client can fill — matching it later would break hydration
   // (the pattern used by the labels / users / master-data pages).
@@ -238,11 +428,12 @@ export default function SystemsPage() {
    * - ยังไม่กรอก MA → "ยังไม่กรอก" (key เดิม)
    * - อย่างอื่น → ตัวเลขปัด 1 ตำแหน่ง
    *
-   * ตอน `MA_DEDUCTION_PAUSED = true` → ใช้ไป = 0 เสมอ จึงเหลือ MA เต็มก้อน
-   * ("ยังไม่กรอก" กับสองกรณีแรกยังแยกไว้เผื่อเปิดหักกลับ)
+   * (`MA_DEDUCTION_PAUSED = false` → "ใช้ไป" มาจริง; ถ้าปิดกลับเป็น `true`
+   * จะเหลือ MA เต็มก้อน — สองกรณีแรกยังแยกไว้เผื่อปิดหักกลับ)
    *
    * "ใช้ไป" เป็น**ระดับแอป** (`issues` ไม่มี `company_id` — งานระบุบริษัทไม่ได้)
-   * ทุกแถวของแอปเดียวกันจึงหักค่าเดียวกัน
+   * ทุกแถวของแอปเดียวกันจึงหักค่าเดียวกัน และนับเฉพาะ type
+   * `feature`/`requirement` (bug/NULL ไม่หัก — ดูกติกาใน `reports-api.ts`)
    */
   function remainingCell(row: SystemRow) {
     const caption = (text: string) => (
@@ -263,13 +454,96 @@ export default function SystemsPage() {
     <RequirePermission permission="system.view">
       <DashboardLayout>
         <Box>
-          <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
+          {/* ค้นหา (ซ้าย) + ปุ่มเปิด popover ตัวกรอง / ปุ่มเพิ่มข้อมูล (ขวา) */}
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 1.5,
+              mb: 2,
+              flexWrap: "wrap",
+            }}
+          >
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
+              <TextField
+                size="small"
+                placeholder={t("searchPlaceholder")}
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
+                sx={{ minWidth: 240 }}
+                inputProps={{ "aria-label": t("searchPlaceholder") }}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon fontSize="small" />
+                    </InputAdornment>
+                  ),
+                }}
+              />
+
+              {/* ปุ่ม trigger แบบเดียวกับบอร์ด — ปกติโปร่งใส เติมสีเมื่อมี filter ค้าง */}
+              <Tooltip title={tf("title")}>
+                <Badge
+                  badgeContent={totalSelected}
+                  max={99}
+                  overlap="circular"
+                  sx={{
+                    "& .MuiBadge-badge": {
+                      minWidth: 16,
+                      height: 16,
+                      px: 0.4,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      lineHeight: 1,
+                      bgcolor: "primary.contrastText",
+                      color: "primary.main",
+                      top: 4,
+                      right: 4,
+                    },
+                  }}
+                >
+                  <IconButton
+                    size="small"
+                    onClick={(event) => setFilterAnchor(event.currentTarget)}
+                    aria-haspopup="dialog"
+                    aria-expanded={Boolean(filterAnchor)}
+                    aria-label={tf("title")}
+                    sx={{
+                      width: 36,
+                      height: 36,
+                      color: totalSelected > 0 ? "primary.contrastText" : "text.secondary",
+                      bgcolor: totalSelected > 0 ? "primary.main" : "transparent",
+                      "&:hover": {
+                        bgcolor: totalSelected > 0 ? "primary.dark" : "action.hover",
+                      },
+                    }}
+                  >
+                    <FilterListIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Badge>
+              </Tooltip>
+            </Box>
+
             {can("system.create") && (
               <Button variant="contained" startIcon={<AddIcon />} onClick={openAddApp}>
                 {t("addData")}
               </Button>
             )}
           </Box>
+
+          {/* popover ตัวกรอง — chrome แชร์กับบอร์ดและ /reports (components/filter-panel.tsx) */}
+          <FilterPanel
+            open={Boolean(filterAnchor)}
+            anchorEl={filterAnchor}
+            onClose={() => setFilterAnchor(null)}
+            sections={filterSections}
+            onClearAll={resetFilters}
+            selectedCount={totalSelected}
+          />
 
           <DataTable>
             <DataTableHead>
@@ -286,65 +560,64 @@ export default function SystemsPage() {
             </DataTableHead>
             <DataTableBody>
               {/* 1 แถวต่อ 1 รายการ — แอปที่มี 2 ช่วงเวลา (หรือ 2 บริษัท) จึงมี 2 แถว
-                  รายการใหม่ถูกต่อ**ใต้** รายการเดิม (API เรียง `recordId ASC`) */}
-              {apps.flatMap((app) =>
-                app.companies.map((link) => {
-                  const row: SystemRow = { app, link };
-                  const empty = (text: string) => (
-                    <Typography variant="caption" color="text.disabled">
-                      {text}
-                    </Typography>
-                  );
-                  return (
-                    <DataTableRow key={link.recordId}>
-                      <DataTableCell>{app.name}</DataTableCell>
-                      {/* คอลัมน์บริษัท = ชื่อเดียว (แถว = 1 คู่ 1 ช่วงเวลา) */}
-                      <DataTableCell>
-                        <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
-                          {link.name}
-                        </Typography>
-                      </DataTableCell>
-                      <DataTableCell>
-                        {link.startedAt ? formatDay(link.startedAt, locale) : empty(t("notSetYet"))}
-                      </DataTableCell>
-                      <DataTableCell>
-                        {link.expiresAt ? formatDay(link.expiresAt, locale) : empty(t("expiryNone"))}
-                      </DataTableCell>
-                      {/* ชั่วโมง MA ของช่วงนี้ — ตัวเลขล้วน หัวตารางมีหน่วย "ชม." อยู่แล้ว */}
-                      <DataTableCell align="center">
-                        {link.maHours != null ? link.maHours : empty(t("notSetYet"))}
-                      </DataTableCell>
-                      {/* คงเหลือ = MA ของแถวนั้น − ใช้ไป — กฎทั้งหมดอยู่ที่ `remainingCell()` */}
-                      <DataTableCell align="center">{remainingCell(row)}</DataTableCell>
-                      {/* สถานะอายุของ **แถวนั้น** (เก็บไว้รายช่วงเวลา) */}
-                      <DataTableCell align="center">
-                        <Chip
-                          label={expiryChipText(link.expiryStatus, link.expiresAt)}
-                          color={expiryColor(link.expiryStatus)}
-                          size="small"
-                          variant="outlined"
-                        />
-                      </DataTableCell>
-                      <DataTableCell align="right">
-                        {/* ปุ่มแก้/ลบ = **ของแถวนั้น** — ไม่ส่ง `onToggle` → ไม่มีสวิตช์ (เปิด/ปิดแอปที่แท็บแอปใน /master-data) */}
-                        <AppActions
-                          app={app}
-                          canUpdate={canUpdate}
-                          canDelete={canDelete}
-                          onEdit={() => openEditRecord(row)}
-                          onDelete={() => handleDeleteRecord(row)}
-                        />
-                      </DataTableCell>
-                    </DataTableRow>
-                  );
-                }),
-              )}
-              {/* ยังไม่มีรายการเลย (แอปทุกตัวยังไม่มีข้อมูล หรือเพิ่งลบหมด) */}
-              {apps.length === 0 && (
+                  รายการใหม่ถูกต่อ**ใต้** รายการเดิม (API เรียง `recordId ASC`)
+                  โชว์เฉพาะ `pageRows` = หน้าปัจจุบันหลังกรองแล้ว (ไม่ใช่ทุกแถว) */}
+              {pageRows.map(({ app, link }) => {
+                const row: SystemRow = { app, link };
+                const empty = (text: string) => (
+                  <Typography variant="caption" color="text.disabled">
+                    {text}
+                  </Typography>
+                );
+                return (
+                  <DataTableRow key={link.recordId}>
+                    <DataTableCell>{app.name}</DataTableCell>
+                    {/* คอลัมน์บริษัท = ชื่อเดียว (แถว = 1 คู่ 1 ช่วงเวลา) */}
+                    <DataTableCell>
+                      <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+                        {link.name}
+                      </Typography>
+                    </DataTableCell>
+                    <DataTableCell>
+                      {link.startedAt ? formatDay(link.startedAt, locale) : empty(t("notSetYet"))}
+                    </DataTableCell>
+                    <DataTableCell>
+                      {link.expiresAt ? formatDay(link.expiresAt, locale) : empty(t("expiryNone"))}
+                    </DataTableCell>
+                    {/* ชั่วโมง MA ของช่วงนี้ — ตัวเลขล้วน หัวตารางมีหน่วย "ชม." อยู่แล้ว */}
+                    <DataTableCell align="center">
+                      {link.maHours != null ? link.maHours : empty(t("notSetYet"))}
+                    </DataTableCell>
+                    {/* คงเหลือ = MA ของแถวนั้น − ใช้ไป — กฎทั้งหมดอยู่ที่ `remainingCell()` */}
+                    <DataTableCell align="center">{remainingCell(row)}</DataTableCell>
+                    {/* สถานะอายุของ **แถวนั้น** (เก็บไว้รายช่วงเวลา) */}
+                    <DataTableCell align="center">
+                      <Chip
+                        label={expiryChipText(link.expiryStatus, link.expiresAt)}
+                        color={expiryColor(link.expiryStatus)}
+                        size="small"
+                        variant="outlined"
+                      />
+                    </DataTableCell>
+                    <DataTableCell align="right">
+                      {/* ปุ่มแก้/ลบ = **ของแถวนั้น** — ไม่ส่ง `onToggle` → ไม่มีสวิตช์ (เปิด/ปิดแอปที่แท็บแอปใน /master-data) */}
+                      <AppActions
+                        app={app}
+                        canUpdate={canUpdate}
+                        canDelete={canDelete}
+                        onEdit={() => openEditRecord(row)}
+                        onDelete={() => handleDeleteRecord(row)}
+                      />
+                    </DataTableCell>
+                  </DataTableRow>
+                );
+              })}
+              {/* ว่าง 2 กรณี — ไม่มีข้อมูลเลย vs กรอง/ค้นจนไม่เหลือ (คนละข้อความ) */}
+              {pageRows.length === 0 && (
                 <DataTableRow>
                   <DataTableCell colSpan={8}>
                     <Typography variant="caption" color="text.disabled">
-                      {t("noRows")}
+                      {apps.length === 0 ? t("noRows") : t("noMatch")}
                     </Typography>
                   </DataTableCell>
                 </DataTableRow>
@@ -368,11 +641,13 @@ export default function SystemsPage() {
             </Box>
           )}
 
+          {/* ข้อมูลไม่เกิน 1 หน้า (≤ 10 แถวหลังกรอง) → component คืน `null` เอง
+              จึงไม่มีแถบ pagination ให้เห็น — แบบเดียวกับหน้า /labels */}
           <Pagination
-            page={page}
-            totalPages={Math.max(1, Math.ceil(apps.length / 10))}
-            total={apps.length}
-            limit={10}
+            page={safePage}
+            totalPages={totalPages}
+            total={filtered.length}
+            limit={PAGE_SIZE}
             onPageChange={setPage}
           />
         </Box>

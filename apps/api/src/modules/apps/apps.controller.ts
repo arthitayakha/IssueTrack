@@ -15,8 +15,6 @@ import { AppsService, AppRecordInput, AppWriteInput } from "./apps.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
-import { CurrentUser } from "../auth/current-user.decorator";
-import { AuthUser } from "../auth/auth-user";
 
 @Controller("apps")
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -27,18 +25,16 @@ export class AppsController {
   // must be able to load the app list when reporting an issue. The rows now
   // also carry company names + expiry — both are master data the board shows.
   //
-  // `?mine=1` = **แอปของบริษัทผู้เรียกเท่านั้น** — ฟอร์มรายงานปัญหาส่ง flag นี้
-  // เพื่อให้ dropdown เหลือเฉพาะแอปที่บริษัทของผู้รายงานใช้จริง (ตาม
-  // `users.company_id` → `app_companies`) ที่อื่น (แท็บแอปใน /master-data,
-  // ฟอร์มแอป, รายงาน) ไม่ส่ง → ได้ทุกแอปตามเดิม และ fail-open เมื่อผู้เรียก
-  // ไม่มีบริษัท (แอดมิน/โปรแกรมเมอร์) ก็ยังได้ทุกแอป
+  // `?visible=1` = **รายการแอปที่ฟอร์มรายงานปัญหาใช้** — คืนเฉพาะแอปที่เปิดใช้
+  // งาน (`is_visible = true`) **ไม่ว่าจะผูกกับบริษัทของผู้เรียกหรือไม่ก็ตาม**
+  // (ข้อสรุปจากพี่: เชื่อมหรือไม่เชื่อม ลูกค้าก็เห็นแอปทุกตัว — จึงไม่มีการกรอง
+  // ตาม `users.company_id` และไม่มี guard ตอนสร้างงานอีกแล้ว)
+  // ที่อื่น (แท็บแอปใน /master-data, /systems, /reports, ชิปบนบอร์ด) ไม่ส่ง flag
+  // → ได้ทุกแอปรวมที่ปิดสถานะ เพราะหน้าเหล่านั้นต้องเห็นแอปที่ปิดเพื่อเปิดกลับได้
   @Get()
-  findAll(
-    @Query() query: { page?: string; limit?: string; mine?: string },
-    @CurrentUser() user: AuthUser,
-  ) {
-    const mine = query.mine === "1" || query.mine === "true";
-    return this.apps.findAll(normalizePagination(query), mine ? (user?.companyId ?? null) : null);
+  findAll(@Query() query: { page?: string; limit?: string; visible?: string }) {
+    const visible = query.visible === "1" || query.visible === "true";
+    return this.apps.findAll(normalizePagination(query), { visible });
   }
 
   // The CRUD below serves TWO surfaces with separate permission cards:

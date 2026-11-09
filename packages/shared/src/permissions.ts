@@ -206,9 +206,6 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "board.column.update",
     "board.column.delete",
     "issue.lock",
-    "label.view",
-    "status.view",
-    "priority.view",
   ],
   customer: [
     "auth.login",
@@ -227,9 +224,6 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "board.column.create",
     "board.column.update",
     "board.column.delete",
-    "label.view",
-    "status.view",
-    "priority.view",
     "time.actual.view",
   ],
 };

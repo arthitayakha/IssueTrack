@@ -62,6 +62,11 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
   };
 
   const apps = {
+    // `find` = the un-scoped path (`GET /apps` without `?visible=1`): every app,
+    // hidden ones included, because /master-data has to toggle them back on
+    find: jest
+      .fn()
+      .mockImplementation(() => Promise.resolve(state.apps.map((a) => ({ ...a })))),
     findOne: jest.fn().mockImplementation((opts: { where: Partial<AppRow> }) => {
       const { id, name } = opts.where;
       const found = state.apps.find(
@@ -70,6 +75,34 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
       return Promise.resolve(found ? { ...found } : null);
     }),
     create: jest.fn().mockImplementation((value: Partial<AppRow>) => value),
+    /**
+     * `?visible=1` path — a fake builder that *evaluates* the one condition the
+     * service asks for instead of running SQL (`app.is_visible = true`), so the
+     * tests assert real output rather than "where() was called". There is no
+     * `andWhere` on purpose: company linkage must never reach this query
+     * (ข้อสรุปจากพี่ — เชื่อมหรือไม่เชื่อม ลูกค้าก็เห็นแอปทุกตัว), so a stray
+     * extra clause would throw here instead of passing quietly.
+     */
+    createQueryBuilder: jest.fn(() => {
+      // Named (recursive) type instead of letting `qb` infer from itself —
+      // TS7022/TS7024 otherwise: the object literal references `qb` inside
+      // its own initializer, so there is nothing to infer from.
+      type FakeQb = {
+        where: (_sql: string) => FakeQb;
+        orderBy: () => FakeQb;
+        getMany: () => Promise<AppRow[]>;
+      };
+      const qb: FakeQb = {
+        where: jest.fn(() => qb),
+        orderBy: jest.fn(() => qb),
+        getMany: jest.fn(() =>
+          Promise.resolve(
+            state.apps.filter((a) => a.isVisible).map((a) => ({ ...a })),
+          ),
+        ),
+      };
+      return qb;
+    }),
     save: jest.fn().mockImplementation((value: Partial<AppRow>) => {
       if (value.id === undefined) {
         const created: AppRow = { isVisible: true, ...value, id: state.nextAppId++ } as AppRow;
@@ -140,6 +173,8 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
 }
 
 const POS: AppRow = { id: 7, name: "POS", isVisible: true };
+const CRM: AppRow = { id: 11, name: "CRM", isVisible: true };
+const CRM_OFF: AppRow = { id: 12, name: "CRM Classic", isVisible: false };
 
 describe("AppsService.addRecord — append, never overwrite", () => {
   it("creates a new row for a pair that already has one (ช่วงใหม่ไม่เขียนทับช่วงเก่า)", async () => {
@@ -324,5 +359,51 @@ describe("AppsService.create / update — name only (แท็บแอปใน
     const { service } = makeService({ apps: [POS] });
 
     await expect(service.update(999, { name: "X" })).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe("AppsService.findAll — the ?visible=1 scope (ฟอร์มรายงานปัญหา)", () => {
+  const params = { page: 1, limit: 100 };
+
+  it("returns every switched-on app, linked to a company or not (ข้อสรุปจากพี่)", async () => {
+    // POS is linked to company 1, CRM to nobody — linkage must not matter, so
+    // both belong in the customer's dropdown
+    const { service, apps } = makeService({
+      apps: [POS, CRM],
+      rows: [row({ id: 11, appId: 7, companyId: 1 })],
+    });
+
+    const res = await service.findAll(params, { visible: true });
+
+    expect(res.data.map((a) => a.name)).toEqual(["POS", "CRM"]);
+    expect(res.total).toBe(2);
+    // …and the only clause it asked for is the visibility one — no company EXISTS
+    expect(apps.createQueryBuilder.mock.results[0].value.where).toHaveBeenCalledWith(
+      "app.is_visible = true",
+    );
+  });
+
+  it("drops apps switched off in /master-data from the ?visible=1 path", async () => {
+    // CRM Classic is linked just like POS — visibility is the only reason it
+    // must not show up, so this test cannot pass by accident
+    const { service } = makeService({
+      apps: [POS, CRM_OFF],
+      rows: [row({ id: 11, appId: 7, companyId: 1 }), row({ id: 12, appId: 12, companyId: 1 })],
+    });
+
+    const res = await service.findAll(params, { visible: true });
+
+    expect(res.data.map((a) => a.name)).toEqual(["POS"]);
+  });
+
+  it("keeps every app, hidden ones included, when the flag is absent (master data / reports)", async () => {
+    const { service, apps } = makeService({ apps: [POS, CRM_OFF], rows: [] });
+
+    const res = await service.findAll(params);
+
+    expect(res.data.map((a) => a.name)).toEqual(["POS", "CRM Classic"]);
+    // the un-scoped path reads straight from the table — no picker query at all
+    expect(apps.createQueryBuilder).not.toHaveBeenCalled();
+    expect(apps.find).toHaveBeenCalledWith({ order: { id: "ASC" } });
   });
 });

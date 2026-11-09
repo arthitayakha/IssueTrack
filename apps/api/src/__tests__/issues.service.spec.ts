@@ -71,8 +71,6 @@ function makeService() {
   });
   const categories = repo();
   const labels = repo();
-  // `app_companies` — the create-time "this app belongs to my company" guard
-  const appCompanies = repo();
   const workSessions = { stop: jest.fn().mockResolvedValue(null) };
   const permissions = {};
   const rulesEngine = {
@@ -112,11 +110,18 @@ function makeService() {
       permissions,
       rulesEngine,
       notifications,
-      // create-time guard: no test creates a card for a company, so "no link"
-      appCompanies,
     ] as unknown as ServiceArgs ),
   );
-  return { service, issues, users, issueStatuses, rulesEngine, activityLogs, workSessions, notifications };
+  return {
+    service,
+    issues,
+    users,
+    issueStatuses,
+    rulesEngine,
+    activityLogs,
+    workSessions,
+    notifications,
+  };
 }
 
 /** A fully-shaped issue row — `update()` re-reads it before responding. */
@@ -720,6 +725,46 @@ describe("IssuesService.update — fill-ins change only where the rule opens the
     await expect(service.update(5, { analysisCause: "x" }, ACTOR)).rejects.toBeInstanceOf(
       BadRequestException,
     );
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("IssuesService.update — task type (MA deduction gate)", () => {
+  it("writes a whitelisted type and logs the change", async () => {
+    const { service, issues, activityLogs } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ taskType: null }));
+
+    await service.update(5, { taskType: "bug" }, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: "bug" });
+    expect(activityLogs.create).toHaveBeenCalled();
+  });
+
+  it("400s on a value outside the 3 known types (before any write)", async () => {
+    const { service, issues } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ taskType: null }));
+
+    await expect(
+      service.update(5, { taskType: "chore" as never }, ACTOR),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("null clears the type back to ยังไม่ระบุ (no deduction until set)", async () => {
+    const { service, issues } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ taskType: "feature" }));
+
+    await service.update(5, { taskType: null }, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: null });
+  });
+
+  it("skips the write when the type did not actually change", async () => {
+    const { service, issues } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ taskType: "requirement" }));
+
+    await service.update(5, { taskType: "requirement" }, ACTOR);
+
     expect(issues.update).not.toHaveBeenCalled();
   });
 });

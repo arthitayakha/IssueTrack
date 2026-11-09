@@ -266,13 +266,14 @@ export function ReportsTable({
    * `company_id` จึงระบุคู่ไม่ได้) อ่านจาก `usage` prop ตอน render เพราะ
    * แถวถูกสร้างก่อนที่ `fetchAppUsageAllTime()` จะเสร็จ
    *
-   * **ตอนนี้ MA ยังไม่ถูกหัก** (`MA_DEDUCTION_PAUSED` ใน `reports-api.ts`) —
-   * ฟังก์ชันนั้นคืน map ว่างทันที คอลัมน์นี้จึงโชว์ `0` ซึ่งเป็นค่า **จริง**
-   * (ยังไม่มีการหัก) ไม่ใช่ค่าเดา
+   * **MA ถูกหักแล้ว** (`MA_DEDUCTION_PAUSED = false` ใน `reports-api.ts`) —
+   * คอลัมน์นี้จึงเป็นผลรวมเวลาจริงเฉพาะงาน type feature/requirement
+   * (bug กับงานที่ยังไม่ระบุ type = ไม่หัก)
    *
    * ยังโหลด/ดึงไม่สำเร็จ → `—` (**ห้าม**โชว์ 0 เพราะนั่นคือการโกง —
-   * "ยังไม่รู้" กับ "ใช้ไป 0 ชม." เป็นคนละเรื่อง; เข้าไม่ถึงตอน pause เพราะ
-   * ไม่มี request ให้ล้มเหลว)
+   * "ยังไม่รู้" กับ "ใช้ไป 0 ชม." เป็นคนละเรื่อง; ถ้าปิดหักกลับเป็น
+   * `MA_DEDUCTION_PAUSED = true` จะไม่มี request ให้ล้มเหลว — ตรงนั้น
+   * ฟังก์ชันคืน map ว่างทันที → 0/MA เต็มก้อน)
    */
   const usedHoursCell = (appId: number) => {
     if (usage.status !== "ready") return dash;
@@ -287,9 +288,9 @@ export function ReportsTable({
    * - ยังไม่กรอก MA → "ยังไม่กรอก"
    * - อย่างอื่น → ตัวเลขปัด 1 ตำแหน่ง
    *
-   * **ตอน `MA_DEDUCTION_PAUSED`** → ใช้ไปเป็น 0 เสมอ จึงเหลือ MA เต็มก้อน
-   * (เช่น 40 − 0 = 40) และ "ยังไม่รู้ค่า" ข้อแรกก็เข้าไม่ถึง เพราะไม่มี
-   * request ให้ล้มเหลว
+   * (`MA_DEDUCTION_PAUSED = false` → "ใช้ไป" มาจริง นับเฉพาะ type
+   * feature/requirement — bug/NULL ไม่หัก; ถ้าปิดหักกลับเป็น `true` คอลัมน์
+   * "ยังไม่รู้ค่า" ข้อแรกจะเข้าไม่ถึง เพราะฟังก์ชันคืน map ว่างทันที)
    *
    * หมายเหตุ: "ใช้ไป" เป็นระดับแอป — แอปผูกหลายบริษัทได้จริง (เช่น POS ผูก
    * 3 บริษัท) ตัวเลขนี้จึงซ้ำทุกแถวของแอปนั้น เว้นแต่จะย้ายไปคิดรายคู่
@@ -779,8 +780,8 @@ export function ReportsTable({
    *
    * คอลัมน์สัญญา 5 ตัวแรกอ่านจากตัวแถวเอง (per-pair) ส่วน 2 ตัวสุดท้าย
    * เป็นระดับ**แอป** จึงต้องถาม `usage` prop ตอน render — แถวถูกสร้าง
-   * จาก `GET /apps` ก่อนที่ `fetchAppUsageAllTime()` จะเสร็จ (ตอน
-   * `MA_DEDUCTION_PAUSED` ตัวนั้นเสร็จทันทีด้วย map ว่าง → 0 / MA เต็ม)
+   * จาก `GET /apps` ก่อนที่ `fetchAppUsageAllTime()` จะเสร็จ (ถ้าปิดหัก MA
+   * กลับเป็น `PAUSED = true` ตัวนั้นจะเสร็จทันทีด้วย map ว่าง → 0 / MA เต็ม)
    */
   function companyCell(key: string, r: CompanyRow): React.ReactNode {
     switch (key) {

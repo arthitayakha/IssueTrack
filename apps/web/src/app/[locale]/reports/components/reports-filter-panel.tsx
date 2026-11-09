@@ -1,24 +1,8 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import {
-  Box,
-  Button,
-  Checkbox,
-  Chip,
-  FormControlLabel,
-  IconButton,
-  InputAdornment,
-  Popover,
-  TextField,
-  Typography,
-} from "@mui/material";
+import type { ReactNode } from "react";
+import { Box } from "@mui/material";
 import { useTheme, type Theme } from "@mui/material/styles";
-import FilterListIcon from "@mui/icons-material/FilterList";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import SearchIcon from "@mui/icons-material/Search";
-import CloseIcon from "@mui/icons-material/Close";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
 import AppsIcon from "@mui/icons-material/Apps";
 import BusinessIcon from "@mui/icons-material/Business";
@@ -29,6 +13,11 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import { useTranslations } from "next-intl";
 import { activeFilterCount, EMPTY_FILTERS } from "@/lib/reports-api";
 import type { FilterOptions, ReportFilters, ReportView } from "@/lib/reports-api";
+import {
+  FilterPanel,
+  type FilterOption,
+  type FilterSectionData,
+} from "@/components/filter-panel";
 
 /* ---------------- colour helpers (same mapping as the board filter) ---------------- */
 
@@ -52,16 +41,6 @@ function getPriorityColor(theme: Theme, name: string): string {
 }
 
 /* ---------------- section option type ---------------- */
-
-type PanelOption = {
-  id: number;
-  label: string;
-  checked: boolean;
-  onToggle: () => void;
-  start?: ReactNode;
-};
-
-const FILTER_VISIBLE_ITEMS = 6;
 
 /* ---------------- per-view section order ---------------- */
 
@@ -93,181 +72,6 @@ const VIEW_SECTIONS: Record<ReportView, SectionKey[]> = {
   app: ["status", "priority", "category", "app", "company", "assignee"],
   company: ["company", "app"],
 };
-
-/** Collapsible section with its own search + "show all" — mirrors the board's FilterSection. */
-function FilterSection({
-  title,
-  icon,
-  count,
-  options,
-  initialOpen,
-}: {
-  title: string;
-  icon: ReactNode;
-  count: number;
-  options: PanelOption[];
-  initialOpen: boolean;
-}) {
-  const t = useTranslations("Reports");
-  const [open, setOpen] = useState(initialOpen);
-  const [query, setQuery] = useState("");
-  const [showAll, setShowAll] = useState(false);
-
-  const trimmed = query.trim().toLowerCase();
-  const filtered = trimmed
-    ? options.filter((option) => option.label.toLowerCase().includes(trimmed))
-    : options;
-  const canExpand = options.length > FILTER_VISIBLE_ITEMS;
-  const expanded = showAll || Boolean(trimmed);
-  const visible = canExpand && !expanded ? filtered.slice(0, FILTER_VISIBLE_ITEMS) : filtered;
-  const isEmpty = options.length === 0;
-
-  return (
-    <Box sx={{ borderBottom: "1px solid", borderColor: "divider", "&:last-of-type": { borderBottom: 0 } }}>
-      <Box sx={{ display: "flex", alignItems: "center", pr: 1.25 }}>
-        <Box
-          component="button"
-          type="button"
-          onClick={() => setOpen((value) => !value)}
-          aria-expanded={open}
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-            px: 2,
-            py: 1.25,
-            border: 0,
-            bgcolor: "transparent",
-            color: "text.primary",
-            textAlign: "left",
-            fontFamily: "inherit",
-            cursor: "pointer",
-            "&:hover": { bgcolor: "action.hover" },
-          }}
-        >
-          <ExpandMoreIcon
-            sx={{
-              fontSize: 20,
-              color: "text.secondary",
-              transition: "transform 0.15s ease",
-              transform: open ? "rotate(0deg)" : "rotate(-90deg)",
-            }}
-          />
-          <Box
-            sx={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 26,
-              height: 26,
-              flexShrink: 0,
-              borderRadius: "8px",
-              bgcolor: "action.selected",
-              color: "primary.main",
-            }}
-          >
-            {icon}
-          </Box>
-          <Typography variant="subtitle2" fontWeight={700} noWrap sx={{ flex: 1 }}>
-            {title}
-          </Typography>
-          {count > 0 && (
-            <Chip
-              size="small"
-              color="primary"
-              label={count}
-              sx={{ height: 20, minWidth: 20, fontSize: 11, fontWeight: 700 }}
-            />
-          )}
-        </Box>
-      </Box>
-
-      {open && (
-        <Box sx={{ px: 2, pb: 1.75 }}>
-          {canExpand && (
-            <TextField
-              fullWidth
-              size="small"
-              placeholder={t("filters.searchPlaceholder")}
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setShowAll(false);
-              }}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon sx={{ fontSize: 16, color: "text.secondary" }} />
-                  </InputAdornment>
-                ),
-                endAdornment: query ? (
-                  <InputAdornment position="end">
-                    <IconButton size="small" onClick={() => setQuery("")} aria-label="clear">
-                      <CloseIcon sx={{ fontSize: 14 }} />
-                    </IconButton>
-                  </InputAdornment>
-                ) : null,
-              }}
-              sx={{ mb: 1.25, "& .MuiOutlinedInput-root": { borderRadius: "10px" } }}
-            />
-          )}
-
-          {isEmpty || filtered.length === 0 ? (
-            <Typography variant="body2" color="text.secondary" sx={{ py: 0.5 }}>
-              {t("filters.noResults")}
-            </Typography>
-          ) : (
-            <Box component="ul" sx={{ listStyle: "none", m: 0, p: 0 }}>
-              {visible.map((option) => (
-                <li key={option.id}>
-                  <FormControlLabel
-                    sx={{
-                      m: 0,
-                      width: "100%",
-                      px: 0.5,
-                      py: 0.25,
-                      borderRadius: 1,
-                      alignItems: "center",
-                      "&:hover": { bgcolor: "action.hover" },
-                    }}
-                    control={
-                      <Checkbox
-                        size="small"
-                        color="primary"
-                        checked={option.checked}
-                        onChange={option.onToggle}
-                      />
-                    }
-                    label={
-                      <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
-                        {option.start}
-                        <Typography variant="body2" noWrap>
-                          {option.label}
-                        </Typography>
-                      </Box>
-                    }
-                  />
-                </li>
-              ))}
-            </Box>
-          )}
-
-          {canExpand && !trimmed && (
-            <Button
-              size="small"
-              onClick={() => setShowAll((value) => !value)}
-              sx={{ mt: 0.5, px: 1, textTransform: "none", fontWeight: 600 }}
-            >
-              {showAll ? t("filters.showLess") : t("filters.showMore")}
-            </Button>
-          )}
-        </Box>
-      )}
-    </Box>
-  );
-}
 
 /* ---------------- panel ---------------- */
 
@@ -323,7 +127,7 @@ export function ReportsFilterPanel({
     });
   };
 
-  const statusOptions: PanelOption[] = options.statuses.map((status) => ({
+  const statusOptions: FilterOption[] = options.statuses.map((status) => ({
     id: status.id,
     label: status.name,
     checked: filters.statusIds.includes(status.id),
@@ -342,7 +146,7 @@ export function ReportsFilterPanel({
     ),
   }));
 
-  const appOptions: PanelOption[] = options.apps.map((app) => ({
+  const appOptions: FilterOption[] = options.apps.map((app) => ({
     id: app.id,
     label: app.name,
     checked: filters.appIds.includes(app.id),
@@ -350,7 +154,7 @@ export function ReportsFilterPanel({
     start: <AppsIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main" }} />,
   }));
 
-  const companyOptions: PanelOption[] = options.companies.map((company) => ({
+  const companyOptions: FilterOption[] = options.companies.map((company) => ({
     id: company.id,
     label: company.name,
     checked: filters.companyIds.includes(company.id),
@@ -358,7 +162,7 @@ export function ReportsFilterPanel({
     start: <BusinessIcon sx={{ fontSize: 16, flexShrink: 0, color: "warning.main" }} />,
   }));
 
-  const priorityOptions: PanelOption[] = options.priorities.map((priority) => ({
+  const priorityOptions: FilterOption[] = options.priorities.map((priority) => ({
     id: priority.id,
     label: priority.name,
     checked: filters.priorityIds.includes(priority.id),
@@ -368,7 +172,7 @@ export function ReportsFilterPanel({
     ),
   }));
 
-  const categoryOptions: PanelOption[] = options.categories.map((category) => ({
+  const categoryOptions: FilterOption[] = options.categories.map((category) => ({
     id: category.id,
     label: category.name,
     checked: filters.categoryIds.includes(category.id),
@@ -376,7 +180,7 @@ export function ReportsFilterPanel({
     start: <CategoryIcon sx={{ fontSize: 16, flexShrink: 0, color: "secondary.main" }} />,
   }));
 
-  const assigneeOptions: PanelOption[] = options.people.map((person) => ({
+  const assigneeOptions: FilterOption[] = options.people.map((person) => ({
     id: person.id,
     label: person.name,
     checked: filters.assigneeIds.includes(person.id),
@@ -384,7 +188,7 @@ export function ReportsFilterPanel({
     start: <PersonIcon sx={{ fontSize: 16, flexShrink: 0, color: "primary.main" }} />,
   }));
 
-  const reporterOptions: PanelOption[] = options.reporters.map((person) => ({
+  const reporterOptions: FilterOption[] = options.reporters.map((person) => ({
     id: person.id,
     label: person.name,
     checked: filters.reporterIds.includes(person.id),
@@ -395,7 +199,7 @@ export function ReportsFilterPanel({
   /** Everything a section needs, keyed once — the view decides the order. */
   const sections: Record<
     SectionKey,
-    { title: string; icon: ReactNode; count: number; options: PanelOption[] }
+    { title: string; icon: ReactNode; count: number; options: FilterOption[] }
   > = {
     assignee: {
       title: t("filters.sectionAssignee"),
@@ -441,107 +245,32 @@ export function ReportsFilterPanel({
     },
   };
 
+  /**
+   * แปลง Record → array ตามลำดับของ view — ส่วน chrome ทั้งหมด (หัว panel /
+   * ปุ่มล้าง) อยู่ที่ `components/filter-panel.tsx` แชร์กับบอร์ดและ `/systems`
+   */
+  const orderedSections: FilterSectionData[] = VIEW_SECTIONS[view].map((key, index) => {
+    const section = sections[key];
+    return {
+      // keyed by view too — switching view re-mounts the sections so
+      // each one returns to its per-view default open state
+      key: `${view}-${key}`,
+      title: section.title,
+      icon: section.icon,
+      count: section.count,
+      options: section.options,
+      initialOpen: startsOpen(section.count, index === 0),
+    };
+  });
+
   return (
-    <Popover
+    <FilterPanel
       open={open}
       anchorEl={anchorEl}
       onClose={onClose}
-      anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-      transformOrigin={{ vertical: "top", horizontal: "left" }}
-      slotProps={{
-        paper: {
-          sx: {
-            width: 360,
-            maxWidth: "calc(100vw - 24px)",
-            maxHeight: "72vh",
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            borderRadius: 2,
-            border: "1px solid",
-            borderColor: "divider",
-            boxShadow: theme.custom.cardShadow,
-          },
-        },
-      }}
-    >
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1.5,
-          px: 2,
-          py: 1.5,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        <Box
-          sx={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 30,
-            height: 30,
-            borderRadius: "8px",
-            bgcolor: "primary.main",
-            color: "primary.contrastText",
-          }}
-        >
-          <FilterListIcon fontSize="small" />
-        </Box>
-        <Typography variant="subtitle1" fontWeight={700} sx={{ flex: 1 }}>
-          {t("filters.heading")}
-        </Typography>
-        {totalSelected > 0 && (
-          <Chip
-            size="small"
-            color="primary"
-            label={t("filters.selectedCount", { count: totalSelected })}
-            sx={{ height: 22, fontSize: 11, fontWeight: 700 }}
-          />
-        )}
-      </Box>
-
-      <Box sx={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
-        {VIEW_SECTIONS[view].map((key, index) => {
-          const section = sections[key];
-          return (
-            <FilterSection
-              // keyed by view too — switching view re-mounts the sections so
-              // each one returns to its per-view default open state
-              key={`${view}-${key}`}
-              title={section.title}
-              icon={section.icon}
-              count={section.count}
-              options={section.options}
-              initialOpen={startsOpen(section.count, index === 0)}
-            />
-          );
-        })}
-      </Box>
-
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          px: 2,
-          py: 1.25,
-          borderTop: "1px solid",
-          borderColor: "divider",
-          bgcolor: "background.paper",
-        }}
-      >
-        <Button
-          size="small"
-          onClick={() => onFiltersChange({ ...EMPTY_FILTERS })}
-          disabled={totalSelected === 0}
-          startIcon={<DeleteOutlineIcon fontSize="small" />}
-          sx={{ textTransform: "none", fontWeight: 600 }}
-        >
-          {t("filters.clear")}
-        </Button>
-      </Box>
-    </Popover>
+      sections={orderedSections}
+      onClearAll={() => onFiltersChange({ ...EMPTY_FILTERS })}
+      selectedCount={totalSelected}
+    />
   );
 }

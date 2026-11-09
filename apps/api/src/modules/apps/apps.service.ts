@@ -55,22 +55,24 @@ export class AppsService {
   ) {}
 
   /**
-   * `myCompanyId` (มาจาก `?mine=1`) — เมื่อมีค่าจะคืนเฉพาะแอปที่บริษัทของผู้เรียก
-   * ผูกอยู่ใน `app_companies` เท่านั้น (ฟอร์มรายงานปัญหา) ค่า `null` = ทุกแอป
-   * ซึ่งเป็นทั้งกรณีไม่ได้ส่ง flag และกรณีผู้เรียกไม่มีบริษัท (**fail-open**:
-   * แอดมิน/โปรแกรมเมอร์ต้องยังรายงานปัญหาได้)
+   * **ขอบเขตการอ่านรายการแอป** — `scope.visible` มาจาก `?visible=1` ของฟอร์ม
+   * รายงานปัญหา (`/issues/new` → `fetchVisibleApps()`) เมื่อตั้ง flag จะคืนเฉพาะ
+   * แอปที่ **เปิดใช้งาน** (`is_visible = true`) เท่านั้น — **ไม่สนว่าแอปนั้นจะผูก
+   * กับบริษัทของผู้เรียกหรือไม่** (ข้อสรุปจากพี่: เชื่อมหรือไม่เชื่อม ลูกค้าก็
+   * เห็นแอปทุกตัว การผูก `app_companies` จึงไม่ได้ปิดกั้นอะไรอีกแล้ว)
    *
-   * ใช้ `EXISTS` ไม่ใช้ JOIN — คู่ แอป×บริษัท มีได้หลายแถว (migration 1812)
-   * JOIN จะคูณแอปซ้ำแล้ว `getMany()` ต้องมารอ DISTINCT เอง
+   * ไม่ส่ง flag (แท็บแอปใน `/master-data`, `/systems`, `/reports`, ชิปบนบอร์ด)
+   * = พฤติกรรมเดิมทุกประการ: คืน **ทุกแอปรวมที่ปิดสถานะ** เพราะหน้าเหล่านั้น
+   * ต้องเห็นแอปที่ปิดเพื่อเปิดกลับได้ / ดูชั่วโมง MA ย้อนหลัง
+   *
+   * **ไม่กรองอายุสัญญา** — คู่เดิมมีได้หลายช่วงต่ออายุ (append แถวใหม่) การจะ
+   * บอกว่า "หมดอายุ" ต้องดูช่วงล่าสุด ไม่ใช่แถวเก่าที่ expiresAt ผ่านไปแล้ว
    */
-  async findAll(params: PaginationParams, myCompanyId: number | null = null) {
-    const apps = myCompanyId
+  async findAll(params: PaginationParams, scope: { visible?: boolean } = {}) {
+    const apps = scope.visible
       ? await this.apps
           .createQueryBuilder("app")
-          .where(
-            "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = app.id AND ac.company_id = :companyId)",
-            { companyId: myCompanyId },
-          )
+          .where("app.is_visible = true")
           .orderBy("app.id", "ASC")
           .getMany()
       : await this.apps.find({ order: { id: "ASC" } });
