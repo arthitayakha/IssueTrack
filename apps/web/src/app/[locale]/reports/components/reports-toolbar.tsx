@@ -315,7 +315,13 @@ export function ReportsToolbar({
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
           sx={{ flexGrow: 1, maxWidth: 480, minWidth: 200 }}
-          inputProps={{ "aria-label": t("toolbar.search") }}
+          inputProps={{
+            "aria-label": t("toolbar.search"),
+            // ไม่ให้ password manager เทอีเมลที่บันทึกไว้ลงช่องค้นหา
+            // (บั๊กเดียวกับ toolbar ของหน้าบอร์ด — ดู profile-dialog.tsx)
+            autoComplete: "off",
+            name: "reports-search",
+          }}
           InputProps={{
             startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
           }}

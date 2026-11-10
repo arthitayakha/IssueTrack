@@ -44,13 +44,14 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
  *
  * **ช่วยตัดสินใจว่าจะซื้อกี่ชม.** — กล่องสรุปโชว์ 3 ตัวเลขของคู่นี้ (MA ปัจจุบัน /
  * ใช้ไป / คงเหลือ — ตัวเดียวกับตาราง ผ่าน `used` + `usageStatus` จากหน้า), ระหว่าง
- * พิมพ์โชว์สด "MA รวมหลังซื้อ" กับ "คงเหลือหลังซื้อ" (`คงเหลือเดิม + ที่ซื้อ` —
- * "ใช้ไป" ไม่เปลี่ยนตอนซื้อ), และมีปุ่มด่วน 10/20/50 ใต้ช่องกรอก · ข้อความ intro
- * ย้ำว่า **บวกกับ MA เดิม ไม่ใช่การต่ออายุ**
+ * พิมพ์โชว์สด "MA หลังซื้อ" (= ที่ซื้อ — **สูตรใหม่: ไม่บวกของเดิม**) กับ
+ * "คงเหลือหลังซื้อ" (`ที่ซื้อ − ใช้ไป`, "ใช้ไป" ไม่เปลี่ยนตอนซื้อ), และมีปุ่มด่วน
+ * 10/20/50 ใต้ช่องกรอก · ข้อความ intro ย้ำว่า **ได้ MA เท่ากับที่ซื้อ ไม่รวมของ
+ * เดิม และไม่ใช่การต่ออายุ**
  *
  * **สถานะข้อมูล "ใช้ไป" ต้องไม่เงียบ**: ยังโหลด → ตัวเลขโชว์ "…", ดึงไม่สำเร็จ →
  * "—" พร้อมคำเตือนใต้กล่อง — ตัวเลขพวกนี้**ใช้แค่ประกอบการตัดสินใจ** ไม่ป้อนกลับ
- * ตอนบันทึก (เซิร์ฟเวอร์บวก `maHours` เดิม + ที่ซื้ออย่างเดียว) จึง**ไม่ปิดปุ่ม
+ * ตอนบันทึก (เซิร์ฟเวอร์ตั้ง `maHours` = ที่ซื้ออย่างเดียว) จึง**ไม่ปิดปุ่ม
  * บันทึก**ตอนโหลด ต่างจากฟอร์มต่ออายุที่ต้องรู้คงเหลือเพื่อทบชั่วโมง
  */
 export default function BuyHoursDialog({
@@ -95,7 +96,10 @@ export default function BuyHoursDialog({
   }, [open]);
 
   const unit = t("hoursUnit");
-  /** MA ของแถวนี้ (`null` = ยังไม่เคยกรอก — เซิร์ฟเวอร์ตอนซื้อนับเป็น 0) */
+  /**
+   * MA ของแถวนั้น — ใช้โชว์ "ชั่วโมง MA ปัจจุบัน" ในกล่องสรุปเท่านั้น · **สูตร
+   * ซื้อไม่ได้ใช้ค่านี้แล้ว** (แถวใหม่ได้ `maHours = ที่ซื้อ` ล้วน)
+   */
   const current = record?.link.maHours ?? 0;
   const usageReady = usageStatus === "ready";
   /** ยังรู้ค่า "ใช้ไป" ไม่ได้ — "…" ตอนโหลด / "—" ตอนดึงไม่สำเร็จ */
@@ -108,11 +112,18 @@ export default function BuyHoursDialog({
   const parsed = hours.trim() === "" ? null : Number(hours);
   /** ตัวเลขที่จะบันทึกได้จริง — จำนวนเต็ม > 0 (ตรงกับฝั่งเซิร์ฟเวอร์) */
   const validHours = parsed !== null && Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-  /** preview "MA รวมหลังซื้อ" — แสดงสดขณะพิมพ์ (ฝั่งเซิร์ฟเวอร์เป็นคนจริงตอนบันทึก) */
-  const totalAfter = validHours !== null ? current + validHours : null;
-  /** preview "คงเหลือหลังซื้อ" — = คงเหลือตอนนี้ + ที่ซื้อ ("ใช้ไป" ไม่เปลี่ยนตอนซื้อ) */
+  /**
+   * preview "MA หลังซื้อ" — **= ที่ซื้อเท่านั้น** (สูตรใหม่ของ `buyHours()` ไม่บวก
+   * ของเดิม) · แสดงสดขณะพิมพ์ (ค่าจริงฝั่งเซิร์ฟเวอร์ตอนบันทึก)
+   */
+  const totalAfter = validHours !== null ? validHours : null;
+  /**
+   * preview "คงเหลือหลังซื้อ" — = `ที่ซื้อ − ใช้ไป` เพราะแถวใหม่ได้ `maHours =
+   * ที่ซื้อ` ("ใช้ไป" ไม่เปลี่ยนตอนซื้อ) · อาจติดลบได้ถ้าใช้ไปเกินที่ซื้อ —
+   * โชว์ตามจริงเหมือนคอลัมน์ "คงเหลือ" ในตาราง
+   */
   const remainingAfter =
-    validHours !== null && remainingNow !== null ? round1(remainingNow + validHours) : null;
+    validHours !== null && remainingNow !== null ? round1(validHours - (used ?? 0)) : null;
 
   async function handleSave() {
     if (!record || saving) return;
@@ -170,7 +181,7 @@ export default function BuyHoursDialog({
               {[record.link.name, record.app.name].filter(Boolean).join(" · ")}
             </Typography>
 
-            {/* ย้ำตั้งแต่บรรทัดแรกว่า "บวกกับ MA เดิม ไม่ใช่ต่ออายุ" */}
+            {/* ย้ำตั้งแต่บรรทัดแรกว่า "ได้ MA เท่ากับที่ซื้อ ไม่รวมของเดิม ไม่ใช่ต่ออายุ" */}
             <Typography variant="caption" color="text.secondary">
               {t("buyHoursIntro")}
             </Typography>
@@ -253,11 +264,10 @@ export default function BuyHoursDialog({
               ))}
             </Box>
 
-            {/* preview สดขณะพิมพ์ — MA รวม (รู้ได้เสมอ) + คงเหลือหลังซื้อ (ต้องรู้ "ใช้ไป") */}
+            {/* preview สดขณะพิมพ์ — MA หลังซื้อ (รู้ได้เสมอ) + คงเหลือหลังซื้อ (ต้องรู้ "ใช้ไป") */}
             {(totalAfter !== null || remainingAfter !== null) && (
               <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
-                {totalAfter !== null &&
-                  statRow(t("buyHoursPreview"), `${current} → ${totalAfter} ${unit}`)}
+                {totalAfter !== null && statRow(t("buyHoursPreview"), `${totalAfter} ${unit}`)}
                 {remainingAfter !== null &&
                   remainingNow !== null &&
                   statRow(

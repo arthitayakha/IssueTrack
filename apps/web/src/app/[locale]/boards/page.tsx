@@ -1901,12 +1901,20 @@ function IssueDetailDialog({
                 {current?.appName ?? "—"}
               </Typography>
             </Grid>
+            {/* บริษัทของผู้แจ้ง — read-only; มาจาก `customerCompanyName` ใน
+                issues.service.toResponse() (relation customer.company) */}
             <Grid item xs={12} sm={4}>
               <Typography variant="caption" color="text.secondary" display="block">
-                {t("detail.category")}
+                {t("detail.company")}
               </Typography>
-              <Typography variant="body2" sx={{ mt: 0.5 }}>
-                {categoryName}
+              <Typography
+                variant="body2"
+                sx={{
+                  mt: 0.5,
+                  color: current?.customerCompanyName ? "text.primary" : "text.secondary",
+                }}
+              >
+                {current?.customerCompanyName ?? "—"}
               </Typography>
             </Grid>
             <Grid item xs={12} sm={4}>
@@ -1918,6 +1926,14 @@ function IssueDetailDialog({
                 sx={{ mt: 0.5, color: statusName ? "text.primary" : "text.secondary" }}
               >
                 {statusName ?? "—"}
+              </Typography>
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {t("detail.category")}
+              </Typography>
+              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                {categoryName}
               </Typography>
             </Grid>
             <Grid item xs={12} sm={4}>
@@ -3428,7 +3444,9 @@ function KanbanView({
             priorityIds: selectedPriorityIds,
             categoryIds: selectedCategoryIds,
             appIds: selectedAppIds,
-            // the API resolves companies through the card's app (app_companies)
+            // the API resolves companies through the card's REPORTER
+            // (issues.customer_id → users.company_id) — same rule the table
+            // and folder apply in memory via `companyReporterIds`
             companyIds: selectedCompanyIds,
             assigneeIds: selectedAssigneeIds,
             reporterIds: selectedReporterIds,
@@ -3975,7 +3993,7 @@ function TableView({
   selectedPriorityIds,
   selectedCategoryIds,
   selectedAppIds,
-  companyAppIds,
+  companyReporterIds,
   selectedAssigneeIds,
   selectedReporterIds,
   searchQuery,
@@ -3999,11 +4017,11 @@ function TableView({
   selectedCategoryIds: number[];
   selectedAppIds: number[];
   /**
-   * Company filter resolved to app ids: `null` = no company selected (no
-   * constraint), `[]` = a selected company with no linked apps (must match
+   * Company filter resolved to **reporter ids**: `null` = no company selected
+   * (no constraint), `[]` = a selected company with no members (must match
    * nothing — an empty array on its own would read as "no filter").
    */
-  companyAppIds: number[] | null;
+  companyReporterIds: string[] | null;
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
   searchQuery: string;
@@ -4034,7 +4052,7 @@ function TableView({
     selectedPriorityIds.length > 0 ||
     selectedCategoryIds.length > 0 ||
     selectedAppIds.length > 0 ||
-    companyAppIds !== null ||
+    companyReporterIds !== null ||
     selectedAssigneeIds.length > 0 ||
     selectedReporterIds.length > 0 ||
     searchQuery.trim() !== "";
@@ -4053,8 +4071,9 @@ function TableView({
         if (!matchCat && !matchCustom) return false;
       }
       if (selectedAppIds.length > 0 && !selectedAppIds.includes(issue.appId ?? -1)) return false;
-      // company → the card's app must be linked to one of the selected ones
-      if (companyAppIds !== null && !companyAppIds.includes(issue.appId ?? -1)) return false;
+      // company → the card's REPORTER must belong to one of the selected ones
+      // (no reporter → "-1" never matches → hidden, same rule as the API)
+      if (companyReporterIds !== null && !companyReporterIds.includes(String(issue.customerId ?? -1))) return false;
       if (selectedAssigneeIds.length > 0) {
         if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
       }
@@ -4068,7 +4087,7 @@ function TableView({
       }
       return true;
     });
-  }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, companyAppIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
+  }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, companyReporterIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
   const pageIssues = filteredIssues.slice((page - 1) * 10, page * 10);
 
   const handleSaveIssue = async (data: { title: string; description: string; statusId: number; labelId?: number | null }) => {
@@ -4527,7 +4546,7 @@ function FolderView({
   selectedPriorityIds,
   selectedCategoryIds,
   selectedAppIds,
-  companyAppIds,
+  companyReporterIds,
   selectedAssigneeIds,
   selectedReporterIds,
   searchQuery,
@@ -4556,7 +4575,7 @@ function FolderView({
   selectedCategoryIds: number[];
   selectedAppIds: number[];
   /** See TableView: `null` = no company selected, `[]` = matches nothing. */
-  companyAppIds: number[] | null;
+  companyReporterIds: string[] | null;
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
   searchQuery: string;
@@ -4594,7 +4613,7 @@ function FolderView({
     selectedPriorityIds.length > 0 ||
     selectedCategoryIds.length > 0 ||
     selectedAppIds.length > 0 ||
-    companyAppIds !== null ||
+    companyReporterIds !== null ||
     selectedAssigneeIds.length > 0 ||
     selectedReporterIds.length > 0 ||
     searchQuery.trim() !== "";
@@ -4625,8 +4644,9 @@ function FolderView({
         if (!matchCat && !matchCustom) return false;
       }
       if (selectedAppIds.length > 0 && !selectedAppIds.includes(issue.appId ?? -1)) return false;
-      // company → the card's app must be linked to one of the selected ones
-      if (companyAppIds !== null && !companyAppIds.includes(issue.appId ?? -1)) return false;
+      // company → the card's REPORTER must belong to one of the selected ones
+      // (no reporter → "-1" never matches → hidden, same rule as the API)
+      if (companyReporterIds !== null && !companyReporterIds.includes(String(issue.customerId ?? -1))) return false;
       if (selectedAssigneeIds.length > 0) {
         if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
       }
@@ -4647,7 +4667,7 @@ function FolderView({
     selectedPriorityIds,
     selectedCategoryIds,
     selectedAppIds,
-    companyAppIds,
+    companyReporterIds,
     selectedAssigneeIds,
     selectedReporterIds,
     searchQuery,
@@ -5433,26 +5453,31 @@ function BoardsPageInner() {
   }, [issueParam]);
 
   /**
-   * Company filter resolved to app ids for the two in-memory views (table /
-   * folder) — the kanban columns ask the API with `companyIds` instead.
+   * Company filter resolved to **reporter ids** for the two in-memory views
+   * (table / folder) — the kanban columns ask the API with `companyIds`
+   * instead and the server runs the identical rule as a subquery.
    * `null` = no company selected (no constraint at all); `[]` = a selected
-   * company that no app is linked to, which must match nothing (an empty
-   * array without the null would read as "no filter" and show every card).
+   * company that has no members, which must match nothing (an empty array
+   * without the null would read as "no filter" and show every card).
    *
-   * Follows the same path as the API side — **งาน → แอป → บริษัท**
-   * (`app_companies`; `issues` has no `company_id`). Still not "user ↔
-   * company": `users` has no `company_id` yet, so this only narrows cards by
-   * their app's linked companies.
+   * Path is **การ์ด → ผู้แจ้ง → บริษัท** (`issues.customer_id` →
+   * `users.company_id`): a card is "of" a company because the person who
+   * reported it belongs to that company — exactly what the company field on
+   * the user form records. A card with no reporter, or a reporter with no
+   * company, is never in the list → hidden while a company filter is on
+   * (deliberate: it belongs to no company).
+   *
+   * NOTE: the OLD path (card → app → `app_companies`) is gone here. It made
+   * every company return the same cards whenever one app was linked to all
+   * of them (POS was linked to all three).
    */
-  const companyAppIds = useMemo<number[] | null>(() => {
+  const companyReporterIds = useMemo<string[] | null>(() => {
     if (selectedCompanyIds.length === 0) return null;
     const wanted = new Set(selectedCompanyIds);
-    const ids = new Set<number>();
-    for (const app of apps) {
-      if (app.companies?.some((link) => wanted.has(link.id))) ids.add(app.id);
-    }
-    return [...ids];
-  }, [selectedCompanyIds, apps]);
+    return users
+      .filter((member) => member.companyId != null && wanted.has(member.companyId))
+      .map((member) => member.id);
+  }, [selectedCompanyIds, users]);
 
   const activeFilterChips = useMemo(() => {
     type FilterChipEntry = {
@@ -5847,7 +5872,7 @@ function BoardsPageInner() {
                 selectedPriorityIds={selectedPriorityIds}
                 selectedCategoryIds={selectedCategoryIds}
                 selectedAppIds={selectedAppIds}
-                companyAppIds={companyAppIds}
+                companyReporterIds={companyReporterIds}
                 selectedAssigneeIds={selectedAssigneeIds}
                 selectedReporterIds={selectedReporterIds}
                 searchQuery={searchQuery}
@@ -5896,7 +5921,7 @@ function BoardsPageInner() {
                 selectedPriorityIds={selectedPriorityIds}
                 selectedCategoryIds={selectedCategoryIds}
                 selectedAppIds={selectedAppIds}
-                companyAppIds={companyAppIds}
+                companyReporterIds={companyReporterIds}
                 selectedAssigneeIds={selectedAssigneeIds}
                 selectedReporterIds={selectedReporterIds}
                 searchQuery={searchQuery}

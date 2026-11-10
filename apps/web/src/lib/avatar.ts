@@ -6,12 +6,24 @@ import { useAuthStore } from "./auth-store";
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002";
 
 /**
- * objectURLs cached per user id, so the navbar, the avatar menu and the
- * profile tab share one request instead of fetching the picture three times.
- * A module-level map (not state) survives remounts; `invalidateAvatar`
- * drops the entry after an upload/removal so the next read refetches.
+ * The signed-in user's picture per user id: an objectURL, or **null when the
+ * user has no picture** — a miss is cached exactly like a hit. The navbar, the
+ * avatar menu and the profile tab all remount on every navigation (each page
+ * renders its own `DashboardLayout`), and only a *successful* lookup used to be
+ * cached, so a 404 fired one request per consumer per navigation — a page full
+ * of them. `invalidateAvatar` drops the entry after an upload/removal so the
+ * next read refetches; a reload clears this module-level map anyway, so a
+ * picture changed on another device shows up on the next page load.
  */
-const urlCache = new Map<string, string>();
+const urlCache = new Map<string, string | null>();
+
+/**
+ * Lookups currently on the wire, keyed by user id. The navbar and the profile
+ * popup mount together and would otherwise both ask for the same picture;
+ * sharing one promise also keeps React StrictMode's double-invoked effect to a
+ * single request in dev.
+ */
+const inflight = new Map<string, Promise<string | null>>();
 
 /**
  * Listeners fire whenever a picture is uploaded/removed — every
@@ -20,43 +32,69 @@ const urlCache = new Map<string, string>();
  */
 const listeners = new Set<() => void>();
 
-function revoke(userId: string) {
+function drop(userId: string) {
   const cached = urlCache.get(userId);
-  if (cached) {
-    URL.revokeObjectURL(cached);
-    urlCache.delete(userId);
-  }
+  if (cached) URL.revokeObjectURL(cached);
+  urlCache.delete(userId);
+  inflight.delete(userId);
 }
 
 /** Call after uploading/deleting the picture so every consumer refetches. */
 export function invalidateAvatar(userId?: string) {
-  if (userId) revoke(userId);
-  else for (const id of urlCache.keys()) revoke(id);
+  const ids = userId ? [userId] : [...new Set([...urlCache.keys(), ...inflight.keys()])];
+  for (const id of ids) drop(id);
   for (const listener of listeners) listener();
 }
 
 /**
  * The signed-in user's picture as an objectURL, or null when none exists
  * (callers render the initials avatar) / the lookup failed.
+ *
+ * A **204** ("no picture yet") is remembered as `null`, so that answer costs
+ * one request per session instead of one per mount. Anything else — a
+ * transport failure, the API restarting, an expired token — is NOT cached, so
+ * a blip cannot pin the initials avatar until the next upload.
  */
 export function fetchOwnAvatar(token: string, userId: string): Promise<string | null> {
-  const cached = urlCache.get(userId);
-  if (cached) return Promise.resolve(cached);
-  return fetch(`${API_URL}/auth/profile/avatar`, {
+  if (urlCache.has(userId)) return Promise.resolve(urlCache.get(userId) ?? null);
+  const pending = inflight.get(userId);
+  if (pending) return pending;
+
+  const request = fetch(`${API_URL}/auth/profile/avatar`, {
     headers: { Authorization: `Bearer ${token}` },
-    // never reuse the browser's HTTP cache: a cached 404 would keep the
-    // initials avatar up long after a picture exists (and a cached picture
-    // would outlive a replace)
+    // never reuse the browser's HTTP cache: a cached miss (204) would keep
+    // the initials avatar up long after a picture exists (and a cached
+    // picture would outlive a replace)
     cache: "no-store",
   })
-    .then((res) => (res.ok ? res.blob() : null))
+    .then((res) => {
+      // 204 = "there is no picture", a fact worth remembering. This branch
+      // must run before res.blob(): a 204 has no body, and caching that empty
+      // blob as an objectURL would render a broken image instead of the
+      // initials avatar.
+      if (res.status === 204) return null;
+      if (!res.ok) throw new Error(`avatar lookup failed: ${res.status}`);
+      return res.blob();
+    })
     .then((blob) => {
-      if (!blob) return null;
+      // invalidated while in flight → a newer lookup owns the cache now
+      if (inflight.get(userId) !== request) return null;
+      inflight.delete(userId);
+      if (!blob) {
+        urlCache.set(userId, null);
+        return null;
+      }
       const url = URL.createObjectURL(blob);
       urlCache.set(userId, url);
       return url;
     })
-    .catch(() => null);
+    .catch(() => {
+      if (inflight.get(userId) === request) inflight.delete(userId);
+      return null;
+    });
+
+  inflight.set(userId, request);
+  return request;
 }
 
 /** `null` until the fetch settles — callers show the initials avatar meanwhile. */

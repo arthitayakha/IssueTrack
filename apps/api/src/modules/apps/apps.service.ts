@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { In, IsNull, Repository } from "typeorm";
 import { App } from "./entities/app.entity";
 import { AppCompany } from "./entities/app-company.entity";
 import { Company } from "../companies/entities/company.entity";
@@ -48,6 +48,14 @@ export interface AppRenewInput {
   expiresAt?: string | null;
   /** ชั่วโมง MA ของช่วงใหม่ (บังคับ) — รับ string ด้วย (ช่องกรอกในฟอร์ม) */
   maHours?: number | string | null;
+  /**
+   * **ชั่วโมงที่ทบมาจากช่วงแรก** (แสดงผลเท่านั้น, ไม่บังคับ) — ฟอร์มต่ออายุ
+   * คำนวณไว้แล้ว (`carryShown`) ส่งมาให้เก็บ เพื่อโชว์ย้อนหลังในป๊อปอัพ
+   * `/systems` · ไม่ส่ง / ไม่ทบ → `NULL` · ต้องเป็นจำนวนเต็ม ≥ 0 และ **ไม่เกิน
+   * `maHours`** (เกิน = 400) · ค่านี้**ไม่ป้อนตัวเลขหลัก** (`maHours` / ใช้ไป /
+   * คงเหลือ ยังมาจากสูตรเดิม) จึงถูก spoof ได้แค่ทำให้ label ผิด
+   */
+  carriedHours?: number | string | null;
 }
 
 /**
@@ -264,6 +272,8 @@ export class AppsService {
     const startedAt = this.requireDate(data.startedAt, "startedAt");
     const expiresAt = this.requireDate(data.expiresAt, "expiresAt");
     const maHours = this.requireHours(data.maHours);
+    // ชั่วโมงที่ทบมา — ค่าแสดงผลของแถวนี้ (ไม่บังคับ, ดู `requireCarriedHours`)
+    const carriedHours = this.requireCarriedHours(data.carriedHours, maHours);
     if (expiresAt <= startedAt) {
       throw new BadRequestException("expiresAt must be later than startedAt");
     }
@@ -275,6 +285,8 @@ export class AppsService {
         startedAt,
         expiresAt,
         maHours,
+        // `NULL` = แถวนี้ไม่ได้ทบ (แถวเก่า/แถวที่ทบไม่ได้/ไม่ส่งค่า) — UI ซ่อนเอง
+        carriedHours,
         // ช่วงใหม่เริ่มจากศูนย์ — `reconcile()` จะคำนวณสถานะ/รอบแจ้งเตือนให้เอง
         expiryStatus: "none",
         expiryNotified: "none",
@@ -286,12 +298,20 @@ export class AppsService {
   /**
    * **ซื้อชั่วโมง MA เพิ่ม** — append แถวใหม่ให้คู่เดิมโดย**คงวันที่สัญญาเท่า
    * เดิม** (คัดลอก `startedAt` / `expiresAt` จากแถวนั้น) ต่างจาก `renewRecord()`
-   * ที่เปิดช่วงใหม่ด้วยวันใหม่ · `maHours` = ของแถวนั้น (`null` = ยังไม่กรอก →
-   * นับเป็น 0) + จำนวนชั่วโมงที่ซื้อ
+   * ที่เปิดช่วงใหม่ด้วยวันใหม่
+   *
+   * **`maHours` = จำนวนชั่วโมงที่ซื้อ ล้วน ๆ** (ข้อสรุปจากผู้ใช้ — เดิมเป็น
+   * `ของแถวนั้น + ที่ซื้อ` ซึ่งทำให้ "ซื้อ 40 ชม." ออกมาเป็น 80): แถวที่ซื้อคือ
+   * *สิทธิ์ใหม่เท่าที่ซื้อ* ไม่ใช่ยอดรวมของคู่ · ผลข้างเคียงที่ยอมรับแล้ว —
+   * คอลัมน์ "คงเหลือ" (`maHours − ใช้ไป` ระดับคู่) ของแถวนี้จะเป็น `ที่ซื้อ −
+   * ใช้ไป` (ซื้อ 40 ตอนใช้ไป 40 = 0) จึงทำให้ปุ่ม "ซื้อชั่วโมง" (เปิดเมื่อคงเหลือ
+   * ≤ 0) ยังอยู่ให้ซื้อซ้ำได้ · **ต่างจากต่ออายุ** ที่รวม "ใช้ไป" ของช่วงก่อน
+   * เข้าไปใน `maHours` ด้วย เพื่อให้คงเหลือ = จำนวนที่พิมพ์
    *
    * แถวใหม่ได้ `kind = 'buy'` เพื่อให้แท็บ "ประวัติการต่ออายุ" แยกออกว่าเป็น
-   * การซื้อ — สองแถบนั้นมีวันที่เท่ากันแต่ `maHours` ต่างกัน ดูจากตัวเลขอย่าง
-   * เดียวไม่ได้ว่าแถวไหนคือการซื้อ · แถวใหม่มี `id` ใหญ่สุด → ขึ้นเป็นช่วง
+   * การซื้อ — สองแถบนั้นมีวันที่เท่ากัน และ `maHours` **คนละความหมาย**: แถว
+   * `renew` = ยอดของช่วง, แถว `buy` = ที่ซื้อ (ดูจากตัวเลขอย่างเดียวจึงบอกไม่ได้
+   * ว่าแถวไหนคือการซื้อ → ต้องดู `kind`) · แถวใหม่มี `id` ใหญ่สุด → ขึ้นเป็นช่วง
    * ล่าสุดของคู่ ตาราง `/systems` เห็นค่า MA ใหม่ทันที แถบเดิมตกลงเป็น history
    *
    * `expiryStatus` / `expiryNotified` **คัดลอกจากแถบตั้งต้น** (ไม่รีเซ็ตเป็น
@@ -316,7 +336,8 @@ export class AppsService {
         companyId: source.companyId,
         startedAt: source.startedAt,
         expiresAt: source.expiresAt,
-        maHours: (source.maHours ?? 0) + hours,
+        // **เท่ากับที่ซื้อเท่านั้น** — ไม่รวม MA ของแถวก่อน (ดู docblock)
+        maHours: hours,
         kind: "buy",
         expiryStatus: source.expiryStatus,
         expiryNotified: source.expiryNotified,
@@ -358,6 +379,28 @@ export class AppsService {
     return normalized;
   }
 
+  /**
+   * **ชั่วโมงที่ทบมาจากช่วงแรก** (แสดงผลเท่านั้น) — `undefined` / `null` / `""` /
+   * `0` = **ไม่ทบ** → เก็บเป็น `NULL` ให้ UI ซ่อน chip/บรรทัดนี้ได้ทันที · อย่างอื่น
+   * ต้องเป็น **จำนวนเต็ม ≥ 0** และ **ไม่เกิน `maHours`** ของช่วงใหม่ที่เพิ่งบันทึก
+   * (สูตรฟอร์มคือ `maHours = ที่พิมพ์ + ทบ` ดังนั้นทบเกิน `maHours` เป็นไปไม่ได้
+   * → ถือว่า payload เพี้ยน → 400)
+   */
+  private requireCarriedHours(
+    value: number | string | null | undefined,
+    maHours: number,
+  ): number | null {
+    if (value === undefined || value === null || value === "") return null;
+    const hours = typeof value === "string" ? Number(value) : value;
+    if (!Number.isInteger(hours) || hours < 0) {
+      throw new BadRequestException("carriedHours must be a non-negative whole number of hours");
+    }
+    if (hours > maHours) {
+      throw new BadRequestException("carriedHours cannot exceed maHours");
+    }
+    return hours === 0 ? null : hours;
+  }
+
   /** โหลดคู่ทั้งหมดของแอป + รีเฟรชสถานะอายุทุกแถว แล้วคืน payload ของแอป */
   private async appPayload(app: App) {
     const { links, companyName } = await this.loadLinks([app.id]);
@@ -395,12 +438,21 @@ export class AppsService {
     return this.toResponse(app, links, companyName);
   }
 
+  /**
+   * `canDelete` — **นับเฉพาะงานปกติ** (`deleted_at IS NULL`): `Issue.deletedAt` เป็น
+   * `@Column` ธรรมดา (ไม่ใช่ `@DeleteDateColumn`) TypeORM จึง**ไม่กรองงานในถังขยะ**
+   * ให้เอง — เดิม `count({ where: { appId } })` นับรวมถังขยะด้วย ทำให้ย้ายงานลง
+   * ถังขยะหมดแล้วก็ยังลบแอปไม่ได้ตลอดกาล (ระบบมีแค่ soft delete + restore
+   * ไม่มี "ลบทถาวร") · **กฎ "มีงานจริง = เตือน + บล็อก" คงเดิม** (ข้อความเตือน
+   * ของแอปมี key แยก `Settings.deleteAppInUse`) และถ้าการลบเกิดขึ้นจริง FK
+   * `issues.app_id … ON DELETE SET NULL` จะย้ายงานที่เหลือไป "ไม่มีแอป" เอง
+   */
   async check(id: number) {
     const app = await this.apps.findOne({ where: { id } });
     if (!app) {
       throw new NotFoundException(`App with id ${id} not found`);
     }
-    const issueCount = await this.issues.count({ where: { appId: id } });
+    const issueCount = await this.issues.count({ where: { appId: id, deletedAt: IsNull() } });
     return { canDelete: issueCount === 0, issueCount };
   }
 
@@ -409,7 +461,8 @@ export class AppsService {
     if (!app) {
       throw new NotFoundException(`App with id ${id} not found`);
     }
-    const issueCount = await this.issues.count({ where: { appId: id } });
+    // live issues only — same rule as `check()` (งานในถังขยะไม่จองการลบถาวร)
+    const issueCount = await this.issues.count({ where: { appId: id, deletedAt: IsNull() } });
     if (issueCount > 0) {
       throw new ConflictException(
         `Cannot delete app "${app.name}" because it has ${issueCount} issue(s) assigned`,
@@ -493,6 +546,11 @@ export class AppsService {
         expiresAt: link.expiresAt ? toIsoDate(link.expiresAt) : null,
         /** ชั่วโมง MA ของช่วงนี้ — `null` = ยังไม่กำหนด */
         maHours: link.maHours ?? null,
+        /**
+         * ชั่วโมงที่ทบมาจากช่วงแรกตอนต่ออายุ (migration 1824) — `null`/`0` =
+         * แถวนี้ไม่ได้ทบ → UI ซ่อน chip "ทบมา" กับบรรทัดในข้อมูลทั่วไปเอง
+         */
+        carriedHours: link.carriedHours ?? null,
         /** แถวนี้มาจากอะไร — `renew` (ต่ออายุ/เพิ่มรายการ) หรือ `buy` (ซื้อชั่วโมง) */
         kind: link.kind,
         expiryStatus: link.expiryStatus,

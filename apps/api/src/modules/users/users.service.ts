@@ -75,6 +75,13 @@ export class UsersService {
    * Lightweight member list for the board (assignee/reporter pickers).
    * Only exposes id/name/role - no email - so it can be read by anyone
    * who is allowed to see the board, not only by `user.view` holders.
+   *
+   * `companyId` rides along because the board's **company filter** resolves
+   * "which reporters belong to the selected company(s)" in memory
+   * (`boards/page.tsx` → `companyReporterIds`) — the members endpoint is the
+   * only user list a `board.view` seat gets (`GET /users` needs `user.view`).
+   * It is a plain column, so no extra query, and the board's filter panel
+   * already shows company names to the same audience.
    */
   async findMembers() {
     const users = await this.users
@@ -88,6 +95,7 @@ export class UsersService {
       name: user.name,
       roleId: user.roleId,
       roleName: user.role?.name ?? null,
+      companyId: user.companyId ?? null,
       isActive: user.isActive,
     }));
   }

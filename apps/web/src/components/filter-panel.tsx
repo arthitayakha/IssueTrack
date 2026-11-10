@@ -170,6 +170,8 @@ function FilterSection({ title, icon, count, options, initialOpen }: FilterSecti
                 ) : null,
               }}
               sx={{ mb: 1.25, "& .MuiOutlinedInput-root": { borderRadius: "10px" } }}
+              // กัน password manager เทอีเมลลงช่องค้นหา (เหมือนหน้าบอร์ด)
+              inputProps={{ autoComplete: "off", name: "filter-search" }}
             />
           )}
 

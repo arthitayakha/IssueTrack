@@ -31,7 +31,11 @@ const ISSUE_DETAIL_RELATIONS = [
   "label",
   "labels",
   "programmer",
+  // `customer.company` — the reporter's company, shown read-only in the card
+  // detail popup ("บริษัท"). Dot notation is already used elsewhere here
+  // (`actor.role`), no schema change: `users.company_id` → `companies`.
   "customer",
+  "customer.company",
 ];
 
 /**
@@ -169,23 +173,29 @@ export class IssuesService {
       qb.andWhere("issue.app_id IN (:...appIds)", { appIds: filters.appIds });
     }
     /**
-     * Company filter — a card reaches a company through its app
-     * (`app_companies`, many-to-many: one app serves several companies).
-     * `EXISTS` and not a JOIN: this query runs `DISTINCT` and `getCount()`,
-     * and a join would multiply every card once per linked company.
-     * Cards with no app are excluded, exactly like the app filter above.
+     * Company filter — a card reaches a company **through its reporter**
+     * (`issues.customer_id` → `users.company_id`, migration 1816): the company
+     * on the user form says who belongs to it, so picking a company means
+     * "cards reported by that company's people". The old path
+     * (card → app → `app_companies`) is gone from the board on purpose: an app
+     * linked to every company made every selection return the same cards.
      *
-     * Still an **app-level** filter, not a user-level one: it narrows cards by
-     * their app's linked companies (the web side does the same in
-     * `boards/page.tsx` → `companyAppIds`). `users.company_id` (migration 1816)
-     * is deliberately **not** wired to any filter: the report form's picker shows
-     * every app regardless of company (senior's call), so nothing here keys off
-     * who the reporter is — a customer's own tickets are scoped by the
-     * assignee/reporter filters above.
+     * `EXISTS` and not a JOIN: this query runs `DISTINCT` and `getCount()`,
+     * and a join would multiply every card once per matching member.
+     *
+     * **No reporter, or a reporter with no company → the card is hidden** (an
+     * `EXISTS` over `u.id = issue.customer_id` can never match a NULL
+     * customer_id). Same rule the web applies in memory — see
+     * `boards/page.tsx` → `companyReporterIds`.
+     *
+     * Scope: the **board and `/reports` alike** — `reports.service.ts` runs
+     * the same `EXISTS` now that its บริษัท column follows the reporter too.
+     * Only the report's `company` (ตามบริษัท) view still walks card → app →
+     * `app_companies`, and there it labels a contract row, not a person.
      */
     if (filters.companyIds && filters.companyIds.length > 0) {
       qb.andWhere(
-        "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
+        "EXISTS (SELECT 1 FROM users u WHERE u.id = issue.customer_id AND u.company_id IN (:...companyIds))",
         { companyIds: filters.companyIds },
       );
     }
@@ -273,6 +283,8 @@ export class IssuesService {
       .leftJoinAndSelect("issue.labels", "labels")
       .leftJoinAndSelect("issue.programmer", "programmer")
       .leftJoinAndSelect("issue.customer", "customer")
+      // the reporter's company for the detail popup's "บริษัท" cell (see toResponse)
+      .leftJoinAndSelect("customer.company", "customerCompany")
       .leftJoinAndSelect("issue.attachments", "attachments")
       .loadRelationCountAndMap("issue.commentCount", "issue.comments")
       .where("issue.id IN (:...ids)", { ids });
@@ -845,6 +857,10 @@ export class IssuesService {
       throw new BadRequestException("actualFixDuration must be a positive number of seconds");
     }
     issue.actualFixDuration = Math.round(duration);
+    // **ผู้เดียวที่เขียน `actual_fix_at`** (migration 1822) — เวลาที่ชั่วโมงถูกกรอก
+    // ใช้ผูกงานเข้ารอบสัญญาใน `ma-attribution.ts` · ค่า 0 = ไม่มีชั่วโมงให้หัก
+    // จึงล้าง stamp เพื่อไม่ให้เป็น "ชั่วโมงของรอบไหนก็ไม่รู้" ที่มีค่า 0
+    issue.actualFixAt = issue.actualFixDuration > 0 ? new Date() : null;
     await this.issues.save(issue);
     // **fire-and-forget**: ชั่วโมงที่กรอกอาจทำให้ MA ของคู่หมด — แจ้งลูกค้า +
     // แอดมิน (ครั้งเดียวต่อรอบ, ดู `MaUsageService`) โดยไม่รอให้ request นี้
@@ -1012,7 +1028,16 @@ export class IssuesService {
     const issues = await this.issues.find({
       where: { deletedAt: Not(IsNull()) },
       order: { deletedAt: "DESC" },
-      relations: ["priority", "category", "label", "labels", "programmer", "customer", "deletedByUser"],
+      relations: [
+        "priority",
+        "category",
+        "label",
+        "labels",
+        "programmer",
+        "customer",
+        "customer.company",
+        "deletedByUser",
+      ],
       withDeleted: true,
     });
     // one rules query for the whole trash page (see `toResponse`)
@@ -1155,6 +1180,10 @@ export class IssuesService {
       programmerName: issue.programmer?.name ?? null,
       customerId: issue.customerId,
       customerName: issue.customer?.name ?? null,
+      // the reporter's company (`users.company_id` → `companies`) — read-only
+      // "บริษัท" cell in the detail popup; null = no reporter / no company
+      customerCompanyId: issue.customer?.companyId ?? null,
+      customerCompanyName: issue.customer?.company?.name ?? null,
       commentCount:
         (issue as Issue & { commentCount?: number }).commentCount ??
         issue.comments?.length ??

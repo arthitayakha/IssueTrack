@@ -229,6 +229,8 @@ export default function LabelsPage() {
               setPage(1);
             }}
             sx={{ mb: 2, maxWidth: 360 }}
+            // กัน password manager เทอีเมลลงช่องค้นหา (เหมือนหน้าบอร์ด)
+            inputProps={{ autoComplete: "off", name: "labels-search" }}
             InputProps={{
               startAdornment: (
                 <InputAdornment position="start">

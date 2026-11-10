@@ -26,6 +26,11 @@ interface Row {
   maHours: number | null;
   /** แถวนี้มาจากอะไร — `renew` (ค่าเริ่มต้น/แถวเก่า) หรือ `buy` (ซื้อชั่วโมง) */
   kind: "renew" | "buy";
+  /**
+   * ชั่วโมงที่ "ทบมาจากช่วงแรก" ตอนต่ออายุ (migration 1824) — `null` = แถวนี้
+   * ไม่ทบ (แถวเก่า / รอบ 2 เป็นต้นไป / แถว `buy`)
+   */
+  carriedHours: number | null;
   /** latch flag "แจ้ง MA หมดแล้ว" รอบนี้ — `null` = ยังไม่เคยแจ้ง (migration 1821) */
   maNotifiedAt: Date | null;
   expiryStatus: string;
@@ -52,6 +57,7 @@ function row(overrides: Partial<Row> = {}): Row {
     expiresAt: null,
     maHours: null,
     kind: "renew",
+    carriedHours: null,
     maNotifiedAt: null,
     expiryStatus: "none",
     expiryNotified: "none",
@@ -446,10 +452,49 @@ describe("AppsService.renewRecord — appends the next period, never rewrites", 
     await expect(service.renewRecord(999, 11, period)).rejects.toThrow(NotFoundException);
     expect(state.rows).toHaveLength(1);
   });
+
+  it("stores the carried-over hours and exposes them in the payload (carried_hours)", async () => {
+    const { service, state } = makeService({ apps: [POS], rows: [row({ id: 11 })] });
+
+    const result = await service.renewRecord(7, 11, { ...period, carriedHours: 15 });
+
+    expect(state.rows[1]).toMatchObject({ maHours: 40, carriedHours: 15 });
+    // ป๊อปอัพ `/systems` อ่านค่านี้จาก payload เพื่อโชว์ chip "ทบมา X ชม."
+    expect(result.companies[1].carriedHours).toBe(15);
+    expect(result.companies[0].carriedHours ?? null).toBeNull();
+  });
+
+  it("keeps carried_hours NULL when nothing was carried (ส่ง 0 / ไม่ส่งค่า)", async () => {
+    const { service, state } = makeService({ apps: [POS], rows: [row({ id: 11 })] });
+
+    // ฟอร์มส่ง 0 เมื่อรอบนั้นทบไม่ได้ (รอบ 2 เป็นต้นไป) → เก็บเป็น NULL
+    await service.renewRecord(7, 11, { ...period, carriedHours: 0 });
+    expect(state.rows[1].carriedHours ?? null).toBeNull();
+
+    // payload ที่ไม่ส่งค่าเลย (เวอร์ชันเก่า) ก็ต้องไม่พัง
+    await service.renewRecord(7, 11, period);
+    expect(state.rows[2].carriedHours ?? null).toBeNull();
+  });
+
+  it("rejects a carried value that is negative, fractional or above maHours", async () => {
+    const { service, state } = makeService({ apps: [POS], rows: [row({ id: 11 })] });
+
+    await expect(service.renewRecord(7, 11, { ...period, carriedHours: -1 })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.renewRecord(7, 11, { ...period, carriedHours: 1.5 })).rejects.toThrow(
+      BadRequestException,
+    );
+    // `maHours` ของรอบนี้ = 40 → ทบมากกว่านั้นเป็นไปไม่ได้ (payload เพี้ยน)
+    await expect(service.renewRecord(7, 11, { ...period, carriedHours: 41 })).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(state.rows).toHaveLength(1);
+  });
 });
 
 describe("AppsService.buyHours — same dates, more hours (ซื้อชั่วโมง MA เพิ่ม)", () => {
-  it("appends a same-dates row with the summed hours and kind 'buy'", async () => {
+  it("appends a same-dates row whose MA is exactly the purchased hours (kind 'buy')", async () => {
     const { service, state } = makeService({
       apps: [POS],
       rows: [
@@ -476,13 +521,14 @@ describe("AppsService.buyHours — same dates, more hours (ซื้อชั่
       expiryStatus: "expiring_soon",
       expiryNotified: "d30",
     });
-    // the new row keeps the contract dates (ซื้อชั่วโมง ≠ ต่ออายุ) and sums the hours
+    // the new row keeps the contract dates (ซื้อชั่วโมง ≠ ต่ออายุ) and its MA is the purchased amount alone
     expect(state.rows[1]).toMatchObject({
       appId: 7,
       companyId: 2,
       startedAt: "2026-01-01",
       expiresAt: "2026-12-08",
-      maHours: 60,
+      // **เท่ากับที่ซื้อเท่านั้น** — ไม่รวม MA ของแถวก่อน (สูตรใหม่: 40 ไม่ใช่ 60)
+      maHours: 20,
       kind: "buy",
     });
     expect(state.rows[1].id).not.toBe(11);
@@ -495,9 +541,12 @@ describe("AppsService.buyHours — same dates, more hours (ซื้อชั่
     expect(result.companies).toHaveLength(2);
     expect(result.companies[0].kind).toBe("renew");
     expect(result.companies[1].kind).toBe("buy");
+    // ซื้อชั่วโมงไม่เคยทบ → ไม่มีค่าเก็บ (NULL) แท็บงานที่ถูกตัดจึงไม่โชว์ chip "ทบมา"
+    expect(result.companies[1].carriedHours ?? null).toBeNull();
+    expect(state.rows[1].carriedHours ?? null).toBeNull();
   });
 
-  it("treats a null maHours source as 0 (ซื้อได้แม้ยังไม่เคยกรอก MA)", async () => {
+  it("ignores the source row's MA entirely (ซื้อได้แม้ยังไม่เคยกรอก MA)", async () => {
     const { service, state } = makeService({
       apps: [POS],
       rows: [row({ id: 11, startedAt: "2026-01-01", expiresAt: "2026-12-08" })],
@@ -505,6 +554,8 @@ describe("AppsService.buyHours — same dates, more hours (ซื้อชั่
 
     await service.buyHours(7, 11, { hours: 10 });
 
+    // แถวต้นทางไม่มี MA (`null`) และสูตรใหม่ก็ไม่ได้ใช้มันอยู่แล้ว — ค่าที่ได้
+    // ต้องเป็น "ที่ซื้อ" เท่านั้น ไม่ว่าแถวก่อนหน้าจะเป็นเท่าไร
     expect(state.rows[1]).toMatchObject({ maHours: 10, kind: "buy" });
   });
 
@@ -516,7 +567,7 @@ describe("AppsService.buyHours — same dates, more hours (ซื้อชั่
 
     await service.buyHours(7, 11, { hours: "15" });
 
-    expect(state.rows[1]).toMatchObject({ maHours: 55, kind: "buy" });
+    expect(state.rows[1]).toMatchObject({ maHours: 15, kind: "buy" });
   });
 
   it("rejects empty / zero / negative / fractional hours and writes nothing", async () => {

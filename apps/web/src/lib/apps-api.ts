@@ -38,6 +38,12 @@ export interface AppCompanyLink {
   /** ชั่วโมง MA ของช่วงนี้จาก `app_companies.ma_hours`, null = ยังไม่กำหนด */
   maHours: number | null;
   /**
+   * ชั่วโมงที่ **ทบมาจากช่วงแรก** ตอนต่ออายุ (`app_companies.carried_hours`,
+   * migration 1824) — `null` = แถวนี้ไม่ได้ทบ (แถวเก่าที่มีก่อน migration /
+   * รอบ 2 เป็นต้นไป / แถว `buy`) → ป๊อปอัพซ่อน chip "ทบมา" เอง
+   */
+  carriedHours: number | null;
+  /**
    * แถวนี้มาจากอะไร (migration 1820) — `renew` = ต่ออายุ/เพิ่มรายการปกติ,
    * `buy` = ซื้อชั่วโมง MA เพิ่ม (วันที่เท่าเดิมแต่ `maHours` มากขึ้น) —
    * ใช้แยกแถบที่ซื้อในแท็บ "ประวัติการต่ออายุ"
@@ -159,6 +165,12 @@ export interface AppRenewInput {
   expiresAt: string;
   /** ชั่วโมง MA ของช่วงใหม่ */
   maHours: number;
+  /**
+   * ชั่วโมงที่ **ทบมาจากช่วงแรก** ตอนต่ออายุ (แสดงผลเท่านั้น) — ส่ง `0` เมื่อ
+   * รอบนี้ไม่ทบ (เซิร์ฟเวอร์เก็บเป็น `NULL`) เพื่อให้ป๊อปอัพโชว์/ซ่อน chip
+   * "ทบมา" ได้ถูกต้องย้อนหลัง · ต้องเป็นจำนวนเต็ม ≥ 0 และไม่เกิน `maHours`
+   */
+  carriedHours: number;
 }
 
 export async function renewAppRecord(
@@ -204,6 +216,87 @@ export async function toggleAppActive(id: number, isActive: boolean): Promise<Ap
     method: "PATCH",
     body: JSON.stringify({ isActive }),
   }, getToken());
+}
+
+/* ------------------------------------------------------------------ */
+/*  รายการที่ถูกตัดจากช่วง MA — รอบต่อรอบ                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * แถวเดียวของ "งานที่ถูกตัดจากช่วง MA นี้" — ดูได้จากป๊อปอัพ `/systems`
+ * และ drill-down ของรายงาน view "ตามบริษัท"
+ */
+export interface PeriodIssue {
+  id: number;
+  issueNumber: string | null;
+  title: string;
+  taskType: "bug" | "feature" | "requirement" | null;
+  /** ชั่วโมงของงานนี้ (ปัด 1 ตำแหน่ง) */
+  hours: number;
+  /** ISO datetime ที่กรอกชั่วโมง — `null` = ข้อมูลก่อนระบบ (ไม่ระบุรอบ) */
+  deductedAt: string | null;
+  statusName: string | null;
+  assigneeName: string | null;
+}
+
+/**
+ * `GET /apps/:id/companies/:recordId/usage` — สรุปของ **1 รอบ**
+ *
+ * `pairUsedHours` = "ใช้ไป" ระดับคู่ (ตลอดเวลา) — **ตัวเดียวกับที่ตารางโชว์อยู่**
+ * ส่วน `periodUsedHours` เป็นส่วนของรอบนี้ ซึ่งบวกทุกรอบ + `unattributedHours`
+ * ต้องได้เท่ากับ `pairUsedHours` เสมอ (เซิร์ฟเวอร์คุมด้วยเทสต์ invariant)
+ */
+export interface PeriodUsage {
+  recordId: number;
+  appId: number;
+  companyId: number;
+  /** ลำดับรอบในคู่นี้ (ตรงกับ "รอบที่ N" ในแท็บประวัติ) */
+  round: number;
+  kind: "renew" | "buy";
+  startedAt: string | null;
+  expiresAt: string | null;
+  maHours: number | null;
+  pairUsedHours: number;
+  periodUsedHours: number;
+  /** ชั่วโมงที่ไม่รู้ว่ากรอกตอนไหน (ข้อมูลก่อนระบบ) — pair-level */
+  unattributedHours: number;
+  count: number;
+  issues: PeriodIssue[];
+}
+
+/** `GET /apps/usage-counts?recordIds=` — นับอย่างเดียว ไม่โหลดรายการ (ยิงครั้งเดียวต่อหน้า) */
+export interface UsageCount {
+  recordId: number;
+  count: number;
+  periodUsedHours: number;
+}
+
+/** รายการจริงของรอบ — เรียกตอนผู้ใช้กดเปิดดู (ไม่โหลดตอนเปิดหน้า) */
+/** `GET /apps/:id/companies/:recordId/usage` — สถานะฝั่ง UI ของรายการที่กางอยู่ */
+export type DeductionState =
+  | { status: "loading" }
+  | { status: "error" }
+  | { status: "ready"; data: PeriodUsage };
+
+export async function fetchPeriodUsage(
+  appId: number,
+  recordId: number,
+): Promise<PeriodUsage> {
+  return apiFetch<PeriodUsage>(
+    `/apps/${appId}/companies/${recordId}/usage`,
+    {},
+    getToken(),
+  );
+}
+
+/**
+ * จำนวนรายการที่ถูกตัดของหลายๆ รอบในคำสั่งเดียว — คอลัมน์ "รายการที่ตัด"
+ * ของรายงาน (นับทั้งหน้าพร้อมกัน ไม่ใช่ยิงต่อแถว)
+ */
+export async function fetchUsageCounts(recordIds: number[]): Promise<UsageCount[]> {
+  if (recordIds.length === 0) return [];
+  const qs = recordIds.join(",");
+  return apiFetch<UsageCount[]>(`/apps/usage-counts?recordIds=${qs}`, {}, getToken());
 }
 
 export async function checkApp(id: number): Promise<{ canDelete: boolean; issueCount: number }> {

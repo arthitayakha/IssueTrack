@@ -18,6 +18,7 @@ import {
   AppRenewInput,
   AppWriteInput,
 } from "./apps.service";
+import { MaUsageService } from "./ma-usage.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -25,7 +26,10 @@ import { Permissions } from "../auth/permissions.decorator";
 @Controller("apps")
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class AppsController {
-  constructor(private readonly apps: AppsService) {}
+  constructor(
+    private readonly apps: AppsService,
+    private readonly maUsage: MaUsageService,
+  ) {}
 
   // No @Permissions on purpose: any authenticated user (customers included)
   // must be able to load the app list when reporting an issue. The rows now
@@ -41,6 +45,25 @@ export class AppsController {
   findAll(@Query() query: { page?: string; limit?: string; visible?: string }) {
     const visible = query.visible === "1" || query.visible === "true";
     return this.apps.findAll(normalizePagination(query), { visible });
+  }
+
+  /**
+   * **จำนวนรายการที่ถูกตัดจากแต่ละช่วง MA** (`?recordIds=24,25,26`)
+   *
+   * เติมคอลัมน์ "รายการที่ตัด" ในรายงาน/แท็บประวัติ — ยิง **ครั้งเดียวต่อหน้า**
+   * แทนการยิงต่อแถว (รายการจริงค่อยโหลดตอนกดเปิดด้วย route ด้านล่าง)
+   *
+   * guard เป็น ANY-of: หน้า `/systems` มาด้วย `system.view` หน้ารายงานมาด้วย
+   * `report.view` — สอง surface คนละ permission card จึงแชร์ endpoint เดียว
+   */
+  @Get("usage-counts")
+  @Permissions("system.view", "report.view")
+  usageCounts(@Query("recordIds") recordIds?: string) {
+    const ids = (recordIds ?? "")
+      .split(",")
+      .map((value) => Number.parseInt(value.trim(), 10))
+      .filter((value) => Number.isInteger(value));
+    return this.maUsage.usageCounts(ids);
   }
 
   // The CRUD below serves TWO surfaces with separate permission cards:
@@ -123,6 +146,25 @@ export class AppsController {
     @Body() body: AppBuyInput,
   ) {
     return this.apps.buyHours(id, recordId, body);
+  }
+
+  /**
+   * **รายการที่ถูกตัดจากช่วง MA นี้** — นับ + รายการจริงของ `recordId`
+   *
+   * "ชั่วโมงของงานนี้เป็นของรอบไหน" คำนวณจาก `issues.actual_fix_at` (เวลาที่กรอก)
+   * กับกติกาใน `ma-attribution.ts`: รอบที่มีผลอยู่ ณ ตอนกรอก · **ไม่เปลี่ยน**
+   * ตัวเลข "ใช้ไป/คงเหลือ" เดิม — `pairUsedHours` ยังเป็นคู่เดียวกับที่จอโชว์อยู่
+   * และ `Σ ทุกรอบ + unattributedHours` จะเท่ากับมันเสมอ (มีเทสต์คุม)
+   *
+   * ANY-of guard เหมือน `usage-counts`: `/systems` → `system.view`, รายงาน → `report.view`
+   */
+  @Get(":id/companies/:recordId/usage")
+  @Permissions("system.view", "report.view")
+  periodUsage(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("recordId", ParseIntPipe) recordId: number,
+  ) {
+    return this.maUsage.periodUsage(id, recordId);
   }
 
   @Patch(":id/active")

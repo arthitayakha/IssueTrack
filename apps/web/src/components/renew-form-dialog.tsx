@@ -59,9 +59,15 @@ const NO_ERRORS: FieldErrors = { startedAt: null, expiresAt: null, maHours: null
  * เป็นคนละเรื่องกับช่วงเก่า การเอาตัวเลขเก่ามา prefill ทำให้ดูเหมือน "มี
  * ชั่วโมงเพิ่มขึ้นมาเอง" โดยที่ผู้ใช้ไม่ได้กรอก (ค่าที่บันทึกจึงผิดไปด้วย)
  *
- * **ทบชั่วโมงคงเหลือ** — เฉพาะตอนช่วงเก่า *หมดอายุแล้วแต่ MA ยังไม่หมด*
- * (`คงเหลือ = maHours − ใช้ไป > 0`) จำนวนนั้นถูก**บอกเป็นตัวเลขในฟอร์ม**แล้ว
- * บวกเข้ากับที่ผู้ใช้กรอกตอนบันทึก (`carry`) — คู่อื่น/สถานะอื่นทบให้ 0 (fail-open)
+ * **ทบชั่วโมงคงเหลือ — เฉพาะการต่ออายุ "ครั้งแรก" เท่านั้น** (แถวต้นทางต้องเป็น
+ * รอบที่ 1 ของคู่ = `recordId` น้อยสุด ซึ่งตรงกับเลข "รอบที่ N" ในแท็บประวัติ):
+ * ถ้าช่วงแรกยังมี MA เหลือ (`คงเหลือ = maHours − ใช้ไป > 0`) จำนวนนั้นถูก**บอก
+ * เป็นตัวเลขในฟอร์ม** แล้วบวกเข้ากับที่ผู้ใช้กรอกตอนบันทึก (`carry`) ·
+ * **รอบ 2 เป็นต้นไปไม่ทบ** ไม่ว่าจะเหลือเท่าไร (ข้อสรุปจากผู้ใช้) และ
+ * **ไม่ผูกกับวันหมดอายุอีกต่อไป** — เดิมบังคับให้ช่วงเก่าเป็น `expired` ก่อน
+ * ซึ่งทำให้การต่ออายุ**วันหมดอายุพอดี** (สถานะยัง `critical`, `carry = 0`)
+ * ทบเงียบ ๆ ทั้งที่ช่วงแรกยังไม่ได้ใช้ · fail-open ทุกกรณี: ยังโหลด/ดึง "ใช้ไป"
+ * ไม่สำเร็จ / ยังไม่เคยกรอก MA → ไม่ทบ พร้อมบอกเหตุผลใต้ช่อง MA เสมอ
  *
  * **สูตรบันทึกต้องทำให้ "ฟอร์ม = ตาราง" เป๊ะ** — `คงเหลือ` ในตารางคำนวณเป็น
  * `MA ใหม่ − ใช้ไป(ตลอดเวลาต่อคู่)` ไม่ใช่ต่อช่วง ดังนั้น:
@@ -78,7 +84,8 @@ const NO_ERRORS: FieldErrors = { startedAt: null, expiresAt: null, maHours: null
  *
  * **สถานะข้อมูล "ใช้ไป"** ต้องไม่เงียบ: ยังโหลดอยู่ → ปุ่มบันทึกถูก disable
  * (กันบันทึกก่อนรู้คงเหลือ = ทบเพี้ยน), ดึงไม่สำเร็จ → บันทึกได้แต่**บอกตรง ๆ**
- * ว่ารอบนี้ไม่ทบ, หมดอายุแต่ใช้หมด → บอกว่าไม่มีให้ทบ (3 บรรทัดใต้ช่อง MA)
+ * ว่ารอบนี้ไม่ทบ, รอบแรกแต่ใช้หมด → บอกว่าไม่มีให้ทบ, รอบ 2 เป็นต้นไป → บอกว่า
+ * การทบมีเฉพาะครั้งแรก (มีทุกกรณีใต้ช่อง MA ไม่มีทางเงียบ)
  */
 export default function RenewFormDialog({
   open,
@@ -137,25 +144,35 @@ export default function RenewFormDialog({
   }, [open, record]);
 
   /**
-   * **ชั่วโมงคงเหลือที่จะทบ** — มีก็ต่อเมื่อ **ช่วงเก่าหมดอายุแล้ว แต่ MA ยังไม่หมด**
-   * (`maHours − ใช้ไป > 0`) ทุกเงื่อนไข fail-open: ยังโหลด/ดึง "ใช้ไป" ไม่สำเร็จ /
-   * ยังไม่กรอก MA / ยังไม่หมดอายุ → 0 (ไม่ทบ) · ค่าเป็นจำนวนเต็มเพราะเซิร์ฟเวอร์
-   * reject ทศนิยม (`requireHours`) จึงปัดเศษของ "คงเหลือ" ทิ้ง
+   * **เป็น "รอบแรก" ของคู่หรือไม่** — แถวต้นทางต้องมี `recordId` น้อยสุดในคู่
+   * นั้น (= "รอบที่ 1" ในแท็บประวัติ; แถวที่ซื้อชั่วโมงก็นับเป็นหนึ่งรอบ เพราะ
+   * ประวัตินับตามจำนวนแถว) — **การทบชั่วโมงมีเฉพาะการต่ออายุครั้งแรกเท่านั้น**
+   * รอบ 2 เป็นต้นไป `carry` = 0 เสมอ (ข้อสรุปจากผู้ใช้)
+   */
+  const isFirstPeriod = useMemo(() => {
+    if (!record) return false;
+    const { app, link } = record;
+    return app.companies
+      .filter((c) => c.id === link.id)
+      .every((c) => c.recordId >= link.recordId);
+  }, [record]);
+
+  /**
+   * **ชั่วโมงคงเหลือที่จะทบ** — มีก็ต่อเมื่อ **เป็นรอบแรกของคู่ และ MA ยังไม่หมด**
+   * (`maHours − ใช้ไป > 0`) — **ไม่สนว่าช่วงเก่าจะหมดอายุหรือยัง**: การต่ออายุปิด
+   * ช่วงเก่าเสมอ ชั่วโมงที่เหลือจึงถูกใช้ในช่วงนั้นไม่ได้อีก (เดิมบังคับ `expired`
+   * ก่อน → ต่ออายุวันหมดอายุพอดีทบเงียบ ๆ) · ทุกเงื่อนไข fail-open: ไม่ใช่รอบแรก /
+   * ยังโหลดหรือดึง "ใช้ไป" ไม่สำเร็จ / ยังไม่กรอก MA → 0 (ไม่ทบ) · ค่าเป็นจำนวนเต็ม
+   * เพราะเซิร์ฟเวอร์ reject ทศนิยม (`requireHours`) จึงปัดเศษของ "คงเหลือ" ทิ้ง
    */
   const carry = useMemo(() => {
-    if (!record || usageStatus !== "ready") return 0;
+    if (!record || !isFirstPeriod || usageStatus !== "ready") return 0;
     const link = record.link;
-    if (!link.expiresAt || previewExpiryStatus(link.expiresAt) !== "expired") return 0;
     if (link.maHours == null) return 0;
     const left = link.maHours - (used ?? 0);
     if (!(left > 0)) return 0;
     return Math.round(left);
-  }, [record, used, usageStatus]);
-
-  /** ช่วงเก่า "หมดอายุแล้ว" จริงหรือไม่ — ใช้เลือกข้อความบอกใต้ช่อง MA */
-  const oldExpired =
-    Boolean(record?.link.expiresAt) &&
-    previewExpiryStatus(record?.link.expiresAt ?? "") === "expired";
+  }, [record, used, usageStatus, isFirstPeriod]);
 
   /**
    * **ค่า MA ที่จะบันทึกจริง** — ใช้ทั้งตอนส่ง API และตอนโชว์ "ทบรวม" ใต้ช่อง
@@ -203,6 +220,14 @@ export default function RenewFormDialog({
         // ช่วงใหม่ = สูตรเดียวกับที่โชว์ใต้ช่อง (ดู `newMa` ใน docblock) —
         // ทำให้ "คงเหลือ" ในตารางเท่ากับ "ทบรวมเป็น …" ที่ฟอร์มสัญญาไว้
         maHours: newMa,
+        /**
+         * **ชั่วโมงที่ทบมา** — ส่งไปเก็บ (`app_companies.carried_hours`) เพื่อให้
+         * ป๊อปอัพโชว์ย้อนหลังได้ · `carryShown` เป็นเศษได้ (used เป็นทศนิยม) จึง
+         * ปัดเป็นจำนวนเต็ม · **ต้อง gate ด้วย `carry`**: เมื่อไม่ทบ `carryShown`
+         * จะเป็นเศษค้าง (เช่น 0.5) จากรูตร `maHours = ที่พิมพ์ + ใช้ไป` → ส่ง 0
+         * (เซิร์ฟเวอร์เก็บเป็น `NULL` = แถวนี้ไม่ทบ)
+         */
+        carriedHours: carry > 0 ? Math.round(carryShown) : 0,
       });
       notify(t("renewSuccess"));
       onClose();
@@ -279,8 +304,9 @@ export default function RenewFormDialog({
             </LocalizationProvider>
 
             {/* จำนวน MA ของช่วงใหม่ — ช่อง**ปล่อยว่าง**ให้กรอกเอง (ไม่ prefill
-                ตัวเลขเก่า) · ถ้าช่วงเก่าหมดอายุแล้วแต่ MA ยังไม่หมด ระบบ**บอกจำนวน
-                คงเหลือเป็นตัวเลข**ตรงนี้แล้วทบให้อัตโนมัติตอนบันทึก */}
+                ตัวเลขเก่า) · ถ้าเป็น**รอบแรกของคู่**และ MA ยังไม่หมด ระบบ**บอกจำนวน
+                คงเหลือเป็นตัวเลข**ตรงนี้แล้วทบให้อัตโนมัติตอนบันทึก (รอบ 2 เป็น
+                ต้นไปไม่ทบ — บอกเหตุผลใต้ช่องแทน) */}
             <Box>
               <TextField
                 label={t("renewMaHours")}
@@ -304,8 +330,9 @@ export default function RenewFormDialog({
                 }}
               />
               {/* บรรทัดบอกใต้ช่อง — ต้อง**ไม่เงียบ**เรื่องการทบ เพราะ "ทำไมไม่เพิ่ม"
-                  คือคำถามแรกของผู้ใช้ทุกครั้ง: โหลดอยู่ / ดึงไม่สำเร็จ / ไม่มีให้ทบ /
-                  มีให้ทบ (พร้อมตัวเลขที่จะได้รวม) */}
+                  คือคำถามแรกของผู้ใช้ทุกครั้ง: โหลดอยู่ / ดึงไม่สำเร็จ / รอบแรกแต่
+                  ใช้หมด / รอบ 2 เป็นต้นไป (ไม่ทบตามกติกา) / มีให้ทบ (พร้อมตัวเลข
+                  ที่จะได้รวม) */}
               <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25, mt: 0.75 }}>
                 {usageStatus === "loading" && (
                   <Typography variant="caption" color="text.secondary">
@@ -317,14 +344,20 @@ export default function RenewFormDialog({
                     {t("renewUsageUnknown")}
                   </Typography>
                 )}
-                {usageStatus === "ready" && carry > 0 && (
+                {/* รอบ 2 เป็นต้นไป — ไม่ทบไม่ว่าเหลือเท่าไร (กติกา "ครั้งแรกเท่านั้น") */}
+                {usageStatus === "ready" && !isFirstPeriod && (
+                  <Typography variant="caption" color="text.secondary">
+                    {t("renewNoCarryLater")}
+                  </Typography>
+                )}
+                {usageStatus === "ready" && isFirstPeriod && carry > 0 && (
                   <Typography variant="caption" color="primary.main">
                     {t("renewCarryOver", { n: carryShown, total: totalAfter })}
                   </Typography>
                 )}
                 {usageStatus === "ready" &&
+                  isFirstPeriod &&
                   carry === 0 &&
-                  oldExpired &&
                   record?.link.maHours != null && (
                     <Typography variant="caption" color="text.secondary">
                       {t("renewNoCarry")}

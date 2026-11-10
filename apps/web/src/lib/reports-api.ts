@@ -98,6 +98,15 @@ export interface IssueRow {
   assigneeName: string | null;
   reporterId: number | null;
   reporterName: string | null;
+  /**
+   * คอลัมน์ "บริษัท" (view รายการปัญหา) — **บริษัทของผู้แจ้งงาน**
+   * (`issues.customer_id` → `users.company_id` → `companies`) เท่านั้น
+   * 1 คน = 1 บริษัท · `null` = ไม่มีผู้แจ้ง / ผู้แจ้งไม่มีบริษัท → โชว์ `—`
+   *
+   * (เดิมคอลัมน์นี้อ่านผ่านแอปของงาน → `app_companies` จึงเทชื่อบริษัท
+   * **ทั้งหมด**ที่แอปผูกไว้มาทุกแถว — เปลี่ยนให้ตรงกับบอร์ดแล้ว)
+   */
+  companyName: string | null;
   categoryId: number | null;
   categoryName: string | null;
   appId: number | null;
@@ -172,10 +181,13 @@ export interface FilterOption {
 }
 
 /**
- * Contract facts of one app — the source behind the บริษัท column (issues
- * view) and **every** row of the `company` view. Built from the same
- * `GET /apps` call the filter panel already makes, so it costs no extra
- * request.
+ * Contract facts of one app — the source behind **every** row of the `company`
+ * view (and its contract columns). Built from the same `GET /apps` call the
+ * filter panel already makes, so it costs no extra request.
+ *
+ * **ไม่ใช่**แหล่งของคอลัมน์ "บริษัท" ใน view รายการปัญหาอีกแล้ว — คอลัมน์นั้น
+ * อ่านจาก `IssueRow.companyName` (บริษัทของผู้แจ้ง) ตรง ๆ เพราะแอปผูกได้
+ * หลายบริษัท แล้วทุกแถวจะเทชื่อมาหมดเหมือนกันหมด
  *
  * The links are kept whole (not flattened to names) because `company` view is
  * **one row per pair** แอป×บริษัท: `started_at` / `expires_at` / `ma_hours`
@@ -203,15 +215,24 @@ export interface AppContract {
  * MA **ถูกหักแล้ว** (`MA_DEDUCTION_PAUSED = false`) — แต่ "ใช้ไป" นับเฉพาะงาน
  * type `feature`/`requirement` (bug กับ NULL ไม่หัก); `maHours == null` ยัง
  * แปลว่า "ยังไม่กรอก" เหมือนเดิม
+ *
+ * **`recordId`** = PK ของแถวนั้นใน `app_companies` — จำเป็นสำหรับคอลัมน์
+ * "รายการที่ตัด" ซึ่งต้องถาม **รายรอบ** (`GET /apps/usage-counts` /
+ * `GET /apps/:id/companies/:recordId/usage`) เพราะแถวละ 1 รอบอยู่แล้ว
+ * (`null` = แอปยังไม่ผูกบริษัท → ไม่มีรอบให้ถาม)
  */
 export interface CompanyRow {
   appId: number;
   appName: string;
   companyId: number | null;
   companyName: string | null;
+  /** แถวสัญญานี้มาจากอะไร — `renew` (ต่ออายุ/เพิ่มรายการ) หรือ `buy` (ซื้อชั่วโมง) */
+  kind: "renew" | "buy" | null;
   startedAt: string | null;
   expiresAt: string | null;
   maHours: number | null;
+  /** `app_companies.id` ของรอบนี้ — คีย์ของคอลัมน์ "รายการที่ตัด" */
+  recordId: number | null;
 }
 
 /** One row of `GET /reports/usage` — hours already narrowed to one แอป×บริษัท pair. */
@@ -429,6 +450,8 @@ interface RawIssue {
   programmerName: string | null;
   customerId?: number | string | null;
   customerName: string | null;
+  /** บริษัทของผู้แจ้ง — `toResponse()` ส่งมาให้แล้ว (ใช้กับ popup บอร์ดด้วย) */
+  customerCompanyName?: string | null;
   trackedDuration?: number;
   actualFixDuration?: number | null;
   createdAt: string;
@@ -452,6 +475,7 @@ function mapIssue(raw: RawIssue): IssueRow {
     assigneeName: raw.programmerName,
     reporterId: raw.customerId == null ? null : Number(raw.customerId),
     reporterName: raw.customerName,
+    companyName: raw.customerCompanyName ?? null,
     categoryId: raw.categoryId,
     categoryName: raw.categoryName,
     appId: raw.appId,
@@ -619,7 +643,9 @@ export async function fetchReportPeople(): Promise<ReportPeople> {
  * the panel renders with empty sections instead of breaking the page.
  *
  * `appContracts` rides the same `GET /apps` call the app section already
- * needs — the บริษัท / ชั่วโมง MA columns get their data for free.
+ * needs — every ตามบริษัท row (and its ชั่วโมง MA / คงเหลือ columns) comes
+ * from it for free. The รายการปัญหา view's บริษัท column does **not**: that one
+ * is the reporter's company, read from each issue payload.
  */
 export async function loadFilterOptions(): Promise<FilterOptions> {
   try {
@@ -749,8 +775,11 @@ export function buildCompanyRows(
    * `wantedCompanies` ด้านล่าง; แอปที่ยังไม่ผูกบริษัท = แถว `[null]` ที่ถูก
    * ตัดออกเมื่อมี filter บริษัท บรรทัดถัดไป)
    *
-   * `users.company_id` (migration 1816) มีค่าแล้วแต่**ไม่ได้ถูกใช้กรองอะไร** —
-   * มุมนี้จึงยังเดินตามเส้นงาน → แอป → บริษัท แต่เพียงอย่างเดียว
+   * `users.company_id` (migration 1816) ถูกใช้กรองทั้ง**บอร์ด**และ**รายงานมุม view
+   * รายการปัญหา/สรุป** แล้ว (`issues.service.ts` → `companyReporterIds`,
+   * `reports.service.ts` → `applyIssueDims`) — เหลือ**มุมนี้มุมเดียว**ที่ยังเดิน
+   * เส้นงาน → แอป → บริษัท เพราะแถวของมุมนี้คือ "คู่สัญญา แอป×บริษัท"
+   * ไม่ใช่ "งานของคนคนหนึ่ง"
    */
   const q = filters.search.trim().toLocaleLowerCase();
   const wantedCompanies = new Set(filters.companyIds);
@@ -779,9 +808,13 @@ export function buildCompanyRows(
         appName: app.name,
         companyId: link?.id ?? null,
         companyName: link?.name ?? null,
+        // ประเภทของแถวนั้น — `GET /apps` ส่ง `kind` มาอยู่แล้ว (ไม่ยิงขอเพิ่ม)
+        kind: link?.kind ?? null,
         startedAt: link?.startedAt ?? null,
         expiresAt: link?.expiresAt ?? null,
         maHours: link?.maHours ?? null,
+        // แถวละ 1 รอบ → recordId ของรอบนั้น (คอลัมน์ "รายการที่ตัด" ใช้ตัวนี้)
+        recordId: link?.recordId ?? null,
       });
     }
   }

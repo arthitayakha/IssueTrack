@@ -866,3 +866,48 @@ describe("IssuesService.findAll — ?hideStaleDone=1 cuts stale cards for the bo
     expect(whereCalls(issues).some(([sql]) => String(sql).includes("NOT ("))).toBe(false);
   });
 });
+
+describe("IssuesService.findAll — the company filter follows the REPORTER", () => {
+  const PARAMS = { page: 1, limit: 20 };
+
+  /** The `andWhere` calls the single query builder received during findAll. */
+  function whereCalls(issues: { createQueryBuilder: jest.Mock }): unknown[][] {
+    const builder = issues.createQueryBuilder.mock.results.at(-1)?.value;
+    return builder?.andWhere?.mock.calls ?? [];
+  }
+
+  it("narrows to cards whose reporter belongs to a selected company", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { companyIds: [6] });
+
+    const clause = whereCalls(issues).find(([sql]) => String(sql).includes("u.company_id"));
+    expect(clause).toBeDefined();
+    const [sql, params] = clause as [string, Record<string, unknown>];
+    // card → reporter → company, NOT card → app → app_companies
+    expect(sql).toContain("u.id = issue.customer_id");
+    expect(sql).toContain("u.company_id IN (:...companyIds)");
+    expect(sql).not.toContain("app_companies");
+    expect(params.companyIds).toEqual([6]);
+  });
+
+  it("adds no company clause without the filter", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {});
+
+    // a card with no reporter can never satisfy the EXISTS → cards without
+    // one are hidden only while a company is actually selected
+    expect(whereCalls(issues).some(([sql]) => String(sql).includes("u.company_id"))).toBe(false);
+  });
+
+  it("keeps every selected company in ONE clause (multi-select)", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { companyIds: [4, 6] });
+
+    const clauses = whereCalls(issues).filter(([sql]) => String(sql).includes("u.company_id"));
+    expect(clauses).toHaveLength(1);
+    expect((clauses[0] as [string, Record<string, unknown>])[1].companyIds).toEqual([4, 6]);
+  });
+});

@@ -12,6 +12,12 @@ import { usePathname, useRouter } from "@/i18n/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermissions } from "@/lib/permissions";
 import {
+  fetchPeriodUsage,
+  fetchUsageCounts,
+  type DeductionState,
+  type UsageCount,
+} from "@/lib/apps-api";
+import {
   buildCompanyRows,
   buildCsv,
   DEFAULT_SORT,
@@ -28,7 +34,6 @@ import {
   SORTABLE_FIELDS,
 } from "@/lib/reports-api";
 import type {
-  AppContract,
   CompanyRow,
   FilterOptions,
   IssueRow,
@@ -187,6 +192,12 @@ function filtersToPatch(f: ReportFilters) {
  */
 function ReportsScreen() {
   const t = useTranslations("Reports");
+  /**
+   * translator ของ namespace `Settings` — ใช้ตอน export ให้ CSV/PDF ออก
+   * คำเดียวกับที่จอโชว์ (เช่น ประเภทสัญญา "ต่ออายุ"/"ซื้อชั่วโมง" ที่
+   * ตารางอ่านจาก `Settings.renew` / `Settings.kindBuy`)
+   */
+  const st = useTranslations("Settings");
   const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
@@ -403,6 +414,109 @@ function ReportsScreen() {
     setExpandedPersonId((cur) => (cur === personId ? null : personId));
   }, []);
 
+  /* ---------------- expandable "รายการที่ตัด" (view ตามบริษัท) ---------------- */
+
+  /**
+   * **จำนวนงานที่ถูกตัดของทุกรอบในหน้านี้** — `GET /apps/usage-counts` ยิง
+   * **ครั้งเดียว** ต่อหน้า (ไม่ใช่ต่อแถว) · ต่างจาก `usage` ที่เป็นระดับ**คู่**
+   * ตัวนี้ระดับ**รอบ** เพราะแถวของ view นี้ = 1 รอบอยู่แล้ว
+   *
+   * `status` แยก "ยังโหลด" (`…`) / "ดึงไม่ได้` (`—`) / "รู้ค่า" — ห้ามเดาเป็น 0
+   */
+  const [deductionCounts, setDeductionCounts] = useState<{
+    status: "loading" | "ready" | "error";
+    byRecord: Map<number, UsageCount>;
+  }>({ status: "loading", byRecord: new Map() });
+
+  /** `recordId` ของแถวกางอยู่ — `null` = ไม่มีแถวกาง */
+  const [expandedRecordId, setExpandedRecordId] = useState<number | null>(null);
+  /** รายการจริงของรอบที่กาง — โหลดตอนกดเท่านั้น (ไม่ยิงตอนเปิด view) */
+  const [deductionDetail, setDeductionDetail] = useState<DeductionState>({ status: "loading" });
+  const [deductionRetry, setDeductionRetry] = useState(0);
+
+  /** `recordId → appId` จาก payload สัญญาที่โหลดไว้แล้ว (ไม่ต้องยิงเพิ่ม) */
+  const recordAppId = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const app of options.appContracts) {
+      for (const link of app.companies) map.set(link.recordId, app.id);
+    }
+    return map;
+  }, [options.appContracts]);
+
+  /**
+   * recordIds ของหน้าที่แสดง (view ตามบริษัท เท่านั้น) — **primitive** จึงใช้เป็น
+   * dep ได้โดยไม่ต้องพึ่ง object `rows` ที่สร้างใหม่ทุก render (ไม่งั้นยิงซ้ำไม่หยุด)
+   */
+  const deductionIdsKey =
+    view === "company" && rowsView === "company" && rows
+      ? (rows.data as CompanyRow[])
+          .map((r) => r.recordId)
+          .filter((id): id is number => id != null)
+          .join(",")
+      : "";
+
+  useEffect(() => {
+    if (deductionIdsKey === "") {
+      setDeductionCounts({ status: "loading", byRecord: new Map() });
+      return;
+    }
+    const ids = deductionIdsKey.split(",").map((value) => Number.parseInt(value, 10));
+    let cancelled = false;
+    setDeductionCounts({ status: "loading", byRecord: new Map() });
+    fetchUsageCounts(ids)
+      .then((list) => {
+        if (cancelled) return;
+        setDeductionCounts({
+          status: "ready",
+          byRecord: new Map(list.map((item) => [item.recordId, item])),
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // fail-open: คอลัมน์โชว์ `—` ทุกแถว — ห้ามเดาเป็น "0 รายการ"
+        setDeductionCounts({ status: "error", byRecord: new Map() });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deductionIdsKey]);
+
+  // แถวที่กางต้องเป็นของหน้า/ตัวกรองปัจจุบันเสมอ — เปลี่ยน = ยุบ (เหมือน person detail)
+  useEffect(() => {
+    setExpandedRecordId(null);
+  }, [deductionIdsKey]);
+
+  useEffect(() => {
+    if (expandedRecordId == null) {
+      setDeductionDetail({ status: "loading" });
+      return;
+    }
+    const appId = recordAppId.get(expandedRecordId);
+    if (appId == null) {
+      // แถวถูกลบ/ไม่อยู่ใน payload สัญญาอีก → บอกตรง ๆ ว่าดึงไม่ได้ ไม่โชว์ว่า "ไม่มี"
+      setDeductionDetail({ status: "error" });
+      return;
+    }
+    let cancelled = false;
+    setDeductionDetail({ status: "loading" });
+    fetchPeriodUsage(appId, expandedRecordId)
+      .then((data) => {
+        if (!cancelled) setDeductionDetail({ status: "ready", data });
+      })
+      .catch(() => {
+        if (!cancelled) setDeductionDetail({ status: "error" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedRecordId, recordAppId, deductionRetry]);
+
+  const handleToggleDeduction = useCallback((recordId: number) => {
+    setExpandedRecordId((cur) => (cur === recordId ? null : recordId));
+  }, []);
+
+  const retryDeductionDetail = useCallback(() => setDeductionRetry((n) => n + 1), []);
+
   /* ---------------- column prefs: show/hide + order (per view) ---------------- */
 
   const [prefs, setPrefs] = useState<ColumnPrefsByView>({});
@@ -415,12 +529,6 @@ function ReportsScreen() {
   const columns = useMemo(() => orderedColumns(view, prefs[view]?.order), [prefs, view]);
   /** Same order as key list — what the CSV export follows. */
   const orderKeys = useMemo(() => columns.map((c) => c.key), [columns]);
-
-  /** Contract facts by app id — one lookup per row for บริษัท / MA / คงเหลือ. */
-  const contractsByApp = useMemo(
-    () => new Map<number, AppContract>(options.appContracts.map((c) => [c.id, c])),
-    [options.appContracts],
-  );
 
   const updatePrefs = useCallback(
     (updater: (cur: ColumnPrefs) => ColumnPrefs) => {
@@ -563,7 +671,8 @@ function ReportsScreen() {
       /**
        * คอลัมน์สัญญา — ค่าเดียวกับที่ตารางจอโชว์ (จอ/CSV/PDF ห้ามต่างกัน)
        *
-       * - `companiesOf` (view รายการปัญหา): ชื่อบริษัททั้งหมดของแอปคั่น `", "`
+       * - บริษัท (view รายการปัญหา): **บริษัทของผู้แจ้งงาน** ชื่อเดียว
+       *   (`IssueRow.companyName`) — ไม่ใช่ชื่อบริษัททั้งหมดของแอปอีกแล้ว
        * - 3 ตัวล่าง (view ตามบริษัท): **per-pair** — ค่าของคู่นั้น ๆ
        * - คงเหลือ ใช้ "ใช้ไป" all-time เหมือนจอ; ยังโหลด/พัง → ""
        *   (ห้ามโชว์ MA เต็มก้อนเพราะยังไม่รู้ค่าจริง — ตรงกับ cell)
@@ -571,13 +680,6 @@ function ReportsScreen() {
        * (`MA_DEDUCTION_PAUSED = false` → "ใช้ไป" มาจริง นับเฉพาะ type
        * feature/requirement; ยังไม่กรอก MA → "" เหมือนเดิม)
        */
-      const companiesOf = (appId: number | null) =>
-        appId == null
-          ? ""
-          : (contractsByApp
-              .get(appId)
-              ?.companies.map((c) => c.name)
-              .join(", ") ?? "");
       const usedHoursOf = (r: CompanyRow) => {
         if (usage.status !== "ready") return "";
         return round1(usage.byPair.get(pairKey(r.appId, r.companyId)) ?? 0);
@@ -585,6 +687,12 @@ function ReportsScreen() {
       const remainingOf = (r: CompanyRow) => {
         if (usage.status !== "ready" || r.maHours == null) return "";
         return round1(r.maHours - (usage.byPair.get(pairKey(r.appId, r.companyId)) ?? 0));
+      };
+      /** จำนวนงานที่ถูกตัดของ **รอบนั้น** — คอลัมน์ "รายการที่ตัด" (CSV ตรงกับจอ) */
+      const deductedCountOf = (r: CompanyRow) => {
+        if (r.recordId == null) return "";
+        const entry = deductionCounts.byRecord.get(r.recordId);
+        return entry ? entry.count : "";
       };
 
       switch (view) {
@@ -608,8 +716,8 @@ function ReportsScreen() {
             { key: "status", header: t("columns.status"), value: (r) => r.statusName ?? "" },
             { key: "category", header: t("columns.category"), value: (r) => r.categoryName ?? "" },
             { key: "app", header: t("columns.app"), value: (r) => r.appName ?? "" },
-            // บริษัท = ผ่านแอป (issues ไม่มี company_id) — ตรงกับที่จอโชว์
-            { key: "company", header: t("columns.company"), value: (r) => companiesOf(r.appId) },
+            // บริษัท = ของผู้แจ้งงาน — ตรงกับที่จอโชว์ (1 คน = 1 บริษัท)
+            { key: "company", header: t("columns.company"), value: (r) => r.companyName ?? "" },
             { key: "priority", header: t("columns.priority"), value: (r) => r.priorityName ?? "" },
           ];
           return matrix(cols, rs, hidden, orderKeys);
@@ -644,11 +752,19 @@ function ReportsScreen() {
           const cols: Array<ExportCol<CompanyRow>> = [
             { key: "company", header: t("columns.company"), value: (r) => r.companyName ?? "" },
             { key: "app", header: t("columns.app"), value: (r) => r.appName },
+            // ประเภทสัญญา — คำเดียวกับ chip บนจอ (จอ/CSV/PDF ห้ามต่างกัน)
+            {
+              key: "kind",
+              header: t("columns.type"),
+              value: (r) => (r.kind == null ? "" : r.kind === "buy" ? st("kindBuy") : st("renew")),
+            },
             { key: "startedAt", header: t("columns.startedAt"), value: (r) => fmtContractDay(r.startedAt) },
             { key: "expiresAt", header: t("columns.expiresAt"), value: (r) => fmtContractDay(r.expiresAt) },
             { key: "maHours", header: t("columns.maHours"), value: (r) => r.maHours ?? "" },
             { key: "usedHours", header: t("columns.usedHours"), value: (r) => usedHoursOf(r) },
             { key: "remaining", header: t("columns.remaining"), value: (r) => remainingOf(r) },
+            // ระดับแถว (แถว = 1 รอบ) — ค่าจาก `usage-counts` เหมือนที่จอโชว์
+            { key: "deductedCount", header: t("columns.deductedCount"), value: (r) => deductedCountOf(r) },
           ];
           return matrix(cols, rs, hidden, orderKeys);
         }
@@ -656,7 +772,7 @@ function ReportsScreen() {
           return { keys: [], headers: [], data: [] };
       }
     },
-    [view, locale, t, hidden, orderKeys, contractsByApp, usage],
+    [view, locale, t, st, hidden, orderKeys, usage, deductionCounts],
   );
 
   /**
@@ -899,8 +1015,14 @@ function ReportsScreen() {
               personTasks={personTasks}
               personTasksLoading={personTasksLoading}
               onTogglePerson={handleTogglePerson}
-              contractsByApp={contractsByApp}
               usage={usage}
+              deductions={{
+                counts: deductionCounts,
+                expandedRecordId,
+                detail: deductionDetail,
+                onToggle: handleToggleDeduction,
+                onRetryDetail: retryDeductionDetail,
+              }}
             />
           )}
 

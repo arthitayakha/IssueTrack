@@ -5,7 +5,6 @@ import {
   Delete,
   Get,
   Logger,
-  NotFoundException,
   Patch,
   Post,
   Res,
@@ -25,7 +24,6 @@ import { ChangeEmailDto } from "./dto/change-email.dto";
 import { ChangePasswordDto } from "./dto/change-password.dto";
 import { ResetOwnPasswordDto } from "./dto/reset-own-password.dto";
 import { RolesGuard } from "./roles.guard";
-import { Permissions } from "./permissions.decorator";
 import { CurrentUser } from "./current-user.decorator";
 import { Public } from "./public.decorator";
 import { User } from "./entities/user.entity";
@@ -60,9 +58,16 @@ export class AuthController {
     return this.auth.resetPassword(dto.token, dto.newPassword);
   }
 
+  /**
+   * "Who am I" — self-service, so **no `@Permissions`**: it only ever echoes
+   * the caller's own row (the exact payload `POST /auth/login` already gives
+   * everyone), and gating it behind `user.view` locked the profile popup's
+   * late name lookup out for `customer` seats (403 → the ตำแหน่ง/บริษัท rows
+   * never loaded for a session stored before those fields existed). The guard
+   * stays so a future `@Permissions()` here cannot be added bare.
+   */
   @Get("me")
   @UseGuards(RolesGuard)
-  @Permissions("user.view")
   me(@CurrentUser() user: User) {
     return this.auth.me(user);
   }
@@ -149,16 +154,19 @@ export class AuthController {
   }
 
   /**
-   * Serves the stored bytes; 404 when the user never uploaded one.
-   * `no-store` on the miss matters as much as `max-age` on the hit — a cached
-   * 404 keeps rendering the initials avatar long after a picture exists.
+   * Serves the stored bytes; **204 No Content** when the user never uploaded
+   * one — a body-less success rather than a 404, so DevTools stops flagging a
+   * perfectly normal "no picture yet" as a failed request. `no-store` on the
+   * miss matters as much as `max-age` on the hit — a cached miss keeps
+   * rendering the initials avatar long after a picture exists.
    */
   @Get("profile/avatar")
   async serveAvatar(@CurrentUser() user: User, @Res() res: Response) {
     const picture = await this.auth.getAvatar(user.id);
     if (!picture) {
       res.setHeader("Cache-Control", "no-store");
-      throw new NotFoundException("No avatar");
+      res.status(204).end();
+      return;
     }
     // the upload filter only accepts image/* — the guard covers older rows too
     res.setHeader(

@@ -18,6 +18,7 @@ import { LoginDto } from "./dto/login.dto";
 import { MailService } from "../mail/mail.service";
 import { PositionPermission } from "../positions/entities/position-permission.entity";
 import { Position } from "../positions/position.entity";
+import { Company } from "../companies/entities/company.entity";
 
 /** How long a reset link stays valid, and how often we may re-send one. */
 const RESET_TTL_MS = 30 * 60 * 1000;
@@ -38,6 +39,8 @@ export class AuthService {
     private readonly positions: Repository<Position>,
     @InjectRepository(PositionPermission)
     private readonly positionPermissions: Repository<PositionPermission>,
+    @InjectRepository(Company)
+    private readonly companies: Repository<Company>,
     private readonly mail: MailService,
     private readonly jwt: JwtService,
   ) {}
@@ -262,6 +265,11 @@ export class AuthService {
     const positionName = user.positionId
       ? ((await this.positions.findOne({ where: { id: user.positionId } }))?.name ?? null)
       : null;
+    // บริษัทของผู้ใช้ (มีค่าเฉพาะบทบาท `customer`) — โชว์ใน popup โปรไฟล์เท่านั้น
+    // อ่านตอนนี้ที่เดียว: ไม่เก็บลง JWT ไม่ต้อง prefill ฝั่ง client
+    const companyName = user.companyId
+      ? ((await this.companies.findOne({ where: { id: user.companyId } }))?.name ?? null)
+      : null;
     return {
       id: String(user.id),
       email: user.email,
@@ -269,6 +277,8 @@ export class AuthService {
       roleId: user.roleId,
       positionId: user.positionId,
       positionName,
+      companyId: user.companyId ?? null,
+      companyName,
       roleName,
       isActive: user.isActive,
       positionPermissions,

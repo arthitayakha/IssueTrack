@@ -4,6 +4,7 @@ import { Repository, type ObjectLiteral, type SelectQueryBuilder } from "typeorm
 import { Issue } from "../issues/entities/issue.entity";
 import { Comment } from "../comments/entities/comment.entity";
 import { Attachment } from "../attachments/entities/attachment.entity";
+import { App } from "../apps/entities/app.entity";
 import { AuthUser } from "../auth/auth-user";
 import { PermissionsService } from "../permissions/permissions.service";
 import { paginate, type Paginated, type PaginationParams } from "../../common/pagination";
@@ -193,6 +194,9 @@ export class ReportsService {
     private readonly comments: Repository<Comment>,
     @InjectRepository(Attachment)
     private readonly attachments: Repository<Attachment>,
+    /** ใช้ seed แถวแอปที่ไม่มีงานใน `groupByApp()` — ดู method นั้น */
+    @InjectRepository(App)
+    private readonly apps: Repository<App>,
     private readonly permissions: PermissionsService,
   ) {}
 
@@ -232,19 +236,25 @@ export class ReportsService {
       qb.andWhere("issue.app_id IN (:...appIds)", { appIds: f.appIds });
     }
     /**
-     * Company filter — a card reaches a company only through its app
-     * (`app_companies`, many-to-many). `EXISTS` and not a JOIN: these
-     * builders feed COUNTs and grouped aggregates, and a join would multiply
-     * every card once per linked company. Cards with no app never match,
-     * same as the app filter above.
+     * Company filter — an issue reaches a company **through its reporter**
+     * (`issues.customer_id` → `users.company_id`), the same path the board
+     * uses (`IssuesService.findAll`): picking a company means "issues
+     * reported by that company's people", which is also what the view's
+     * บริษัท column shows (`IssueRow.companyName`), so filter and cell agree.
      *
-     * Still not "user ↔ company" — `users` has no `company_id`, so this only
-     * narrows cards by their app's linked companies (same as
-     * `issues.service.ts` and the web's `companyAppIds`).
+     * `EXISTS` and not a JOIN: these builders feed COUNTs and grouped
+     * aggregates, and a join would multiply every issue once per matching
+     * member of the company.
+     *
+     * **No reporter, or a reporter with no company → hidden while a company
+     * is selected** (an `EXISTS` over a NULL `customer_id` can never match),
+     * same rule as the board. The `company` view never reaches this code —
+     * its rows are built client-side from `app_companies` pairs, because
+     * there the company labels a contract, not a person.
      */
     if (f.companyIds?.length) {
       qb.andWhere(
-        "EXISTS (SELECT 1 FROM app_companies ac WHERE ac.app_id = issue.app_id AND ac.company_id IN (:...companyIds))",
+        "EXISTS (SELECT 1 FROM users u WHERE u.id = issue.customer_id AND u.company_id IN (:...companyIds))",
         { companyIds: f.companyIds },
       );
     }
@@ -559,6 +569,8 @@ export class ReportsService {
    * query only swaps the grouping key and the label join. Still grouped at
    * (app × person) grain so each app can name the person who spent the most
    * time on it. Median minutes come from `summary()` (own SQL at row grain).
+   * **ทุกแอปได้แถวเสมอ แม้ไม่มีงาน** — seed จากตาราง `apps` ก่อน merge (ดู inline
+   * comment ด้านล่าง) เพราะผู้ใช้ต้องการเห็นแอปครบทุกตัวในรายงาน
    */
   private async groupByApp(qb: SelectQueryBuilder<Issue>): Promise<SummarySeed[]> {
     const raw = await qb
@@ -591,6 +603,26 @@ export class ReportsService {
       perPerson: Map<number, { label: string; hours: number }>;
     }
     const byApp = new Map<number | null, AppAgg>();
+
+    /**
+     * **seed ทุกแอปก่อน merge** — รายงาน "ตามแอป" ต้องโชว์แอปครบทุกตัว แม้ไม่มี
+     * งานเลย (CRM ไม่มีงาน → เดิมหายจากตารางเงียบ ๆ ตอนนี้ขึ้น 0 งาน / 0 ปิดแล้ว
+     * / — / 0.0 นาที) · แถวจาก `raw` ด้านล่าง merge ทับค่า seed เอง (label ตรงกัน
+     * อยู่แล้ว) · แถว "ไม่มีแอป" (`app_id` NULL) ยังมาจากข้อมูลเหมือนเดิม — ไม่มี
+     * งานกลุ่มนี้ = ไม่มีแถวนี้ · ยอดรวมไม่กระทบ (0 ไม่เปลี่ยนผลรวม) และ CSV/PDF
+     * export rows ชุดเดียวกันจึงตรงกับจอ
+     */
+    for (const app of await this.apps.find({ order: { id: "ASC" } })) {
+      byApp.set(app.id, {
+        label: app.name,
+        issueCount: 0,
+        openCount: 0,
+        actualSeconds: 0,
+        enteredSeconds: 0,
+        lastAt: null,
+        perPerson: new Map(),
+      });
+    }
 
     for (const r of raw) {
       const appId = r.appKey == null ? null : Number(r.appKey);

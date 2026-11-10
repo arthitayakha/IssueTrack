@@ -13,6 +13,9 @@ export interface AuthUser {
   positionId?: number | null;
   positionName?: string | null;
   positionPermissions?: string[];
+  /** บริษัทของลูกค้า (null กับแอดมิน/โปรแกรมเมอร์) — โชว์ใน popup โปรไฟล์ */
+  companyId?: number | null;
+  companyName?: string | null;
 }
 
 const AUTH_KEY = "kanban-auth";

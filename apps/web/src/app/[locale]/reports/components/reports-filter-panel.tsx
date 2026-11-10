@@ -59,7 +59,7 @@ type SectionKey =
  * same on every dropdown. `assignee` is labelled โปรแกรมเมอร์ (same wording
  * as the by-assignee table header) and leads the issues view; the summary
  * views end on it and skip the reporter section entirely.
- * `company` sits under `app`: a card reaches a company through its app.
+ * `company` sits under `app`: an issue reaches a company through its reporter.
  *
  * `company` view = contract data (rows are แอป×บริษัท pairs): only the two
  * sections that mean anything on a contract. สถานะ/หมวด/ผู้รับ/ผู้แจ้ง/ความสำคัญ

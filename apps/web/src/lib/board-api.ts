@@ -43,6 +43,12 @@ export interface BoardMember {
   name: string;
   roleId: number | null;
   roleName: string | null;
+  /**
+   * The member's company (`users.company_id`, only ever set for `customer`
+   * seats). The board's company filter turns this into "the reporters of the
+   * selected company" — see `companyReporterIds` in `boards/page.tsx`.
+   */
+  companyId: number | null;
   isActive: boolean;
 }
 
@@ -77,6 +83,12 @@ export interface BoardIssue {
   programmerName: string | null;
   customerId: number | null;
   customerName: string | null;
+  /**
+   * The reporter's company (`users.company_id` → `companies`) — the read-only
+   * "บริษัท" cell in the detail popup. Null = no reporter / no company.
+   */
+  customerCompanyId?: number | null;
+  customerCompanyName?: string | null;
   commentCount: number;
   attachmentCount: number;
   trackedDuration?: number;

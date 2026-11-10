@@ -3,6 +3,8 @@
 import { cloneElement, Fragment, isValidElement } from "react";
 import {
   Box,
+  Button,
+  Chip,
   CircularProgress,
   Table,
   TableBody,
@@ -22,7 +24,7 @@ import DataTable, {
   DataTableCell,
 } from "@/components/data-table";
 import { SORTABLE_FIELDS, pairKey } from "@/lib/reports-api";
-import type { AppContract } from "@/lib/reports-api";
+import type { DeductionState, PeriodUsage, UsageCount } from "@/lib/apps-api";
 import type { ReportColumnDef } from "./report-columns";
 import type {
   CompanyRow,
@@ -75,12 +77,16 @@ const COL_MIN: Record<string, number> = {
   category: 130,
   app: 130,
   company: 160,
+  // ประเภทสัญญา (ต่ออายุ / ซื้อชั่วโมง) — chip ขอบบาง กว้างพอไม่ให้ตัดคำ
+  kind: 130,
   maHours: 110,
   remaining: 110,
   // company view — วันที่สัญญา + ชั่วโมงที่ใช้ทั้งหมด (ระดับแอป)
   startedAt: 130,
   expiresAt: 130,
   usedHours: 150,
+  // จำนวนงานที่ถูกตัดจากรอบนั้น (ระดับแถว — แถวละ 1 รอบ) + ลูกศรกางรายการ
+  deductedCount: 150,
   priority: 130,
   // summaries
   person: 150,
@@ -119,12 +125,6 @@ export interface ReportsTableProps {
   personTasksLoading: boolean;
   onTogglePerson: (personId: number) => void;
   /**
-   * Contract facts per app (บริษัท / ชั่วโมง MA) keyed by app id — drives the
-   * `company` and `maHours` columns in the issues / app views. `issues` has no
-   * `company_id`, so a row only knows its company **through its app**.
-   */
-  contractsByApp: Map<number, AppContract>;
-  /**
    * All-time "used" hours per **แอป×บริษัท pair** — the subtrahend of คงเหลือ =
    * MA − ใช้ไป. Keyed with `pairKey(appId, companyId)` because hours are
    * attributed through the **reporter's company** (`users.company_id`), so only
@@ -133,6 +133,22 @@ export interface ReportsTableProps {
    * render as `—`, never as MA itself (a full-MA remaining would be a lie).
    */
   usage: { status: "loading" | "ready" | "error"; byPair: Map<string, number> };
+  /**
+   * **รายการที่ถูกตัดจากช่วง MA** (view ตามบริษัท ที่แถว = 1 รอบ)
+   *
+   * - `counts` — จำนวนของทุกรอบในหน้านี้ (`GET /apps/usage-counts`, ยิงครั้งเดียว
+   *   ตอนเปิด view ไม่ใช่ต่อแถว) · `status` แยก "ยังโหลด" (`…`) ออก "ดึงไม่ได้" (`—`)
+   *   ออก "0 รายการ" ให้ชัด (ห้ามเดา)
+   * - `detail` — รายการจริงของรอบที่กาง (`GET /apps/:id/companies/:recordId/usage`)
+   *   **โหลดตอนกดกางเท่านั้น** ไม่ยิงตอนเปิด view
+   */
+  deductions: {
+    counts: { status: "loading" | "ready" | "error"; byRecord: Map<number, UsageCount> };
+    expandedRecordId: number | null;
+    detail: DeductionState;
+    onToggle: (recordId: number) => void;
+    onRetryDetail: () => void;
+  };
 }
 
 /**
@@ -157,10 +173,13 @@ export function ReportsTable({
   personTasks,
   personTasksLoading,
   onTogglePerson,
-  contractsByApp,
   usage,
+  deductions,
 }: ReportsTableProps) {
   const t = useTranslations("Reports");
+  /** คีย์ร่วมกับป๊อปอัพ `/systems` — คำของฟีเจอร์ "รายการที่ตัด" ชุดเดียวกัน */
+  const st = useTranslations("Settings");
+  const deductionTaskTypes = useTranslations("Boards");
   const theme = useTheme();
   const locale = useLocale();
 
@@ -211,37 +230,7 @@ export function ReportsTable({
 
   const personCell = (name: string) => <Typography variant="body2">{name}</Typography>;
 
-  /* ---------------- contract cells (บริษัท / MA / คงเหลือ) ---------------- */
-
-  /**
-   * คอลัมน์ "บริษัท" (view รายการปัญหา) — รู้ผ่านแอปเท่านั้น
-   * (`issues` ไม่มี `company_id`)
-   *
-   * - ไม่มีแอป / แอปไม่มีบริษัท / ยังไม่ได้โหลดสัญญา → `—`
-   * - ผูกหลายแห่ง → คั่นด้วย `", "` แล้วขึ้นบรรทัดใหม่ (ไม่ยุบเป็น `+N`
-   *   แบบ `/systems` เพราะตารางนี้มีที่ว่างให้ wrap และ hover title
-   *   อ่านชื่อครบทุกแห่งได้อยู่แล้ว)
-   */
-  const contractCell = (appId: number | null) => {
-    const empty = (
-      <Typography variant="body2" color="text.secondary">
-        —
-      </Typography>
-    );
-    if (appId == null) return empty;
-    const contract = contractsByApp.get(appId);
-    if (!contract || contract.companies.length === 0) return empty;
-    const text = contract.companies.map((c) => c.name).join(", ");
-    return (
-      <Typography
-        variant="body2"
-        title={text}
-        sx={{ overflowWrap: "anywhere", display: "block" }}
-      >
-        {text}
-      </Typography>
-    );
-  };
+  /* ---------------- contract cells (ชั่วโมง MA / คงเหลือ) ---------------- */
 
   /** จุดว่างกลางเซลล์ — ใช้ทุกครั้งที่ "ยังไม่มีค่าจะโชว์" */
   const dash = (
@@ -430,6 +419,13 @@ export function ReportsTable({
             return th("companyName", t("columns.company"));
           case "app":
             return th("appName", t("columns.app"));
+          /**
+           * ประเภทสัญญา (ต่ออายุ / ซื้อชั่วโมง) — ไม่ sortable: ค่าเป็น
+           * หมวด (renew/buy) เรียง alphabetically ไม่มีความหมาย เหมือน
+           * `deductedCount` ที่อยู่ติดกัน
+           */
+          case "kind":
+            return <DataTableCell>{t("columns.type")}</DataTableCell>;
           case "startedAt":
             return th("startedAt", t("columns.startedAt"));
           case "expiresAt":
@@ -441,6 +437,13 @@ export function ReportsTable({
             return <DataTableCell align="right">{t("columns.usedHours")}</DataTableCell>;
           case "remaining":
             return <DataTableCell align="right">{t("columns.remaining")}</DataTableCell>;
+          /**
+           * **รายการที่ตัด** — ระดับแถว (แถว = 1 รอบ) แต่ค่ามาจากการยิง
+           * `usage-counts` ฝั่ง client จึงเรียงใน SQL ไม่ได้ → ไม่ sortable
+           * เหมือน `usedHours` / `remaining` ที่อยู่ติดกัน
+           */
+          case "deductedCount":
+            return <DataTableCell align="right">{t("columns.deductedCount")}</DataTableCell>;
           default:
             return null;
         }
@@ -665,7 +668,13 @@ export function ReportsTable({
       case "app":
         return <DataTableCell>{r.appName ?? "—"}</DataTableCell>;
       case "company":
-        return <DataTableCell>{contractCell(r.appId)}</DataTableCell>;
+        /**
+         * คอลัมน์ "บริษัท" (view รายการปัญหา) — **บริษัทของผู้แจ้งงาน**
+         * (`IssueRow.companyName`), 1 คน = 1 บริษัท — ไม่ใช่ชื่อบริษัททั้งหมด
+         * ที่แอปของงานผูกไว้อีกแล้ว · ไม่มีผู้แจ้ง / ผู้แจ้งไม่มีบริษัท → `—`
+         * (และถูกตัดออกทันทีที่เปิดตัวกรองบริษัท — เหมือนบอร์ด)
+         */
+        return <DataTableCell>{cellText(r.companyName)}</DataTableCell>;
       case "priority":
         return <DataTableCell>{cellText(r.priorityName)}</DataTableCell>;
       default:
@@ -808,6 +817,32 @@ export function ReportsTable({
         );
       case "app":
         return <DataTableCell>{r.appName}</DataTableCell>;
+      /**
+       * **ประเภทของแถวนั้น** — chip แบบเดียวกับแท็บ "ประวัติการต่ออายุ" ใน
+       * ป๊อปอัพ `/systems` (`system-detail-dialog.tsx`): ซื้อชั่วโมง = info,
+       * ต่ออายุ/เพิ่มรายการ = default · ค่ามาจาก `app_companies.kind` ·
+       * แอปยังไม่ผูกบริษัท (`kind == null`) → `—` ไม่เดา
+       */
+      case "kind":
+        if (r.kind == null) {
+          return (
+            <DataTableCell>
+              <Typography variant="body2" color="text.secondary">
+                —
+              </Typography>
+            </DataTableCell>
+          );
+        }
+        return (
+          <DataTableCell sx={{ whiteSpace: "nowrap" }}>
+            <Chip
+              label={r.kind === "buy" ? st("kindBuy") : st("renew")}
+              color={r.kind === "buy" ? "info" : "default"}
+              size="small"
+              variant="outlined"
+            />
+          </DataTableCell>
+        );
       case "startedAt":
         // `formatDay` ไม่ใช่ `new Date()` ตรง ๆ — ค่าเป็น `YYYY-MM-DD`
         // (parse เป็น UTC midnight จะเพี้ยน 1 วันใน timezone ติดลบ)
@@ -833,9 +868,165 @@ export function ReportsTable({
             {remainingCell(r.appId, r.companyId, r.maHours)}
           </DataTableCell>
         );
+      /**
+       * จำนวนงานที่ถูกตัดจากรอบนั้น — แถว = 1 รอบ (`r.recordId`) จึงนับรายรอบได้จริง
+       * ต่างจาก "ชั่วโมงที่ใช้ทั้งหมด" ที่เป็นระดับคู่ ทั้งเซลล์เป็น **ปุ่มกาง**
+       * รายการใต้แถว (คลิกที่แถวไหนก็ได้ — `bodyRows` ผูก `onClick` ไว้)
+       *
+       * ยังโหลด → `…` · ดึงไม่ได้ → `—` (fail-open ห้ามเดาเป็น 0) · รู้ค่า → "N รายการ"
+       */
+      case "deductedCount": {
+        if (r.recordId == null) return <DataTableCell align="right">—</DataTableCell>;
+        const entry = deductions.counts.byRecord.get(r.recordId);
+        const open = deductions.expandedRecordId === r.recordId;
+        const label =
+          deductions.counts.status === "loading"
+            ? "…"
+            : entry
+              ? st("deductionsCount", { n: entry.count })
+              : "—";
+        return (
+          <DataTableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+            <Box sx={{ display: "inline-flex", alignItems: "center", gap: 0.75 }}>
+              <KeyboardArrowDownIcon
+                sx={{
+                  fontSize: 18,
+                  color: open ? "primary.main" : "text.secondary",
+                  transform: open ? "rotate(0deg)" : "rotate(-90deg)",
+                  transition: "transform .15s",
+                }}
+              />
+              <Typography variant="body2">{label}</Typography>
+            </Box>
+          </DataTableCell>
+        );
+      }
       default:
         return null;
     }
+  }
+
+  /**
+   * **แถวรายละเอียดใต้แถวที่กาง** — รายการที่ถูกตัดของรอบนั้น
+   * (แพตเทิร์นเดียวกับ person-detail ของ assignee view)
+   *
+   * 3 สถานะแยกให้ชัด: ยังโหลด (spinner) / ดึงไม่ได้ (ข้อความ + ปุ่มลองใหม่ —
+   * ห้ามโชว์ "ไม่มีรายการ" เพราะนั่นคือการโกง) / สำเร็จ (หัวข้อ + ตาราง)
+   */
+  function companyDetailRow(r: CompanyRow): React.ReactNode {
+    if (r.recordId == null || deductions.expandedRecordId !== r.recordId) return null;
+    const detail = deductions.detail;
+
+    const head = (
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+        {st("tabDeductions")}
+        {detail.status === "ready"
+          ? ` · ${st("deductionsCount", { n: detail.data.count })} · ${st("deductionsUsed", {
+              n: detail.data.periodUsedHours,
+            })}`
+          : ""}
+      </Typography>
+    );
+
+    const innerTable = (data: PeriodUsage) => (
+      <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              {(
+                [
+                  ["issueNo", st("deductionIssueNo"), "left"],
+                  ["title", st("deductionTitle"), "left"],
+                  ["type", st("deductionType"), "left"],
+                  ["hours", st("deductionHours"), "right"],
+                  ["at", st("deductionAt"), "left"],
+                  ["assignee", st("deductionAssignee"), "left"],
+                ] as const
+              ).map(([key, label, align]) => (
+                <TableCell
+                  key={key}
+                  align={align}
+                  sx={{
+                    bgcolor: theme.custom.tableStripe,
+                    fontWeight: 700,
+                    fontSize: 11.5,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {label}
+                </TableCell>
+              ))}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {data.issues.map((issue) => (
+              <TableRow key={issue.id}>
+                <TableCell sx={{ fontSize: 12.5, whiteSpace: "nowrap" }}>
+                  {issue.issueNumber ?? "—"}
+                </TableCell>
+                <TableCell sx={{ fontSize: 12.5, maxWidth: 320 }}>
+                  <Typography variant="body2" noWrap>
+                    {issue.title}
+                  </Typography>
+                </TableCell>
+                <TableCell sx={{ fontSize: 12.5, whiteSpace: "nowrap" }}>
+                  {issue.taskType ? deductionTaskTypes(`taskType.${issue.taskType}`) : "—"}
+                </TableCell>
+                <TableCell align="right" sx={{ fontSize: 12.5 }}>
+                  {issue.hours}
+                </TableCell>
+                <TableCell sx={{ fontSize: 12.5, whiteSpace: "nowrap" }}>
+                  {issue.deductedAt ? fmtDate(issue.deductedAt) : "—"}
+                </TableCell>
+                <TableCell sx={{ fontSize: 12.5, whiteSpace: "nowrap" }}>
+                  {issue.assigneeName ?? st("deductionUnassigned")}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Box>
+    );
+
+    return (
+      <DataTableRow key="deduction-detail">
+        <DataTableCell colSpan={visible.length} sx={{ py: 2, bgcolor: "background.default" }}>
+          {head}
+
+          {detail.status === "loading" ? (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 0.5 }}>
+              <CircularProgress size={18} />
+              <Typography variant="caption" color="text.secondary">
+                {st("deductionsLoading")}
+              </Typography>
+            </Box>
+          ) : detail.status === "error" ? (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 2, py: 0.5 }}>
+              <Typography variant="caption" color="text.secondary">
+                {st("deductionsError")}
+              </Typography>
+              <Button size="small" onClick={deductions.onRetryDetail}>
+                {st("deductionsRetry")}
+              </Button>
+            </Box>
+          ) : detail.data.unattributedHours > 0 ? (
+            /* ชั่วโมงที่กรอกก่อนระบบ — เล่าตรง ๆ ว่าไม่ระบุรอบ ไม่เดาใส่รอบใด */
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+              {st("deductionsUnattributed", { n: detail.data.unattributedHours })}
+            </Typography>
+          ) : null}
+
+          {detail.status === "ready" &&
+            (detail.data.count === 0 ? (
+              <Typography variant="caption" color="text.secondary">
+                {st("deductionsEmpty")}
+              </Typography>
+            ) : (
+              innerTable(detail.data)
+            ))}
+        </DataTableCell>
+      </DataTableRow>
+    );
   }
 
   /* ---------------- body rows per view ---------------- */
@@ -894,16 +1085,31 @@ export function ReportsTable({
         ));
 
       case "company":
-        return (rows as CompanyRow[]).map((r, i) => (
-          <DataTableRow
-            // 1 แถวต่อคู่ แอป×บริษัท — แอปไม่มีบริษัทก็ยังมีแถว (`none`)
-            key={`${r.appId}:${r.companyId ?? "none"}-${i}`}
-          >
-            {visible.map((c) => (
-              <Fragment key={c.key}>{companyCell(c.key, r)}</Fragment>
-            ))}
-          </DataTableRow>
-        ));
+        return (rows as CompanyRow[]).map((r, i) => {
+          /**
+           * **แถว = 1 รอบ** จึงกางดู "รายการที่ตัด" ของรอบนั้นได้ — แอปยังไม่ผูก
+           * บริษัท (`recordId: null`) ไม่มีรอบให้ถาม จึงไม่คลิกได้
+           */
+          const expandable = r.recordId != null;
+          const open = expandable && deductions.expandedRecordId === r.recordId;
+          return (
+            <Fragment key={`${r.appId}:${r.companyId ?? "none"}-${i}`}>
+              <DataTableRow
+                onClick={expandable ? () => deductions.onToggle(r.recordId as number) : undefined}
+                sx={
+                  expandable
+                    ? { cursor: "pointer", ...(open ? { bgcolor: "action.hover" } : {}) }
+                    : undefined
+                }
+              >
+                {visible.map((c) => (
+                  <Fragment key={c.key}>{companyCell(c.key, r)}</Fragment>
+                ))}
+              </DataTableRow>
+              {companyDetailRow(r)}
+            </Fragment>
+          );
+        });
 
       default:
         return null;

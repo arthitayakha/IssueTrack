@@ -184,7 +184,7 @@ export default function SystemsPage() {
     label: string;
   } | null>(null);
 
-  /** แถวกำลัง**ต่ออายุ** (null = ปิดฟอร์ม) — ปุ่มขึ้นเฉพาะแถวใกล้หมดอายุ/หมดอายุ */
+  /** แถวกำลัง**ต่ออายุ** (null = ปิดฟอร์ม) — ปุ่มขึ้นเฉพาะช่วงที่หมดอายุแล้ว (ดู `canRenew()`) */
   const [renewingRecord, setRenewingRecord] = useState<RenewingRecord | null>(null);
   /**
    * แถวกำลัง**ซื้อชั่วโมง** (null = ปิดฟอร์ม) — ปุ่มขึ้นเฉพาะแถวที่คงเหลือ ≤ 0
@@ -295,14 +295,17 @@ export default function SystemsPage() {
   }
 
   /**
-   * ปุ่ม "ต่ออายุ" โชว์**เฉพาะ**แถวที่ใกล้หมดอายุ/หมดอายุแล้ว
-   * (`expiring_soon` ≤30 วัน รวม `critical` ≤7 วัน หรือ `expired`) — แถวยัง
-   * "ปกติ" ไม่ต้องต่ออายุล่วงหน้า · บวกต้องมีสิทธิ์แก้ข้อมูลระบบด้วย
+   * ปุ่ม "ต่ออายุ" โชว์**เฉพาะช่วงที่หมดอายุแล้ว** — แถวยังไม่หมดอายุ
+   * (ปกติ/ใกล้หมดอายุ ≤30 วัน) ไม่ขึ้นปุ่มเลย (ข้อสรุปจากผู้ใช้: "ถ้ามันยังไม่
+   * หมดอายุ จะขึ้นทำไม") · สองเงื่อนไขนี้ต้อง OR กัน: `expired` = สถานะที่
+   * เซิร์ฟเวอร์เก็บ (วันที่ผ่านไปแล้ว) และ `daysLeft <= 0` = ตรงกับ**ชิป**ที่ขึ้น
+   * "หมดอายุแล้ว" ตั้งแต่วันหมดอายุพอดี — ไม่งั้นจะมีวันที่ชิปบอกหมดอายุ
+   * แต่ปุ่มยังไม่โผล่ · บวกต้องมีสิทธิ์แก้ข้อมูลระบบด้วย
    */
   function canRenew(row: SystemRow): boolean {
     if (!canUpdate) return false;
-    const s = row.link.expiryStatus;
-    return s === "expiring_soon" || s === "critical" || s === "expired";
+    const daysLeft = daysLeftIso(row.link.expiresAt ?? "");
+    return row.link.expiryStatus === "expired" || (daysLeft !== null && daysLeft <= 0);
   }
 
   /**
@@ -385,12 +388,24 @@ export default function SystemsPage() {
    * `apps` ชุดปัจจุบัน ไม่ใช่ snapshot ที่กดไว้: หลังต่ออายุ `loadApps()` ดึง
    * ข้อมูลใหม่ → ป๊อปอัพเห็น**ช่วงใหม่ในประวัติ**ทันที · คู่ถูกลบไปแล้ว (แถว
    * เดียวหาย) → คืน `null` → ป๊อปอัพปิดเอง ไม่ค้างข้อมูลที่ไม่มีจริง
+   *
+   * ต้องเลือก**ช่วงล่าสุด** = `recordId` มากสุด (กฎเดียวกับ `rows` ด้านบน) —
+   * **ห้ามใช้ `.find()`**: API คืน `app_companies` เรียง `id ASC` (เก่าสุดก่อน)
+   * การ์ดแรกที่เจอจึงเป็น "รอบที่ 1" ทำให้แท็บข้อมูลทั่วไป/ชิปหัวการ์ด/ปุ่ม
+   * ต่ออายุของป๊อปอัพ**ค้างอยู่กับช่วงที่หมดอายุไปแล้ว** ทั้งที่คู่นั้นมีช่วง
+   * ใหม่ที่ยังปกติอยู่ (และปุ่มต่ออายุจะ prefill วันที่จากช่วงเก่าที่ผ่านมาแล้ว)
    */
   const detailRow = useMemo<SystemRow | null>(() => {
     if (!detailKey) return null;
     const app = apps.find((a) => a.id === detailKey.appId);
-    const link = app?.companies.find((c) => c.id === detailKey.companyId);
-    return app && link ? { app, link } : null;
+    if (!app) return null;
+    const link = app.companies
+      .filter((c) => c.id === detailKey.companyId)
+      .reduce<AppCompanyLink | undefined>(
+        (best, c) => (best === undefined || c.recordId > best.recordId ? c : best),
+        undefined,
+      );
+    return link ? { app, link } : null;
   }, [apps, detailKey]);
 
   /**
@@ -585,7 +600,12 @@ export default function SystemsPage() {
                 setPage(1);
               }}
               sx={{ flexGrow: 1, maxWidth: 480, minWidth: 200 }}
-              inputProps={{ "aria-label": t("searchPlaceholder") }}
+              inputProps={{
+                "aria-label": t("searchPlaceholder"),
+                // กัน password manager เทอีเมลลงช่องค้นหา (เหมือนหน้าบอร์ด)
+                autoComplete: "off",
+                name: "systems-search",
+              }}
               InputProps={{
                 startAdornment: (
                   <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />
@@ -723,7 +743,7 @@ export default function SystemsPage() {
                           {t("buyHours")}
                         </Button>
                       )}
-                      {/* ปุ่มต่ออายุ — **เฉพาะแถวใกล้หมดอายุ/หมดอายุแล้ว** และต้องมี
+                      {/* ปุ่มต่ออายุ — **เฉพาะช่วงที่หมดอายุแล้ว** และต้องมี
                           `system.update` (ดู `canRenew()`) · ปุ่ม 🕐 = เปิดป๊อปอัพ
                           รายละเอียด (ข้อมูลทั่วไป + ประวัติการต่ออายุ) */}
                       {canRenew(row) && (

@@ -74,7 +74,7 @@ const COLUMN_WIDTHS: Record<ReportView, Record<string, number>> = {
     status: 42,
     category: 44,
     app: 40,
-    // ผ่านแอป — ชื่อบริษัทคั่น ", " อาจยาว ปล่อยให้ตัดบรรทัด
+    // บริษัทของผู้แจ้งงาน — ชื่อเดียวต่อแถว (อาจยาวจึงให้ตัดบรรทัดได้)
     company: 70,
     priority: 34,
   },

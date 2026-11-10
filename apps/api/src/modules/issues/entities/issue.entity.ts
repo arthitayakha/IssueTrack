@@ -92,6 +92,18 @@ export class Issue {
   actualFixDuration!: number | null;
 
   /**
+   * **เวลาที่บันทึกชั่วโมงนี้** (migration 1822) — เดียวที่เขียนคือ
+   * `setActualFixDuration` (ค่า > 0 → stamp ตอนนั้น, ค่า 0 → ล้างกลับเป็น `NULL`)
+   *
+   * ใช้ผูกงานเข้า **รอบสัญญา** (`app_companies` หลายแถวต่อคู่): ชั่วโมงเป็นของ
+   * รอบที่ "มีผลอยู่ ณ ตอนกรอก" — ดูกติกาที่ `ma-attribution.ts` ·
+   * `NULL` = ยังไม่เคยกรอกเวลา **หรือ** เป็นข้อมูลที่กรอกก่อน migration นี้
+   * ซึ่งหน้า UI โชว์เป็น "ไม่ระบุรอบ" (`unattributedHours`) ไม่เดาสุ่ม
+   */
+  @Column({ name: "actual_fix_at", type: "timestamptz", nullable: true })
+  actualFixAt!: Date | null;
+
+  /**
    * ประเภทงาน — `bug` | `feature` | `requirement` | NULL (ยังไม่ระบุ)
    *
    * ป้ายฝั่งแอดมิน/โปรแกรมเมอร์ตั้งที่แผงรายละเอียดการ์ด (ลูกค้าไม่ได้เลือก)

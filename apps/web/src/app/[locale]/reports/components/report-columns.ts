@@ -31,7 +31,8 @@ export const REPORT_COLUMNS: Record<ReportView, ReportColumnDef[]> = {
     { key: "status", labelKey: "columns.status" },
     { key: "category", labelKey: "columns.category" },
     { key: "app", labelKey: "columns.app" },
-    // บริษัท มาจากแอปของงาน (issues ไม่มี company_id) — อยู่ติดกับคอลัมน์แอป
+    // บริษัท = บริษัทของผู้แจ้งงาน (issues.customer_id → users.company_id)
+    // 1 คน = 1 บริษัท — อยู่ติดกับคอลัมน์แอป
     { key: "company", labelKey: "columns.company" },
     { key: "priority", labelKey: "columns.priority" },
   ],
@@ -58,15 +59,26 @@ export const REPORT_COLUMNS: Record<ReportView, ReportColumnDef[]> = {
    *
    * ไม่มีคอลัมน์ "ชั่วโมงที่ใช้ทั้งหมด" / "คงเหลือ" ใน registry เพราะสองค่านั้น
    * เป็นระดับแอปและยังไม่รู้ตอนสร้างแถว — cell หยิบจาก `usage` prop เอง
+   *
+   * **`deductedCount`** ต่างออกไป: แถว = 1 รอบอยู่แล้ว จึงนับได้จริงต่อแถว
+   * (คีย์ `recordId` ที่ `CompanyRow` แบกมา) — cell ขอ `usage-counts` รอบเดียว
+   * ตอนเปิด view แล้วเป็นปุ่มกาง "รายการที่ถูกตัด" ใต้แถว
    */
   company: [
     { key: "company", labelKey: "columns.company" },
     { key: "app", labelKey: "columns.app" },
+    /**
+     * **ประเภทของแถวนั้น** (`app_companies.kind`) — `renew` = ต่ออายุ/เพิ่มรายการ,
+     * `buy` = ซื้อชั่วโมง · ใช้ `columns.type` ที่มีอยู่แล้วใน messages (ไม่เพิ่ม key ใหม่)
+     * · อยู่ติดกับ "แอป" เพราะเป็นข้อมูลสัญญาชุดเดียวกัน
+     */
+    { key: "kind", labelKey: "columns.type" },
     { key: "startedAt", labelKey: "columns.startedAt" },
     { key: "expiresAt", labelKey: "columns.expiresAt" },
     { key: "maHours", labelKey: "columns.maHours" },
     { key: "usedHours", labelKey: "columns.usedHours" },
     { key: "remaining", labelKey: "columns.remaining" },
+    { key: "deductedCount", labelKey: "columns.deductedCount" },
   ],
 };
 

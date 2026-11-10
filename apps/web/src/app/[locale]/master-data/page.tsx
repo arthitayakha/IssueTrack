@@ -1904,11 +1904,22 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                         appCount: deleteCheck.appCount ?? 0,
                         userCount: deleteCheck.userCount ?? 0,
                       })
-                    : t("deleteInUse", {
-                        name: deleteTarget.name,
-                        issueCount: deleteCheck.issueCount,
-                        columnCount: deleteCheck.columnCount,
-                      })}
+                    : deleteTarget.type === "app"
+                      /**
+                       * แอปใช้ข้อความของตัวเอง — `deleteInUse` ร่วมกับ status/category
+                       * ฟอร์แมตว่า "{n} งานและ {columnCount} คอลัมน์" ซึ่งฝั่งแอปไม่มี
+                       * columnCount → โชว์เป็น "0 คอลัมน์" ที่งง ๆ (นับเฉพาะงานปกติ —
+                       * ดู `AppsService.check()`)
+                       */
+                      ? t("deleteAppInUse", {
+                          name: deleteTarget.name,
+                          issueCount: deleteCheck.issueCount,
+                        })
+                      : t("deleteInUse", {
+                          name: deleteTarget.name,
+                          issueCount: deleteCheck.issueCount,
+                          columnCount: deleteCheck.columnCount,
+                        })}
                 </Typography>
               ) : deleteTarget ? (
                 <Typography variant="body2">

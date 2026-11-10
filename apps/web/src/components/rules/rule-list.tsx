@@ -285,6 +285,8 @@ export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           sx={{ flex: 1, minWidth: 180 }}
+          // กัน password manager เทอีเมลลงช่องค้นหา (เหมือนหน้าบอร์ด)
+          inputProps={{ autoComplete: "off", name: "rules-search" }}
         />
         <Select
           size="small"
