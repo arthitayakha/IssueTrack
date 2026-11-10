@@ -13,7 +13,6 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
-  InputAdornment,
   TextField,
   Tooltip,
   Typography,
@@ -21,6 +20,7 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import BusinessIcon from "@mui/icons-material/Business";
 import FilterListIcon from "@mui/icons-material/FilterList";
+import HistoryIcon from "@mui/icons-material/History";
 import ScheduleIcon from "@mui/icons-material/Schedule";
 import SearchIcon from "@mui/icons-material/Search";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
@@ -43,6 +43,9 @@ import { usePermissions } from "@/lib/permissions";
 import { useNotification } from "@/components/notification";
 import AppActions from "@/components/app-actions";
 import AppFormDialog, { type EditingRecord } from "@/components/app-form-dialog";
+import RenewFormDialog, { type RenewingRecord } from "@/components/renew-form-dialog";
+import BuyHoursDialog, { type BuyingRecord } from "@/components/buy-hours-dialog";
+import SystemDetailDialog from "@/components/system-detail-dialog";
 import {
   deleteAppRecord,
   fetchCompanies,
@@ -59,11 +62,13 @@ import {
   type ExpiryLabelKey,
   type ExpiryStatus,
 } from "@/lib/app-expiry";
-import { fetchAppUsageAllTime } from "@/lib/reports-api";
+import { fetchAppUsageAllTime, pairKey } from "@/lib/reports-api";
 
 /**
- * 1 แถวในตาราง = **1 รายการข้อมูล (1 ช่วงเวลาของคู่ แอป×บริษัท)** — แอปที่ยัง
- * ไม่มีรายการเลย**ไม่มีแถว** (ไปจัดการชื่อได้ที่แท็บแอปใน `/master-data`)
+ * 1 แถวในตาราง = **1 คู่ แอป×บริษัท** — โชว์เฉพาะ **ช่วงเวลาล่าสุด** ของคู่นั้น
+ * (ช่วงเก่าๆ ไปอยู่ในป๊อปอัพ "ประวัติการต่ออายุ" ซึ่งอ่านจาก `app.companies`
+ * ของแถวเดียวกัน ไม่ต้องยิง API เพิ่ม) · แอปที่ยังไม่มีรายการเลย**ไม่มีแถว**
+ * (ไปจัดการชื่อได้ที่แท็บแอปใน `/master-data`)
  */
 interface SystemRow {
   app: App;
@@ -150,9 +155,10 @@ export default function SystemsPage() {
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
 
   /**
-   * ตัวเลข "ใช้ไป" ต่อแอป (ชม.) — ดึงคู่กับ `loadApps()` ตอนเปิดหน้า ผ่าน
-   * `fetchAppUsageAllTime()` จุดเดียวกับที่ `/reports` ใช้ (กติกาหัก MA
-   * จะได้ไม่ต่างกันระหว่างสองหน้า)
+   * ตัวเลข "ใช้ไป" ต่อ **คู่ แอป×บริษัท** (ชม.) — ดึงคู่กับ `loadApps()` ตอนเปิดหน้า
+   * ผ่าน `fetchAppUsageAllTime()` จุดเดียวกับที่ `/reports` ใช้ (กติกาหัก MA
+   * จะได้ไม่ต่างกันระหว่างสองหน้า) — คีย์ด้วย `pairKey(appId, companyId)` เพราะ
+   * งานของลูกค้าบริษัทไหนต้องหักเฉพาะแถวของบริษัทนั้น ไม่ใช่ทุกแถวของแอป
    *
    * `error` ต้องแยกจาก `ready` เพราะถ้าดึงไม่ได้แล้วปล่อยให้เหลือ 0
    * ตัวเลข "คงเหลือ" จะเท่ากับ MA ทั้งก้อนซึ่ง**ผิด**
@@ -160,7 +166,7 @@ export default function SystemsPage() {
    * (`MA_DEDUCTION_PAUSED = false` → ฟังก์ชันนั้นยิง request จริง; ถ้าปิด
    * กลับเป็น `true` จะคืน map ว่างทันที → "คงเหลือ" = MA เต็มก้อน)
    */
-  const [usedByApp, setUsedByApp] = useState<Map<number, number>>(new Map());
+  const [usedByApp, setUsedByApp] = useState<Map<string, number>>(new Map());
   const [usageStatus, setUsageStatus] = useState<"loading" | "ready" | "error">("loading");
 
   useEffect(() => {
@@ -177,6 +183,21 @@ export default function SystemsPage() {
     recordId: number;
     label: string;
   } | null>(null);
+
+  /** แถวกำลัง**ต่ออายุ** (null = ปิดฟอร์ม) — ปุ่มขึ้นเฉพาะแถวใกล้หมดอายุ/หมดอายุ */
+  const [renewingRecord, setRenewingRecord] = useState<RenewingRecord | null>(null);
+  /**
+   * แถวกำลัง**ซื้อชั่วโมง** (null = ปิดฟอร์ม) — ปุ่มขึ้นเฉพาะแถวที่คงเหลือ ≤ 0
+   * (ดู `canBuyHours()`) · ต่างจากต่ออายุตรงที่กรอกมาแค่จำนวนชม. วันที่คงเดิม
+   */
+  const [buyingRecord, setBuyingRecord] = useState<BuyingRecord | null>(null);
+  /**
+   * แถวที่เปิดป๊อปอัพรายละเอียดอยู่ — เก็บเป็น **key (appId + companyId)**
+   * ไม่ใช่ snapshot ของแถว: หลังต่ออายุ/แก้ไข `loadApps()` ดึง `apps` ใหม่ ถ้า
+   * เก็บ snapshot อยู่ ป๊อปอัพจะค้างข้อมูลเก่า (ไม่เห็นช่วงใหม่ในประวัติ)
+   * จึง derive ออกจาก `apps` ทุกครั้งที่โหลด — ดู `detailRow` ด้านล่าง
+   */
+  const [detailKey, setDetailKey] = useState<{ appId: number; companyId: number } | null>(null);
 
   const canUpdate = can("system.update");
   const canDelete = can("system.delete");
@@ -210,8 +231,8 @@ export default function SystemsPage() {
   }, [token]);
 
   /**
-   * ดึง "ชั่วโมงที่ใช้ไป" ต่อแอป — `fetchAppUsageAllTime()` (ตัวเดียวกับที่
-   * หน้ารายงานใช้, นับเฉพาะงาน type feature/requirement)
+   * ดึง "ชั่วโมงที่ใช้ไป" ต่อ **คู่ แอป×บริษัท** — `fetchAppUsageAllTime()`
+   * (ตัวเดียวกับที่หน้ารายงานใช้, นับเฉพาะงาน type feature/requirement)
    * ล้มเหลวเองได้: คอลัมน์ "คงเหลือ" จะกลายเป็น `—` พร้อมปุ่มลองใหม่
    */
   async function loadUsage() {
@@ -253,6 +274,61 @@ export default function SystemsPage() {
   }
 
   /**
+   * เปิดฟอร์ม**ต่ออายุ**ของแถวนั้น — ฟอร์มล็อกคู่ แอป×บริษัท ไว้แล้ว
+   * (เหลือแค่วันที่ 2 + จำนวน MA) ไม่มีช่องหมายเหตุ
+   */
+  function openRenewRecord(row: SystemRow) {
+    setRenewingRecord({ app: row.app, link: row.link });
+  }
+
+  /** เปิดฟอร์ม**ซื้อชั่วโมง**ของแถวนั้น — ล็อกคู่ แอป×บริษัท ไว้แล้วเหมือนต่ออายุ */
+  function openBuyRecord(row: SystemRow) {
+    setBuyingRecord({ app: row.app, link: row.link });
+  }
+
+  /**
+   * เปิดป๊อปอัพรายละเอียดของแถวที่กด — เก็บ key ไว้แล้วค่อยหาแถวจริงจาก
+   * `apps` (derive) เพื่อให้ข้อมูลในป๊อปอัพตามหลัง `loadApps()` เสมอ
+   */
+  function openDetailRecord(row: SystemRow) {
+    setDetailKey({ appId: row.app.id, companyId: row.link.id });
+  }
+
+  /**
+   * ปุ่ม "ต่ออายุ" โชว์**เฉพาะ**แถวที่ใกล้หมดอายุ/หมดอายุแล้ว
+   * (`expiring_soon` ≤30 วัน รวม `critical` ≤7 วัน หรือ `expired`) — แถวยัง
+   * "ปกติ" ไม่ต้องต่ออายุล่วงหน้า · บวกต้องมีสิทธิ์แก้ข้อมูลระบบด้วย
+   */
+  function canRenew(row: SystemRow): boolean {
+    if (!canUpdate) return false;
+    const s = row.link.expiryStatus;
+    return s === "expiring_soon" || s === "critical" || s === "expired";
+  }
+
+  /**
+   * ปุ่ม "ซื้อชั่วโมง" โชว์**เฉพาะแถวที่คงเหลือ ≤ 0** (MA ใช้หมดพอดี/เกิน) —
+   * ยังไม่หมดไม่ต้องซื้อ · เงื่อนไข fail-open ทุกข้อเหมือนคอลัมน์ "คงเหลือ":
+   *
+   * - **แถว "หมดอายุแล้ว" ไม่ซื้อ** — สัญญาจบแล้ว ต้อง "ต่ออายุ" แทน
+   *   (ปุ่มต่ออายุขึ้นอยู่แล้วตาม `canRenew()`); การซื้อชม. บนสัญญาที่หมด
+   *   โดยไม่ต่ออายุ = ชั่วโมงลอยอยู่ในช่วงที่ปิดไปแล้ว
+   * - ยังดึง "ใช้ไป" ไม่สำเร็จ (`usageStatus !== "ready"`) → **ห้ามตัดสิน**ว่าหมด
+   *   (ถ้าปล่อยผ่าน ปุ่มจะโผล่ทุกแถวตอนข้อมูลโหลดไม่ทัน)
+   * - ยังไม่เคยกรอก `maHours` (`null`) → ไม่มีเพดาน = ไม่ถือว่าหมด
+   * - ต้องมี `system.update` (เหมือนปุ่มต่ออายุ)
+   *
+   * ซื้อแล้ว `maHours` มากขึ้น → คงเหลือ > 0 → ปุ่มหายเองในโหลดถัดไป
+   */
+  function canBuyHours(row: SystemRow): boolean {
+    if (!canUpdate || usageStatus !== "ready") return false;
+    if (row.link.expiryStatus === "expired") return false;
+    const ma = row.link.maHours;
+    if (ma == null) return false;
+    const used = usedByApp.get(pairKey(row.app.id, row.link.id)) ?? 0;
+    return ma - used <= 0;
+  }
+
+  /**
    * เปิดกล่องยืนยันเพื่อ **ลบรายการนั้น** — ไม่ใช่ลบแอป (การลบแอปเป็นหน้าที่
    * แท็บแอปใน `/master-data`) `label` โชว์ "แอป — บริษัท" กันลบผิดแถว
    */
@@ -278,14 +354,44 @@ export default function SystemsPage() {
   }
 
   /**
-   * ตาราง = **1 แถวต่อ 1 ช่วงเวลา** ของคู่ แอป×บริษัท — flatten ออกมาก่อน
+   * ตาราง = **1 แถวต่อ 1 คู่ แอป×บริษัท** — flatten ออกมาก่อน (1 คู่มีได้หลาย
+   * ช่วงเวลาหลัง migration 1812) แล้ว**เก็บเฉพาะช่วงล่าสุด** (`recordId` ใหญ่
+   * สุด = เพิ่มทีหลังสุด) ช่วงเก่าทั้งหมดยังอยู่ใน `app.companies` ให้ป๊อปอัพ
+   * รายละเอียดหยิบไปเป็น "ประวัติการต่ออายุ" โดยไม่ต้องดึงใหม่
+   *
+   * คีย์ด้วย `pairKey(appId, companyId)` — ตรงกับคีย์ของ map "ใช้ไป" ที่ใช้
+   * คำนวณคอลัมน์ "คงเหลือ" (คนละคีย์ = หักผิดคู่)
+   *
    * แล้วค่อยกรอง/แบ่งหน้า (ของเดิม render ทุกแถวผ่าน `flatMap` ทำให้
    * pagination ที่มีอยู่ไม่เคยมีผลจริง)
    */
-  const rows = useMemo<SystemRow[]>(
-    () => apps.flatMap((app) => app.companies.map((link) => ({ app, link }))),
-    [apps],
-  );
+  const rows = useMemo<SystemRow[]>(() => {
+    const latest = new Map<string, SystemRow>();
+    for (const app of apps) {
+      for (const link of app.companies) {
+        const key = pairKey(app.id, link.id);
+        const existing = latest.get(key);
+        // `>` ล้วน — แถวแรกที่เจอของคู่นั้นยังอยู่ แล้วค่อยแทนที่ด้วยช่วงใหม่กว่า
+        if (!existing || link.recordId > existing.link.recordId) {
+          latest.set(key, { app, link });
+        }
+      }
+    }
+    return [...latest.values()];
+  }, [apps]);
+
+  /**
+   * **แถวจริงของป๊อปอัพรายละเอียด** — หาจาก key (`appId` + `companyId`) ใน
+   * `apps` ชุดปัจจุบัน ไม่ใช่ snapshot ที่กดไว้: หลังต่ออายุ `loadApps()` ดึง
+   * ข้อมูลใหม่ → ป๊อปอัพเห็น**ช่วงใหม่ในประวัติ**ทันที · คู่ถูกลบไปแล้ว (แถว
+   * เดียวหาย) → คืน `null` → ป๊อปอัพปิดเอง ไม่ค้างข้อมูลที่ไม่มีจริง
+   */
+  const detailRow = useMemo<SystemRow | null>(() => {
+    if (!detailKey) return null;
+    const app = apps.find((a) => a.id === detailKey.appId);
+    const link = app?.companies.find((c) => c.id === detailKey.companyId);
+    return app && link ? { app, link } : null;
+  }, [apps, detailKey]);
 
   /**
    * รายชื่อบริษัทที่**มีข้อมูลจริง**ในตาราง (distinct จากแถวที่โหลดมา) — ไม่ยิง
@@ -430,10 +536,13 @@ export default function SystemsPage() {
    *
    * (`MA_DEDUCTION_PAUSED = false` → "ใช้ไป" มาจริง; ถ้าปิดกลับเป็น `true`
    * จะเหลือ MA เต็มก้อน — สองกรณีแรกยังแยกไว้เผื่อปิดหักกลับ)
+   * ("ใช้ไป" นับเฉพาะ type `feature`/`requirement` — bug/NULL ไม่หัก — ดูกติกา
+   * ใน `reports-api.ts`)
    *
-   * "ใช้ไป" เป็น**ระดับแอป** (`issues` ไม่มี `company_id` — งานระบุบริษัทไม่ได้)
-   * ทุกแถวของแอปเดียวกันจึงหักค่าเดียวกัน และนับเฉพาะ type
-   * `feature`/`requirement` (bug/NULL ไม่หัก — ดูกติกาใน `reports-api.ts`)
+   * **ระดับคู่ แอป×บริษัท** — คีย์ `pairKey(row.app.id, row.link.id)` เพราะงานถูก
+   * โยงกับบริษัทของ**ผู้แจ้งงาน** (`users.company_id`) ดังนั้นงานของลูกค้า
+   * บริษัทไหนหักเฉพาะแถวนั้น; จับคู่ไม่ได้ (ผู้แจ้งไม่มีบริษัท / ไม่มีผู้แจ้ง)
+   * map จะไม่มีคีย์นี้ → หัก 0 ทุกแถว = ไม่ลดที่ไหนเลย (ตามกติกา)
    */
   function remainingCell(row: SystemRow) {
     const caption = (text: string) => (
@@ -447,14 +556,15 @@ export default function SystemsPage() {
 
     const ma = row.link.maHours;
     if (ma == null) return caption(t("notSetYet"));
-    return round1(ma - (usedByApp.get(row.app.id) ?? 0));
+    return round1(ma - (usedByApp.get(pairKey(row.app.id, row.link.id)) ?? 0));
   }
 
   return (
     <RequirePermission permission="system.view">
       <DashboardLayout>
         <Box>
-          {/* ค้นหา (ซ้าย) + ปุ่มเปิด popover ตัวกรอง / ปุ่มเพิ่มข้อมูล (ขวา) */}
+          {/* แถว toolbar รูปแบบเดียวกับหน้าบอร์ด: ช่องค้นหาชิดซ้าย (กว้างสุด 480) —
+              ปุ่มตัวกรอง + ปุ่มเพิ่มข้อมูล ชิดขวา (ml: auto) */}
           <Box
             sx={{
               display: "flex",
@@ -465,26 +575,26 @@ export default function SystemsPage() {
               flexWrap: "wrap",
             }}
           >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
-              <TextField
-                size="small"
-                placeholder={t("searchPlaceholder")}
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  setPage(1);
-                }}
-                sx={{ minWidth: 240 }}
-                inputProps={{ "aria-label": t("searchPlaceholder") }}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <SearchIcon fontSize="small" />
-                    </InputAdornment>
-                  ),
-                }}
-              />
+            {/* ช่องค้นหาอยู่ซ้ายสุดและกว้างสุด — เท่ากับ toolbar ของหน้าบอร์ด */}
+            <TextField
+              size="small"
+              placeholder={t("searchPlaceholder")}
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
+              sx={{ flexGrow: 1, maxWidth: 480, minWidth: 200 }}
+              inputProps={{ "aria-label": t("searchPlaceholder") }}
+              InputProps={{
+                startAdornment: (
+                  <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />
+                ),
+              }}
+            />
 
+            {/* ปุ่มฝั่งขวาชิดขวา (ml: auto) — ตัวกรองอยู่ขวาเหมือนหน้าบอร์ด */}
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
               {/* ปุ่ม trigger แบบเดียวกับบอร์ด — ปกติโปร่งใส เติมสีเมื่อมี filter ค้าง */}
               <Tooltip title={tf("title")}>
                 <Badge
@@ -526,13 +636,13 @@ export default function SystemsPage() {
                   </IconButton>
                 </Badge>
               </Tooltip>
-            </Box>
 
-            {can("system.create") && (
-              <Button variant="contained" startIcon={<AddIcon />} onClick={openAddApp}>
-                {t("addData")}
-              </Button>
-            )}
+              {can("system.create") && (
+                <Button variant="contained" startIcon={<AddIcon />} onClick={openAddApp}>
+                  {t("addData")}
+                </Button>
+              )}
+            </Box>
           </Box>
 
           {/* popover ตัวกรอง — chrome แชร์กับบอร์ดและ /reports (components/filter-panel.tsx) */}
@@ -559,11 +669,11 @@ export default function SystemsPage() {
               </DataTableRow>
             </DataTableHead>
             <DataTableBody>
-              {/* 1 แถวต่อ 1 รายการ — แอปที่มี 2 ช่วงเวลา (หรือ 2 บริษัท) จึงมี 2 แถว
-                  รายการใหม่ถูกต่อ**ใต้** รายการเดิม (API เรียง `recordId ASC`)
-                  โชว์เฉพาะ `pageRows` = หน้าปัจจุบันหลังกรองแล้ว (ไม่ใช่ทุกแถว) */}
-              {pageRows.map(({ app, link }) => {
-                const row: SystemRow = { app, link };
+              {/* 1 แถวต่อ 1 คู่ — โชว์เฉพาะ**ช่วงล่าสุด** ของคู่นั้น (ช่วงก่อนหน้า
+                  อยู่ในป๊อปอัพประวัติ) โชว์เฉพาะ `pageRows` = หน้าปัจจุบันหลัง
+                  กรองแล้ว (ไม่ใช่ทุกแถว) */}
+              {pageRows.map((row) => {
+                const { app, link } = row;
                 const empty = (text: string) => (
                   <Typography variant="caption" color="text.disabled">
                     {text}
@@ -572,7 +682,7 @@ export default function SystemsPage() {
                 return (
                   <DataTableRow key={link.recordId}>
                     <DataTableCell>{app.name}</DataTableCell>
-                    {/* คอลัมน์บริษัท = ชื่อเดียว (แถว = 1 คู่ 1 ช่วงเวลา) */}
+                    {/* คอลัมน์บริษัท = ชื่อเดียว (แถว = 1 คู่ ช่วงล่าสุด) */}
                     <DataTableCell>
                       <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
                         {link.name}
@@ -600,7 +710,43 @@ export default function SystemsPage() {
                       />
                     </DataTableCell>
                     <DataTableCell align="right">
-                      {/* ปุ่มแก้/ลบ = **ของแถวนั้น** — ไม่ส่ง `onToggle` → ไม่มีสวิตช์ (เปิด/ปิดแอปที่แท็บแอปใน /master-data) */}
+                      {/* ปุ่มซื้อชั่วโมง — **เฉพาะแถวคงเหลือ ≤ 0** + `system.update`
+                          (ดู `canBuyHours()`) · ซื้อแล้วคงเหลือ > 0 ปุ่มหายเอง */}
+                      {canBuyHours(row) && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="primary"
+                          onClick={() => openBuyRecord(row)}
+                          sx={{ mr: 1, textTransform: "none", whiteSpace: "nowrap" }}
+                        >
+                          {t("buyHours")}
+                        </Button>
+                      )}
+                      {/* ปุ่มต่ออายุ — **เฉพาะแถวใกล้หมดอายุ/หมดอายุแล้ว** และต้องมี
+                          `system.update` (ดู `canRenew()`) · ปุ่ม 🕐 = เปิดป๊อปอัพ
+                          รายละเอียด (ข้อมูลทั่วไป + ประวัติการต่ออายุ) */}
+                      {canRenew(row) && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="warning"
+                          onClick={() => openRenewRecord(row)}
+                          sx={{ mr: 1, textTransform: "none", whiteSpace: "nowrap" }}
+                        >
+                          {t("renew")}
+                        </Button>
+                      )}
+                      <Tooltip title={t("viewDetail")}>
+                        <IconButton
+                          size="small"
+                          onClick={() => openDetailRecord(row)}
+                          aria-label={t("viewDetail")}
+                        >
+                          <HistoryIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                      {/* ปุ่มแก้/ลบ = **ของช่วงล่าสุด** (แถวที่โชว์อยู่) — ไม่ส่ง `onToggle` → ไม่มีสวิตช์ (เปิด/ปิดแอปที่แท็บแอปใน /master-data) */}
                       <AppActions
                         app={app}
                         canUpdate={canUpdate}
@@ -657,6 +803,63 @@ export default function SystemsPage() {
           record={editingRecord}
           companies={companies}
           onClose={() => setAppDialogOpen(false)}
+          onSaved={loadApps}
+        />
+
+        {/* ป๊อปอัพรายละเอียด — การ์ดใบเดียวครอบทั้ง 2 แท็บ (หัว + เนื้อหา + ปุ่มต่ออายุ)
+            ข้อมูล derive จาก `apps` จึงอัปเดตเองหลังต่ออายุ/แก้ไข
+            **mount อยู่หน้า AppFormDialog แต่หลัง RenewFormDialog** — ดูที่ข้อความ
+            ใต้ `RenewFormDialog` เรื่อง z-index */}
+        <SystemDetailDialog
+          open={Boolean(detailRow)}
+          record={detailRow}
+          used={detailRow ? usedByApp.get(pairKey(detailRow.app.id, detailRow.link.id)) : undefined}
+          usageReady={usageStatus === "ready"}
+          canRenew={detailRow ? canRenew(detailRow) : false}
+          onRenew={() => {
+            // **ไม่ปิด** ป๊อปอัพรายละเอียด — เปิดฟอร์มต่ออายุทับไว้ พอบันทึกเสร็จ
+            // `loadApps()` จะดึงช่วงใหม่เข้ามาแล้วป๊อปอัพนี้แสดงประวัติทันที
+            if (detailRow) {
+              setRenewingRecord({ app: detailRow.app, link: detailRow.link });
+            }
+          }}
+          onClose={() => setDetailKey(null)}
+        />
+
+        {/* ฟอร์มต่ออายุ — คู่แอป×บริษัทล็อกจากแถวที่กด บันทึกแล้ว append ช่วงใหม่
+            **mount ท้ายสุด = อยู่บนสุด** — MUI Dialog ทุกตัวมี zIndex เท่ากัน
+            (1300) ตัวที่ mount ทีหลังจะถูกวาดทับ ถ้าสลับลำดับ ฟอร์มต่ออายุจะถูก
+            ป๊อปอัพรายละเอียดทับจนกดไม่ได้ · `used`/`usageStatus` = ข้อมูล "ใช้ไป"
+            ชุดเดียวกับคอลัมน์ "คงเหลือ" ให้ฟอร์มโชว์/ทบชั่วโมงที่เหลือได้ตรงกับ
+            ตาราง (และรอโหลดเสร็จก่อนเปิดปุ่มบันทึก) */}
+        <RenewFormDialog
+          open={Boolean(renewingRecord)}
+          record={renewingRecord}
+          used={
+            renewingRecord
+              ? usedByApp.get(pairKey(renewingRecord.app.id, renewingRecord.link.id))
+              : undefined
+          }
+          usageStatus={usageStatus}
+          onClose={() => setRenewingRecord(null)}
+          onSaved={loadApps}
+        />
+
+        {/* ฟอร์มซื้อชั่วโมง — **mount ท้ายสุด = อยู่บนสุด** (เหตุผล z-index เดียวกับ
+            ฟอร์มต่ออายุด้านบน) · บันทึกแล้ว `loadApps()` ดึงช่วงใหม่ → แถวนั้นเห็น
+            MA ใหม่ทันที และปุ่ม "ซื้อชั่วโมง" หายเองเพราะคงเหลือ > 0 · `used`/
+            `usageStatus` = ข้อมูล "ใช้ไป" ชุดเดียวกับคอลัมน์ "คงเหลือ" ในตาราง
+            ให้กล่องสรุป/preview ในฟอร์มตรงกับที่เห็นข้างนอก */}
+        <BuyHoursDialog
+          open={Boolean(buyingRecord)}
+          record={buyingRecord}
+          used={
+            buyingRecord
+              ? usedByApp.get(pairKey(buyingRecord.app.id, buyingRecord.link.id))
+              : undefined
+          }
+          usageStatus={usageStatus}
+          onClose={() => setBuyingRecord(null)}
           onSaved={loadApps}
         />
 

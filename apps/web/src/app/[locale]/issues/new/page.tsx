@@ -364,6 +364,9 @@ export default function ReportIssuePage() {
                           value={searchQuery}
                           onChange={(e) => setSearchQuery(e.target.value)}
                           placeholder={t("searchPlaceholder")}
+                          // keep the password manager from dumping its saved
+                          // username into this box while the dropdown is open
+                          inputProps={{ autoComplete: "off" }}
                           InputProps={{
                             startAdornment: (
                               <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />

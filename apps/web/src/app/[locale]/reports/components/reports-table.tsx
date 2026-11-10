@@ -21,7 +21,7 @@ import DataTable, {
   DataTableRow,
   DataTableCell,
 } from "@/components/data-table";
-import { SORTABLE_FIELDS } from "@/lib/reports-api";
+import { SORTABLE_FIELDS, pairKey } from "@/lib/reports-api";
 import type { AppContract } from "@/lib/reports-api";
 import type { ReportColumnDef } from "./report-columns";
 import type {
@@ -125,11 +125,14 @@ export interface ReportsTableProps {
    */
   contractsByApp: Map<number, AppContract>;
   /**
-   * All-time "used" hours per app — the subtrahend of คงเหลือ = MA − ใช้ไป.
+   * All-time "used" hours per **แอป×บริษัท pair** — the subtrahend of คงเหลือ =
+   * MA − ใช้ไป. Keyed with `pairKey(appId, companyId)` because hours are
+   * attributed through the **reporter's company** (`users.company_id`), so only
+   * the matching row is deducted; an unmatchable task deducts nothing anywhere.
    * `status` distinguishes "still fetching" from "fetch failed": both must
    * render as `—`, never as MA itself (a full-MA remaining would be a lie).
    */
-  usage: { status: "loading" | "ready" | "error"; byApp: Map<number, number> };
+  usage: { status: "loading" | "ready" | "error"; byPair: Map<string, number> };
 }
 
 /**
@@ -256,28 +259,28 @@ export function ReportsTable({
 
   /**
    * คอลัมน์ "ชั่วโมง MA" (view ตามบริษัท) — **per-row** คือค่าของแถว (1 ช่วงเวลา)
-   * นั้นเอง ไม่ใช่ผลรวมของแอป (ต่างจาก "ชั่วโมงที่ใช้ทั้งหมด" ที่เป็นระดับแอป)
+   * นั้นเอง ไม่ใช่ผลรวมของแอป (ต่างจาก "ชั่วโมงที่ใช้ทั้งหมด" ที่เป็นระดับคู่ แอป×บริษัท)
    */
   const maHoursCell = (ma: number | null) =>
     ma == null ? notSet : <Typography variant="body2">{ma}</Typography>;
 
   /**
-   * คอลัมน์ "ชั่วโมงที่ใช้ทั้งหมด" — **ระดับแอป** (`issues` ไม่มี
-   * `company_id` จึงระบุคู่ไม่ได้) อ่านจาก `usage` prop ตอน render เพราะ
-   * แถวถูกสร้างก่อนที่ `fetchAppUsageAllTime()` จะเสร็จ
+   * คอลัมน์ "ชั่วโมงที่ใช้ทั้งหมด" — **ระดับคู่ แอป×บริษัท** อ่านจาก `usage` prop
+   * ตอน render เพราะแถวถูกสร้างก่อนที่ `fetchAppUsageAllTime()` จะเสร็จ
    *
    * **MA ถูกหักแล้ว** (`MA_DEDUCTION_PAUSED = false` ใน `reports-api.ts`) —
-   * คอลัมน์นี้จึงเป็นผลรวมเวลาจริงเฉพาะงาน type feature/requirement
-   * (bug กับงานที่ยังไม่ระบุ type = ไม่หัก)
+   * คอลัมน์นี้เป็นผลรวมเวลาจริงเฉพาะงาน type feature/requirement (bug กับ
+   * งานที่ยังไม่ระบุ type = ไม่หัก) **และเฉพาะคู่ที่ผู้แจ้งงานผูกบริษัทไว้** —
+   * งานที่จับคู่ไม่ได้ไม่ถูกหักจากคู่ไหนเลย (map ไม่มีคีย์ → 0)
    *
    * ยังโหลด/ดึงไม่สำเร็จ → `—` (**ห้าม**โชว์ 0 เพราะนั่นคือการโกง —
    * "ยังไม่รู้" กับ "ใช้ไป 0 ชม." เป็นคนละเรื่อง; ถ้าปิดหักกลับเป็น
    * `MA_DEDUCTION_PAUSED = true` จะไม่มี request ให้ล้มเหลว — ตรงนั้น
    * ฟังก์ชันคืน map ว่างทันที → 0/MA เต็มก้อน)
    */
-  const usedHoursCell = (appId: number) => {
+  const usedHoursCell = (appId: number, companyId: number | null) => {
     if (usage.status !== "ready") return dash;
-    const used = usage.byApp.get(appId) ?? 0;
+    const used = usage.byPair.get(pairKey(appId, companyId)) ?? 0;
     return <Typography variant="body2">{round1(used)}</Typography>;
   };
 
@@ -292,14 +295,18 @@ export function ReportsTable({
    * feature/requirement — bug/NULL ไม่หัก; ถ้าปิดหักกลับเป็น `true` คอลัมน์
    * "ยังไม่รู้ค่า" ข้อแรกจะเข้าไม่ถึง เพราะฟังก์ชันคืน map ว่างทันที)
    *
-   * หมายเหตุ: "ใช้ไป" เป็นระดับแอป — แอปผูกหลายบริษัทได้จริง (เช่น POS ผูก
-   * 3 บริษัท) ตัวเลขนี้จึงซ้ำทุกแถวของแอปนั้น เว้นแต่จะย้ายไปคิดรายคู่
-   * ซึ่งต้องผูกงานกับบริษัทก่อน (`issues` ยังไม่มี `company_id`)
+   * หัก **เฉพาะแถวนั้น ๆ** (`pairKey(appId, companyId)`) — แอปผูกหลายบริษัท
+   * (เช่น POS ผูก 3 บริษัท) งานของลูกค้าบริษัทไหนจึงลดแค่แถวของบริษัทนั้น
+   * ไม่กระทบอีก 2 แถว; งานที่จับคู่ไม่ได้ = ไม่ลดที่ไหนเลย
    */
-  const remainingCell = (appId: number, ma: number | null) => {
+  const remainingCell = (appId: number, companyId: number | null, ma: number | null) => {
     if (usage.status !== "ready") return dash;
     if (ma == null) return notSet;
-    return <Typography variant="body2">{round1(ma - (usage.byApp.get(appId) ?? 0))}</Typography>;
+    return (
+      <Typography variant="body2">
+        {round1(ma - (usage.byPair.get(pairKey(appId, companyId)) ?? 0))}
+      </Typography>
+    );
   };
 
   const th = (field: string, label: string, numeric = false) => {
@@ -819,11 +826,11 @@ export function ReportsTable({
       case "maHours":
         return <DataTableCell align="right">{maHoursCell(r.maHours)}</DataTableCell>;
       case "usedHours":
-        return <DataTableCell align="right">{usedHoursCell(r.appId)}</DataTableCell>;
+        return <DataTableCell align="right">{usedHoursCell(r.appId, r.companyId)}</DataTableCell>;
       case "remaining":
         return (
           <DataTableCell align="right">
-            {remainingCell(r.appId, r.maHours)}
+            {remainingCell(r.appId, r.companyId, r.maHours)}
           </DataTableCell>
         );
       default:

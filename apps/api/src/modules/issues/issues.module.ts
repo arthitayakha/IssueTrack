@@ -14,9 +14,12 @@ import { PermissionsModule } from "../permissions/permissions.module";
 import { ActivityLogsModule } from "../activity-logs/activity-logs.module";
 import { RulesModule } from "../rules/rules.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { AppsModule } from "../apps/apps.module";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Issue, ActivityLog, User, IssueStatus, Category, Label, Position]), WorkSessionsModule, PermissionsModule, ActivityLogsModule, RulesModule, NotificationsModule],
+  // AppsModule: `MaUsageService` — a finished time entry checks the pair's MA
+  // quota and rings the company's customers when it just ran out
+  imports: [TypeOrmModule.forFeature([Issue, ActivityLog, User, IssueStatus, Category, Label, Position]), WorkSessionsModule, PermissionsModule, ActivityLogsModule, RulesModule, NotificationsModule, AppsModule],
   controllers: [IssuesController],
   providers: [IssuesService],
   exports: [IssuesService],

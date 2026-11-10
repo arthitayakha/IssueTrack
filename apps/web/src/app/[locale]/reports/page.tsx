@@ -23,6 +23,7 @@ import {
   loadFilterOptions,
   EMPTY_FILTER_OPTIONS,
   paginate,
+  pairKey,
   REPORT_PAGE_SIZE,
   SORTABLE_FIELDS,
 } from "@/lib/reports-api";
@@ -243,8 +244,8 @@ function ReportsScreen() {
 
   const [options, setOptions] = useState<FilterOptions>(EMPTY_FILTER_OPTIONS);
   /**
-   * "ใช้ไป" ต่อแอป (all-time) — ตัวส่วนของ คงเหลือ = MA − ใช้ไป ใน view
-   * **ตามบริษัท**
+   * "ใช้ไป" ต่อ **คู่ แอป×บริษัท** (all-time) — ตัวส่วนของ คงเหลือ = MA − ใช้ไป
+   * ใน view **ตามบริษัท**
    *
    * ดึง **เฉพาะตอนเปิด view ตามบริษัท** เพราะเป็นคนละ query กับตารางบนจอ
    * (ตารางใช้ตัวกรองของผู้ใช้ ส่วนตัวเลขนี้ต้องคงที่เสมอ — ดูเหตุผลใน
@@ -252,12 +253,14 @@ function ReportsScreen() {
    *
    * **MA ถูกหักแล้ว** (`MA_DEDUCTION_PAUSED = false` ใน `reports-api.ts`) →
    * "ใช้ไป" = ผลรวมเวลาจริงเฉพาะงาน type feature/requirement (bug/NULL ไม่หัก)
+   * และ**เฉพาะคู่ที่งานถูกโยงด้วยบริษัทของผู้แจ้งงาน** — จับคู่ไม่ได้ = ไม่หัก
    * (จอ + CSV + PDF อ่านจากตัวเลขนี้ชุดเดียว)
    */
   const [usage, setUsage] = useState<{
     status: "loading" | "ready" | "error";
-    byApp: Map<number, number>;
-  }>({ status: "loading", byApp: new Map() });
+    /** คีย์ `pairKey(appId, companyId)` — ไม่ใช่ระดับแอป (ดู `fetchAppUsageAllTime`) */
+    byPair: Map<string, number>;
+  }>({ status: "loading", byPair: new Map() });
   const [rows, setRows] = useState<ReportPage<ReportRows> | null>(null);
   /**
    * Which view `rows` actually belongs to. The URL flips `view` immediately on
@@ -301,13 +304,13 @@ function ReportsScreen() {
     let cancelled = false;
     setUsage((u) => ({ ...u, status: "loading" }));
     fetchAppUsageAllTime()
-      .then((byApp) => {
-        if (!cancelled) setUsage({ status: "ready", byApp });
+      .then((byPair) => {
+        if (!cancelled) setUsage({ status: "ready", byPair });
       })
       .catch(() => {
         // ล้มเหลว = คงเหลือทุกแถวเป็น `—` — ห้ามเดาค่า (ดู remainingCell)
         // (ตอน pause ฟังก์ชันไม่ reject → เส้นทางนี้เข้าไม่ถึง)
-        if (!cancelled) setUsage({ status: "error", byApp: new Map() });
+        if (!cancelled) setUsage({ status: "error", byPair: new Map() });
       });
     return () => {
       cancelled = true;
@@ -577,11 +580,11 @@ function ReportsScreen() {
               .join(", ") ?? "");
       const usedHoursOf = (r: CompanyRow) => {
         if (usage.status !== "ready") return "";
-        return round1(usage.byApp.get(r.appId) ?? 0);
+        return round1(usage.byPair.get(pairKey(r.appId, r.companyId)) ?? 0);
       };
       const remainingOf = (r: CompanyRow) => {
         if (usage.status !== "ready" || r.maHours == null) return "";
-        return round1(r.maHours - (usage.byApp.get(r.appId) ?? 0));
+        return round1(r.maHours - (usage.byPair.get(pairKey(r.appId, r.companyId)) ?? 0));
       };
 
       switch (view) {

@@ -55,6 +55,11 @@ function pair(overrides: Partial<AppCompany> = {}): AppCompany {
     maHours: null,
     expiryStatus: "none",
     expiryNotified: "none",
+    // ไม่ใช่ส่วนที่ `AppExpiryService` อ่าน — ใส่ให้ครบ type ของ entity เท่านั้น
+    // (`created_at` มาจาก migration 1819, `kind` จาก 1820, `maNotifiedAt` จาก 1821)
+    kind: "renew",
+    maNotifiedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
   };
 }

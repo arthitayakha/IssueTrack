@@ -10,6 +10,7 @@ import { NotificationsService } from "../modules/notifications/notifications.ser
  * - เสร็จสิ้น → reporter + assignee + admins (`completed`)
  * - any other column → the two people on the card (`moved`)
  * - assign → new assignee + reporter; unassign → the person who lost it + admins
+ * - รอดำเนินการ (รับเรื่อง) / เสร็จสิ้น → the reporter also gets an e-mail
  *
  * Stubbed repositories only — safe to run while `npm run dev` is up.
  */
@@ -33,16 +34,25 @@ function repo(overrides: Partial<Stub> = {}): Stub {
   };
 }
 
+/** The MailService seam — both methods are awaited nowhere, only called. */
+function mailStub() {
+  return {
+    sendPasswordReset: jest.fn().mockResolvedValue(undefined),
+    sendIssueStatusUpdate: jest.fn().mockResolvedValue(undefined),
+  };
+}
+
 type ServiceArgs = ConstructorParameters<typeof NotificationsService>;
 
 function makeService() {
   const notifications = repo();
   // two active admins by default — the fan-out target
   const users = repo({ find: jest.fn().mockResolvedValue([{ id: 80 }, { id: 81 }]) });
+  const mail = mailStub();
   const service = new NotificationsService(
-    ...([notifications, users] as unknown as ServiceArgs),
+    ...([notifications, users, mail] as unknown as ServiceArgs),
   );
-  return { service, notifications, users };
+  return { service, notifications, users, mail };
 }
 
 const ISSUE = {
@@ -137,6 +147,156 @@ describe("NotificationsService.notifyStatusChange — milestone columns", () => 
     });
 
     expect(writtenRows(notifications).map((r) => r.userId)).not.toContain(3);
+  });
+});
+
+/**
+ * The e-mail twin of the two milestone columns (รับเรื่อง = id 2,
+ * เสร็จสิ้น = id 4) — always to the reporter, never to anyone else, and
+ * never breaking the in-app rows around it.
+ */
+describe("NotificationsService.notifyStatusChange — milestone e-mail", () => {
+  const REPORTER = { id: 9, name: "Arthitaya", email: "arthitaya@gmail.com" };
+
+  it("รอดำเนินการ (รับเรื่อง) → e-mails the reporter with the live column name", async () => {
+    const { service, mail, users } = makeService();
+    users.findOne.mockResolvedValue(REPORTER);
+
+    await service.notifyStatusChange({
+      issue: ISSUE,
+      statusId: 2,
+      statusName: "รอดำเนินการ",
+      actor: { actorId: 3 },
+    });
+
+    expect(mail.sendIssueStatusUpdate).toHaveBeenCalledTimes(1);
+    expect(mail.sendIssueStatusUpdate).toHaveBeenCalledWith({
+      to: "arthitaya@gmail.com",
+      name: "Arthitaya",
+      title: "POS error",
+      issueNumber: null,
+      statusName: "รอดำเนินการ",
+      url: expect.stringContaining("/boards?issue=5"),
+    });
+    // the reporter row is looked up by id — nothing else reads the users table
+    expect(users.findOne).toHaveBeenCalledWith({ where: { id: 9 } });
+  });
+
+  it("เสร็จสิ้น → e-mails the reporter too (every entry, not just the first)", async () => {
+    const { service, mail, users } = makeService();
+    users.findOne.mockResolvedValue(REPORTER);
+
+    await service.notifyStatusChange({
+      issue: { ...ISSUE, issueNumber: "ISS-0042" },
+      statusId: 4,
+      statusName: "เสร็จสิ้น",
+      actor: { actorId: 3 },
+    });
+
+    expect(mail.sendIssueStatusUpdate).toHaveBeenCalledTimes(1);
+    expect(mail.sendIssueStatusUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "arthitaya@gmail.com",
+        issueNumber: "ISS-0042",
+        statusName: "เสร็จสิ้น",
+      }),
+    );
+  });
+
+  it("falls back to the default column name when the caller passes none", async () => {
+    const { service, mail, users } = makeService();
+    users.findOne.mockResolvedValue(REPORTER);
+
+    await service.notifyStatusChange({ issue: ISSUE, statusId: 4, actor: { actorId: 3 } });
+
+    expect(mail.sendIssueStatusUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ statusName: "เสร็จสิ้น" }),
+    );
+  });
+
+  it.each([1, 3, 7])("status %i → no e-mail (only the two milestones mail)", async (statusId) => {
+    const { service, mail, users } = makeService();
+    users.findOne.mockResolvedValue(REPORTER);
+
+    await service.notifyStatusChange({ issue: ISSUE, statusId, actor: { actorId: 3 } });
+
+    expect(mail.sendIssueStatusUpdate).not.toHaveBeenCalled();
+    // the in-app policy still ran as always
+    expect(users.findOne).not.toHaveBeenCalled();
+  });
+
+  it("a card with no reporter → no lookup, no mail", async () => {
+    const { service, mail, users } = makeService();
+
+    await service.notifyStatusChange({
+      issue: { ...ISSUE, customerId: null },
+      statusId: 4,
+      actor: { actorId: 3 },
+    });
+
+    expect(users.findOne).not.toHaveBeenCalled();
+    expect(mail.sendIssueStatusUpdate).not.toHaveBeenCalled();
+  });
+
+  it("the reporter moving their own card → no mail (never notify yourself)", async () => {
+    const { service, mail, users } = makeService();
+    users.findOne.mockResolvedValue(REPORTER);
+
+    await service.notifyStatusChange({
+      issue: ISSUE,
+      statusId: 4,
+      actor: { actorId: 9 },
+    });
+
+    expect(users.findOne).not.toHaveBeenCalled();
+    expect(mail.sendIssueStatusUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a reporter row that is gone → no mail, and the in-app rows still land", async () => {
+    const { service, notifications, mail, users } = makeService();
+    users.findOne.mockResolvedValue(null);
+
+    await service.notifyStatusChange({
+      issue: ISSUE,
+      statusId: 4,
+      actor: { actorId: 3 },
+    });
+
+    expect(mail.sendIssueStatusUpdate).not.toHaveBeenCalled();
+    expect(writtenRows(notifications).map((r) => r.type)).toEqual([
+      "completed",
+      "completed",
+      "completed",
+      "completed",
+    ]);
+  });
+
+  it("a rejected user lookup never breaks the move (fail-open)", async () => {
+    const { service, notifications, mail, users } = makeService();
+    users.findOne.mockRejectedValue(new Error("connection lost"));
+
+    await expect(
+      service.notifyStatusChange({ issue: ISSUE, statusId: 4, actor: { actorId: 3 } }),
+    ).resolves.toBeUndefined();
+
+    expect(mail.sendIssueStatusUpdate).not.toHaveBeenCalled();
+    expect(writtenRows(notifications).length).toBeGreaterThan(0);
+  });
+
+  it("a mail that rejects never bubbles up (fire-and-forget)", async () => {
+    const { service, notifications, mail, users } = makeService();
+    users.findOne.mockResolvedValue(REPORTER);
+    mail.sendIssueStatusUpdate.mockRejectedValue(new Error("smtp down"));
+
+    await expect(
+      service.notifyStatusChange({ issue: ISSUE, statusId: 2, actor: { actorId: 3 } }),
+    ).resolves.toBeUndefined();
+
+    // the in-app rows are written before the send is kicked off
+    expect(writtenRows(notifications).map((r) => r.type)).toEqual([
+      "status_pending",
+      "status_pending",
+    ]);
   });
 });
 

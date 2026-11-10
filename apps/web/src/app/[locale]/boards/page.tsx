@@ -4298,6 +4298,27 @@ function TableView({
                   )}
                 </DataTableRow>
               ))}
+              {/* Empty (no rows at all, or a search/filter matched nothing)
+                  used to render as bare headers that looked like a crash —
+                  say so instead. colSpan mirrors the head's conditional
+                  columns exactly. */}
+              {pageIssues.length === 0 && (
+                <DataTableRow hover={false}>
+                  <DataTableCell
+                    align="center"
+                    colSpan={
+                      8 +
+                      (canSeeReporter ? 1 : 0) +
+                      (canSeeTrackedTime ? 1 : 0) +
+                      (canSeeActualTime ? 1 : 0) +
+                      (canManage || canViewOwnHistory ? 1 : 0)
+                    }
+                    sx={{ py: 6, color: "text.secondary" }}
+                  >
+                    {t("filter.noResults")}
+                  </DataTableCell>
+                </DataTableRow>
+              )}
             </DataTableBody>
       </DataTable>
       <Pagination
@@ -5651,6 +5672,11 @@ function BoardsPageInner() {
           InputProps={{
             startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
           }}
+          // Without `autoComplete: "off"` the password manager dumps its saved
+          // username (the account's first e-mail) into this box when the
+          // profile dialog's password field is autofilled — the table then
+          // filters to nothing and only a refresh clears it.
+          inputProps={{ autoComplete: "off", name: "board-search" }}
         />
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
           {!isCustomer && (

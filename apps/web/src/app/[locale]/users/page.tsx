@@ -26,10 +26,13 @@ import {
   CircularProgress,
   Switch,
   FormControlLabel,
+  Badge,
+  Tooltip,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DnsIcon from "@mui/icons-material/Dns";
 import { Pagination } from "@/components/pagination";
+import { FilterPanel, type FilterSectionData } from "@/components/filter-panel";
 import { PaginatedResponse } from "@kanban/shared";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -46,6 +49,8 @@ import AssessmentIcon from "@mui/icons-material/Assessment";
 import LockIcon from "@mui/icons-material/Lock";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import HistoryIcon from "@mui/icons-material/History";
+import BusinessIcon from "@mui/icons-material/Business";
+import FilterListIcon from "@mui/icons-material/FilterList";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
@@ -57,6 +62,17 @@ import { PERMISSION_LABELS, ALL_PERMISSIONS, permissionsForRole, PERMISSION_DEPE
 import { useNotification } from "@/components/notification";
 import { useRouter } from "@/i18n/navigation";
 
+
+/** จำนวนแถวต่อหน้า — ทุกแท็บดึง `?page=&limit=10` จาก API (แถบ pagination ซ่อนตัวเองเมื่อไม่เกิน 1 หน้า) */
+const PAGE_SIZE = 10;
+
+type TabKey = "users" | "roles" | "positions";
+
+/** `total` / `totalPages` ที่เซิร์ฟเวอร์คืนมา — ใช้ป้อน `<Pagination>` */
+interface PageInfo {
+  total: number;
+  totalPages: number;
+}
 
 const PERMISSION_GROUPS = [
   {
@@ -252,16 +268,30 @@ interface PositionUser {
 
 export default function UsersPage() {
   const t = useTranslations("Users");
+  /** chrome ของ popover ตัวกรอง (หัวข้อ/ปุ่มล้าง) อยู่ที่ namespace `Filters` แชร์ทุกหน้า */
+  const tf = useTranslations("Filters");
   const { can } = usePermissions();
   const token = useAuthStore((s) => s.token);
   const router = useRouter();
   const { notify } = useNotification();
   const [tab, setTab] = useState(0);
+  /** แถวของ "หน้าปัจจุบัน" แต่ละแท็บ — ดึงทีละหน้า (`?page=&limit=10`) ไม่เหมาทั้งตาราง */
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
-  /** รายการบริษัทให้ dropdown ในฟอร์มผู้ใช้ — โหลดเฉพาะตอนเห็นแท็บผู้ใช้ */
-  const [companies, setCompanies] = useState<Company[]>([]);
+  /** แท็บไหนดึงข้อมูลมาแล้วบ้าง — ใช้โชว์ spinner แทนตารางเปล่าตอนสลับแท็บ */
+  const [loaded, setLoaded] = useState<Record<TabKey, boolean>>({ users: false, roles: false, positions: false });
+  /** total/totalPages ของแต่ละแท็บจากเซิร์ฟเวอร์ — แถบ pagination ซ่อนตัวเองเมื่อไม่เกิน 1 หน้า */
+  const [meta, setMeta] = useState<Record<TabKey, PageInfo>>({
+    users: { total: 0, totalPages: 1 },
+    roles: { total: 0, totalPages: 1 },
+    positions: { total: 0, totalPages: 1 },
+  });
+  /** ชุดข้อมูลเต็มให้ dropdown — ฟิวเตอร์บนแท็บผู้ใช้ + ฟอร์มเพิ่ม/แก้ (ตารางเหลือแค่ 10 แถว/หน้า จึงใช้แทนไม่ได้) */
+  const [rolesAll, setRolesAll] = useState<Role[] | null>(null);
+  const [positionsAll, setPositionsAll] = useState<Position[] | null>(null);
+  /** รายการบริษัทให้ dropdown (ฟิวเตอร์ + ฟอร์มผู้ใช้) — โหลดตอนเปิดแท็บผู้ใช้ */
+  const [companies, setCompanies] = useState<Company[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -291,11 +321,21 @@ export default function UsersPage() {
   const [errorAlert, setErrorAlert] = useState<string | null>(null);
   const [deleteUserTarget, setDeleteUserTarget] = useState<User | null>(null);
   const [deleteUserLoading, setDeleteUserLoading] = useState(false);
-  const [page, setPage] = useState(1);
+  /** หน้าที่เปิดอยู่ของแต่ละแท็บ — เปลี่ยนหน้า = ยิง API หน้านั้นใหม่ทีละหน้า */
+  const [pages, setPages] = useState<Record<TabKey, number>>({ users: 1, roles: 1, positions: 1 });
+  /** bump ค่า = ให้ effect ของแท็บนั้นดึงข้อมูลใหม่ (หลังบันทึก/ลบ/สลับสถานะ) */
+  const [reloadKeys, setReloadKeys] = useState<Record<TabKey, number>>({ users: 0, roles: 0, positions: 0 });
+  /** ฟิวเตอร์บนแท็บผู้ใช้ — **server-side multi-select** (`GET /users?companyIds=1,2&roleIds=…&positionIds=…`) */
+  const [userFilters, setUserFilters] = useState({
+    companyIds: [] as number[],
+    roleIds: [] as number[],
+    positionIds: [] as number[],
+  });
+  /** anchor ของ popover ตัวกรอง (`components/filter-panel.tsx` — แชร์กับบอร์ด/รายงาน/systems) */
+  const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
   const [usersError, setUsersError] = useState(false);
   const [rolesError, setRolesError] = useState(false);
   const [positionsError, setPositionsError] = useState(false);
-  const pageUsers = users.slice((page - 1) * 10, page * 10);
 
   const canViewUsers = can("user.view");
   const canViewRoles = can("role.view");
@@ -312,6 +352,14 @@ export default function UsersPage() {
   const hasAnyViewPermission = effectiveCanViewUsers || effectiveCanViewRoles || effectiveCanViewPositions;
   const [mounted, setMounted] = useState(false);
 
+  /** เนื้อหาของแท็บเรียงตามที่มีสิทธิ์ดู — `tab` ชี้ลงใน array นี้ (ค่าเป็น string จึงใช้เป็น dep ของ effect ได้ปลอดภัย) */
+  const tabContents: TabKey[] = [
+    ...(effectiveCanViewUsers ? ["users" as const] : []),
+    ...(effectiveCanViewRoles ? ["roles" as const] : []),
+    ...(effectiveCanViewPositions ? ["positions" as const] : []),
+  ];
+  const activeContent = tabContents[tab];
+
   useEffect(() => {
     if (mounted && !hasAnyViewPermission) {
       router.replace("/");
@@ -322,45 +370,169 @@ export default function UsersPage() {
     setMounted(true);
   }, []);
 
-  useEffect(() => {
-    const requests: Promise<void>[] = [];
-    if (canViewUsers) {
-      requests.push(
-        apiFetch<PaginatedResponse<User>>("/users?page=1&limit=100", {}, token)
-          .then(r => { setUsers(r.data); })
-          .catch((err) => {
-            if (err instanceof ApiError && err.status === 403) setUsersError(true);
-          })
-      );
-      // `GET /companies` ตั้งใจเปิดให้ทุกคนที่ล็อกอิน (ฟอร์มแอปใช้ที่เดียวกัน)
-      // จึงไม่มี 403 ให้กังวล — ถ้าล้มจริงก็แค่ dropdown โชว์ว่ายังไม่มีบริษัท
-      requests.push(
-        fetchCompanies()
-          .then(r => setCompanies(r.data))
-          .catch(() => { /* fail-open: ฟอร์มยังเปิดแก้ข้อมูลอื่นได้ตามเดิม */ })
-      );
-    }
-    if (canViewRoles) {
-      requests.push(
-        apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token)
-          .then(r => { setRoles(r.data); })
-          .catch((err) => {
-            if (err instanceof ApiError && err.status === 403) setRolesError(true);
-          })
-      );
-    }
-    if (canViewPositions) {
-      requests.push(
-        apiFetch<PaginatedResponse<Position>>("/positions?page=1&limit=100", {}, token)
-          .then(r => { setPositions(r.data); })
-          .catch((err) => {
-            if (err instanceof ApiError && err.status === 403) setPositionsError(true);
-          })
-      );
-    }
+  /**
+   * ชุดข้อมูลเต็มให้ dropdown — ฟิวเตอร์บนแท็บผู้ใช้ + ฟอร์มเพิ่ม/แก้ (บทบาท/
+   * ตำแหน่ง/บริษัท) ดึง**ครั้งเดียว**ตอนแท็บแรกที่ต้องใช้เปิด เพราะตารางตอนนี้
+   * เหลือแค่ 10 แถว/หน้า เอาไปใช้เป็นรายการเลือกแทนไม่ได้
+   */
+  function loadRolesAll() {
+    return apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token)
+      .then((r) => setRolesAll(r.data))
+      .catch(() => {
+        /* fail-open: dropdown อาจว่าง — ไม่ทำให้หน้าพัง */
+      });
+  }
+  function loadPositionsAll() {
+    return apiFetch<PaginatedResponse<Position>>("/positions?page=1&limit=100", {}, token)
+      .then((r) => setPositionsAll(r.data))
+      .catch(() => {
+        /* fail-open */
+      });
+  }
+  function loadCompanies() {
+    // `GET /companies` ตั้งใจเปิดให้ทุกคนที่ล็อกอิน จึงไม่มี 403 ให้กังวล —
+    // ถ้าล้มจริงก็แค่ dropdown โชว์ว่ายังไม่มีบริษัท
+    return fetchCompanies()
+      .then((r) => setCompanies(r.data))
+      .catch(() => {
+        /* fail-open: ฟอร์มยังเปิดแก้ข้อมูลอื่นได้ตามเดิม */
+      });
+  }
 
-    Promise.all(requests).finally(() => setLoading(false));
-  }, [canViewUsers, canViewRoles, canViewPositions, token]);
+  /** สั่งให้แท็บนั้นดึงข้อมูลหน้าปัจจุบันใหม่ */
+  function bumpReload(key: TabKey) {
+    setReloadKeys((prev) => ({ ...prev, [key]: prev[key] + 1 }));
+  }
+
+  /**
+   * หลัง "เพิ่ม" รายการใหม่ — ทุกตารางเรียง `id ASC` รายการใหม่จึงตกท้ายตาราง
+   * = หน้าสุดท้าย: ปรับ total แล้วกระโดดไปหน้านั้นพร้อมดึงใหม่
+   * เพื่อให้เห็นรายการที่เพิ่งบันทึกทันที (เคสกรองฟิวเตอร์ค้างอยู่แล้วรายการใหม่
+   * ไม่เข้าเงื่อนไข = หน้าเกิน → effect จะถอยกลับหน้าให้เอง)
+   */
+  function jumpToNewRow(key: TabKey) {
+    const total = meta[key].total + 1;
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    setMeta((prev) => ({ ...prev, [key]: { total, totalPages } }));
+    setPages((prev) => ({ ...prev, [key]: totalPages }));
+    setReloadKeys((prev) => ({ ...prev, [key]: prev[key] + 1 }));
+  }
+
+  /**
+   * หลัง "ลบ" แถว — ปรับ total ใหม่ และถ้าหน้าปัจจุบันว่าง (ลบแถวสุดท้ายของ
+   * หน้าสุดท้าย) ให้ถอยกลับหน้า — `pages` เปลี่ยนเมื่อไหร่ effect ของแท็บจะดึง
+   * ข้อมูลหน้านั้นให้เอง (ค่าไม่เปลี่ยน = ไม่ trigger → ไม่ยิง request ซ้ำ)
+   */
+  function afterDelete(key: TabKey) {
+    const total = Math.max(0, meta[key].total - 1);
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    setMeta((prev) => ({ ...prev, [key]: { total, totalPages } }));
+    setPages((prev) => (prev[key] > totalPages ? { ...prev, [key]: totalPages } : prev));
+  }
+
+  /**
+   * เปลี่ยนฟิวเตอร์ = กลับไปหน้า 1 แล้วให้ effect ดึงใหม่ (server-side filter) —
+   * tick/untick 1 ตัวเลือกใน popover ตัวกรอง
+   */
+  function toggleUserFilter(key: keyof typeof userFilters, id: number) {
+    setUserFilters((prev) => {
+      const next = { ...prev };
+      const list = next[key];
+      next[key] = list.includes(id) ? list.filter((v) => v !== id) : [...list, id];
+      return next;
+    });
+    setPages((prev) => ({ ...prev, users: 1 }));
+  }
+
+  /** ปุ่ม "ล้างทั้งหมด" ใน popover ตัวกรอง */
+  function clearUserFilters() {
+    setUserFilters({ companyIds: [], roleIds: [], positionIds: [] });
+    setPages((prev) => ({ ...prev, users: 1 }));
+  }
+
+  // ชุด dropdown — ดึงครั้งเดียวตอนแท็บแรกที่ต้องใช้เปิด (เช็ค `=== null` ก่อน
+  // จึงเรียกซ้ำได้ไม่ลูป และ retry เองได้ตอนสลับแท็บถ้าดึงพลาด)
+  useEffect(() => {
+    if (!activeContent) return;
+    if ((activeContent === "users" || activeContent === "positions") && rolesAll === null) void loadRolesAll();
+    if (activeContent === "users" && positionsAll === null) void loadPositionsAll();
+    if (activeContent === "users" && companies === null) void loadCompanies();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeContent, rolesAll, positionsAll, companies]);
+
+  /**
+   * ดึงข้อมูล "แท็บที่เปิดอยู่เท่านั้น" — 1 request ต่อการเข้า/สลับแท็บ และดึงใหม่
+   * ทุกครั้งที่เปลี่ยนหน้า / เปลี่ยนฟิวเตอร์ / bump `reloadKeys` (`?page=&limit=10`
+   * = ดึงทีละหน้า ไม่เหมาทั้งตาราง)
+   */
+  useEffect(() => {
+    if (!activeContent) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    async function load() {
+      try {
+        if (activeContent === "users") {
+          const qs = new URLSearchParams({ page: String(pages.users), limit: String(PAGE_SIZE) });
+          if (userFilters.companyIds.length) qs.set("companyIds", userFilters.companyIds.join(","));
+          if (userFilters.roleIds.length) qs.set("roleIds", userFilters.roleIds.join(","));
+          if (userFilters.positionIds.length) qs.set("positionIds", userFilters.positionIds.join(","));
+          const r = await apiFetch<PaginatedResponse<User>>(`/users?${qs.toString()}`, {}, token);
+          if (cancelled) return;
+          if (r.data.length === 0 && pages.users > 1) {
+            // หน้าเกิน (เช่น เพิ่มรายการใหม่ตอนกรองฟิวเตอร์ค้างอยู่) → ถอยกลับหน้าหนึ่งแล้วดึงใหม่
+            setPages((prev) => ({ ...prev, users: pages.users - 1 }));
+            return;
+          }
+          setUsers(r.data);
+          setMeta((prev) => ({ ...prev, users: { total: r.total, totalPages: r.totalPages } }));
+          setLoaded((prev) => ({ ...prev, users: true }));
+        } else if (activeContent === "roles") {
+          const r = await apiFetch<PaginatedResponse<Role>>(
+            `/roles?page=${pages.roles}&limit=${PAGE_SIZE}`,
+            {},
+            token,
+          );
+          if (cancelled) return;
+          if (r.data.length === 0 && pages.roles > 1) {
+            setPages((prev) => ({ ...prev, roles: pages.roles - 1 }));
+            return;
+          }
+          setRoles(r.data);
+          setMeta((prev) => ({ ...prev, roles: { total: r.total, totalPages: r.totalPages } }));
+          setLoaded((prev) => ({ ...prev, roles: true }));
+        } else {
+          const r = await apiFetch<PaginatedResponse<Position>>(
+            `/positions?page=${pages.positions}&limit=${PAGE_SIZE}`,
+            {},
+            token,
+          );
+          if (cancelled) return;
+          if (r.data.length === 0 && pages.positions > 1) {
+            setPages((prev) => ({ ...prev, positions: pages.positions - 1 }));
+            return;
+          }
+          setPositions(r.data);
+          setMeta((prev) => ({ ...prev, positions: { total: r.total, totalPages: r.totalPages } }));
+          setLoaded((prev) => ({ ...prev, positions: true }));
+        }
+      } catch (err) {
+        // 403 = สิทธิ์ใน DB ไม่ตรงกับ mirror ฝั่งเว็บ → ซ่อนแท็บนี้ทิ้ง (เหมือนเดิม)
+        if (!cancelled && err instanceof ApiError && err.status === 403) {
+          if (activeContent === "users") setUsersError(true);
+          else if (activeContent === "roles") setRolesError(true);
+          else setPositionsError(true);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeContent, pages, userFilters, reloadKeys, token]);
 
   function openAdd() {
     setEditingUser(null);
@@ -387,7 +559,7 @@ export default function UsersPage() {
     // บริษัทเป็นข้อมูลของ "ลูกค้า" เท่านั้น — เทียบด้วยชื่อบทบาท (ไม่ใช่เลข id)
     // เหมือนที่หน้าบอร์ดเช็ก `roleName === "programmer"`
     const isCustomerRole =
-      roles.find((r) => r.id === form.roleId)?.name === "customer";
+      rolesAll?.find((r) => r.id === form.roleId)?.name === "customer";
     if (isCustomerRole && !form.companyId) {
       setCompanyError(t("companyRequired"));
       return;
@@ -407,9 +579,10 @@ export default function UsersPage() {
         await apiFetch("/users", { method: "POST", body: JSON.stringify(payload) }, token);
         notify(t("userCreated"));
       }
-      const updated = await apiFetch<PaginatedResponse<User>>("/users?page=1&limit=100", {}, token);
-      setUsers(updated.data);
       setDialogOpen(false);
+      // แก้ไข = จำนวนไม่เปลี่ยน → ดึงหน้าปัจจุบันซ้ำ · เพิ่มใหม่ = ตกท้ายตาราง → กระโดดไปหน้าสุดท้ายให้เห็นเลย
+      if (editingUser) bumpReload("users");
+      else jumpToNewRow("users");
     } catch (err) {
       if (err instanceof ApiError) {
         notify(err.message, "error");
@@ -425,6 +598,7 @@ export default function UsersPage() {
     apiFetch(`/users/${deleteUserTarget.id}`, { method: "DELETE" }, token)
       .then(() => {
         setUsers((prev) => prev.filter((u) => u.id !== deleteUserTarget.id));
+        afterDelete("users");
         setDeleteUserTarget(null);
         notify(t("userDeleted"));
       })
@@ -502,10 +676,12 @@ export default function UsersPage() {
         );
         notify(t("positionCreated"));
       }
-      const updated = await apiFetch<PaginatedResponse<Position>>("/positions?page=1&limit=100", {}, token);
-      setPositions(updated.data);
-      await useAuthStore.getState().refreshPermissions();
       setPositionDialogOpen(false);
+      if (editingPosition) bumpReload("positions");
+      else jumpToNewRow("positions");
+      // dropdown ตำแหน่งในฟอร์มผู้ใช้ต้องเห็นรายการใหม่/ชื่อใหม่ด้วย
+      if (positionsAll !== null) void loadPositionsAll();
+      await useAuthStore.getState().refreshPermissions();
     } catch (err) {
       if (err instanceof ApiError) {
         notify(err.message, "error");
@@ -541,6 +717,8 @@ export default function UsersPage() {
       if (deleteTarget.type === "position") {
         await apiFetch(`/positions/${deleteTarget.id}`, { method: "DELETE" }, token);
         setPositions((prev) => prev.filter((p) => p.id !== deleteTarget.id));
+        afterDelete("positions");
+        if (positionsAll !== null) void loadPositionsAll();
         notify(t("positionDeleted"));
       } else {
         await handleDeleteRoleConfirm();
@@ -639,9 +817,11 @@ export default function UsersPage() {
         }, token);
         notify(t("roleCreated"));
       }
-      const updated = await apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token);
-      setRoles(updated.data);
       setRoleDialogOpen(false);
+      if (editingRole) bumpReload("roles");
+      else jumpToNewRow("roles");
+      // dropdown บทบาท (ฟิวเตอร์ + ฟอร์ม) ต้องเห็นชื่อใหม่/ isActive ใหม่ด้วย
+      if (rolesAll !== null) void loadRolesAll();
     } catch (err) {
       if (err instanceof ApiError) {
         notify(err.message, "error");
@@ -675,8 +855,9 @@ export default function UsersPage() {
     if (!deleteTarget || deleteTarget.type !== "role") return;
     try {
       await apiFetch(`/roles/${deleteTarget.id}`, { method: "DELETE" }, token);
-      const updated = await apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token);
-      setRoles(updated.data);
+      setRoles((prev) => prev.filter((r) => r.id !== deleteTarget.id));
+      afterDelete("roles");
+      if (rolesAll !== null) void loadRolesAll();
       setDeleteTarget(null);
       setDeleteCheck(null);
       notify(t("roleDeleted"));
@@ -695,8 +876,9 @@ export default function UsersPage() {
         method: "PATCH",
         body: JSON.stringify({ isActive: !role.isActive }),
       }, token);
-      const updated = await apiFetch<PaginatedResponse<Role>>("/roles?page=1&limit=100", {}, token);
-      setRoles(updated.data);
+      setRoles((prev) => prev.map((r) => (r.id === role.id ? { ...r, isActive: !r.isActive } : r)));
+      // dropdown กรอง `role.isActive` อยู่ → refresh ชุด dropdown ด้วย
+      if (rolesAll !== null) void loadRolesAll();
       notify(t("roleToggled"));
     } catch (err) {
       if (err instanceof ApiError) {
@@ -721,15 +903,69 @@ export default function UsersPage() {
     );
   }
 
-  const tabs = [
-    ...(effectiveCanViewUsers ? [{ label: t("tabUsers"), content: "users" }] : []),
-    ...(effectiveCanViewRoles ? [{ label: t("tabRoles"), content: "roles" }] : []),
-    ...(effectiveCanViewPositions ? [{ label: t("tabPositions"), content: "positions" }] : []),
-  ];
+  const tabLabels: Record<TabKey, string> = {
+    users: t("tabUsers"),
+    roles: t("tabRoles"),
+    positions: t("tabPositions"),
+  };
+  const tabs = tabContents.map((content) => ({ label: tabLabels[content], content }));
 
   // "ลูกค้า" ตัวเดียวที่ฟอร์มผู้ใช้โชว์ dropdown บริษัท — เทียบด้วยชื่อบทบาท
   // (ไม่ใช่เลข id) แบบเดียวกับที่หน้าบอร์ดเช็ก `roleName === "programmer"`
-  const isCustomerRole = roles.find((r) => r.id === form.roleId)?.name === "customer";
+  const isCustomerRole = rolesAll?.find((r) => r.id === form.roleId)?.name === "customer";
+
+  /** จำนวน tick รวมทุก section — badge บนปุ่ม trigger + chip ที่หัว panel */
+  const filterCount =
+    userFilters.companyIds.length + userFilters.roleIds.length + userFilters.positionIds.length;
+  const hasFilter = filterCount > 0;
+
+  /**
+   * section ของ popover ตัวกรอง — เรียงเอง + คำนวณ `initialOpen` เอง (เปิดอัตโนมัติ
+   * เฉพาะ section ที่มีการเลือกไว้ หรือ section แรกเมื่อยังไม่เลือกอะไรเลย —
+   * ตรงกติกาเดียวกับบอร์ด) · รายการมาจากชุดข้อมูลเต็ม `*All` ไม่ใช่ตาราง
+   * เพราะตารางเหลือแค่ 10 แถว/หน้า
+   */
+  const filterSections: FilterSectionData[] = [
+    {
+      key: "company",
+      title: t("filterCompany"),
+      icon: <BusinessIcon sx={{ fontSize: 18 }} />,
+      count: userFilters.companyIds.length,
+      options: (companies ?? []).map((company) => ({
+        id: company.id,
+        label: company.name,
+        checked: userFilters.companyIds.includes(company.id),
+        onToggle: () => toggleUserFilter("companyIds", company.id),
+      })),
+      initialOpen: userFilters.companyIds.length > 0 || !hasFilter,
+    },
+    {
+      key: "role",
+      title: t("filterRole"),
+      icon: <GroupIcon sx={{ fontSize: 18 }} />,
+      count: userFilters.roleIds.length,
+      options: (rolesAll ?? []).map((role) => ({
+        id: role.id,
+        label: roleLabel(role.name),
+        checked: userFilters.roleIds.includes(role.id),
+        onToggle: () => toggleUserFilter("roleIds", role.id),
+      })),
+      initialOpen: userFilters.roleIds.length > 0,
+    },
+    {
+      key: "position",
+      title: t("filterPosition"),
+      icon: <WorkIcon sx={{ fontSize: 18 }} />,
+      count: userFilters.positionIds.length,
+      options: (positionsAll ?? []).map((position) => ({
+        id: position.id,
+        label: position.name,
+        checked: userFilters.positionIds.includes(position.id),
+        onToggle: () => toggleUserFilter("positionIds", position.id),
+      })),
+      initialOpen: userFilters.positionIds.length > 0,
+    },
+  ];
 
   return (
     <RequirePermission permissions={["user.view", "role.view", "position.view"]}>
@@ -747,13 +983,69 @@ export default function UsersPage() {
 
         {tabs[tab]?.content === "users" && (
           <Box>
-            <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
+            {/* แถวปุ่ม — ตัวกรอง (badge นับจำนวน) อยู่ซ้ายของปุ่มเพิ่ม ชิดขวาเหมือน /systems */}
+            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 1, mb: 2 }}>
+              <Tooltip title={tf("title")}>
+                <Badge
+                  badgeContent={filterCount}
+                  max={99}
+                  overlap="circular"
+                  sx={{
+                    "& .MuiBadge-badge": {
+                      minWidth: 16,
+                      height: 16,
+                      px: 0.4,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      lineHeight: 1,
+                      bgcolor: "primary.contrastText",
+                      color: "primary.main",
+                      top: 4,
+                      right: 4,
+                    },
+                  }}
+                >
+                  <IconButton
+                    size="small"
+                    onClick={(event) => setFilterAnchor(event.currentTarget)}
+                    aria-haspopup="dialog"
+                    aria-expanded={Boolean(filterAnchor)}
+                    aria-label={tf("title")}
+                    sx={{
+                      width: 36,
+                      height: 36,
+                      color: filterCount > 0 ? "primary.contrastText" : "text.secondary",
+                      bgcolor: filterCount > 0 ? "primary.main" : "transparent",
+                      "&:hover": {
+                        bgcolor: filterCount > 0 ? "primary.dark" : "action.hover",
+                      },
+                    }}
+                  >
+                    <FilterListIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Badge>
+              </Tooltip>
               {can("user.create") && (
                 <Button variant="contained" startIcon={<AddIcon />} onClick={openAdd}>
                   {t("addUser")}
                 </Button>
               )}
             </Box>
+
+            {/* popover ตัวกรอง — chrome แชร์กับบอร์ด/รายงาน/systems (components/filter-panel.tsx) */}
+            <FilterPanel
+              open={Boolean(filterAnchor)}
+              anchorEl={filterAnchor}
+              onClose={() => setFilterAnchor(null)}
+              sections={filterSections}
+              onClearAll={clearUserFilters}
+            />
+
+            {!loaded.users ? (
+              <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+                <CircularProgress />
+              </Box>
+            ) : (
             <DataTable>
               <DataTableHead>
                 <DataTableRow>
@@ -767,7 +1059,7 @@ export default function UsersPage() {
                 </DataTableRow>
               </DataTableHead>
               <DataTableBody>
-                {pageUsers.map((user) => (
+                {users.map((user) => (
                   <DataTableRow key={user.id}>
                     <DataTableCell>{user.name}</DataTableCell>
                     <DataTableCell>{user.email}</DataTableCell>
@@ -813,12 +1105,13 @@ export default function UsersPage() {
                 ))}
               </DataTableBody>
             </DataTable>
+            )}
             <Pagination
-              page={page}
-              totalPages={Math.max(1, Math.ceil(users.length / 10))}
-              total={users.length}
-              limit={10}
-              onPageChange={setPage}
+              page={pages.users}
+              totalPages={meta.users.totalPages}
+              total={meta.users.total}
+              limit={PAGE_SIZE}
+              onPageChange={(p) => setPages((prev) => ({ ...prev, users: p }))}
             />
           </Box>
         )}
@@ -832,6 +1125,11 @@ export default function UsersPage() {
                 </Button>
               )}
             </Box>
+            {!loaded.roles ? (
+              <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+                <CircularProgress />
+              </Box>
+            ) : (
             <DataTable>
               <DataTableHead>
                 <DataTableRow>
@@ -887,6 +1185,14 @@ export default function UsersPage() {
                 ))}
               </DataTableBody>
             </DataTable>
+            )}
+            <Pagination
+              page={pages.roles}
+              totalPages={meta.roles.totalPages}
+              total={meta.roles.total}
+              limit={PAGE_SIZE}
+              onPageChange={(p) => setPages((prev) => ({ ...prev, roles: p }))}
+            />
           </Box>
         )}
 
@@ -899,6 +1205,11 @@ export default function UsersPage() {
                 </Button>
               )}
             </Box>
+            {!loaded.positions ? (
+              <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+                <CircularProgress />
+              </Box>
+            ) : (
             <DataTable>
               <DataTableHead>
                 <DataTableRow>
@@ -950,6 +1261,14 @@ export default function UsersPage() {
                 ))}
               </DataTableBody>
             </DataTable>
+            )}
+            <Pagination
+              page={pages.positions}
+              totalPages={meta.positions.totalPages}
+              total={meta.positions.total}
+              limit={PAGE_SIZE}
+              onPageChange={(p) => setPages((prev) => ({ ...prev, positions: p }))}
+            />
           </Box>
         )}
 
@@ -990,7 +1309,7 @@ export default function UsersPage() {
                     setCompanyError(null);
                   }}
                 >
-                  {roles.filter(r => r.isActive).map((role) => (
+                  {(rolesAll ?? []).filter(r => r.isActive).map((role) => (
                     <MenuItem key={role.id} value={role.id}>
                       {role.name}
                     </MenuItem>
@@ -1015,7 +1334,7 @@ export default function UsersPage() {
                     </MenuItem>
                     {/* จงใจโชว์ครบทุกบริษัทรวมที่ถูกปิดสถานะ — กันเคสลูกค้าผูกอยู่กับ
                         บริษัทที่ admin เพิ่ง toggle ปิด แล้ว dropdown โชว์ช่องว่างทั้งที่มีค่า */}
-                    {companies.map((company) => (
+                    {(companies ?? []).map((company) => (
                       <MenuItem key={company.id} value={company.id}>
                         {company.name}
                       </MenuItem>
@@ -1036,7 +1355,7 @@ export default function UsersPage() {
                     label={t("columnPosition")}
                     onChange={(e) => setForm({ ...form, positionId: e.target.value ? Number(e.target.value) : null })}
                   >
-                    {positions.map((position) => (
+                    {(positionsAll ?? []).map((position) => (
                       <MenuItem key={position.id} value={position.id}>
                         {position.name}
                       </MenuItem>
@@ -1078,7 +1397,7 @@ export default function UsersPage() {
                   label={t("columnRole")}
                   onChange={(e) => {
                     const newRoleId = e.target.value ? Number(e.target.value) : null;
-                    const selectedRole = roles.find((r) => r.id === newRoleId);
+                    const selectedRole = rolesAll?.find((r) => r.id === newRoleId);
                     const isAdmin = selectedRole?.name === "admin";
                     setPositionForm({
                       ...positionForm,
@@ -1095,7 +1414,7 @@ export default function UsersPage() {
                     });
                   }}
                 >
-                  {roles.filter(r => r.isActive).map((role) => (
+                  {(rolesAll ?? []).filter(r => r.isActive).map((role) => (
                     <MenuItem key={role.id} value={role.id}>
                       {role.name}
                     </MenuItem>
@@ -1122,7 +1441,7 @@ export default function UsersPage() {
                             permissions: e.target.checked ? [...ALL_PERMISSIONS] : [],
                           });
                         }}
-                        disabled={positionForm.roleId === null || roles.find((r) => r.id === positionForm.roleId)?.name === "admin"}
+                        disabled={positionForm.roleId === null || rolesAll?.find((r) => r.id === positionForm.roleId)?.name === "admin"}
                         size="small"
                       />
                     }
@@ -1137,7 +1456,7 @@ export default function UsersPage() {
                     const Icon = group.icon;
                     const allChecked = groupPerms.every((p) => positionForm.permissions.includes(p));
                     const someChecked = groupPerms.some((p) => positionForm.permissions.includes(p));
-                    const isDisabled = positionForm.roleId === null || roles.find((r) => r.id === positionForm.roleId)?.name === "admin";
+                    const isDisabled = positionForm.roleId === null || rolesAll?.find((r) => r.id === positionForm.roleId)?.name === "admin";
                     const hasMultipleChildren = group.children.length > 1;
                     return (
                       <Card key={group.key} variant="outlined" sx={{ overflow: "visible" }}>

@@ -23,8 +23,22 @@ export class UsersController {
 
   @Get()
   @Permissions("user.view")
-  findAll(@Query() query: { page?: string; limit?: string }) {
-    return this.users.findAll(normalizePagination(query));
+  findAll(
+    @Query()
+    query: {
+      page?: string;
+      limit?: string;
+      /** ฟิวเตอร์บนหน้าจัดการผู้ใช้ (multi-select คั่นด้วยจุลภาค) — ไม่ส่ง/กรองไม่ได้ = ไม่กรอง */
+      companyIds?: string;
+      roleIds?: string;
+      positionIds?: string;
+    },
+  ) {
+    return this.users.findAll(normalizePagination(query), {
+      companyIds: parseIds(query.companyIds),
+      roleIds: parseIds(query.roleIds),
+      positionIds: parseIds(query.positionIds),
+    });
   }
 
   @Get("members")
@@ -80,4 +94,14 @@ export class UsersController {
   remove(@Param("id", ParseIntPipe) id: number) {
     return this.users.remove(id);
   }
+}
+
+/** "1,2,3" → `[1, 2, 3]` · ค่าว่าง/ไม่ใช่ตัวเลข/ติดลบ = ตัดทิ้ง (fail-open → ไม่กรอง) */
+function parseIds(value?: string): number[] | undefined {
+  if (!value) return undefined;
+  const ids = value
+    .split(",")
+    .map((part) => Number(part.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  return ids.length ? [...new Set(ids)] : undefined;
 }

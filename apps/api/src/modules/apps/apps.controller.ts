@@ -11,7 +11,13 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
-import { AppsService, AppRecordInput, AppWriteInput } from "./apps.service";
+import {
+  AppsService,
+  AppBuyInput,
+  AppRecordInput,
+  AppRenewInput,
+  AppWriteInput,
+} from "./apps.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -82,6 +88,41 @@ export class AppsController {
     @Param("recordId", ParseIntPipe) recordId: number,
   ) {
     return this.apps.removeRecord(id, recordId);
+  }
+
+  /**
+   * **ต่ออายุ** — ปิดช่วงเก่าแล้ว append ช่วงใหม่ให้คู่เดิม (`company_id`
+   * ยืมจากแถวตั้งต้น ฟอร์มส่งมาแค่วันที่ 2 + จำนวน MA)
+   *
+   * route นี้**มีที่หน้า `/systems` ที่เดียว** (แท็บแอปใน `/master-data` ไม่มี
+   * ปุ่มต่ออายุ) จึงรับ permission เดียวคือ `system.update` — ต่างจาก CRUD
+   * ด้านบนที่เปิดสอง surface ด้วย OR
+   */
+  @Post(":id/companies/:recordId/renew")
+  @Permissions("system.update")
+  renewRecord(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("recordId", ParseIntPipe) recordId: number,
+    @Body() body: AppRenewInput,
+  ) {
+    return this.apps.renewRecord(id, recordId, body);
+  }
+
+  /**
+   * **ซื้อชั่วโมง MA เพิ่ม** — append แถบใหม่ให้คู่เดิม (วันที่คงเดิม, `maHours`
+   * มากขึ้น, `kind = 'buy'`) ต่างจาก renew ตรงที่กรอกมา**แค่จำนวนชั่วโมง**
+   *
+   * route นี้อยู่ที่ `/systems` ที่เดียวเหมือน renew จึงรับ `system.update`
+   * เดียว — ปุ่ม "ซื้อชั่วโมง" โชว์เฉพาะแถวที่คงเหลือ ≤ 0 (ดู `canBuyHours()`)
+   */
+  @Post(":id/companies/:recordId/buy-hours")
+  @Permissions("system.update")
+  buyHours(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("recordId", ParseIntPipe) recordId: number,
+    @Body() body: AppBuyInput,
+  ) {
+    return this.apps.buyHours(id, recordId, body);
   }
 
   @Patch(":id/active")

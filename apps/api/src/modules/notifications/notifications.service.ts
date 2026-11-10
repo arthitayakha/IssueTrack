@@ -1,8 +1,9 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import { Notification } from "./entities/notification.entity";
 import { User } from "../auth/entities/user.entity";
+import { MailService } from "../mail/mail.service";
 
 export type NotificationAction =
   | "created"
@@ -29,7 +30,10 @@ export type NotificationAction =
   | "stale"
   // app expiry — not an issue at all, so it points at the apps tab
   | "app_expiring" // ใกล้หมดอายุ (≤30 วัน)
-  | "app_expired"; // หมดอายุแล้ว
+  | "app_expired" // หมดอายุแล้ว
+  // MA quota ran out (used ≥ ma_hours of the pair) — rings once per episode
+  // from the time-entry hook, to the company's customers + every admin
+  | "ma_depleted";
 
 /**
  * Milestone columns, keyed by id — the names get renamed by hand
@@ -41,6 +45,17 @@ const WAITING_ASSIGNMENT_STATUS_ID = 1; // รอรับเรื่อง
 const PENDING_STATUS_ID = 2; // รอดำเนินการ
 const IN_PROGRESS_STATUS_ID = 3; // กำลังดำเนินการ
 const DONE_STATUS_ID = 4; // เสร็จสิ้น
+
+/**
+ * The two milestone columns that also e-mail the reporter (รับเรื่องแล้ว /
+ * เสร็จสิ้น) — ids only, names may be renamed by hand. A caller that knows
+ * the live column name passes it; these are the fallback copy.
+ */
+const STATUS_EMAIL_IDS = new Set<number>([PENDING_STATUS_ID, DONE_STATUS_ID]);
+const STATUS_EMAIL_DEFAULT_NAMES: Record<number, string> = {
+  [PENDING_STATUS_ID]: "รอดำเนินการ",
+  [DONE_STATUS_ID]: "เสร็จสิ้น",
+};
 
 /** Structural subset of ActivityLogsService's ActorInfo (avoids a circular import). */
 export interface NotificationActor {
@@ -60,6 +75,8 @@ export interface NotifyInput {
 export interface NotificationIssueTarget {
   id: number;
   title: string;
+  /** `ISS-001`-style number — only used in the milestone e-mail copy. */
+  issueNumber?: string | null;
   programmerId?: number | null;
   customerId?: number | null;
   category?: { name?: string } | null;
@@ -74,6 +91,7 @@ export class NotificationsService {
     private readonly notifications: Repository<Notification>,
     @InjectRepository(User)
     private readonly users: Repository<User>,
+    private readonly mail: MailService,
   ) {}
 
   /** Deep link straight to the card's detail dialog; the plain board when there is no issue. */
@@ -189,13 +207,18 @@ export class NotificationsService {
    * - เสร็จสิ้น → `completed` to the reporter + assignee + every admin
    * - every other column → plain `moved` to the two people on the card only
    *   (routine drags no longer flood the admin inbox)
+   *
+   * The two milestone columns (รับเรื่อง = id 2, เสร็จสิ้น = id 4) also e-mail
+   * the reporter — same trigger, same recipient policy, see `emailMilestone`.
    */
   async notifyStatusChange(params: {
     issue: NotificationIssueTarget;
     statusId: number | null;
+    /** The live column name for the e-mail copy (admins may rename columns). */
+    statusName?: string | null;
     actor?: NotificationActor | null;
   }): Promise<void> {
-    const { issue, statusId, actor } = params;
+    const { issue, statusId, statusName, actor } = params;
     const people: Array<number | null | undefined> = [issue.programmerId, issue.customerId];
     switch (statusId) {
       case WAITING_ASSIGNMENT_STATUS_ID:
@@ -211,12 +234,13 @@ export class NotificationsService {
           alsoAdmins: true,
         });
       case PENDING_STATUS_ID:
-        return this.notifyIssueEvent({
+        await this.notifyIssueEvent({
           issue,
           action: "status_pending",
           recipients: people,
           actor,
         });
+        return this.emailMilestone(issue, statusId, statusName, actor);
       case IN_PROGRESS_STATUS_ID:
         return this.notifyIssueEvent({
           issue,
@@ -225,17 +249,59 @@ export class NotificationsService {
           actor,
         });
       case DONE_STATUS_ID:
-        return this.notifyIssueEvent({
+        await this.notifyIssueEvent({
           issue,
           action: "completed",
           recipients: people,
           actor,
           alsoAdmins: true,
         });
+        return this.emailMilestone(issue, statusId, statusName, actor);
       default:
         break;
     }
     return this.notifyIssueEvent({ issue, action: "moved", recipients: people, actor });
+  }
+
+  /**
+   * The e-mail twin of a milestone move — to the reporter only, best-effort
+   * like `notify()`: a missing reporter/address is a no-op, a broken lookup
+   * only logs, and the SMTP send itself is fire-and-forget so a slow or dead
+   * server can never stall the drag that triggered it (the in-app row above
+   * is already written by then).
+   */
+  private async emailMilestone(
+    issue: NotificationIssueTarget,
+    statusId: number,
+    statusName?: string | null,
+    actor?: NotificationActor | null,
+  ): Promise<void> {
+    if (!STATUS_EMAIL_IDS.has(statusId)) return;
+    const customerId = issue.customerId;
+    // no reporter on the card, or the reporter is the actor → nothing to say
+    // (same "never notify yourself" rule the in-app rows follow)
+    if (!customerId || customerId === actor?.actorId) return;
+    try {
+      const customer = await this.users.findOne({ where: { id: customerId } });
+      if (!customer?.email) return;
+      void this.mail
+        .sendIssueStatusUpdate({
+          to: customer.email,
+          name: customer.name,
+          title: issue.title,
+          issueNumber: issue.issueNumber ?? null,
+          statusName: statusName?.trim() || STATUS_EMAIL_DEFAULT_NAMES[statusId],
+          url: `${this.webBase()}${this.issueLink(issue.id)}`,
+        })
+        .catch((error) => this.logger.warn(`issue status mail failed: ${(error as Error).message}`));
+    } catch (error) {
+      this.logger.warn(`could not load reporter for status mail: ${(error as Error).message}`);
+    }
+  }
+
+  /** Absolute base for links inside e-mails — same env the reset mail uses. */
+  private webBase(): string {
+    return (process.env.APP_URL ?? "http://localhost:3000").replace(/\/+$/, "");
   }
 
   /**
@@ -301,6 +367,89 @@ export class NotificationsService {
         issueId: issue.id,
         link: this.issueLink(issue.id),
       });
+    }
+  }
+
+  /**
+   * **"ชั่วโมง MA หมดแล้ว"** — ผู้รับ = ลูกค้า active ของบริษัทคู่นั้น
+   * (`users.company_id` = คู่, บทบาท `customer`) **+ แอดมินทุกคน** (dedupe,
+   * แอดมินชนะถ้าซ้ำ), ไม่มี actor (ระบบเป็นคนส่ง) · เรียกโดย `MaUsageService`
+   * หลังกรอกเวลาจริงทำให้ ใช้ไป ≥ `ma_hours` — **ครั้งเดียวต่อรอบ** (latch
+   * `ma_notified_at` อยู่ที่แถวล่าสุดของคู่)
+   *
+   * สองช่องทางพร้อมกัน: in-app (`notify()`) + อีเมล (`sendMaDepleted`) ทั้งคู่
+   * best-effort — รายชื่อผู้รับพัง/SMTP พัง ไม่กระทบ request ที่กรอกเวลา
+   *
+   * **ลิงก์ต่างกันตามคน**: แอดมิน → `/systems` (ไปต่ออายุ/ซื้อชม. ได้) ·
+   * ลูกค้า → `/boards` เพราะไม่มี `system.view` — ชี้ไป `/systems` เท่ากับ
+   * พาไปกำแพง permission
+   */
+  async notifyMaDepleted(params: {
+    companyId: number;
+    appName: string;
+    companyName: string;
+    maHours: number;
+    /** ใช้ไป (ชม.) — ปัด 1 ตำแหน่งตอนแสดงเท่านั้น */
+    usedHours: number;
+  }): Promise<void> {
+    try {
+      const { companyId, appName, companyName, maHours, usedHours } = params;
+      const title = [appName, companyName].filter(Boolean).join(" ");
+      const used = Math.round(usedHours * 10) / 10;
+      const context = `ใช้ไป ${used} / ${maHours} ชม.`;
+
+      // ลูกค้าของบริษัทคู่นั้น — ถ้าอ่านไม่ได้ แอดมินยังได้ยิน (best-effort)
+      let customers: User[] = [];
+      try {
+        customers = await this.users.find({
+          where: { isActive: true, companyId, role: { name: "customer" } },
+          relations: ["role"],
+        });
+      } catch (error) {
+        this.logger.warn(`could not load company customers for MA bell: ${(error as Error).message}`);
+      }
+
+      // `kind` = จะชี้ลิงก์ไปไหน — แอดมินทับลูกค้าถ้าใครเป็นทั้งคู่
+      const recipients = new Map<number, "admin" | "customer">();
+      for (const u of customers) recipients.set(u.id, "customer");
+      try {
+        for (const u of await this.users.find({
+          where: { isActive: true, role: { name: "admin" } },
+          relations: ["role"],
+        })) {
+          recipients.set(u.id, "admin");
+        }
+      } catch (error) {
+        this.logger.warn(`could not load admins for MA bell: ${(error as Error).message}`);
+      }
+      if (recipients.size === 0) return;
+
+      // อีเมลต้องการ address/ชื่อ — โหลดเฉพาะผู้รับที่มีในลิสต์ (best-effort)
+      const withEmail = await this.users.find({
+        where: { id: In([...recipients.keys()]) },
+      });
+      const people = new Map(withEmail.map((u) => [u.id, u]));
+
+      for (const [userId, kind] of recipients) {
+        const link = kind === "admin" ? "/systems" : "/boards";
+        await this.notify({ userId, action: "ma_depleted", title, context, link });
+
+        const person = people.get(userId);
+        if (!person?.email) continue;
+        void this.mail
+          .sendMaDepleted({
+            to: person.email,
+            name: person.name,
+            appName,
+            companyName,
+            maHours,
+            usedHours: used,
+            url: `${this.webBase()}${link}`,
+          })
+          .catch((error) => this.logger.warn(`ma depleted mail failed: ${(error as Error).message}`));
+      }
+    } catch (error) {
+      this.logger.warn(`ma depletion notification failed: ${(error as Error).message}`);
     }
   }
 

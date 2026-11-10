@@ -71,6 +71,17 @@ export interface SummaryRow extends SummaryMedians {
   isTotal?: boolean;
 }
 
+/**
+ * GET /reports/usage — one row per **app × company** pair the hours belong to.
+ * `hours` is the summed `actual_fix_duration` (client narrows it further with
+ * `?taskTypes=`); rows whose reporter has no company never appear here.
+ */
+export interface AppUsageRow {
+  appId: number;
+  companyId: number;
+  hours: number;
+}
+
 /** One person for the filter panel's people lists. */
 export interface ReportPerson {
   id: number;
@@ -327,6 +338,46 @@ export class ReportsService {
 
     appendTotals(rows, total);
     return rows;
+  }
+
+  /**
+   * GET /reports/usage — **"ใช้ไป" ระดับคู่ แอป×บริษัท** ให้สูตร คงเหลือ = MA − ใช้ไป
+   *
+   * ต่างจาก `summary(groupBy=app)` ที่รวมเวลาของแอปทั้งก้อน (ทำให้ทุกแถวของแอป
+   * เดียวกันโดนหักเท่ากัน): ที่นี่โยงงานเข้ากับ**บริษัทของผู้แจ้งงาน**
+   * (`issues.customer_id` → `users.company_id`) แล้ว group ที่ `(app_id, company_id)`
+   * ดังนั้นเวลาของงานลูกค้าบริษัทไหนก็จะหักเฉพาะคู่นั้น ๆ
+   *
+   * **แถวที่จับคู่ไม่ได้ถูกทิ้งฝั่ง server** — ผู้แจ้งไม่มีบริษัท (NULL), ไม่มีผู้แจ้ง,
+   * หรือ admin/โปรแกรมเมอร์เป็นคนแจ้ง → ไม่เข้าคู่ไหนเลย = ไม่หักที่ไหนทั้งสิ้น
+   * (ตรงกติกา "ถ้าไม่ถูกก็คือไม่ลด"; ทิ้ง NULL ทิ้งไว้ยังอันตราย เพราะแถว `app_companies`
+   * ที่ไม่ผูกบริษัทก็มี `companyId: null` เหมือนกัน — ปล่อยไว้จะชนคีย์กัน)
+   *
+   * คง filter ชุดเดียวกับรายงาน (`summaryBaseQb`) รวม visibility ของผู้อ่าน —
+   * ฝั่งเว็บส่ง `taskTypes=feature,requirement` มาเองเพื่อไม่นับเวลาของ bug/NULL
+   */
+  async usageByPair(
+    f: ReportIssueFilters,
+    user?: AuthUser | null,
+  ): Promise<AppUsageRow[]> {
+    const canViewAll = await this.canViewAll(user);
+    const uid = Number(user?.id ?? 0);
+    const raw = await this.summaryBaseQb(f, canViewAll, uid)
+      .leftJoin("issue.customer", "reporter")
+      .select("issue.app_id", "appKey")
+      .addSelect("reporter.company_id", "companyKey")
+      .addSelect("COALESCE(SUM(issue.actual_fix_duration), 0)", "seconds")
+      .groupBy("issue.app_id")
+      .addGroupBy("reporter.company_id")
+      .getRawMany();
+
+    return raw
+      .map((r) => ({
+        appId: r.appKey == null ? null : Number(r.appKey),
+        companyId: r.companyKey == null ? null : Number(r.companyKey),
+        hours: round1(num(r.seconds) / 3600),
+      }))
+      .filter((r): r is AppUsageRow => r.appId != null && r.companyId != null);
   }
 
   /** Shared WHERE (visibility + dimension + date + search) on the bare `issue` alias. */

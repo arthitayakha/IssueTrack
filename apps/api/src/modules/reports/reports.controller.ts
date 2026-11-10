@@ -73,6 +73,19 @@ export class ReportsController {
     return this.reports.people(user);
   }
 
+  /**
+   * "ใช้ไป" ระดับคู่ แอป×บริษัท (สูตรคงเหลือ MA) — โยงงานกับบริษัทของผู้แจ้งงาน
+   * แล้วกรองด้วย `?taskTypes=feature,requirement` ให้คงเหลือไม่โดนหักผิดคู่
+   */
+  @Get("usage")
+  @Permissions("report.view")
+  usage(
+    @Query() query: Record<string, string | undefined>,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.reports.usageByPair(parseFilters(query), user);
+  }
+
   /** Comments + attachments merged: shared filters + sortBy/sortOrder/page. */
   @Get("activity")
   @Permissions("report.view")

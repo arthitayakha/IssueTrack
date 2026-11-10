@@ -1,8 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { Box, Button, IconButton, MenuItem, Popover, Select, Typography } from "@mui/material";
-import type { SelectChangeEvent } from "@mui/material";
+import { useRef, useState, type MouseEvent } from "react";
+import { Box, Button, IconButton, Menu, MenuItem, Popover, Tooltip, Typography } from "@mui/material";
 import CalendarMonthIcon from "@mui/icons-material/CalendarMonth";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
@@ -18,19 +17,16 @@ export interface DateRangeValue {
 }
 
 export interface DateRangePreset {
-  /** Value stored in the Select — also what the caller switches on. */
+  /** The preset's identity — also what the menu highlights as current. */
   key: string;
   label: string;
   /** The dates this preset applies. */
   dates: DateRangeValue;
 }
 
-/** The last menu entry of `DateRangeSelect`: pick the bounds yourself. */
-const CUSTOM_KEY = "__custom";
-
 /**
- * The two-picker popover shared by every date filter in the app (reports'
- * preset Select and the dashboard's calendar icon): title + hint, "จากวันที่" /
+ * The two-picker popover shared by every date filter in the app (the reports'
+ * preset menu and the dashboard's calendar icon): title + hint, "จากวันที่" /
  * "ถึงวันที่", dates applied live with the pair kept ordered, footer clears or
  * dismisses. One component = one place to reword or restyle it.
  */
@@ -45,7 +41,7 @@ export function RangePopover({
   onClose: () => void;
   value: DateRangeValue;
   onChange: (value: DateRangeValue) => void;
-  /** Defaults to clearing the pair — the Select also drops back to a preset. */
+  /** Defaults to clearing the pair — the menu then falls back to "ทั้งหมด". */
   onClear?: () => void;
 }) {
   const t = useTranslations("DateRange");
@@ -145,137 +141,114 @@ export function RangePopover({
 
 /**
  * Calendar-icon date filter — the compact form used in tight headers (the
- * dashboard's trend card). Tints itself while a range is active so the state
- * is visible without a label.
+ * dashboard's trend card, the reports toolbar). Tints itself while a range is
+ * active so the state is visible without a label, and a tooltip names the
+ * current range.
+ *
+ * - **No `presets`** → one click opens `RangePopover` (two date pickers).
+ * - **With `presets`** → one click opens a preset menu in the same order the
+ *   old Select showed them; the matching entry is highlighted, the last entry
+ *   ("กำหนดเอง") closes the menu and opens `RangePopover` on this icon.
  */
 export function DateRangeIconButton({
   value,
   onChange,
-  ariaLabel,
-}: {
-  value: DateRangeValue;
-  onChange: (value: DateRangeValue) => void;
-  ariaLabel?: string;
-}) {
-  const t = useTranslations("DateRange");
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const active = Boolean(value.from || value.to);
-
-  return (
-    <>
-      <IconButton
-        size="small"
-        aria-label={ariaLabel ?? t("range")}
-        aria-haspopup="dialog"
-        aria-expanded={Boolean(anchor)}
-        onClick={(e) => setAnchor(e.currentTarget)}
-        sx={{
-          border: "1px solid",
-          borderColor: active ? "primary.main" : "divider",
-          borderRadius: "10px",
-          color: active ? "primary.main" : "text.secondary",
-          "&:hover": { bgcolor: "action.hover" },
-        }}
-      >
-        <CalendarMonthIcon fontSize="small" />
-      </IconButton>
-      <RangePopover
-        anchorEl={anchor}
-        onClose={() => setAnchor(null)}
-        value={value}
-        onChange={onChange}
-      />
-    </>
-  );
-}
-
-/**
- * Preset Select date filter — the reports toolbar's control: a preset list
- * that opens `RangePopover` when "กำหนดเอง" is chosen, showing
- * `Custom · 1 ก.ย. – 30 ก.ย.` while a custom span is active.
- */
-export function DateRangeSelect({
-  value,
-  onChange,
   presets,
-  minWidth = 165,
   size = "small",
   ariaLabel,
 }: {
   value: DateRangeValue;
   onChange: (value: DateRangeValue) => void;
   /** Preset entries in menu order — the custom entry is appended for you. */
-  presets: DateRangePreset[];
-  minWidth?: number;
+  presets?: DateRangePreset[];
   size?: "small" | "medium";
   /** Defaults to the shared "ช่วงเวลา" / "Date range" label. */
   ariaLabel?: string;
 }) {
   const t = useTranslations("DateRange");
-  const selectRef = useRef<HTMLDivElement | null>(null);
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  /** Keeps "custom" selected until an explicit preset replaces it. */
-  const [customMode, setCustomMode] = useState(false);
+  const iconRef = useRef<HTMLButtonElement | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  const [popAnchor, setPopAnchor] = useState<HTMLElement | null>(null);
 
   const from = value.from ?? "";
   const to = value.to ?? "";
-  const matched = presets.find((p) => p.dates.from === from && p.dates.to === to);
-  const activeKey = !customMode && matched ? matched.key : CUSTOM_KEY;
+  const active = Boolean(from || to);
+  /** No match + a range set → a hand-picked span (only meaningful with presets). */
+  const matched = presets?.find((p) => p.dates.from === from && p.dates.to === to);
 
-  const handleSelect = (event: SelectChangeEvent<string>) => {
-    const key = event.target.value;
-    if (key === CUSTOM_KEY) {
-      // keep the current dates and open the popover under the select
-      setCustomMode(true);
-      setAnchor(selectRef.current);
-      return;
-    }
-    setCustomMode(false);
-    setAnchor(null);
-    const preset = presets.find((p) => p.key === key);
-    if (preset) onChange({ from: preset.dates.from, to: preset.dates.to });
-  };
-
-  /** "1 ก.ย." piece inside the custom renderValue. */
+  /** "1 ก.ย." piece inside the custom label. */
   const spanLabel = (iso: string) => (iso ? dayjs(iso).format("D MMM") : "—");
+  const label = matched
+    ? matched.label
+    : active
+      ? `${t("custom")} · ${spanLabel(from)} – ${spanLabel(to)}`
+      : (ariaLabel ?? t("range"));
+
+  const handleClick = (e: MouseEvent<HTMLButtonElement>) => {
+    if (presets) setMenuAnchor(e.currentTarget);
+    else setPopAnchor(e.currentTarget);
+  };
 
   return (
     <>
-      <Select<string>
-        size={size}
-        ref={selectRef}
-        value={activeKey}
-        onChange={handleSelect}
-        renderValue={(v) => (
-          <Typography variant="body2" fontWeight={700}>
-            {v === CUSTOM_KEY
-              ? from || to
-                ? `${t("custom")} · ${spanLabel(from)} – ${spanLabel(to)}`
-                : t("custom")
-              : (presets.find((p) => p.key === v)?.label ?? "")}
-          </Typography>
-        )}
-        sx={{ minWidth }}
-        inputProps={{ "aria-label": ariaLabel ?? t("range") }}
-      >
-        {presets.map((preset) => (
-          <MenuItem key={preset.key} value={preset.key}>
-            {preset.label}
+      <Tooltip title={label}>
+        <IconButton
+          ref={iconRef}
+          size={size}
+          aria-label={ariaLabel ?? t("range")}
+          aria-haspopup={presets ? "menu" : "dialog"}
+          aria-expanded={presets ? Boolean(menuAnchor) : Boolean(popAnchor)}
+          onClick={handleClick}
+          sx={{
+            border: "1px solid",
+            borderColor: active ? "primary.main" : "divider",
+            borderRadius: "10px",
+            color: active ? "primary.main" : "text.secondary",
+            "&:hover": { bgcolor: "action.hover" },
+          }}
+        >
+          <CalendarMonthIcon fontSize="small" />
+        </IconButton>
+      </Tooltip>
+
+      {presets && (
+        <Menu
+          anchorEl={menuAnchor}
+          open={Boolean(menuAnchor)}
+          onClose={() => setMenuAnchor(null)}
+          anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+          transformOrigin={{ vertical: "top", horizontal: "left" }}
+        >
+          {presets.map((preset) => (
+            <MenuItem
+              key={preset.key}
+              selected={preset.key === matched?.key}
+              onClick={() => {
+                setMenuAnchor(null);
+                onChange({ from: preset.dates.from, to: preset.dates.to });
+              }}
+            >
+              {preset.label}
+            </MenuItem>
+          ))}
+          <MenuItem
+            selected={!matched}
+            onClick={() => {
+              setMenuAnchor(null);
+              // keep the current dates and open the popover under the icon
+              setPopAnchor(iconRef.current);
+            }}
+          >
+            {t("custom")}
           </MenuItem>
-        ))}
-        <MenuItem value={CUSTOM_KEY}>{t("custom")}</MenuItem>
-      </Select>
+        </Menu>
+      )}
 
       <RangePopover
-        anchorEl={anchor}
-        onClose={() => setAnchor(null)}
+        anchorEl={popAnchor}
+        onClose={() => setPopAnchor(null)}
         value={{ from, to }}
         onChange={onChange}
-        onClear={() => {
-          // clearing returns the Select to whichever preset matches
-          setCustomMode(false);
-          onChange({ from: "", to: "" });
-        }}
       />
     </>
   );

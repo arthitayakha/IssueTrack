@@ -393,6 +393,7 @@ export class RulesEngineService {
           await this.notifications.notifyStatusChange({
             issue,
             statusId,
+            statusName: status.name,
             actor: this.actorFrom(ctx),
           });
         }

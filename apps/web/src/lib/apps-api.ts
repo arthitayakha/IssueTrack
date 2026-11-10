@@ -37,8 +37,20 @@ export interface AppCompanyLink {
   expiresAt: string | null;
   /** ชั่วโมง MA ของช่วงนี้จาก `app_companies.ma_hours`, null = ยังไม่กำหนด */
   maHours: number | null;
+  /**
+   * แถวนี้มาจากอะไร (migration 1820) — `renew` = ต่ออายุ/เพิ่มรายการปกติ,
+   * `buy` = ซื้อชั่วโมง MA เพิ่ม (วันที่เท่าเดิมแต่ `maHours` มากขึ้น) —
+   * ใช้แยกแถบที่ซื้อในแท็บ "ประวัติการต่ออายุ"
+   */
+  kind: "renew" | "buy";
   /** stored state **ของแถวนี้** — ไม่กำหนด / ปกติ / ใกล้หมดอายุ (≤30 วัน) / หมดอายุ — UI โชว์เป็นจำนวนวันดูที่ `expiryChipLabel()` */
   expiryStatus: ExpiryStatus;
+  /**
+   * ISO datetime จาก `app_companies.created_at` — **วันที่บันทึกช่วงนั้น**
+   * ใช้เป็นคอลัมน์ "วันที่" ของตารางประวัติการต่ออายุ (ต่างจาก `startedAt`
+   * ที่เป็นวันที่ของสัญญา) · แถวที่สร้างก่อน migration 1819 ได้ค่าตอน migrate
+   */
+  createdAt: string | null;
 }
 
 export interface App {
@@ -129,6 +141,61 @@ export async function deleteAppRecord(
 ): Promise<{ deleted: boolean }> {
   return apiFetch<{ deleted: boolean }>(`/apps/${appId}/companies/${recordId}`, {
     method: "DELETE",
+  }, getToken());
+}
+
+/**
+ * **ต่ออายุ** — ปิดช่วงเก่าแล้ว append ช่วงใหม่ให้คู่เดิม (`company_id` ยืม
+ * จากแถวตั้งต้นที่เซิร์ฟเวอร์อ่านเอง ฟอร์มส่งมาแค่ 3 ช่องนี้)
+ *
+ * ต่างจาก `addAppRecord()`: ทั้ง 3 ฟิลด์**บังคับ**และ endpoint รับ
+ * `system.update` (ไม่ใช่ `system.create`) — ปุ่มต่ออายุจึงเปิดได้เฉพาะ
+ * คนที่แก้ข้อมูลระบบได้
+ */
+export interface AppRenewInput {
+  /** `YYYY-MM-DD` — วันที่เริ่มใช้งานของช่วงใหม่ */
+  startedAt: string;
+  /** `YYYY-MM-DD` — วันหมดอายุของช่วงใหม่ (ต้องมากกว่า `startedAt`) */
+  expiresAt: string;
+  /** ชั่วโมง MA ของช่วงใหม่ */
+  maHours: number;
+}
+
+export async function renewAppRecord(
+  appId: number,
+  recordId: number,
+  data: AppRenewInput,
+): Promise<App> {
+  return apiFetch<App>(`/apps/${appId}/companies/${recordId}/renew`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  }, getToken());
+}
+
+/**
+ * payload ของ `POST /apps/:id/companies/:recordId/buy-hours` — **ซื้อชั่วโมง MA เพิ่ม**
+ *
+ * ต่างจาก `AppRenewInput`: ส่งมา**แค่จำนวนชั่วโมง** (จำนวนเต็ม > 0) — วันที่สัญญา
+ * คงเดิมทุกประการ ฝั่งเซิร์ฟเวอร์ append แถบใหม่ให้คู่เดิมด้วย
+ * `maHours = ของเดิม + ที่ซื้อ` และ `kind = 'buy'`
+ */
+export interface AppBuyInput {
+  hours: number;
+}
+
+/**
+ * **ซื้อชั่วโมง MA เพิ่ม** — ปุ่ม "ซื้อชั่วโมง" ในตาราง `/systems` ขึ้นเฉพาะ
+ * แถวที่คงเหลือ ≤ 0 (ดู `canBuyHours()` ในหน้านั้น) และต้องมี `system.update`
+ * เหมือนปุ่มต่ออายุ
+ */
+export async function buyAppHours(
+  appId: number,
+  recordId: number,
+  data: AppBuyInput,
+): Promise<App> {
+  return apiFetch<App>(`/apps/${appId}/companies/${recordId}/buy-hours`, {
+    method: "POST",
+    body: JSON.stringify(data),
   }, getToken());
 }
 

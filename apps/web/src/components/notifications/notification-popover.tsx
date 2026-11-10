@@ -118,6 +118,7 @@ export default function NotificationPopover({
     stale: t("actions.stale"),
     app_expiring: t("actions.app_expiring"),
     app_expired: t("actions.app_expired"),
+    ma_depleted: t("actions.ma_depleted"),
   };
 
   function handleItemClick(item: AppNotification) {
@@ -289,9 +290,13 @@ export default function NotificationPopover({
           </Box>
         ) : (
           visibleItems.map((item, index) => {
-            // แถวหมดอายุไม่มีคนกระทำ (ระบบเป็นคนส่ง) — หัวข้อคือ "ชื่อแอป + บริษัท"
-            // ขึ้นต้นด้วยสิ่งนั้นแทน "System" แล้วตามด้วย label: **POS ครัวบ้านสวย** ใกล้หมดอายุ
-            const isExpiryRow = item.action === "app_expiring" || item.action === "app_expired";
+            // แถวที่ระบบเป็นคนส่ง (ไม่มีคนกระทำ) — หัวข้อคือ "ชื่อแอป + บริษัท"
+            // ขึ้นต้นด้วยสิ่งนั้นแทน "System" แล้วตามด้วย label:
+            // **POS ครัวบ้านสวย** ใกล้หมดอายุ / **POS ครัวบ้านสวย** MA หมดแล้ว
+            const isSystemRow =
+              item.action === "app_expiring" ||
+              item.action === "app_expired" ||
+              item.action === "ma_depleted";
             return (
               <Box key={item.id}>
                 {index > 0 && <Divider />}
@@ -317,7 +322,7 @@ export default function NotificationPopover({
                       flexShrink: 0,
                     }}
                   >
-                    {getInitials(isExpiryRow ? item.target : (item.actorName ?? "System"))}
+                    {getInitials(isSystemRow ? item.target : (item.actorName ?? "System"))}
                   </Avatar>
 
                   <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -330,7 +335,7 @@ export default function NotificationPopover({
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {isExpiryRow ? (
+                      {isSystemRow ? (
                         <>
                           <Box component="span" sx={{ fontWeight: 700 }}>
                             {item.target}

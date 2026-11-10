@@ -8,7 +8,6 @@ import {
   Checkbox,
   Divider,
   IconButton,
-  InputAdornment,
   ListItemText,
   MenuItem,
   Popover,
@@ -26,7 +25,7 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import { useTranslations } from "next-intl";
-import { DateRangeSelect, type DateRangePreset } from "@/components/date-range-select";
+import { DateRangeIconButton, type DateRangePreset } from "@/components/date-range-select";
 import { activeFilterCount } from "@/lib/reports-api";
 import type { FilterOptions, ReportFilters, ReportView } from "@/lib/reports-api";
 import { REPORT_VIEW_ORDER } from "./report-views";
@@ -245,11 +244,13 @@ export interface ReportsToolbarProps {
 }
 
 /**
- * Row 1: view + date-range presets + the filter popover button, then search
- * and the export buttons on the right (the reference layout). Checkbox
- * sections live inside the filter panel, mirroring the board's filter
- * popover; choosing "custom" opens a range popover (two MUI date pickers)
- * anchored under this row. Search is debounced into the URL.
+ * Row 1: **search on the left (same box as the board's toolbar), then every
+ * other control pushed right with `ml: auto` — view, the date-range calendar
+ * icon, the filter popover button, columns, refresh and export**. Checkbox
+ * sections live inside the filter panel, mirroring the board's filter popover;
+ * the calendar icon opens a preset menu (same entries the old Select listed),
+ * and choosing "กำหนดเอง" in it opens a range popover (two MUI date pickers)
+ * anchored under the icon. Search is debounced into the URL.
  */
 export function ReportsToolbar({
   view,
@@ -276,7 +277,7 @@ export function ReportsToolbar({
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
   const [columnAnchor, setColumnAnchor] = useState<HTMLElement | null>(null);
 
-  /** Preset menu for the shared date-range control (custom comes with it). */
+  /** Preset menu for the shared date-range icon (custom comes with it). */
   const rangePresets: DateRangePreset[] = RANGE_PRESET_KEYS.map((key) => ({
     key,
     label: t(`toolbar.${RANGE_LABEL_KEYS[key]}`),
@@ -306,6 +307,23 @@ export function ReportsToolbar({
   return (
     <Stack spacing={2}>
       <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+        {/* ช่องค้นหาอยู่ซ้ายสุดและกว้างสุด — เท่ากับ toolbar ของหน้าบอร์ด
+            (เดิมอยู่ขวาสุดหลัง spacer ทำให้ดูลอยคนละส่วนกับปุ่มอื่น) */}
+        <TextField
+          size="small"
+          placeholder={t("toolbar.search")}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          sx={{ flexGrow: 1, maxWidth: 480, minWidth: 200 }}
+          inputProps={{ "aria-label": t("toolbar.search") }}
+          InputProps={{
+            startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
+          }}
+        />
+
+        {/* ทุกปุ่มที่เหลือชิดขวา (ml: auto) — รวมปุ่มตัวกรอง เหมือนหน้าบอร์ด */}
+        <Box sx={{ flex: 1, minWidth: 8 }} />
+
         <Select<ReportView>
           size="small"
           value={view}
@@ -328,11 +346,11 @@ export function ReportsToolbar({
         {/* ช่วงวันที่กรอง "วันที่ของงาน" — ไม่มีความหมายกับ view ตามบริษัท
             (แถวคือสัญญา แอป×บริษัท) จึงซ่อนออกไป ไม่ใช่ปล่อยให้ไม่ทำงาน */}
         {view !== "company" && (
-          <DateRangeSelect
-            value={filters}
+          <DateRangeIconButton
+            value={{ from: filters.from, to: filters.to }}
             onChange={(range) => onFiltersChange({ ...filters, from: range.from, to: range.to })}
             presets={rangePresets}
-            minWidth={165}
+            size="medium"
             ariaLabel={t("toolbar.range")}
           />
         )}
@@ -421,24 +439,6 @@ export function ReportsToolbar({
             )}
           </Box>
         </Popover>
-
-        <Box sx={{ flex: 1, minWidth: 8 }} />
-
-        <TextField
-          size="small"
-          placeholder={t("toolbar.search")}
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          sx={{ minWidth: 230 }}
-          inputProps={{ "aria-label": t("toolbar.search") }}
-          InputProps={{
-            startAdornment: (
-              <InputAdornment position="start">
-                <SearchIcon fontSize="small" />
-              </InputAdornment>
-            ),
-          }}
-        />
 
         <Tooltip title={t("toolbar.refresh")}>
           <IconButton size="medium" onClick={onRefresh} aria-label={t("toolbar.refresh")}>

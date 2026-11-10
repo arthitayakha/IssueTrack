@@ -534,7 +534,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
               }}
               onKeyDown={(event) => handleFieldKeyDown(event, "name")}
               onBlur={() => setEditing(null)}
-              inputProps={{ maxLength: 100 }}
+              inputProps={{ maxLength: 100, autoComplete: "name" }}
               error={trimmedName === ""}
             />
           ) : (
@@ -566,6 +566,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
               }}
               onKeyDown={(event) => handleFieldKeyDown(event, "email")}
               onBlur={() => setEditing(null)}
+              inputProps={{ autoComplete: "email" }}
               error={Boolean(emailError)}
             />
           ) : (
@@ -692,6 +693,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
             autoFocus
             value={confirmPassword}
             onChange={(event) => setConfirmPassword(event.target.value)}
+            inputProps={{ autoComplete: "current-password" }}
           />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -727,6 +729,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
               setPwCurrent(event.target.value);
               setPwError(null);
             }}
+            inputProps={{ autoComplete: "current-password" }}
             sx={{ mb: 2 }}
           />
           {/* the current password is exactly what a forgetful user lacks —
@@ -761,6 +764,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
               setPwNew(event.target.value);
               setPwError(null);
             }}
+            inputProps={{ autoComplete: "new-password" }}
             sx={{ mb: 2 }}
           />
           <TextField
@@ -774,6 +778,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
               setPwConfirm(event.target.value);
               setPwError(null);
             }}
+            inputProps={{ autoComplete: "new-password" }}
             error={Boolean(pwError)}
             helperText={pwError ?? " "}
           />
@@ -813,6 +818,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
               setPwNew(event.target.value);
               setPwError(null);
             }}
+            inputProps={{ autoComplete: "new-password" }}
             sx={{ mb: 2 }}
           />
           <TextField
@@ -826,6 +832,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
               setPwConfirm(event.target.value);
               setPwError(null);
             }}
+            inputProps={{ autoComplete: "new-password" }}
             error={Boolean(pwError)}
             helperText={pwError ?? " "}
           />

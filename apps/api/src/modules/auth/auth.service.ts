@@ -15,7 +15,7 @@ import { User } from "./entities/user.entity";
 import { PasswordResetToken } from "./entities/password-reset-token.entity";
 import { Role } from "../roles/entities/role.entity";
 import { LoginDto } from "./dto/login.dto";
-import { MailService } from "./mail.service";
+import { MailService } from "../mail/mail.service";
 import { PositionPermission } from "../positions/entities/position-permission.entity";
 import { Position } from "../positions/position.entity";
 

@@ -1,4 +1,4 @@
-import { Column, Entity, PrimaryGeneratedColumn } from "typeorm";
+import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from "typeorm";
 
 /**
  * สถานะอายุที่ *เก็บไว้* ใน DB (`none` | `normal` | `expiring_soon` (≤30 วัน) |
@@ -77,6 +77,28 @@ export class AppCompany {
   @Column({ name: "ma_hours", type: "int", nullable: true })
   maHours!: number | null;
 
+  /**
+   * **แถบนี้มาจากอะไร** (migration 1820) — `renew` = ต่ออายุ/เพิ่มรายการปกติ,
+   * `buy` = ซื้อชั่วโมง MA เพิ่ม (คงวันที่สัญญาเดิม `maHours` มากขึ้น)
+   *
+   * ใช้แยกแถบที่ซื้อออกจากแถบที่ต่ออายุในแท็บ "ประวัติการต่ออายุ" —
+   * สองแถวมีวันที่เท่ากันแต่ `maHours` ต่างกัน จึงแยกจากตัวเลขอย่างเดียว
+   * ไม่ได้ว่าแถวไหนคือการซื้อ · แถวเก่าที่มีก่อน migration = `renew` ทุกแถว
+   */
+  @Column({ name: "kind", type: "varchar", length: 8, default: "renew" })
+  kind!: "renew" | "buy";
+
+  /**
+   * **latch flag "แจ้ง MA หมดแล้ว" รอบนี้** (migration 1821) — `null` = ยังไม่เคยแจ้ง,
+   * ค่าอื่น = เวลาที่ `MaUsageService` แจ้งลูกค้า + แอดมินไปแล้ว (ครั้งเดียวต่อรอบ)
+   *
+   * ล้างเองเมื่อ ใช้ไป ≤ MA อีกครั้ง (งานย้ายเป็นบั๊ก/แก้ MA เพิ่ม) → รอบการหมด
+   * ถัดไปแจ้งใหม่ได้ · แถวใหม่จากต่ออายุ/ซื้อชั่วโมงได้ `NULL` โดยปริยาย
+   * (คนละแถวกับ latch เดิม จึงแจ้งซ้ำได้เมื่อหมดอีก)
+   */
+  @Column({ name: "ma_notified_at", type: "timestamp", nullable: true })
+  maNotifiedAt!: Date | null;
+
   /** Stored status — refreshed by `AppExpiryService` (read/save/daily cron). */
   @Column({ name: "expiry_status", type: "varchar", length: 16, default: "none" })
   expiryStatus!: AppExpiryStatus;
@@ -88,4 +110,15 @@ export class AppCompany {
    */
   @Column({ name: "expiry_notified", type: "varchar", length: 16, default: "none" })
   expiryNotified!: AppExpiryStage;
+
+  /**
+   * **วันที่บันทึกช่วงเวลานั้น** — คอลัมน์ "วันที่" ของตาราง **ประวัติการต่ออายุ**
+   * (migration 1819) ต่างจาก `startedAt` ที่เป็น *วันที่ของสัญญา*: แถวช่วง 2569
+   * ที่ต่ออายุเมื่อวานต้องโชว์วันที่เมื่อวาน ไม่ใช่วันที่เริ่มสัญญา
+   *
+   * แถวเดิมที่มีอยู่ก่อน migration ได้ค่า "วันที่ migrate" (ย้อนกู้ไม่ได้ —
+   * ไม่เคยเก็บไว้) · แถวใหม่หลังจากนี้ได้ค่าจริงเสมอ
+   */
+  @CreateDateColumn({ name: "created_at", type: "timestamp" })
+  createdAt!: Date;
 }

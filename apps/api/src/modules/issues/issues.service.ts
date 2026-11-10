@@ -19,6 +19,7 @@ import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
 import { RulesEngineService, type StatusGates } from "../rules/rules-engine.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { MaUsageService } from "../apps/ma-usage.service";
 import { PaginationParams } from "../../common/pagination";
 import { AuthUser } from "../auth/auth-user";
 
@@ -105,6 +106,8 @@ export class IssuesService {
     private readonly permissions: PermissionsService,
     private readonly rulesEngine: RulesEngineService,
     private readonly notifications: NotificationsService,
+    // กรอกเวลาจริง = จังหวะเดียวที่ "ใช้ไป" ขยับ → ตรวจว่า MA ของคู่หมดแล้วหรือยัง
+    private readonly maUsage: MaUsageService,
   ) {}
 
   async findAll(
@@ -720,7 +723,12 @@ export class IssuesService {
 
     // the recipient policy lives in NotificationsService (milestone columns
     // get their own type; routine drags only reach the two people on the card)
-    await this.notifications.notifyStatusChange({ issue, statusId, actor });
+    await this.notifications.notifyStatusChange({
+      issue,
+      statusId,
+      statusName: targetStatus.name,
+      actor,
+    });
 
     await this.logActivity({
       action: "card.moved",
@@ -838,6 +846,10 @@ export class IssuesService {
     }
     issue.actualFixDuration = Math.round(duration);
     await this.issues.save(issue);
+    // **fire-and-forget**: ชั่วโมงที่กรอกอาจทำให้ MA ของคู่หมด — แจ้งลูกค้า +
+    // แอดมิน (ครั้งเดียวต่อรอบ, ดู `MaUsageService`) โดยไม่รอให้ request นี้
+    // ช้าเพราะ SMTP/การแจ้งเตือน · ตัว service ไม่เคย throw อยู่แล้ว
+    void this.maUsage.checkAndNotify(issue);
     return this.toResponse(issue);
   }
 

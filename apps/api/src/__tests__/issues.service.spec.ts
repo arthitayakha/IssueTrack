@@ -98,6 +98,8 @@ function makeService() {
     notifyStatusChange: jest.fn().mockResolvedValue(undefined),
     notifyAssignmentChange: jest.fn().mockResolvedValue(undefined),
   };
+  // MA quota check after a time entry — off unless a test opts in
+  const maUsage = { checkAndNotify: jest.fn().mockResolvedValue(undefined) };
   const service = new IssuesService(
     ...( [
       issues,
@@ -110,6 +112,7 @@ function makeService() {
       permissions,
       rulesEngine,
       notifications,
+      maUsage,
     ] as unknown as ServiceArgs ),
   );
   return {
@@ -121,6 +124,7 @@ function makeService() {
     activityLogs,
     workSessions,
     notifications,
+    maUsage,
   };
 }
 

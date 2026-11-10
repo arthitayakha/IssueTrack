@@ -107,6 +107,9 @@ export default function NotificationsPage() {
     rule_updated: t("actions.rule_updated"),
     rule_deleted: t("actions.rule_deleted"),
     stale: t("actions.stale"),
+    app_expiring: t("actions.app_expiring"),
+    app_expired: t("actions.app_expired"),
+    ma_depleted: t("actions.ma_depleted"),
   };
 
   const header = (
@@ -192,9 +195,12 @@ export default function NotificationsPage() {
           <List disablePadding>
             {items.map((item) => {
               const stricken = item.action === "deleted";
-              // แถวหมดอายุไม่มีคนกระทำ (ระบบเป็นคนส่ง) — ขึ้นต้นด้วย "ชื่อแอป + บริษัท"
+              // แถวที่ระบบเป็นคนส่ง (ไม่มีคนกระทำ) — ขึ้นต้นด้วย "ชื่อแอป + บริษัท"
               // แทนคำว่า "System" แล้วตามด้วย label: **POS ครัวบ้านสวย** ใกล้หมดอายุ
-              const isExpiryRow = item.action === "app_expiring" || item.action === "app_expired";
+              const isSystemRow =
+                item.action === "app_expiring" ||
+                item.action === "app_expired" ||
+                item.action === "ma_depleted";
               return (
                 <ListItem
                   key={item.id}
@@ -217,7 +223,7 @@ export default function NotificationsPage() {
                         fontSize: "0.875rem",
                       }}
                     >
-                      {initials(isExpiryRow ? item.target : (item.actorName ?? "System"))}
+                      {initials(isSystemRow ? item.target : (item.actorName ?? "System"))}
                     </Avatar>
                   </ListItemAvatar>
                   <ListItemText
@@ -230,7 +236,7 @@ export default function NotificationsPage() {
                           textDecoration: stricken ? "line-through" : "none",
                         }}
                       >
-                        {isExpiryRow ? (
+                        {isSystemRow ? (
                           <>
                             <Box component="span" sx={{ fontWeight: 700 }}>
                               {item.target}

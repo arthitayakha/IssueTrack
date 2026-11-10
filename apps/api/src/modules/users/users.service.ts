@@ -21,15 +21,38 @@ export class UsersService {
     private readonly companies: Repository<Company>,
   ) {}
 
-  async findAll(params: PaginationParams) {
-    const users = await this.users
+  /**
+   * รายการผู้ใช้แบบแบ่งหน้า — `filters` มาจาก query string ของ `GET /users`
+   * (ฟิวเตอร์: บริษัท / บทบาท / ตำแหน่ง บนหน้าจัดการผู้ใช้) แต่ละตัวเป็น **array**
+   * ของ multi-select (tick ไว้กี่อันก็กรองแบบ OR) ไม่ส่ง/ array ว่าง = ไม่กรอง
+   */
+  async findAll(
+    params: PaginationParams,
+    filters: {
+      companyIds?: number[];
+      roleIds?: number[];
+      positionIds?: number[];
+    } = {},
+  ) {
+    const qb = this.users
       .createQueryBuilder("user")
       .leftJoinAndSelect("user.position", "position")
       .leftJoinAndSelect("user.role", "role")
       // บริษัทของลูกค้า — join มาเพื่อให้ตารางผู้ใช้โชว์ชื่อบริษัทได้ทันที
-      .leftJoinAndSelect("user.company", "company")
-      .orderBy("user.id", "ASC")
-      .getMany();
+      .leftJoinAndSelect("user.company", "company");
+
+    const { companyIds, roleIds, positionIds } = filters;
+    if (companyIds && companyIds.length > 0) {
+      qb.andWhere("user.companyId IN (:...companyIds)", { companyIds });
+    }
+    if (roleIds && roleIds.length > 0) {
+      qb.andWhere("user.roleId IN (:...roleIds)", { roleIds });
+    }
+    if (positionIds && positionIds.length > 0) {
+      qb.andWhere("user.positionId IN (:...positionIds)", { positionIds });
+    }
+
+    const users = await qb.orderBy("user.id", "ASC").getMany();
 
     const mapped = users.map((user) => ({
       id: String(user.id),

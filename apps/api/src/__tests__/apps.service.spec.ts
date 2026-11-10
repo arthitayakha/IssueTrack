@@ -24,6 +24,10 @@ interface Row {
   startedAt: string | null;
   expiresAt: string | null;
   maHours: number | null;
+  /** แถวนี้มาจากอะไร — `renew` (ค่าเริ่มต้น/แถวเก่า) หรือ `buy` (ซื้อชั่วโมง) */
+  kind: "renew" | "buy";
+  /** latch flag "แจ้ง MA หมดแล้ว" รอบนี้ — `null` = ยังไม่เคยแจ้ง (migration 1821) */
+  maNotifiedAt: Date | null;
   expiryStatus: string;
   expiryNotified: string;
 }
@@ -47,6 +51,8 @@ function row(overrides: Partial<Row> = {}): Row {
     startedAt: null,
     expiresAt: null,
     maHours: null,
+    kind: "renew",
+    maNotifiedAt: null,
     expiryStatus: "none",
     expiryNotified: "none",
     ...overrides,
@@ -274,6 +280,26 @@ describe("AppsService.updateRecord — one row only", () => {
     });
   });
 
+  it("clears the MA-depleted latch only when the hours go UP (เปิดรอบแจ้งใหม่)", async () => {
+    const notified = new Date("2026-11-01T00:00:00Z");
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, maHours: 40, maNotifiedAt: notified })],
+    });
+
+    // เติมชั่วโมง → รอบการหมดครั้งต่อไปต้องแจ้งใหม่ได้
+    await service.updateRecord(7, 11, { maHours: 50 });
+    expect(state.rows[0].maNotifiedAt).toBeNull();
+
+    // แก้เท่าเดิม / ลดลง → ไม่แตะ latch (ยังไม่หมดไม่แจ้งอยู่แล้ว)
+    state.rows[0].maNotifiedAt = notified;
+    await service.updateRecord(7, 11, { maHours: 50 });
+    expect(state.rows[0].maNotifiedAt).toBe(notified);
+
+    await service.updateRecord(7, 11, { maHours: 30 });
+    expect(state.rows[0].maNotifiedAt).toBe(notified);
+  });
+
   it("404 when the record belongs to another app (no cross-app edits)", async () => {
     const { service, state } = makeService({
       apps: [POS],
@@ -314,6 +340,215 @@ describe("AppsService.removeRecord — deletes the row, not the app", () => {
 
     await expect(service.removeRecord(7, 11)).rejects.toThrow(NotFoundException);
     await expect(service.removeRecord(7, 4242)).rejects.toThrow(NotFoundException);
+    expect(state.rows).toHaveLength(1);
+  });
+});
+
+describe("AppsService.renewRecord — appends the next period, never rewrites", () => {
+  const period = { startedAt: "2026-11-09", expiresAt: "2027-11-09", maHours: 40 };
+
+  it("adds a new period for the same pair and leaves the old one byte-for-byte", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, companyId: 2, ...period, expiresAt: "2026-12-08" })],
+    });
+
+    await service.renewRecord(7, 11, period);
+
+    expect(state.rows).toHaveLength(2);
+    expect(state.rows[0]).toMatchObject({ id: 11, companyId: 2, expiresAt: "2026-12-08" });
+    // the new period inherits the company — the form cannot move it to another one
+    expect(state.rows[1]).toMatchObject({ appId: 7, companyId: 2, ...period });
+    expect(state.rows[1].id).not.toBe(11);
+    // a fresh period starts with no announcements to its name
+    expect(state.rows[1]).toMatchObject({ expiryStatus: "none", expiryNotified: "none" });
+  });
+
+  it("accepts the hours as a string (ช่องกรอกในฟอร์ม) and normalizes both dates", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11 })],
+    });
+
+    await service.renewRecord(7, 11, { ...period, maHours: "60" });
+
+    expect(state.rows[1]).toMatchObject({ startedAt: "2026-11-09", expiresAt: "2027-11-09", maHours: 60 });
+  });
+
+  it("rejects a renewal that leaves a field empty (บังคับกรอกทั้ง 3 ช่อง)", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11 })],
+    });
+
+    await expect(service.renewRecord(7, 11, { ...period, startedAt: "" })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.renewRecord(7, 11, { ...period, expiresAt: null })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.renewRecord(7, 11, { startedAt: "2026-11-09", expiresAt: "2027-11-09" })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.renewRecord(7, 11, { ...period, maHours: null })).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(state.rows).toHaveLength(1);
+  });
+
+  it("rejects a period whose end is not after its start", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11 })],
+    });
+
+    await expect(
+      service.renewRecord(7, 11, { ...period, expiresAt: "2026-11-09" }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      service.renewRecord(7, 11, { ...period, expiresAt: "2026-01-01" }),
+    ).rejects.toThrow(BadRequestException);
+    expect(state.rows).toHaveLength(1);
+  });
+
+  it("rejects a bad date or a negative/non-integer hour count", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11 })],
+    });
+
+    await expect(
+      service.renewRecord(7, 11, { ...period, startedAt: "09/11/2026" }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(service.renewRecord(7, 11, { ...period, maHours: -1 })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.renewRecord(7, 11, { ...period, maHours: 1.5 })).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(state.rows).toHaveLength(1);
+  });
+
+  it("404 when the record belongs to another app (no cross-app renewal)", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, appId: 8 })],
+    });
+
+    await expect(service.renewRecord(7, 11, period)).rejects.toThrow(NotFoundException);
+    await expect(service.renewRecord(7, 4242, period)).rejects.toThrow(NotFoundException);
+    expect(state.rows).toHaveLength(1);
+  });
+
+  it("404 when the app itself is gone", async () => {
+    const { service, state } = makeService({ apps: [POS], rows: [row({ id: 11 })] });
+
+    await expect(service.renewRecord(999, 11, period)).rejects.toThrow(NotFoundException);
+    expect(state.rows).toHaveLength(1);
+  });
+});
+
+describe("AppsService.buyHours — same dates, more hours (ซื้อชั่วโมง MA เพิ่ม)", () => {
+  it("appends a same-dates row with the summed hours and kind 'buy'", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [
+        row({
+          id: 11,
+          companyId: 2,
+          startedAt: "2026-01-01",
+          expiresAt: "2026-12-08",
+          maHours: 40,
+          expiryStatus: "expiring_soon",
+          expiryNotified: "d30",
+        }),
+      ],
+    });
+
+    const result = await service.buyHours(7, 11, { hours: 20 });
+
+    expect(state.rows).toHaveLength(2);
+    // the source row is byte-for-byte untouched
+    expect(state.rows[0]).toMatchObject({
+      id: 11,
+      companyId: 2,
+      maHours: 40,
+      expiryStatus: "expiring_soon",
+      expiryNotified: "d30",
+    });
+    // the new row keeps the contract dates (ซื้อชั่วโมง ≠ ต่ออายุ) and sums the hours
+    expect(state.rows[1]).toMatchObject({
+      appId: 7,
+      companyId: 2,
+      startedAt: "2026-01-01",
+      expiresAt: "2026-12-08",
+      maHours: 60,
+      kind: "buy",
+    });
+    expect(state.rows[1].id).not.toBe(11);
+    // same dates → copy the announcement latch, NOT a fresh 'none' (กันยิง d30/d7 ซ้ำ)
+    expect(state.rows[1]).toMatchObject({
+      expiryStatus: "expiring_soon",
+      expiryNotified: "d30",
+    });
+    // the response carries `kind` so the history tab can label the row
+    expect(result.companies).toHaveLength(2);
+    expect(result.companies[0].kind).toBe("renew");
+    expect(result.companies[1].kind).toBe("buy");
+  });
+
+  it("treats a null maHours source as 0 (ซื้อได้แม้ยังไม่เคยกรอก MA)", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, startedAt: "2026-01-01", expiresAt: "2026-12-08" })],
+    });
+
+    await service.buyHours(7, 11, { hours: 10 });
+
+    expect(state.rows[1]).toMatchObject({ maHours: 10, kind: "buy" });
+  });
+
+  it("accepts the hours as a string (ช่องกรอกในฟอร์ม)", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, maHours: 40 })],
+    });
+
+    await service.buyHours(7, 11, { hours: "15" });
+
+    expect(state.rows[1]).toMatchObject({ maHours: 55, kind: "buy" });
+  });
+
+  it("rejects empty / zero / negative / fractional hours and writes nothing", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, maHours: 40 })],
+    });
+
+    await expect(service.buyHours(7, 11, {})).rejects.toThrow(BadRequestException);
+    await expect(service.buyHours(7, 11, { hours: null })).rejects.toThrow(BadRequestException);
+    await expect(service.buyHours(7, 11, { hours: "" })).rejects.toThrow(BadRequestException);
+    await expect(service.buyHours(7, 11, { hours: 0 })).rejects.toThrow(BadRequestException);
+    await expect(service.buyHours(7, 11, { hours: -5 })).rejects.toThrow(BadRequestException);
+    await expect(service.buyHours(7, 11, { hours: 2.5 })).rejects.toThrow(BadRequestException);
+    expect(state.rows).toHaveLength(1);
+  });
+
+  it("404 when the record belongs to another app or does not exist", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, appId: 8 })],
+    });
+
+    await expect(service.buyHours(7, 11, { hours: 10 })).rejects.toThrow(NotFoundException);
+    await expect(service.buyHours(7, 4242, { hours: 10 })).rejects.toThrow(NotFoundException);
+    expect(state.rows).toHaveLength(1);
+  });
+
+  it("404 when the app itself is gone", async () => {
+    const { service, state } = makeService({ apps: [POS], rows: [row({ id: 11 })] });
+
+    await expect(service.buyHours(999, 11, { hours: 10 })).rejects.toThrow(NotFoundException);
     expect(state.rows).toHaveLength(1);
   });
 });

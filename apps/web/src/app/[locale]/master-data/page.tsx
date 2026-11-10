@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import {
@@ -68,6 +68,27 @@ import {
   type Label,
 } from "@/lib/labels-api";
 import ColorPicker from "@/components/color-picker";
+
+/** จำนวนแถวต่อหน้าของแท็บที่แบ่งหน้า — แถบ pagination ซ่อนตัวเองเมื่อไม่เกิน 1 หน้า */
+const PAGE_SIZE = 10;
+
+type TabContent =
+  | "apps"
+  | "companies"
+  | "categories"
+  | "statuses"
+  | "priorities"
+  | "labels"
+  | "automation";
+
+/** แท็บที่แบ่งหน้า (แท็บสถานะไม่แบ่ง — ต้องเห็นทั้งหมดเพื่อ drag-reorder) */
+type PaginatedTab = Exclude<TabContent, "statuses" | "automation">;
+
+/** `total` / `totalPages` ที่เซิร์ฟเวอร์คืนมา — ใช้ป้อน `<Pagination>` */
+interface PageInfo {
+  total: number;
+  totalPages: number;
+}
 
 /**
  * Mirror of the API's color rule (`issue-status.dto.ts`): a palette name the
@@ -311,15 +332,52 @@ export default function SettingsPage() {
   const { notify } = useNotification();
   const theme = useTheme();
   const [tab, setTab] = useState(0);
+  /** แถวของ "หน้าปัจจุบัน" แต่ละแท็บ — ดึงทีละหน้า (`?page=&limit=10`) ไม่เหมาทั้งตาราง */
   const [apps, setApps] = useState<App[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  /** แท็บสถานะไม่แบ่งหน้า — รายการเต็มเพื่อ drag-reorder */
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
+  /** แท็บไหนดึงข้อมูลมาแล้วบ้าง — ใช้โชว์ spinner แทนตารางเปล่าตอนสลับแท็บ */
+  const [loaded, setLoaded] = useState<Record<TabContent, boolean>>({
+    apps: false,
+    companies: false,
+    categories: false,
+    statuses: false,
+    priorities: false,
+    labels: false,
+    automation: false,
+  });
+  /** total/totalPages จากเซิร์ฟเวอร์ — แถบ pagination ซ่อนตัวเองเมื่อไม่เกิน 1 หน้า */
+  const [meta, setMeta] = useState<Record<PaginatedTab, PageInfo>>({
+    apps: { total: 0, totalPages: 1 },
+    companies: { total: 0, totalPages: 1 },
+    categories: { total: 0, totalPages: 1 },
+    priorities: { total: 0, totalPages: 1 },
+    labels: { total: 0, totalPages: 1 },
+  });
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
-  const [page, setPage] = useState(1);
+  /** หน้าที่เปิดอยู่ของแต่ละแท็บที่แบ่งหน้า — เปลี่ยนหน้า = ยิง API หน้านั้นใหม่ */
+  const [pages, setPages] = useState<Record<PaginatedTab, number>>({
+    apps: 1,
+    companies: 1,
+    categories: 1,
+    priorities: 1,
+    labels: 1,
+  });
+  /** bump ค่า = ให้ effect ของแท็บนั้นดึงข้อมูลใหม่ (หลังบันทึก/ลบ/สลับสถานะ) */
+  const [reloadKeys, setReloadKeys] = useState<Record<TabContent, number>>({
+    apps: 0,
+    companies: 0,
+    categories: 0,
+    statuses: 0,
+    priorities: 0,
+    labels: 0,
+    automation: 0,
+  });
 
   const [appDialogOpen, setAppDialogOpen] = useState(false);
   const [editingApp, setEditingApp] = useState<App | null>(null);
@@ -368,6 +426,29 @@ export default function SettingsPage() {
   // ใช้ OR กันเคส position เก่าที่มี update โดยไม่มี view (dialog บังคับ update⇒view อยู่แล้ว)
   const canViewAutomation = can("automation.view") || can("automation.update");
 
+  /** เนื้อหาของแท็บเรียงตามที่มีสิทธิ์ดู — `tab` ชี้ลงใน array นี้ (memo กัน effect รันซ้ำทุก render) */
+  const tabContents = useMemo<TabContent[]>(
+    () => [
+      ...(canViewApps ? ["apps" as const] : []),
+      ...(canViewCompanies ? ["companies" as const] : []),
+      ...(canViewCategories ? ["categories" as const] : []),
+      ...(canViewStatuses ? ["statuses" as const] : []),
+      ...(canViewPriorities ? ["priorities" as const] : []),
+      ...(canViewLabels ? ["labels" as const] : []),
+      ...(canViewAutomation ? ["automation" as const] : []),
+    ],
+    [
+      canViewApps,
+      canViewCompanies,
+      canViewCategories,
+      canViewStatuses,
+      canViewPriorities,
+      canViewLabels,
+      canViewAutomation,
+    ],
+  );
+  const activeContent = tabContents[tab];
+
   const statusSensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -407,8 +488,8 @@ export default function SettingsPage() {
       } else {
         notify(t("genericError"), "error");
       }
-      const updated = await apiFetch<PaginatedResponse<IssueStatus>>("/issue-statuses", {}, token);
-      setStatuses(updated.data);
+      // ลากพลาด = รายการบนจอเพี้ยน → สั่งดึงรายการสถานะใหม่ (ไม่แบ่งหน้า)
+      bumpReload("statuses");
     }
   }
 
@@ -416,65 +497,147 @@ export default function SettingsPage() {
     setMounted(true);
   }, []);
 
-  useEffect(() => {
-    const requests: Promise<any>[] = [];
-    if (canViewApps) {
-      requests.push(apiFetch<PaginatedResponse<App>>("/apps?page=1&limit=100", {}, token).then(r => r.data));
-    }
-    // always loaded — the app form's company picker needs the list even for
-    // someone without `company.view` (`GET /companies` is open on purpose)
-    requests.push(apiFetch<PaginatedResponse<Company>>("/companies?page=1&limit=100", {}, token).then(r => r.data));
-    if (canViewCategories) {
-      requests.push(apiFetch<PaginatedResponse<Category>>("/categories?page=1&limit=100", {}, token).then(r => r.data));
-    }
-    if (canViewStatuses) requests.push(apiFetch<PaginatedResponse<IssueStatus>>("/issue-statuses?page=1&limit=100", {}, token).then(r => r.data));
-    if (canViewPriorities) requests.push(apiFetch<PaginatedResponse<IssuePriority>>("/issue-priorities?page=1&limit=100", {}, token).then(r => r.data));
-    if (canViewLabels) requests.push(fetchLabels().then(r => r.data));
+  /** สั่งให้แท็บนั้นดึงข้อมูลหน้าปัจจุบันใหม่ */
+  function bumpReload(key: TabContent) {
+    setReloadKeys((prev) => ({ ...prev, [key]: prev[key] + 1 }));
+  }
 
-    Promise.all(requests)
-      .then((results) => {
-        let idx = 0;
-        if (canViewApps) {
-          setApps(results[idx++]);
+  /**
+   * หลัง "เพิ่ม" รายการใหม่ — ตารางส่วนใหญ่เรียง `id ASC` (ความสำคัญเรียงตาม
+   * `sortOrder` แล้วด้วย `id`) รายการใหม่จึงตกท้ายตาราง = หน้าสุดท้าย: ปรับ total
+   * แล้วกระโดดไปหน้านั้นพร้อมดึงใหม่ เพื่อให้เห็นรายการที่เพิ่งบันทึกทันที
+   * (ถ้าหน้าเกิน effect จะถอยกลับหน้าให้เอง)
+   */
+  function jumpToNewRow(key: PaginatedTab) {
+    const total = meta[key].total + 1;
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    setMeta((prev) => ({ ...prev, [key]: { total, totalPages } }));
+    setPages((prev) => ({ ...prev, [key]: totalPages }));
+    setReloadKeys((prev) => ({ ...prev, [key]: prev[key] + 1 }));
+  }
+
+  /**
+   * หลัง "ลบ" แถว — ปรับ total ใหม่ และถ้าหน้าปัจจุบันว่าง (ลบแถวสุดท้ายของ
+   * หน้าสุดท้าย) ให้ถอยกลับหน้า — `pages` เปลี่ยนเมื่อไหร่ effect ของแท็บจะดึง
+   * ข้อมูลหน้านั้นให้เอง (ค่าไม่เปลี่ยน = ไม่ trigger → ไม่ยิง request ซ้ำ)
+   */
+  function afterDelete(key: PaginatedTab) {
+    const total = Math.max(0, meta[key].total - 1);
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    setMeta((prev) => ({ ...prev, [key]: { total, totalPages } }));
+    setPages((prev) => (prev[key] > totalPages ? { ...prev, [key]: totalPages } : prev));
+  }
+
+  /**
+   * ดึงข้อมูล "แท็บที่เปิดอยู่เท่านั้น" — 1 request ต่อการเข้า/สลับแท็บ และดึงใหม่
+   * ทุกครั้งที่เปลี่ยนหน้า / bump `reloadKeys` (`?page=&limit=10` = ดึงทีละหน้า)
+   */
+  useEffect(() => {
+    if (!activeContent || activeContent === "automation") {
+      // automation = RulesPanel ดึงข้อมูลของตัวเอง → ปล่อย spinner ได้เลย
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    async function load() {
+      try {
+        if (activeContent === "apps") {
+          const r = await apiFetch<PaginatedResponse<App>>(
+            `/apps?page=${pages.apps}&limit=${PAGE_SIZE}`,
+            {},
+            token,
+          );
+          if (cancelled) return;
+          if (r.data.length === 0 && pages.apps > 1) {
+            // หน้าเกิน (เช่น เพิ่มรายการใหม่ตอนกรองค้างอยู่) → ถอยกลับหน้าหนึ่งแล้วดึงใหม่
+            setPages((prev) => ({ ...prev, apps: pages.apps - 1 }));
+            return;
+          }
+          setApps(r.data);
+          setMeta((prev) => ({ ...prev, apps: { total: r.total, totalPages: r.totalPages } }));
+          setLoaded((prev) => ({ ...prev, apps: true }));
+        } else if (activeContent === "companies") {
+          const r = await apiFetch<PaginatedResponse<Company>>(
+            `/companies?page=${pages.companies}&limit=${PAGE_SIZE}`,
+            {},
+            token,
+          );
+          if (cancelled) return;
+          if (r.data.length === 0 && pages.companies > 1) {
+            setPages((prev) => ({ ...prev, companies: pages.companies - 1 }));
+            return;
+          }
+          setCompanies(r.data);
+          setMeta((prev) => ({ ...prev, companies: { total: r.total, totalPages: r.totalPages } }));
+          setLoaded((prev) => ({ ...prev, companies: true }));
+        } else if (activeContent === "categories") {
+          const r = await apiFetch<PaginatedResponse<Category>>(
+            `/categories?page=${pages.categories}&limit=${PAGE_SIZE}`,
+            {},
+            token,
+          );
+          if (cancelled) return;
+          if (r.data.length === 0 && pages.categories > 1) {
+            setPages((prev) => ({ ...prev, categories: pages.categories - 1 }));
+            return;
+          }
+          setCategories(r.data);
+          setMeta((prev) => ({ ...prev, categories: { total: r.total, totalPages: r.totalPages } }));
+          setLoaded((prev) => ({ ...prev, categories: true }));
+        } else if (activeContent === "statuses") {
+          // แท็บสถานะไม่แบ่งหน้า — ต้องเห็นทั้งหมดเพื่อ drag-reorder (max = 100 แถว)
+          const r = await apiFetch<PaginatedResponse<IssueStatus>>(
+            "/issue-statuses?page=1&limit=100",
+            {},
+            token,
+          );
+          if (cancelled) return;
+          setStatuses(r.data);
+          setLoaded((prev) => ({ ...prev, statuses: true }));
+        } else if (activeContent === "priorities") {
+          const r = await apiFetch<PaginatedResponse<IssuePriority>>(
+            `/issue-priorities?page=${pages.priorities}&limit=${PAGE_SIZE}`,
+            {},
+            token,
+          );
+          if (cancelled) return;
+          if (r.data.length === 0 && pages.priorities > 1) {
+            setPages((prev) => ({ ...prev, priorities: pages.priorities - 1 }));
+            return;
+          }
+          setPriorities(r.data);
+          setMeta((prev) => ({ ...prev, priorities: { total: r.total, totalPages: r.totalPages } }));
+          setLoaded((prev) => ({ ...prev, priorities: true }));
+        } else if (activeContent === "labels") {
+          const r = await fetchLabels(pages.labels, PAGE_SIZE);
+          if (cancelled) return;
+          if (r.data.length === 0 && pages.labels > 1) {
+            setPages((prev) => ({ ...prev, labels: pages.labels - 1 }));
+            return;
+          }
+          setLabels(r.data);
+          setMeta((prev) => ({ ...prev, labels: { total: r.total, totalPages: r.totalPages } }));
+          setLoaded((prev) => ({ ...prev, labels: true }));
         }
-        setCompanies(results[idx++]);
-        if (canViewCategories) {
-          setCategories(results[idx++]);
-        }
-        if (canViewStatuses) setStatuses(results[idx++]);
-        if (canViewPriorities) setPriorities(results[idx++]);
-        if (canViewLabels) setLabels(results[idx++]);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [canViewApps, canViewCategories, canViewStatuses, canViewPriorities, canViewLabels, token]);
+      } catch {
+        // รายการเดิม/หน้าว่างยังอยู่บนจอ — ห้ามเคลียร์ทิ้งเพราะดึงไม่สำเร็จ (fail-open)
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeContent, pages, reloadKeys, token]);
 
   // Support deep links such as /master-data?tab=statuses — used by the back link on /automation.
   useEffect(() => {
     const tabParam = new URLSearchParams(window.location.search).get("tab");
     if (!tabParam) return;
-    const contents = [
-      ...(canViewApps ? ["apps"] : []),
-      ...(canViewCompanies ? ["companies"] : []),
-      ...(canViewCategories ? ["categories"] : []),
-      ...(canViewStatuses ? ["statuses"] : []),
-      ...(canViewPriorities ? ["priorities"] : []),
-      ...(canViewLabels ? ["labels"] : []),
-      ...(canViewAutomation ? ["automation"] : []),
-    ];
-    const idx = contents.indexOf(tabParam);
+    const idx = tabContents.indexOf(tabParam as TabContent);
     if (idx >= 0) setTab(idx);
-  }, [canViewApps, canViewCompanies, canViewCategories, canViewStatuses, canViewPriorities, canViewLabels, canViewAutomation]);
-
-  /** ดึงรายการแอปใหม่ — เรียกทั้งตอนบันทึกฟอร์มสำเร็จ (`onSaved`) และตอนลบ */
-  async function loadApps() {
-    try {
-      const updated = await apiFetch<PaginatedResponse<App>>("/apps?page=1&limit=100", {}, token);
-      setApps(updated.data);
-    } catch {
-      // รายการเดิมยังอยู่บนจอ — ห้ามเคลียร์ทิ้งเพราะดึงไม่สำเร็จ
-    }
-  }
+  }, [tabContents]);
 
   function openAddApp() {
     setEditingApp(null);
@@ -514,7 +677,9 @@ export default function SettingsPage() {
         notify(t("appCreated"));
       }
       setAppDialogOpen(false);
-      await loadApps();
+      // แก้ไข = จำนวนไม่เปลี่ยน → ดึงหน้าปัจจุบันซ้ำ · เพิ่มใหม่ = ตกท้ายตาราง → กระโดดไปหน้าสุดท้ายให้เห็นเลย
+      if (editingApp) bumpReload("apps");
+      else jumpToNewRow("apps");
     } catch (err) {
       if (err instanceof ApiError) {
         notify(err.message, "error");
@@ -590,9 +755,9 @@ export default function SettingsPage() {
         }, token);
         notify(t("companyCreated"));
       }
-      const updated = await apiFetch<PaginatedResponse<Company>>("/companies?page=1&limit=100", {}, token);
-      setCompanies(updated.data);
       setCompanyDialogOpen(false);
+      if (editingCompany) bumpReload("companies");
+      else jumpToNewRow("companies");
     } catch (err) {
       if (err instanceof ApiError) {
         notify(err.message, "error");
@@ -673,9 +838,9 @@ export default function SettingsPage() {
         }, token);
         notify(t("categoryCreated"));
       }
-      const updated = await apiFetch<PaginatedResponse<Category>>("/categories?page=1&limit=100", {}, token);
-      setCategories(updated.data);
       setCategoryDialogOpen(false);
+      if (editingCategory) bumpReload("categories");
+      else jumpToNewRow("categories");
     } catch (err) {
       if (err instanceof ApiError) {
         notify(err.message, "error");
@@ -783,9 +948,9 @@ export default function SettingsPage() {
         }, token);
         notify(t("statusCreated"));
       }
-      const updated = await apiFetch<PaginatedResponse<IssueStatus>>("/issue-statuses", {}, token);
-      setStatuses(updated.data);
       setStatusDialogOpen(false);
+      // แท็บสถานะไม่แบ่งหน้า → effect จะดึงรายการเต็ม (limit=100) ใหม่ให้เอง
+      bumpReload("statuses");
       router.refresh();
     } catch (err) {
       if (err instanceof ApiError) {
@@ -895,9 +1060,9 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
         }, token);
         notify(t("priorityCreated"));
       }
-      const updated = await apiFetch<PaginatedResponse<IssuePriority>>("/issue-priorities?page=1&limit=100", {}, token);
-      setPriorities(updated.data);
       setPriorityDialogOpen(false);
+      if (editingPriority) bumpReload("priorities");
+      else jumpToNewRow("priorities");
     } catch (err) {
       if (err instanceof ApiError) {
         notify(err.message, "error");
@@ -970,9 +1135,9 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
         await createLabel(payload);
         notify(t("labelCreated"));
       }
-      const updated = await fetchLabels();
-      setLabels(updated.data);
       setLabelDialogOpen(false);
+      if (editingLabel) bumpReload("labels");
+      else jumpToNewRow("labels");
     } catch (err) {
       if (err instanceof ApiError) {
         notify(err.message, "error");
@@ -1019,26 +1184,32 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
       if (deleteTarget.type === "app") {
         await apiFetch(`/apps/${deleteTarget.id}`, { method: "DELETE" }, token);
         setApps((prev) => prev.filter((a) => a.id !== deleteTarget.id));
+        afterDelete("apps");
         notify(t("appDeleted"));
       } else if (deleteTarget.type === "company") {
         await apiFetch(`/companies/${deleteTarget.id}`, { method: "DELETE" }, token);
         setCompanies((prev) => prev.filter((c) => c.id !== deleteTarget.id));
+        afterDelete("companies");
         notify(t("companyDeleted"));
       } else if (deleteTarget.type === "category") {
         await apiFetch(`/categories/${deleteTarget.id}`, { method: "DELETE" }, token);
         setCategories((prev) => prev.filter((c) => c.id !== deleteTarget.id));
+        afterDelete("categories");
         notify(t("categoryDeleted"));
       } else if (deleteTarget.type === "status") {
+        // แท็บสถานะไม่แบ่งหน้า → แค่ตัดแถวออกจาก state (ไม่มี total ให้ปรับ)
         await apiFetch(`/issue-statuses/${deleteTarget.id}`, { method: "DELETE" }, token);
         setStatuses((prev) => prev.filter((s) => s.id !== deleteTarget.id));
         notify(t("statusDeleted"));
       } else if (deleteTarget.type === "priority") {
         await apiFetch(`/issue-priorities/${deleteTarget.id}`, { method: "DELETE" }, token);
         setPriorities((prev) => prev.filter((p) => p.id !== deleteTarget.id));
+        afterDelete("priorities");
         notify(t("priorityDeleted"));
       } else if (deleteTarget.type === "label") {
         await deleteLabel(deleteTarget.id);
         setLabels((prev) => prev.filter((l) => l.id !== deleteTarget.id));
+        afterDelete("labels");
         notify(t("labelDeleted"));
       }
       setDeleteTarget(null);
@@ -1064,15 +1235,16 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
     );
   }
 
-  const tabs = [
-    ...(canViewApps ? [{ label: t("tabApps"), content: "apps" }] : []),
-    ...(canViewCompanies ? [{ label: t("tabCompanies"), content: "companies" }] : []),
-    ...(canViewCategories ? [{ label: t("tabCategories"), content: "categories" }] : []),
-    ...(canViewStatuses ? [{ label: t("tabStatuses"), content: "statuses" }] : []),
-    ...(canViewPriorities ? [{ label: t("tabPriorities"), content: "priorities" }] : []),
-    ...(canViewLabels ? [{ label: t("tabLabels"), content: "labels" }] : []),
-    ...(canViewAutomation ? [{ label: t("tabAutomation"), content: "automation" }] : []),
-  ];
+  const tabLabels: Record<TabContent, string> = {
+    apps: t("tabApps"),
+    companies: t("tabCompanies"),
+    categories: t("tabCategories"),
+    statuses: t("tabStatuses"),
+    priorities: t("tabPriorities"),
+    labels: t("tabLabels"),
+    automation: t("tabAutomation"),
+  };
+  const tabs = tabContents.map((content) => ({ label: tabLabels[content], content }));
 
   return (
     // เปิดหน้าเมื่อมีสิทธิ์ดูแท็บใดแท็บหนึ่ง (ลูกย่อยในการ์ดจัดการข้อมูลหลัก)
@@ -1111,6 +1283,11 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                 )}
               </Box>
               {/* แท็บนี้สั้นเหมือนแท็บอื่น — รายละเอียดแอป+บริษัทอยู่ที่หน้า `/systems` */}
+              {!loaded.apps ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+                  <CircularProgress />
+                </Box>
+              ) : (
               <DataTable>
                 <DataTableHead>
                   <DataTableRow>
@@ -1146,12 +1323,13 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   ))}
                 </DataTableBody>
               </DataTable>
+              )}
               <Pagination
-                page={page}
-                totalPages={Math.max(1, Math.ceil(apps.length / 10))}
-                total={apps.length}
-                limit={10}
-                onPageChange={setPage}
+                page={pages.apps}
+                totalPages={meta.apps.totalPages}
+                total={meta.apps.total}
+                limit={PAGE_SIZE}
+                onPageChange={(p) => setPages((prev) => ({ ...prev, apps: p }))}
               />
             </Box>
           )}
@@ -1165,6 +1343,11 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   </Button>
                 )}
               </Box>
+              {!loaded.companies ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+                  <CircularProgress />
+                </Box>
+              ) : (
               <DataTable>
                 <DataTableHead>
                   <DataTableRow>
@@ -1216,12 +1399,13 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   ))}
                 </DataTableBody>
               </DataTable>
+              )}
               <Pagination
-                page={page}
-                totalPages={Math.max(1, Math.ceil(companies.length / 10))}
-                total={companies.length}
-                limit={10}
-                onPageChange={setPage}
+                page={pages.companies}
+                totalPages={meta.companies.totalPages}
+                total={meta.companies.total}
+                limit={PAGE_SIZE}
+                onPageChange={(p) => setPages((prev) => ({ ...prev, companies: p }))}
               />
             </Box>
           )}
@@ -1235,6 +1419,11 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   </Button>
                 )}
               </Box>
+              {!loaded.categories ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+                  <CircularProgress />
+                </Box>
+              ) : (
               <DataTable>
                 <DataTableHead>
                   <DataTableRow>
@@ -1284,12 +1473,13 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   ))}
                 </DataTableBody>
               </DataTable>
+              )}
               <Pagination
-                page={page}
-                totalPages={Math.max(1, Math.ceil(categories.length / 10))}
-                total={categories.length}
-                limit={10}
-                onPageChange={setPage}
+                page={pages.categories}
+                totalPages={meta.categories.totalPages}
+                total={meta.categories.total}
+                limit={PAGE_SIZE}
+                onPageChange={(p) => setPages((prev) => ({ ...prev, categories: p }))}
               />
             </Box>
           )}
@@ -1313,6 +1503,11 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
 </Box>
 
               </Box>
+              {!loaded.statuses ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+                  <CircularProgress />
+                </Box>
+              ) : (
               <DndContext
                 sensors={statusSensors}
                 collisionDetection={closestCorners}
@@ -1339,6 +1534,7 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   </Box>
                 </SortableContext>
               </DndContext>
+              )}
             </Box>
           )}
 
@@ -1351,6 +1547,11 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   </Button>
                 )}
               </Box>
+              {!loaded.priorities ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+                  <CircularProgress />
+                </Box>
+              ) : (
               <DataTable>
                 <DataTableHead>
                   <DataTableRow>
@@ -1402,12 +1603,13 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   ))}
                 </DataTableBody>
               </DataTable>
+              )}
               <Pagination
-                page={page}
-                totalPages={Math.max(1, Math.ceil(priorities.length / 10))}
-                total={priorities.length}
-                limit={10}
-                onPageChange={setPage}
+                page={pages.priorities}
+                totalPages={meta.priorities.totalPages}
+                total={meta.priorities.total}
+                limit={PAGE_SIZE}
+                onPageChange={(p) => setPages((prev) => ({ ...prev, priorities: p }))}
               />
             </Box>
           )}
@@ -1421,6 +1623,11 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   </Button>
                 )}
               </Box>
+              {!loaded.labels ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+                  <CircularProgress />
+                </Box>
+              ) : (
               <DataTable>
                 <DataTableHead>
                   <DataTableRow>
@@ -1488,12 +1695,13 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                   ))}
                 </DataTableBody>
               </DataTable>
+              )}
               <Pagination
-                page={page}
-                totalPages={Math.max(1, Math.ceil(labels.length / 10))}
-                total={labels.length}
-                limit={10}
-                onPageChange={setPage}
+                page={pages.labels}
+                totalPages={meta.labels.totalPages}
+                total={meta.labels.total}
+                limit={PAGE_SIZE}
+                onPageChange={(p) => setPages((prev) => ({ ...prev, labels: p }))}
               />
             </Box>
           )}

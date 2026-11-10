@@ -195,10 +195,10 @@ export interface AppContract {
  * disappears silently — it renders `—` and drops out the moment a company
  * filter is on.
  *
- * **Not carried here:** ชั่วโมงที่ใช้ทั้งหมด / คงเหลือ. Those are **app-level**
- * (`issues` has no `company_id`, so hours cannot be attributed to a pair) and
- * only become known once `fetchAppUsageAllTime()` resolves — the cells read
- * them from the `usage` prop at render time instead.
+ * **Not carried here:** ชั่วโมงที่ใช้ทั้งหมด / คงเหลือ. Those come from
+ * `fetchAppUsageAllTime()` as a **per-pair** map (`pairKey(appId, companyId)`) —
+ * โยงงานกับคู่ผ่านบริษัทของผู้แจ้งงาน — และยังไม่รู้ค่าตอนสร้างแถว
+ * ให้ cell หยิบจาก `usage` prop ตอน render เอง (ดู `CompanyRow`)
  *
  * MA **ถูกหักแล้ว** (`MA_DEDUCTION_PAUSED = false`) — แต่ "ใช้ไป" นับเฉพาะงาน
  * type `feature`/`requirement` (bug กับ NULL ไม่หัก); `maHours == null` ยัง
@@ -212,6 +212,13 @@ export interface CompanyRow {
   startedAt: string | null;
   expiresAt: string | null;
   maHours: number | null;
+}
+
+/** One row of `GET /reports/usage` — hours already narrowed to one แอป×บริษัท pair. */
+export interface AppUsageRow {
+  appId: number;
+  companyId: number;
+  hours: number;
 }
 
 export interface FilterOptions {
@@ -648,13 +655,15 @@ export async function loadFilterOptions(): Promise<FilterOptions> {
 }
 
 /**
- * **การหักชั่วโมง MA — เปิดแล้ว** (`false` = หักจริงตามกฎด้านล่าง)
+ * **การหักชั่วโม์ MA — เปิดแล้ว** (`false` = หักจริงตามกฎด้านล่าง)
  *
  * กติกาที่เคาะไว้ (ตามตาราง "กฎการหักชั่วโมง MA"):
  * - `feature` / `requirement` → **หัก** (เอา `actual_fix_duration` เข้า "ใช้ไป")
  * - `bug` → **ไม่หัก** / ยังไม่ระบุ type (`NULL`, รวมงานเก่า) → **ไม่หัก**
  * - หัก **ตอนกรอกเวลาจริง** — ไม่ต้องรอสถานะปิดงาน: ตัวเลขเป็นผลรวมที่
  *   อ่านตอนโหลด พอกรอกเวลาปุ๊บ รอบโหลดถัดไป "คงเหลือ" ลดเองทันที
+ * - **หักเฉพาะคู่ แอป×บริษัทของผู้แจ้งงาน** — งานลูกค้าบริษัทไหนหักคู่นั้น;
+ *   จับคู่ไม่ได้ (ผู้แจ้งไม่มีบริษัท / ไม่มีผู้แจ้ง / แอปไม่ผูกคู่นั้น) = **ไม่หักที่ไหนเลย**
  *
  * คอลัมน์ "ชั่วโมงกรอก" ในรายงาน (จอ + CSV + PDF) **ยังโชว์เวลาครบทุก type**
  * — การหักมีผลเฉพาะ "ใช้ไป / คงเหลือ" ของ MA เท่านั้น
@@ -662,34 +671,51 @@ export async function loadFilterOptions(): Promise<FilterOptions> {
  * **ปิดกลับ = เปลี่ยนเป็น `true` ตรงนี้จุดเดียว** (แล้ว `fetchAppUsageAllTime()`
  * จะคืน Map ว่างทันที — คงเหลือกลับเป็น MA เต็มก้อน)
  *
- * ยังคงไม่กรองช่วงสัญญา / ไม่กรองเฉพาะงานปิดแล้ว (all-time ต่อแอป เหมือน
+ * ยังคงไม่กรองช่วงสัญญา / ไม่กรองเฉพาะงานปิดแล้ว (all-time ต่อคู่ เหมือน
  * เดิม) — ถ้าจะเพิ่มเงื่อนไขพวกนั้นค่อยว่ากันรอบหน้า
  */
 export const MA_DEDUCTION_PAUSED = false;
 
 /**
- * "ใช้ไป" ต่อแอป — ตัวส่วนของสูตร คงเหลือ = MA − ใช้ไป ในมุมมอง "ตามบริษัท"
+ * คีย์ของ Map "ใช้ไป" — **คู่ แอป×บริษัท** (`"appId:companyId"`)
+ *
+ * ต้องเป็นคู่เพราะแถวบน `/systems` และมุมมอง "ตามบริษัท" ของ `/reports`
+ * คือหนึ่งแถวต่อหนึ่งคู่ — ถ้า key เป็นแค่ appId งานของลูกค้าบริษัทเดียว
+ * จะโดนหักจากทุกแถวของแอปเดียวกัน (บั๊ก "MA ลดหมดทุกแถว")
+ */
+export function pairKey(appId: number, companyId: number | null): string {
+  return `${appId}:${companyId}`;
+}
+
+/**
+ * "ใช้ไป" ต่อ **คู่ แอป×บริษัท** — ตัวส่วนของสูตร คงเหลือ = MA − ใช้ไป
  *
  * - **all-time** (`EMPTY_FILTERS`) เพราะ `hoursEntered` ของแถวบนจอ **ผ่านตัว
  *   กรองวันที่/ค้นหา** อยู่แล้ว — ถ้าเอาตัวนั้นไปลบ MA พอผู้ใช้เลือกช่วงวันที่
  *   ตัวเลขคงเหลือจะขยับทั้งที่สัญญาไม่ได้เปลี่ยน (คนละค่ากับ `/systems` ด้วย)
- * - **`taskTypes: ["feature","requirement"]`** — ไม่นับเวลาของงาน bug และ
- *   งานที่ยังไม่ระบุ type (NULL) เข้าการหัก (ดูกติกาที่ `MA_DEDUCTION_PAUSED`)
+ * - **`taskTypes=feature,requirement`** — ไม่นับเวลาของงาน bug และงานที่ยังไม่ระบุ
+ *   type (NULL) เข้าการหัก (ดูกติกาที่ `MA_DEDUCTION_PAUSED`)
+ * - **โยงงานกับบริษัทผ่านผู้แจ้งงาน** (`issues.customer_id` → `users.company_id`)
+ *   — `GET /reports/usage` ทิ้งแถวที่จับคู่ไม่ได้ให้เอง งานที่ผู้แจ้งไม่มีบริษัท
+ *   จึงไม่ถูกหักจากคู่ไหนเลย (map จะไม่มีคีย์นั้น → คอลัมน์อ่านเป็น 0)
+ *
+ * คีย์ด้วย `pairKey(appId, companyId)` — ดูเหตุผลที่ function นั้น
  */
-export async function fetchAppUsageAllTime(): Promise<Map<number, number>> {
-  // ปิดหัก → ค่าที่จะได้จาก `/reports/summary` ไม่มีทางถูกใช้อยู่แล้ว
+export async function fetchAppUsageAllTime(): Promise<Map<string, number>> {
+  // ปิดหัก → ค่าที่จะได้จาก `/reports/usage` ไม่มีทางถูกใช้อยู่แล้ว
   // จึงไม่ยิง request เปล่า ๆ ให้สองหน้าเห็น `ready` พร้อมตัวเลข 0/MA เต็ม
-  if (MA_DEDUCTION_PAUSED) return new Map<number, number>();
+  if (MA_DEDUCTION_PAUSED) return new Map<string, number>();
 
-  const rows = await fetchSummaryRows("app", {
-    ...EMPTY_FILTERS,
-    taskTypes: ["feature", "requirement"],
+  const params = new URLSearchParams({
+    taskTypes: ["feature", "requirement"].join(","),
   });
-  const used = new Map<number, number>();
-  for (const row of rows) {
-    if (row.isTotal || row.appId == null) continue;
-    used.set(row.appId, row.hoursEntered);
-  }
+  const rows = await apiFetch<AppUsageRow[]>(
+    `/reports/usage?${params.toString()}`,
+    {},
+    getToken(),
+  );
+  const used = new Map<string, number>();
+  for (const row of rows) used.set(pairKey(row.appId, row.companyId), row.hours);
   return used;
 }
 
@@ -708,9 +734,9 @@ export async function fetchAppUsageAllTime(): Promise<Map<number, number>> {
  *   ไม่มีความหมายกับแถวสัญญา
  * - `search` จับทั้งชื่อแอปและชื่อบริษัท (case-insensitive)
  *
- * ไม่รวม "ชั่วโมงที่ใช้ทั้งหมด" / "คงเหลือ" — สองค่านั้นเป็นระดับ**แอป**
- * (`issues` ไม่มี `company_id`) และยังไม่รู้ค่าตอนสร้างแถว ให้ cell หยิบจาก
- * `usage` prop ตอน render เอง (ดู `CompanyRow`)
+ * ไม่รวม "ชั่วโมงที่ใช้ทั้งหมด" / "คงเหลือ" — สองค่านั้นอ่านจาก map ระดับ
+ * **คู่** (`fetchAppUsageAllTime()` → `pairKey(appId, companyId)`) ซึ่งยังไม่รู้
+ * ค่าตอนสร้างแถว ให้ cell หยิบจาก `usage` prop ตอน render เอง (ดู `CompanyRow`)
  */
 export function buildCompanyRows(
   contracts: AppContract[],

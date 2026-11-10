@@ -10,9 +10,9 @@ import { PasswordResetToken } from "./entities/password-reset-token.entity";
 import { Role } from "../roles/entities/role.entity";
 import { PositionPermission } from "../positions/entities/position-permission.entity";
 import { Position } from "../positions/position.entity";
-import { MailService } from "./mail.service";
 import { PermissionsModule } from "../permissions/permissions.module";
 import { RolesModule } from "../roles/roles.module";
+import { MailModule } from "../mail/mail.module";
 
 @Module({
   imports: [
@@ -24,9 +24,10 @@ import { RolesModule } from "../roles/roles.module";
     }),
     PermissionsModule,
     RolesModule,
+    MailModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, MailService],
+  providers: [AuthService, JwtStrategy],
   exports: [AuthService],
 })
 export class AuthModule {}

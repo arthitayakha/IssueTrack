@@ -34,6 +34,35 @@ export interface AppWriteInput {
   name?: string;
 }
 
+/**
+ * payload ของ `POST /apps/:id/companies/:recordId/renew` — **ครบทั้ง 3 ฟิลด์**
+ * (ต่างจาก `AppRecordInput` ที่ทุกช่อง optional เพราะเป็น PATCH semantics)
+ *
+ * การต่ออายุ = ปิดช่วงเก่า แล้วเปิดช่วงใหม่ให้คู่เดิม — ช่วงใหม่ต้องมี
+ * วันที่ครบทุกช่อง ไม่งั้นจะเกิดช่วงกำพร้าที่ status คำนวณไม่ได้
+ */
+export interface AppRenewInput {
+  /** `YYYY-MM-DD` — วันที่เริ่มใช้งานของช่วงใหม่ (บังคับ) */
+  startedAt?: string | null;
+  /** `YYYY-MM-DD` — วันหมดอายุของช่วงใหม่ (บังคับ, ต้องมากกว่า `startedAt`) */
+  expiresAt?: string | null;
+  /** ชั่วโมง MA ของช่วงใหม่ (บังคับ) — รับ string ด้วย (ช่องกรอกในฟอร์ม) */
+  maHours?: number | string | null;
+}
+
+/**
+ * payload ของ `POST /apps/:id/companies/:recordId/buy-hours` — **ซื้อชั่วโมง MA เพิ่ม**
+ *
+ * ต่างจาก `AppRenewInput`: กรอก**แค่จำนวนชั่วโมงที่ซื้อ** (บังคับ, > 0) — วันที่
+ * สัญญา**คงเดิมทุกประการ** ระบบ append แถวใหม่ให้คู่เดิมด้วย
+ * `maHours = ของเดิม + ที่ซื้อ` (`kind = 'buy'`) เพื่อให้แท็บ "ประวัติการต่ออายุ"
+ * เห็นว่าซื้อเมื่อไหร่/กี่ชม.
+ */
+export interface AppBuyInput {
+  /** จำนวนชั่วโมงที่ซื้อเพิ่ม (บังคับ — จำนวนเต็ม > 0) */
+  hours?: number | string | null;
+}
+
 /** แถวเชื่อม + ชื่อบริษัทที่ join มาแล้ว — ใช้ทั้งตอนทำ response และแจ้งเตือน */
 interface LoadedLinks {
   links: AppCompany[];
@@ -189,7 +218,13 @@ export class AppsService {
       row.expiresAt = this.normalizeDate(data.expiresAt, "expiresAt");
     }
     if (data.maHours !== undefined) {
-      row.maHours = this.normalizeHours(data.maHours);
+      const next = this.normalizeHours(data.maHours);
+      // เติมชั่วโมงให้มากขึ้น → ล้าง latch "แจ้ง MA หมดแล้ว" ของแถวนี้ เพื่อให้
+      // รอบการหมดครั้งต่อไป (หลังใช้จนหมดอีก) แจ้งใหม่ได้ — ไม่งั้นค้างว่า
+      // "แจ้งแล้ว" ทั้งที่มีชั่วโมงใหม่ · ลดลง/เท่าเดิมไม่แตะ (ยังไม่หมดไม่แจ้งอยู่แล้ว)
+      const raised = next !== null && (row.maHours == null || next > row.maHours);
+      row.maHours = next;
+      if (raised) row.maNotifiedAt = null;
     }
     await this.appCompanies.save(row);
     return this.appPayload(app);
@@ -203,6 +238,124 @@ export class AppsService {
     }
     await this.appCompanies.delete({ id: recordId });
     return { deleted: true };
+  }
+
+  /**
+   * **ต่ออายุ** — ปิดช่วงเก่าแล้วเปิดช่วงใหม่ให้ **คู่เดิม** (`appId` +
+   * `companyId` ยืมจากแถวตั้งต้น ฟอร์มไม่ต้องเลือกใหม่ และเปลี่ยนไม่ได้)
+   *
+   * ต่างจาก `addRecord()` ตรงที่ **ทั้ง 3 ฟิลด์บังคับ** และมีเพิ่มกฎวันที่:
+   * ช่วงใหม่ที่ไม่ครบหรือกลับด้านจะกลายเป็นแถวที่ `AppExpiryService`
+   * คำนวณสถานะไม่ได้ จึง reject ตั้งแต่ก่อนเขียน (400)
+   *
+   * **append เสมอ** — ช่วงเก่าไม่ถูกแตะ กลายเป็น 1 แถวของ "ประวัติการต่ออายุ"
+   * โดยปริยาย (ตาราง `id ASC` ใน `loadLinks()` คือลำดับในหน้า `/systems`)
+   */
+  async renewRecord(appId: number, recordId: number, data: AppRenewInput) {
+    const app = await this.apps.findOne({ where: { id: appId } });
+    if (!app) {
+      throw new NotFoundException(`App with id ${appId} not found`);
+    }
+    const source = await this.appCompanies.findOne({ where: { id: recordId } });
+    if (!source || source.appId !== appId) {
+      throw new NotFoundException(`Record with id ${recordId} not found`);
+    }
+
+    const startedAt = this.requireDate(data.startedAt, "startedAt");
+    const expiresAt = this.requireDate(data.expiresAt, "expiresAt");
+    const maHours = this.requireHours(data.maHours);
+    if (expiresAt <= startedAt) {
+      throw new BadRequestException("expiresAt must be later than startedAt");
+    }
+
+    await this.appCompanies.save(
+      this.appCompanies.create({
+        appId,
+        companyId: source.companyId,
+        startedAt,
+        expiresAt,
+        maHours,
+        // ช่วงใหม่เริ่มจากศูนย์ — `reconcile()` จะคำนวณสถานะ/รอบแจ้งเตือนให้เอง
+        expiryStatus: "none",
+        expiryNotified: "none",
+      }),
+    );
+    return this.appPayload(app);
+  }
+
+  /**
+   * **ซื้อชั่วโมง MA เพิ่ม** — append แถวใหม่ให้คู่เดิมโดย**คงวันที่สัญญาเท่า
+   * เดิม** (คัดลอก `startedAt` / `expiresAt` จากแถวนั้น) ต่างจาก `renewRecord()`
+   * ที่เปิดช่วงใหม่ด้วยวันใหม่ · `maHours` = ของแถวนั้น (`null` = ยังไม่กรอก →
+   * นับเป็น 0) + จำนวนชั่วโมงที่ซื้อ
+   *
+   * แถวใหม่ได้ `kind = 'buy'` เพื่อให้แท็บ "ประวัติการต่ออายุ" แยกออกว่าเป็น
+   * การซื้อ — สองแถบนั้นมีวันที่เท่ากันแต่ `maHours` ต่างกัน ดูจากตัวเลขอย่าง
+   * เดียวไม่ได้ว่าแถวไหนคือการซื้อ · แถวใหม่มี `id` ใหญ่สุด → ขึ้นเป็นช่วง
+   * ล่าสุดของคู่ ตาราง `/systems` เห็นค่า MA ใหม่ทันที แถบเดิมตกลงเป็น history
+   *
+   * `expiryStatus` / `expiryNotified` **คัดลอกจากแถบตั้งต้น** (ไม่รีเซ็ตเป็น
+   * `none` เหมือนต่ออายุ) เพราะวันที่ไม่เปลี่ยน — รีเซ็ตจะทำให้รอบแจ้งเตือน
+   * d30/d7/expired ของวันเดิมถูกยิงซ้ำอีกรอบหลังซื้อชั่วโมง
+   */
+  async buyHours(appId: number, recordId: number, data: AppBuyInput) {
+    const app = await this.apps.findOne({ where: { id: appId } });
+    if (!app) {
+      throw new NotFoundException(`App with id ${appId} not found`);
+    }
+    const source = await this.appCompanies.findOne({ where: { id: recordId } });
+    if (!source || source.appId !== appId) {
+      throw new NotFoundException(`Record with id ${recordId} not found`);
+    }
+
+    const hours = this.requirePurchasedHours(data.hours);
+
+    await this.appCompanies.save(
+      this.appCompanies.create({
+        appId,
+        companyId: source.companyId,
+        startedAt: source.startedAt,
+        expiresAt: source.expiresAt,
+        maHours: (source.maHours ?? 0) + hours,
+        kind: "buy",
+        expiryStatus: source.expiryStatus,
+        expiryNotified: source.expiryNotified,
+      }),
+    );
+    return this.appPayload(app);
+  }
+
+  /**
+   * บังคับกรอก — ต้องเป็น**จำนวนชั่วโมงเต็ม > 0** (ต่างจาก `requireHours()` ของ
+   * ต่ออายุที่ยอม `0`: ซื้อ 0 ชม. ไม่มีความหมายและจะสร้างแถบ history เปล่า ๆ)
+   */
+  private requirePurchasedHours(value: number | string | null | undefined): number {
+    const hours = this.normalizeHours(value);
+    if (hours === null || hours <= 0) {
+      throw new BadRequestException("hours must be a positive whole number of hours");
+    }
+    return hours;
+  }
+
+  /** บังคับกรอก — ฟิลด์ของช่วงใหม่ห้ามว่าง (`""` / `null` = 400 ไม่ใช่ `null`) */
+  private requireDate(
+    value: string | null | undefined,
+    field: "startedAt" | "expiresAt",
+  ): string {
+    const normalized = this.normalizeDate(value, field);
+    if (normalized === null) {
+      throw new BadRequestException(`${field} is required for a renewal`);
+    }
+    return normalized;
+  }
+
+  /** บังคับกรอกชั่วโมง — ต่างจากช่องอื่นที่ `null` = "ยังไม่กำหนด" ยอมได้ */
+  private requireHours(value: number | string | null | undefined): number {
+    const normalized = this.normalizeHours(value);
+    if (normalized === null) {
+      throw new BadRequestException("maHours is required for a renewal");
+    }
+    return normalized;
   }
 
   /** โหลดคู่ทั้งหมดของแอป + รีเฟรชสถานะอายุทุกแถว แล้วคืน payload ของแอป */
@@ -326,6 +479,9 @@ export class AppsService {
    * รายการทั้งหมดของแอป เรียงตามลำดับที่เพิ่ม (`id ASC`) — 1 แถวต่อ 1 ช่วง
    * เวลา คู่เดิมจึงโผล่หลายแถวได้ · `id` ที่ส่งกลับไป = **companyId** (ฝั่ง
    * boards/reports ใช้กรองบริษัทด้วยค่านี้) ส่วน `recordId` คือ PK ของแถว
+   *
+   * `createdAt` = **วันที่บันทึกช่วงนั้น** — คอลัมน์ "วันที่" ของตาราง
+   * ประวัติการต่ออายุ (ต่างจาก `startedAt` ที่เป็นวันที่ของสัญญา)
    */
   private companyLinks(links: AppCompany[], companyName: Map<number, string>) {
     return links
@@ -337,7 +493,11 @@ export class AppsService {
         expiresAt: link.expiresAt ? toIsoDate(link.expiresAt) : null,
         /** ชั่วโมง MA ของช่วงนี้ — `null` = ยังไม่กำหนด */
         maHours: link.maHours ?? null,
+        /** แถวนี้มาจากอะไร — `renew` (ต่ออายุ/เพิ่มรายการ) หรือ `buy` (ซื้อชั่วโมง) */
+        kind: link.kind,
         expiryStatus: link.expiryStatus,
+        /** ISO datetime — แถวเก่าที่สร้างก่อน migration 1819 ได้ค่าตอน migrate */
+        createdAt: link.createdAt ? link.createdAt.toISOString() : null,
       }))
       .sort((a, b) => a.recordId - b.recordId);
   }
