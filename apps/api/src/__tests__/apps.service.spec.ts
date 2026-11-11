@@ -11,8 +11,11 @@ import { AppsService } from "../modules/apps/apps.service";
  * - `addRecord()` **appends** — adding the same app×company pair a second time
  *   must create a *new* row and leave the old one untouched (the whole point
  *   of "เพิ่มข้อมูลใหม่ โดยให้ข้อมูลเก่าอยู่ของมัน")
- * - `updateRecord()` / `removeRecord()` touch **exactly one row**, and only
- *   when that row belongs to the app in the path (no cross-app editing)
+ * - `updateRecord()` touches **exactly one row**, and only when that row
+ *   belongs to the app in the path (no cross-app editing) · `removeRecord()`
+ *   deletes **every row of the pair** (ตาราง `/systems` คือ 1 แถว = 1 คู่
+ *   แอป×บริษัท → ผู้ใช้คาดว่ากดถังขยะแล้วประวัติทั้งคู่หายไปด้วย — ข้อสรุป
+ *   "ลบทีละรอบ มันต้องลบทั้งหมด") แต่ยัง 404 เมื่อแถวไม่อยู่ใต้แอปใน path
  * - `POST /apps` / `PATCH /apps/:id` are **name only** — the master-data tab
  *   can create or rename an app without ever writing to `app_companies`
  */
@@ -156,10 +159,26 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
       state.rows[index] = { ...state.rows[index], ...value };
       return Promise.resolve({ ...state.rows[index] });
     }),
-    delete: jest.fn().mockImplementation((where: { id: number }) => {
-      state.rows = state.rows.filter((r) => r.id !== where.id);
-      return Promise.resolve();
-    }),
+    /**
+     * รับได้ทั้ง `{ id }` (รายแถว) และ `{ appId, companyId }` (ทั้งคู่ —
+     * `removeRecord()`) · คืน `{ affected }` เหมือน TypeORM จริง
+     */
+    delete: jest
+      .fn()
+      .mockImplementation((where: { id?: number; appId?: number; companyId?: number }) => {
+        const before = state.rows.length;
+        state.rows = state.rows.filter(
+          (r) =>
+            !(
+              (where.id !== undefined && r.id === where.id) ||
+              (where.appId !== undefined &&
+                where.companyId !== undefined &&
+                r.appId === where.appId &&
+                r.companyId === where.companyId)
+            ),
+        );
+        return Promise.resolve({ affected: before - state.rows.length });
+      }),
   };
 
   const companies = {
@@ -325,17 +344,38 @@ describe("AppsService.updateRecord — one row only", () => {
   });
 });
 
-describe("AppsService.removeRecord — deletes the row, not the app", () => {
-  it("removes exactly one row and keeps the rest", async () => {
+describe("AppsService.removeRecord — deletes the whole pair, not the app", () => {
+  it("removes EVERY row of that app×company pair and keeps other pairs", async () => {
     const { service, state } = makeService({
       apps: [POS],
-      rows: [row({ id: 11, companyId: 1 }), row({ id: 12, companyId: 2 })],
+      rows: [
+        row({ id: 11, companyId: 1 }), // ช่วงแรกของคู่ (7×1)
+        row({ id: 12, companyId: 2 }), // คู่อื่น — ต้องอยู่รอด
+        row({ id: 13, companyId: 1 }), // ช่วงที่ 2 ของคู่ (7×1)
+      ],
     });
 
-    await expect(service.removeRecord(7, 11)).resolves.toEqual({ deleted: true });
+    // ตารางส่งแถวล่าสุด แต่ทั้งคู่ต้องหาย (ข้อสรุป: "ลบทีละรอบ มันต้องลบทั้งหมด")
+    await expect(service.removeRecord(7, 13)).resolves.toEqual({
+      deleted: true,
+      deletedRows: 2,
+    });
 
     expect(state.rows.map((r) => r.id)).toEqual([12]);
-    expect(state.apps).toHaveLength(1);
+    expect(state.apps).toHaveLength(1); // แอปไม่หาย (คนละกับ remove())
+  });
+
+  it("reports deletedRows: 1 when the pair has a single row", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, companyId: 1 })],
+    });
+
+    await expect(service.removeRecord(7, 11)).resolves.toEqual({
+      deleted: true,
+      deletedRows: 1,
+    });
+    expect(state.rows).toHaveLength(0);
   });
 
   it("404 when the record is not under that app, and deletes nothing", async () => {
@@ -494,7 +534,7 @@ describe("AppsService.renewRecord — appends the next period, never rewrites", 
 });
 
 describe("AppsService.buyHours — same dates, more hours (ซื้อชั่วโมง MA เพิ่ม)", () => {
-  it("appends a same-dates row whose MA is exactly the purchased hours (kind 'buy')", async () => {
+  it("appends a same-dates row whose MA is the purchased hours when nothing is carried (kind 'buy')", async () => {
     const { service, state } = makeService({
       apps: [POS],
       rows: [
@@ -521,13 +561,14 @@ describe("AppsService.buyHours — same dates, more hours (ซื้อชั่
       expiryStatus: "expiring_soon",
       expiryNotified: "d30",
     });
-    // the new row keeps the contract dates (ซื้อชั่วโมง ≠ ต่ออายุ) and its MA is the purchased amount alone
+    // the new row keeps the contract dates (ซื้อชั่วโมง ≠ ต่ออายุ) and — **ไม่ส่ง
+    // `carriedHours`** — MA = ที่ซื้อล้วน (20 ไม่ใช่ 60)
     expect(state.rows[1]).toMatchObject({
       appId: 7,
       companyId: 2,
       startedAt: "2026-01-01",
       expiresAt: "2026-12-08",
-      // **เท่ากับที่ซื้อเท่านั้น** — ไม่รวม MA ของแถวก่อน (สูตรใหม่: 40 ไม่ใช่ 60)
+      // **เท่ากับที่ซื้อเท่านั้น** (ไม่ส่งทบ) — ไม่รวม MA ของแถวก่อน (20 ไม่ใช่ 60)
       maHours: 20,
       kind: "buy",
     });
@@ -541,12 +582,58 @@ describe("AppsService.buyHours — same dates, more hours (ซื้อชั่
     expect(result.companies).toHaveLength(2);
     expect(result.companies[0].kind).toBe("renew");
     expect(result.companies[1].kind).toBe("buy");
-    // ซื้อชั่วโมงไม่เคยทบ → ไม่มีค่าเก็บ (NULL) แท็บงานที่ถูกตัดจึงไม่โชว์ chip "ทบมา"
+    // ไม่ทบ → ไม่มีค่าเก็บ (NULL) ผัง "ข้อมูลทั่วไป" จึงไม่โชว์บรรทัด "ทบมา"
     expect(result.companies[1].carriedHours ?? null).toBeNull();
     expect(state.rows[1].carriedHours ?? null).toBeNull();
   });
 
-  it("ignores the source row's MA entirely (ซื้อได้แม้ยังไม่เคยกรอก MA)", async () => {
+  it("adds the unspent balance of the source row to the new MA (ทบสิทธิ์คงเหลือ)", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, companyId: 2, startedAt: "2026-01-01", expiresAt: "2026-12-08", maHours: 40 })],
+    });
+
+    // ฟอร์มคำนวณ `carry = MA แถวนั้น − ใช้ไปของแถวนั้น` (40 − 25 = 15) แล้วส่งมา
+    await service.buyHours(7, 11, { hours: 20, carriedHours: 15 });
+
+    // **maHours = ที่ซื้อ + ทบ** = 35 (ไม่ใช่ 20 และไม่ใช่ 60) — ช่วงเดิมเหลือ 15 ยังใช้ได้
+    expect(state.rows[1]).toMatchObject({ maHours: 35, kind: "buy", carriedHours: 15 });
+    // แถวนั้นไม่ถูกเขียนทับ
+    expect(state.rows[0]).toMatchObject({ id: 11, maHours: 40 });
+  });
+
+  it("rejects a carried value above the source row's MA / negative / fractional", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, maHours: 40 })],
+    });
+
+    // เพดาน `carried ≤ MA แถวนั้น` (40) — เกิน = payload เพี้ยน → 400
+    await expect(
+      service.buyHours(7, 11, { hours: 20, carriedHours: 41 }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      service.buyHours(7, 11, { hours: 20, carriedHours: -1 }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      service.buyHours(7, 11, { hours: 20, carriedHours: 1.5 }),
+    ).rejects.toThrow(BadRequestException);
+    expect(state.rows).toHaveLength(1);
+  });
+
+  it("keeps carried_hours NULL when the form sends 0 (แถวนั้นใช้หมด)", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, maHours: 40 })],
+    });
+
+    await service.buyHours(7, 11, { hours: 20, carriedHours: 0 });
+
+    expect(state.rows[1]).toMatchObject({ maHours: 20, kind: "buy" });
+    expect(state.rows[1].carriedHours ?? null).toBeNull();
+  });
+
+  it("does not add the source MA when the form sends no carry (ซื้อได้แม้ยังไม่เคยกรอก MA)", async () => {
     const { service, state } = makeService({
       apps: [POS],
       rows: [row({ id: 11, startedAt: "2026-01-01", expiresAt: "2026-12-08" })],
@@ -554,8 +641,8 @@ describe("AppsService.buyHours — same dates, more hours (ซื้อชั่
 
     await service.buyHours(7, 11, { hours: 10 });
 
-    // แถวต้นทางไม่มี MA (`null`) และสูตรใหม่ก็ไม่ได้ใช้มันอยู่แล้ว — ค่าที่ได้
-    // ต้องเป็น "ที่ซื้อ" เท่านั้น ไม่ว่าแถวก่อนหน้าจะเป็นเท่าไร
+    // ไม่ส่ง `carriedHours` → MA = ที่ซื้อ ล้วน (10) — แถวนั้นไม่มี MA อยู่แล้ว
+    // จึงทบอะไรไม่ได้ (เพดานของ `requireCarriedHours` = MA แถวนั้น = 0)
     expect(state.rows[1]).toMatchObject({ maHours: 10, kind: "buy" });
   });
 

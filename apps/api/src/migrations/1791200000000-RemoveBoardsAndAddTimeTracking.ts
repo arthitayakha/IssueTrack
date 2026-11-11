@@ -4,7 +4,8 @@ export class RemoveBoardsAndAddTimeTracking1791200000000 implements MigrationInt
 
     public async up(queryRunner: QueryRunner): Promise<void> {
         await queryRunner.query(`ALTER TABLE issues DROP COLUMN IF EXISTS board_id`);
-        await queryRunner.query(`ALTER TABLE board_columns DROP COLUMN IF EXISTS board_id`);
+        // board_columns dropped by 1826000000000-DropBoardColumnsAndIssueColumnId —
+        // this ALTER would fail on a DB where the table no longer exists (no-op here).
         await queryRunner.query(`ALTER TABLE issue_statuses DROP COLUMN IF EXISTS color`);
         await queryRunner.query(`ALTER TABLE issue_statuses DROP COLUMN IF EXISTS sort_order`);
         await queryRunner.query(`ALTER TABLE issue_statuses DROP COLUMN IF EXISTS is_timer_running`);
@@ -33,7 +34,9 @@ export class RemoveBoardsAndAddTimeTracking1791200000000 implements MigrationInt
             closed_at timestamp with time zone
         )`);
         await queryRunner.query(`ALTER TABLE issues ADD COLUMN board_id integer`);
-        await queryRunner.query(`ALTER TABLE board_columns ADD COLUMN board_id integer`);
+        // board_columns is gone (1826000000000) — re-adding its board_id would fail on a
+        // DB where the table was already dropped; the table itself is restored by that
+        // migration's own down().
         await queryRunner.query(`ALTER TABLE issue_statuses ADD COLUMN color varchar(20)`);
         await queryRunner.query(`ALTER TABLE issue_statuses ADD COLUMN sort_order integer DEFAULT 0`);
         await queryRunner.query(`ALTER TABLE issue_statuses ADD COLUMN is_timer_running boolean DEFAULT false`);

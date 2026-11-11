@@ -92,12 +92,12 @@ category.view, board.view
 | `positions` | id (int PK), name (unique), is_active, **role_id (ใหม่)** | |
 | `position_permissions` | id, position_id, permission | **ตารางใหม่** |
 | `permissions` | id, code, action, category | query ด้วย SQL ตรง ไม่ใช่ entity; ต้องมี unique(code) |
-| `issues` | id, programmer_id, customer_id, category_id, status_id, priority_id, column_id, title, description, tracked_duration, actual_fix_duration, doing_started_at, assigned_at, completed_at | เวลาอยู่ที่นี่ |
+| `issues` | id, programmer_id, customer_id, category_id, status_id, priority_id, title, description, tracked_duration, actual_fix_duration, doing_started_at, completed_at | เวลาอยู่ที่นี่; `column_id` **ถูกลบแล้ว** (migration `1826000000000`) |
 | `issue_statuses` | id, name, description, is_active, **sort_order, is_timer_running, is_end_status** | DB จริงมี 3 คอลัมน์หลังแล้ว แต่ entity ยังไม่มี |
 | `issue_priorities` | id, name, description, sort_order, is_active | |
 | `categories` | id, name, is_visible, position | |
 | `boards` | id, name, description | ⚠️ ดู DB drift |
-| `board_columns` | id, board_id, status, custom_name, is_hidden, position | |
+| `board_columns` | id, board_id, status, custom_name, is_hidden, position | ❌ **ถูกลบแล้ว** — รวมเข้า `issue_statuses` แล้วด้วย migration TS `1826000000000` (SQL `0025` ที่ควรจะ merge **ไม่เคยถูก apply** และถูกทำเครื่องหมาย SUPERSEDED) |
 | `work_sessions` | id, issue_id, programmer_id, started_at, ended_at, duration | module ยังเป็น stub |
 | `comments` | id, issue_id, user_id, comment | module stub |
 | `attachments` | id, issue_id, uploaded_by, file_name, file_path, file_type, file_size | module stub |
@@ -107,9 +107,9 @@ category.view, board.view
 ### ความสัมพันธ์
 - `users` N:1 `roles`, `users` N:1 `positions`
 - `roles` 1:N `role_permissions`; `positions` N:1 `roles`, `positions` 1:N `position_permissions`
-- `issues` N:1 `issue_statuses`, `issue_priorities`, `categories`, `board_columns`, `users` (programmer/customer)
+- `issues` N:1 `issue_statuses`, `issue_priorities`, `categories`, `users` (programmer/customer)
 - `issues` 1:N `work_sessions`, `comments`, `attachments`
-- `boards` 1:N `board_columns` 1:N `issues`
+- ~~`boards` 1:N `board_columns` 1:N `issues`~~ — **เลิกใช้แล้ว**: ไม่มีตาราง `boards` และ `board_columns` (ลบโดย migration `1791200000000` และ `1826000000000`) คอลัมน์ของการ์ดคือ `issues.status_id` → `issue_statuses`
 
 ### 5.1 ความเสี่ยง (Risks)
 1. **ตาราง `permissions` ไม่ใช่ entity** — query SQL ตรง ไม่มี type safety เสี่ยง schema drift

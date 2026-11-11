@@ -9,11 +9,15 @@ import { MaUsageService } from "../modules/apps/ma-usage.service";
  * - **ครั้งเดียวต่อรอบ** — depleted + no latch → rings and stamps
  *   `ma_notified_at`; depleted + latch set → silent; hours come back → latch
  *   clears so the NEXT exhaustion can ring again
+ * - **ใช้ไปรายรอบ** — the ceiling is the **latest round's** hours, attributed
+ *   with `pickPeriodId()` (hours entered BEFORE that round existed belong to an
+ *   earlier round) → a row that was just purchased (0 used) never rings, even
+ *   though the pair's total already reaches MA
  * - **Fail-open ทุกขั้น** — no app / no reporter / reporter without a company /
  *   no pair row / `maHours` not set → nothing is read, written or sent
- * - **สูตรเดียวกับ `/reports/usage`** — the query filters `task_type IN
- *   ('feature','requirement')` (bug/NULL never deduct) and pairs the hours
- *   through the reporter's company
+ * - **สูตร membership เดียวกับ `usage-counts`** — the query filters
+ *   `task_type IN ('feature','requirement')` (bug/NULL never deduct), drops
+ *   trashed issues and keeps only hours whose reporter has a company
  * - never throws: the hook runs fire-and-forget after `save()`
  */
 
@@ -23,6 +27,8 @@ interface LinkRow {
   companyId: number;
   maHours: number | null;
   maNotifiedAt: Date | null;
+  /** `app_companies.created_at` — เวลาที่แถวนั้นถูกสร้าง (กติกาผูกชั่วโมงเข้ารอบ) */
+  createdAt: Date;
 }
 
 function link(overrides: Partial<LinkRow> = {}): LinkRow {
@@ -32,6 +38,7 @@ function link(overrides: Partial<LinkRow> = {}): LinkRow {
     companyId: 3,
     maHours: 40,
     maNotifiedAt: null,
+    createdAt: new Date("2026-01-01"),
     ...overrides,
   };
 }
@@ -41,7 +48,14 @@ function makeService(options?: {
   reporter?: { id: number; companyId: number | null } | null;
   /** แถวล่าสุดของคู่ — `null` = คู่นั้นไม่มี row ใน `app_companies` */
   link?: LinkRow | null;
-  /** ผลรวมวินาทีที่ query คืน */
+  /**
+   * แถว**ทั้งคู่** เรียง `id ASC` — ใช้ตอนทดสอบการผูกชั่วโม์เข้ารอบ
+   * (`periodRowsFor`) · ไม่ส่ง = คู่นั้นมีแถวเดียว (`link`)
+   */
+  pairRows?: LinkRow[];
+  /** `issues.actual_fix_at` ของชั่วโม์ที่กรอก — กำหนดว่าชั่วโม์นั้นตกเป็นของรอบไหน */
+  enteredAt?: Date;
+  /** ผลรวมวินาทีของชั่วโม์ที่กรอก (ทุกแถวใน `getRawMany`) */
   usedSeconds?: number;
   app?: { id: number; name: string } | null;
   company?: { id: number; name: string } | null;
@@ -56,9 +70,10 @@ function makeService(options?: {
   const links = {
     find: jest.fn().mockImplementation((opts?: { take?: number }) => {
       if (!state.link) return Promise.resolve([]);
-      // service สั่ง `order id DESC` + `take: 1` — stub คืนแถวนั้นกลับไป1แถว
-      void opts;
-      return Promise.resolve([{ ...state.link }]);
+      const rows = (options?.pairRows ?? [state.link]).map((row) => ({ ...row }));
+      rows.sort((a, b) => (opts?.take === 1 ? b.id - a.id : a.id - b.id));
+      // `take: 1` = แถวล่าสุดของคู่ (สั่ง `order id DESC`) · อย่างอื่น = ทุกแถว `id ASC`
+      return Promise.resolve(opts?.take === 1 ? [rows[0]] : rows);
     }),
     update: jest.fn().mockImplementation((where: Record<string, unknown>, patch: Record<string, unknown>) => {
       state.updates.push({ where, patch });
@@ -77,13 +92,19 @@ function makeService(options?: {
     }),
   };
 
-  /** fake QB — เก็บทุก andWhere ไว้ assert แล้วคืนค่า seconds ที่ตั้งไว้ */
+  /**
+   * fake QB — เก็บทุก `andWhere` ไว้ assert แล้วคืน "แถวชั่วโม์ที่กรอก" 1 แถว
+   * (`deductionRows()` อ่านผ่าน `getRawMany`) · รูปตรงกับที่ service แปลงเอง
+   * (id / app_id / company_id / seconds / `actual_fix_at`) · `at` กำหนดว่าชั่วโม์
+   * นั้นตกเป็นของรอบไหน (ดู `enteredAt`)
+   */
   type FakeQb = {
     leftJoin: jest.Mock;
     where: jest.Mock;
     andWhere: jest.Mock;
     select: jest.Mock;
-    getRawOne: jest.Mock;
+    addSelect: jest.Mock;
+    getRawMany: jest.Mock;
   };
   const qb: FakeQb = {
     leftJoin: jest.fn((): FakeQb => qb),
@@ -93,9 +114,17 @@ function makeService(options?: {
       return qb;
     }),
     select: jest.fn((): FakeQb => qb),
-    getRawOne: jest.fn(
-      (): Promise<{ seconds: string }> =>
-        Promise.resolve({ seconds: String(options?.usedSeconds ?? 0) }),
+    addSelect: jest.fn((): FakeQb => qb),
+    getRawMany: jest.fn(() =>
+      Promise.resolve([
+        {
+          id: "1",
+          app_id: "7",
+          company_id: "3",
+          seconds: String(options?.usedSeconds ?? 0),
+          at: options?.enteredAt ?? new Date("2026-06-01"),
+        },
+      ]),
     ),
   };
   const issues = { createQueryBuilder: jest.fn(() => qb) };
@@ -146,6 +175,26 @@ describe("MaUsageService.checkAndNotify — one ring per exhaustion episode", ()
       usedHours: 40,
     });
     expect(state.link?.maNotifiedAt).toBeInstanceOf(Date);
+  });
+
+  it("does not ring for hours that belong to an EARLIER round (แถวเพิ่งซื้อ = ใช้ไป 0)", async () => {
+    const { service, notifications } = makeService({
+      reporter: REPORTER,
+      // 40 ชม. ถูกกรอกตอนคู่ยังมีแค่รอบ 1 (`enteredAt` < createdAt ของรอบ 2)
+      usedSeconds: 40 * HOUR,
+      enteredAt: new Date("2026-03-01"),
+      pairRows: [
+        link({ id: 400, createdAt: new Date("2026-01-01"), maHours: 40 }),
+        // แถวล่าสุด = เพิ่งซื้อชั่วโม์ (ถูกสร้างทีหลัง) — ยังไม่มีชั่วโม์ของรอบนี้
+        link({ id: 500, createdAt: new Date("2026-06-01"), maHours: 40 }),
+      ],
+    });
+
+    await service.checkAndNotify(ISSUE);
+
+    // ยอดรวมคู่ = 40 = MA แต่ **ของรอบล่าสุด = 0** → ไม่ ring · กระดิ่งต้องตรงกับ
+    // คอลัมน์ "คงเหลือ" บนจอ (ผู้ใช้: "ยังไม่ได้ใช้เลยทำไมมีใช้ไป")
+    expect(notifications.notifyMaDepleted).not.toHaveBeenCalled();
   });
 
   it("stays silent while the latch is already set (แจ้งซ้ำ = spam)", async () => {
@@ -270,8 +319,8 @@ describe("MaUsageService.checkAndNotify — fail-open on every unpairable step",
   });
 });
 
-describe("MaUsageService.checkAndNotify — the usage query matches /reports/usage", () => {
-  it("filters bug/NULL out and pairs through the reporter's company", async () => {
+describe("MaUsageService.checkAndNotify — the usage query matches usage-counts", () => {
+  it("filters bug/NULL out and keeps only hours whose reporter has a company", async () => {
     const { service, qb } = makeService({ reporter: REPORTER, usedSeconds: 40 * HOUR });
 
     await service.checkAndNotify(ISSUE);

@@ -85,11 +85,13 @@ const MAX_USAGE_COUNT_IDS = 100;
  * **ตรวจว่าชั่วโมง MA ของคู่หมดแล้วหรือยัง** — เรียกหลังกรอกเวลาจริง
  * (`IssuesService.setActualFixDuration`) แบบ fire-and-forget
  *
- * สูตรใช้ไป = SUM(`issues.actual_fix_duration`) ของงานแอปนั้นซึ่ง
- * **ผู้แจ้งอยู่บริษัทคู่นั้น** (`customer_id` → `users.company_id`) และ
- * `task_type IN ('feature','requirement')` — **ตรงกับ `usageByPair()` ของ
- * `/reports/usage` ทุกประการ** (รวมการทิ้งงานที่จับคู่ไม่ได้และงานถังขยะ)
- * เพื่อให้ "หมด" ที่นี่กับ "คงเหลือ ≤ 0" บนตาราง `/systems` เป็นเลขเดียวกัน
+ * สูตรใช้ไป = **ของ "รอบนั้น"** (แถวล่าสุดของคู่) — งานที่กรอกเข้าคู่นั้นซึ่ง
+ * `task_type IN ('feature','requirement')` และ **ผู้แจ้งอยู่บริษัทคู่นั้น**
+ * (`customer_id` → `users.company_id`) ถูก**ผูกเข้ารอบด้วย `pickPeriodId()`**
+ * (งานที่กรอก*ก่อน*รอบนั้นจะถูกสร้าง = ของรอบก่อนหน้า) — **ตรงกับคอลัมน์
+ * "ใช้ไป"/"คงเหลือ" รายรอบบนจอทุกประการ** (รวมการทิ้งงานถังขยะและงานที่จับคู่
+ * ไม่ได้) จึง**ไม่ ring** เมื่อ "เพิ่งซื้อชั่วโม์แต่ยังไม่ได้ใช้" (ข้อสรุปจากผู้ใช้:
+ * "ยังไม่ได้ใช้เลยทำไมมีใช้ไป")
  *
  * **Fail-open ทุกขั้น** (ไม่มีแอป/ไม่มีผู้แจ้ง/ผู้แจ้งไม่มีบริษัท/ไม่มีแถว
  * คู่/ยังไม่กรอก MA → หยุดเงียบ ๆ) · **ครั้งเดียวต่อรอบ**: แจ้งแล้ว stamp
@@ -137,7 +139,10 @@ export class MaUsageService {
       });
       if (!link || link.maHours == null) return;
 
-      const usedSeconds = await this.usedSeconds(issue.appId, companyId);
+      // **ใช้ไปของรอบนั้น** (ไม่ใช่ยอดรวมคู่) — ผูกงานเข้ารอบด้วย `pickPeriodId()`
+      // เหมือน `usage-counts`/`periodUsage` → แถวที่เพิ่งซื้อชั่วโม์ (ยังไม่ได้ใช้)
+      // ใช้ไป = 0 จึงไม่ถือว่าหมด · fail-open: ไม่มี entry = 0
+      const usedSeconds = await this.periodUsedSeconds(issue.appId, companyId, link.id);
       const depleted = usedSeconds >= link.maHours * 3600;
       const alreadyRung = link.maNotifiedAt != null;
 
@@ -171,32 +176,36 @@ export class MaUsageService {
   }
 
   /**
-   * "ใช้ไป" ของคู่ แอป×บริษัท (วินาที) — **สูตรเดียวกับ `usageByPair()`**:
-   * กรองงานถังขยะ + `task_type` ที่หัก + ผู้แจ้งอยู่บริษัทนั้น · งานที่จับคู่
-   * ไม่ได้ (ผู้แจ้งไม่มีบริษัท) หลุดจาก JOIN เอง = ไม่ถูกหัก (ตรงกติกา)
+   * **"ใช้ไป" ของ "รอบนั้น"** (วินาที) — membership ชุดเดียวกับ `deductionRows()`
+   * (งานถังขยะถูกทิ้ง, `task_type` ที่หัก, ผู้แจ้งมีบริษัท) แล้ว**ผูกเข้ารอบด้วย
+   * `pickPeriodId()`** — งานที่กรอก*ก่อน*รอบนั้นจะถูกสร้าง = ของรอบก่อนหน้า ·
+   * `actual_fix_at IS NULL` (กรอกก่อนระบบ) = "ไม่ระบุรอบ" → ไม่ถูกนับที่นี่
+   * (ตรงกับคอลัมน์ "ใช้ไป" รายรอบบนจอ — ชั่วโม์พวกนั้นถูกเล่าผ่าน
+   * `unattributedHours` ในแท็บ "งานที่ถูกตัด MA" ไม่ได้หายไปไหน)
+   *
+   * (เดิมเป็น `usedSeconds()` ระดับ**คู่** — เปลี่ยนเพราะผู้ใช้ทักว่าแถวที่เพิ่ง
+   * ซื้อชั่วโม์โชว์ "ใช้ไป 40" ทั้งที่ยังไม่ได้ใช้ แล้วยังถูก ring กระดิ่งด้วย)
    */
-  private async usedSeconds(appId: number, companyId: number): Promise<number> {
-    const raw = await this.issues
-      .createQueryBuilder("issue")
-      .leftJoin("issue.customer", "reporter")
-      .where("issue.app_id = :appId", { appId })
-      .andWhere("issue.deleted_at IS NULL")
-      .andWhere("issue.task_type IN (:...types)", { types: [...DEDUCTED_TASK_TYPES] })
-      .andWhere("reporter.company_id = :companyId", { companyId })
-      .select("COALESCE(SUM(issue.actual_fix_duration), 0)", "seconds")
-      .getRawOne<{ seconds: string }>();
-    return Number(raw?.seconds ?? 0);
+  private async periodUsedSeconds(
+    appId: number,
+    companyId: number,
+    recordId: number,
+  ): Promise<number> {
+    const pairRows = await this.periodRowsFor(appId, companyId);
+    const rows = this.forPair(await this.deductionRows([appId]), appId, companyId);
+    const { byPeriod } = this.attribute(rows, this.toPeriodRows(pairRows));
+    return byPeriod.get(recordId)?.seconds ?? 0;
   }
 
   /* ------------------------------------------------------------------ */
   /*  รายการที่ถูกตัดจากช่วง MA — รอบต่อรอบ                              */
-  /*  (เสริมข้อมูลใหม่ ไม่แตะตัวเลข "ใช้ไป/คงเหลือ" เดิมแม้แต่ตัวเดียว)     */
+  /*  (ตอนนี้เป็น**แหล่งของ "ใช้ไป" รายรอบ** ทั้งฝั่งจอและฝั่งกระดิ่ง)       */
   /* ------------------------------------------------------------------ */
 
   /**
-   * ชั่วโมงที่หักจาก MA ได้ของแอปที่ระบุ — **membership ชุดเดียวกันเป๊ะ** กับ
-   * `usedSeconds()` / `usageByPair()` (งานถังขยะถูกทิ้ง, `task_type` ที่หัก,
-   * ผู้แจ้งต้องมีบริษัท) เพื่อให้ผลรวมทุกช่อง = ตัว "ใช้ไป" เดิม · คืนมายัง
+   * ชั่วโม์ที่หักจาก MA ได้ของแอปที่ระบุ — **membership ชุดเดียวกันเป๊ะ** กับ
+   * `periodUsedSeconds()` (งานถังขยะถูกทิ้ง, `task_type` ที่หัก, ผู้แจ้งต้องมี
+   * บริษัท) เพื่อให้ผลรวมทุกช่อง = ตัว "ใช้ไป" ระดับคู่เสมอ · คืนมายัง
    * **ไม่ผูกกับรอบ** เพราะกติกาผูกต้องเห็นแถวทั้งคู่พร้อมกัน (ทำใน `attribute()`)
    */
   private async deductionRows(appIds: number[]): Promise<DeductionRow[]> {

@@ -106,6 +106,17 @@ const COLUMN_WIDTHS: Record<ReportView, Record<string, number>> = {
     maHours: 34,
     usedHours: 40,
     remaining: 36,
+    /**
+     * 6 คอลัมน์ของแถวรายละเอียด "รายการที่ตัด" (splice ใต้แถวสัญญา) —
+     * คง `kind` / `deductedCount` ไว้เป็น star เหมือนเดิม จึงเหลือที่ให้
+     * `deductionTitle` พอประมาณ (star ที่เหลือ 2 ตัวแบ่งส่วนที่ว่าง)
+     */
+    deductionIssueNo: 48,
+    deductionTitle: 90,
+    deductionType: 44,
+    deductionHours: 34,
+    deductionAt: 42,
+    deductionAssignee: 60,
   },
 };
 

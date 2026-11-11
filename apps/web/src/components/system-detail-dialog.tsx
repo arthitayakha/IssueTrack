@@ -22,7 +22,8 @@ import {
 } from "@mui/material";
 import type { App, AppCompanyLink, UsageCount } from "@/lib/apps-api";
 import { fetchUsageCounts } from "@/lib/apps-api";
-import SystemDeductionsTab, { type DeductionRound } from "./system-deductions-tab";
+import { periodUsedOf } from "@/lib/reports-api";
+import SystemDeductionsDialog, { type DeductionTarget } from "./system-deductions-dialog";
 import {
   daysLeftIso,
   expiryChipLabel,
@@ -59,15 +60,17 @@ export interface DetailRecord {
  *   (ชั่วโม์ MA ทั้งหมด / ใช้ไป / คงเหลือ) คั่นด้วยเส้นแนวนอน
  * - **ประวัติการต่ออายุ** — ทุกช่วงของคู่เดียวกัน เรียงใหม่สุดก่อน
  *   คอลัมน์: **รอบที่** / ประเภท / เริ่มใช้งาน / หมดอายุ / ชั่วโม์ MA / ใช้ไป /
- *   คงเหลือ / **รายการที่ตัด** (ปุ่มเปิดแท็บที่ 3 ของรอบนั้น) — **ไม่มีหมายเหตุ**
- *   (ตัดออกตามข้อตกลง) · ตาราง scroll ในตัว (sticky header)
- * - **งานที่ถูกตัด MA** — แท็บที่ 3 (`SystemDeductionsTab`) ดึงเองตอนเปิดแท็บ
- *   (ไม่ยิงตอนเปิดป๊อปอัพ) · เปิดจากปุ่มในคอลัมน์ "รายการที่ตัด" ของแท็บประวัติ
- *   จะไปโชว์ **รอบนั้น** ไม่ใช่รอบล่าสุด (state `deductionRecordId`)
+ *   คงเหลือ / **รายการที่ตัด** (ปุ่ม**เปิดป๊อปอัพแยกใบ** `SystemDeductionsDialog`
+ *   ของรอบนั้น — เดิมเป็นแท็บที่ 3 ข้างใน ถูกย้ายออกตามข้อสรุป "dropdown ใหญ่
+ *   ไป ไม่สวย … ดูได้จากลิงก์พวกนี้") — **ไม่มีหมายเหตุ** (ตัดออกตามข้อตกลง) ·
+ *   ตาราง scroll ในตัว (sticky header)
  *
- * ข้อมูล 2 แท็บแรกมาจาก payload ที่หน้าโหลดไว้แล้ว (`GET /systems`) + map "ใช้ไป"
- * ระดับคู่ — **ไม่ยิง API เพิ่ม** · แท็บประวัติยิง `GET /apps/usage-counts` ครั้งเดียว
- * ตอนเปิดป๊อปอัพ (นับ "รายการที่ตัด" ของทุกรอบพร้อมกัน ไม่ใช่ต่อแถว)
+ * **ไม่มีแท็บที่ 3 แล้ว** — "งานที่ถูกตัด MA" เปิดจากลิงก์ในคอลัมน์
+ * "รายการที่ตัด" → ป๊อปอัพ `SystemDeductionsDialog` ซ้อนบนใบเดิม (state
+ * `deductionsTarget`) · ข้อมูล 2 แท็บแรกมาจาก payload ที่หน้าโหลดไว้แล้ว
+ * (`GET /systems`) + **"ใช้ไป" รายรอบ** ที่อ่านจาก `GET /apps/usage-counts`
+ * — ยิง**ครั้งเดียวตอนเปิดป๊อปอัพ** แล้วใช้ร่วมกันทั้ง "รายการที่ตัด" และ
+ * "ใช้ไป/คงเหลือ" ของทุกรอบ (ไม่ยิงเพิ่ม)
  *
  * ขนาด **ฟิกคงที่ทุกแท็บ** (`PaperProps` ด้านล่าง) — เดิมใช้ `maxWidth="md"
  * fullWidth` ทำให้กล่องหด/ขยายตามเนื้อหา สลับแท็บแล้วขยับ
@@ -75,10 +78,6 @@ export interface DetailRecord {
 export default function SystemDetailDialog({
   open,
   record,
-  /** "ใช้ไป" ระดับคู่ แอป×บริษัท (ชม.) — `undefined` = ยังดึงไม่สำเร็จ */
-  used,
-  /** false = ยังโหลด/ดึงไม่ได้ → ช่อง "ใช้ไป/คงเหลือ" โชว์ `—` */
-  usageReady,
   /** false = แถวไม่เข้าเกณฑ์ต่ออายุ/ไม่มีสิทธิ์ → ซ่อนปุ่มท้ายการ์ด */
   canRenew,
   /** เปิดฟอร์มต่ออายุของคู่นี้ */
@@ -88,8 +87,6 @@ export default function SystemDetailDialog({
   open: boolean;
   /** null = ยังไม่ได้เลือกแถว ( Dialog ปิดอยู่ ) */
   record: DetailRecord | null;
-  used: number | undefined;
-  usageReady: boolean;
   canRenew: boolean;
   onRenew: () => void;
   onClose: () => void;
@@ -99,11 +96,11 @@ export default function SystemDetailDialog({
   const [tab, setTab] = useState(0);
 
   /**
-   * รอบที่แท็บ "งานที่ถูกตัด MA" กำลังโชว์ — `null` = ใช้แถวที่เปิดป๊อปอัพอยู่
-   * (รอบล่าสุด) · กดปุ่มในคอลัมน์ "รายการที่ตัด" ของแท็บประวัติจะตั้งค่าเป็น
-   * รอบนั้น ให้โชว์รายการของ **รอบที่กด** ไม่ใช่รอบล่าสุดเสมอไป
+   * ป๊อปอัพ **"งานที่ถูกตัด MA"** ที่เปิดซ้อนอยู่ — `null` = ปิด · ตั้งค่าโดย
+   * ลิงก์ "N รายการ" ในคอลัมน์ "รายการที่ตัด" ของแท็บประวัติ (ส่งข้อมูลรอบนั้น
+   * ครบ: recordId / ลำดับ / ประเภท / ทบมา) — **ไม่มีแท็บที่ 3 ในใบเดิมแล้ว**
    */
-  const [deductionRecordId, setDeductionRecordId] = useState<number | null>(null);
+  const [deductionsTarget, setDeductionsTarget] = useState<DeductionTarget | null>(null);
 
   /** จำนวนรายการที่ถูกตัดของทุกรอบในคู่นี้ — ยิงครั้งเดียวตอนเปิดป๊อปอัพ */
   const [counts, setCounts] = useState<Map<number, UsageCount> | null>(null);
@@ -117,7 +114,7 @@ export default function SystemDetailDialog({
   useEffect(() => {
     if (open) {
       setTab(0);
-      setDeductionRecordId(null);
+      setDeductionsTarget(null);
     }
   }, [open, record?.link.recordId]);
 
@@ -154,40 +151,16 @@ export default function SystemDetailDialog({
   }, [open, countKey]);
 
   /**
-   * ตัวเลือก "รอบ" ของแถว chip บนแท็บที่ 3 — สร้างจาก payload ที่โหลดไว้แล้ว
-   * (**ไม่ยิง API เพิ่ม**) เรียง `recordId ASC` แล้วนับ `round` ตั้งแต่ 1
-   * **แบบเดียวกับคอลัมน์ "รอบที่" ในแท็บประวัติ** (`history.length - index` ของ
-   * ลิสต์กลับด้าน) จึงไม่มีทางขัดกัน
+   * ค่าที่คำนวณจากแถวที่เลือก — `null` = ยังไม่มีแถว (เนื้อหาจะไม่ถูกอ่าน) ·
+   * `onShowDeductions` = เปิดป๊อปอัพ `SystemDeductionsDialog` ของรอบที่กด
+   * (state ชุดเดียวกับ `deductionsTarget`)
    */
-  const rounds: DeductionRound[] = record
-    ? record.app.companies
-        .filter((row) => row.id === record.link.id)
-        .slice()
-        .sort((a, b) => a.recordId - b.recordId)
-        .map((row, i) => ({
-          recordId: row.recordId,
-          round: i + 1,
-          startedAt: row.startedAt,
-          expiresAt: row.expiresAt,
-          kind: row.kind,
-          maHours: row.maHours,
-          // ชั่วโมงที่ทบมาของแถวนั้น — `null` = ไม่ทบ (แท็บที่ 3 ซ่อน chip เอง)
-          carriedHours: row.carriedHours,
-        }))
-    : [];
-
-  /** ค่าที่คำนวณจากแถวที่เลือก — `null` = ยังไม่มีแถว (เนื้อหาจะไม่ถูกอ่าน) */
   const view = record
     ? buildView(record, {
-        used,
-        usageReady,
         t,
         locale,
         counts,
-        onShowDeductions: (recordId) => {
-          setDeductionRecordId(recordId);
-          setTab(2);
-        },
+        onShowDeductions: setDeductionsTarget,
       })
     : null;
 
@@ -231,9 +204,10 @@ export default function SystemDetailDialog({
         onChange={(_, v) => setTab(v)}
         sx={{ px: 3, borderBottom: 1, borderColor: "divider", flexShrink: 0 }}
       >
+        {/* **ไม่มีแท็บ "งานที่ถูกตัด MA" แล้ว** — เปิดจากลิงก์ในแท็บประวัติ →
+            `SystemDeductionsDialog` (ป๊อปอัพแยกใบ ซ้อนบนใบนี้) */}
         <Tab label={t("tabGeneral")} />
         <Tab label={t("tabRenewHistory")} />
-        <Tab label={t("tabDeductions")} />
       </Tabs>
 
       {/**
@@ -315,25 +289,7 @@ export default function SystemDetailDialog({
                 flexDirection: "column",
               }}
             >
-              {tab === 2 ? (
-                /**
-                 * แท็บที่ 3 — **ดึงรายการของตัวเองตอนเปิดแท็บ** (ไม่ยิงตอนเปิดป๊อปอัพ)
-                 *
-                 * `deductionRecordId` = รอบที่ถูกเลือก — ตั้งค่าได้ 2 ทาง (**state
-                 * เดียวกัน จึงตรงกันเสมอ**): กดปุ่มในคอลัมน์ "รายการที่ตัด" ของ
-                 * แท็บประวัติ หรือกด chip เลือกรอบในแท็บนี้เอง · `null` = รอบล่าสุด
-                 */
-                <SystemDeductionsTab
-                  appId={record.app.id}
-                  recordId={deductionRecordId ?? record.link.recordId}
-                  rounds={rounds}
-                  onSelectRound={setDeductionRecordId}
-                />
-              ) : tab === 0 ? (
-                view.general
-              ) : (
-                view.history
-              )}
+              {tab === 0 ? view.general : view.history}
             </Box>
 
             {/* ---- ปุ่มท้ายการ์ด: เท่ากันทั้ง 2 แท็บ ---- */}
@@ -349,6 +305,18 @@ export default function SystemDetailDialog({
           </Box>
         )}
       </DialogContent>
+
+      {/**
+       * **ป๊อปอัพแยกใบ "งานที่ถูกตัด MA"** — เปิดซ้อนบนใบนี้จากลิงก์ "N รายการ"
+       * ในแท็บประวัติ · วางเป็นลูกของ `<Dialog>` แต่ **portal ของมันไป body**
+       * (DOM ทับกัน → ใบที่ mount ทีหลังอยู่บนสุด, Esc/คลิก backdrop โดนแค่ใบ
+       * บนเพราะ event ไม่ผ่าน DOM ของใบล่าง) · **ปิดป๊อปอัพเดิม = ถอดลูกออกจาก
+       * tree** (Modal unmount children) → ไม่มีทางทิ้งป๊อปอัพลูกค้างบนจอ
+       */}
+      <SystemDeductionsDialog
+        target={deductionsTarget}
+        onClose={() => setDeductionsTarget(null)}
+      />
     </Dialog>
   );
 }
@@ -368,21 +336,21 @@ interface DetailView {
 function buildView(
   record: DetailRecord,
   opts: {
-    used: number | undefined;
-    usageReady: boolean;
     t: ReturnType<typeof useTranslations>;
     locale: string;
     /**
-     * จำนวนรายการที่ถูกตัดของ **ทุกรอบ** ในคู่นี้ (คีย์ = `recordId`) —
-     * `null` = ยังโหลดอยู่ (โชว์ `…`) · Map ที่ไม่มีคีย์นั้น = ดึงไม่ได้ (โชว์ `—`)
+     * **"ใช้ไป" + "รายการที่ตัด" ของทุกรอบในคู่นี้** (`GET /apps/usage-counts`,
+     * คีย์ = `recordId`) — `null` = ยังโหลดอยู่ (โชว์ `…`) · Map ที่ไม่มีคีย์นั้น
+     * = ดึงไม่ได้/ไม่รู้จักแถวนั้น (โชว์ `—`) · **ใช้เป็นแหล่งของ "ใช้ไป" รายรอบ**
+     * ด้วย จึงไม่ต้องส่ง `used` ระดับคู่เข้ามาอีก (ดู `usedOf`)
      */
     counts: Map<number, UsageCount> | null;
-    /** เปิดแท็บ "งานที่ถูกตัด MA" ของรอบที่กด */
-    onShowDeductions: (recordId: number) => void;
+    /** เปิดป๊อปอัพแยกใบ `SystemDeductionsDialog` "งานที่ถูกตัด MA" ของรอบที่กด */
+    onShowDeductions: (target: DeductionTarget) => void;
   },
 ): DetailView {
   const { app, link } = record;
-  const { used, usageReady, t, locale, counts, onShowDeductions } = opts;
+  const { t, locale, counts, onShowDeductions } = opts;
 
   const caption = (text: string) => (
     <Typography variant="caption" color="text.disabled">
@@ -393,14 +361,27 @@ function buildView(
   /** ปัดเศษ 1 ตำแหน่ง — เหมือน `round1` ของตารางหลัก */
   const round1 = (n: number) => Math.round(n * 10) / 10;
 
-  /** ใช้ไปของคู่ — **ค่าเดียวกันทุกแถว** ในประวัติ (ตามข้อตกลง: ค่ารวมทั้งคู่) */
-  const usedHours = usageReady && used !== undefined ? round1(used) : null;
+  /**
+   * **"ใช้ไป" ของ "รอบนั้น"** — อ่านจาก `usage-counts` ที่ยิงตอนเปิดป๊อปอัพ
+   * (คีย์เดียวกับคอลัมน์ "รายการที่ตัด") · **รายรอบ ไม่ใช่ยอดรวมคู่**
+   * (ข้อสรุปจากผู้ใช้: "ยังไม่ได้ใช้เลยทำไมมีใช้ไป") — งานที่กรอก*ก่อน*รอบนั้น
+   * จะถูกสร้าง = ของรอบก่อนหน้า (`pickPeriodId()`) → แถวที่เพิ่งซื้อใช้ไป 0 ·
+   * `null` = ยังโหลด (`…`) หรือดึงไม่ได้ (`—`) — **ห้ามเดา 0**
+   */
+  const usedOf = (row: AppCompanyLink): number | null =>
+    periodUsedOf(counts, row.recordId);
+  /** ยังโหลดอยู่ — แยกจาก "ดึงไม่ได้" เพื่อไม่ให้ `…` กับ `—` ปนกัน */
+  const usageLoading = counts === null;
 
-  /** คงเหลือของแถวนั้น = MA ของแถวนั้น − ใช้ไปของคู่ (สูตรเดียวกับตารางหลัก) */
+  /** คงเหลือของแถวนั้น = MA ของแถวนั้น − **ใช้ไปของรอบนั้น** (สูตรเดียวกับตาราง) */
   const remainingOf = (row: AppCompanyLink): number | null => {
-    if (!usageReady || usedHours === null || row.maHours == null) return null;
-    return round1(row.maHours - usedHours);
+    const used = usedOf(row);
+    if (used === null || row.maHours == null) return null;
+    return round1(row.maHours - used);
   };
+
+  /** "ใช้ไป" ของ**แถวที่เปิดอยู่** (แถว = 1 รอบ) — ใช้ในแท็บ "ข้อมูลทั่วไป" */
+  const usedHours = usedOf(link);
 
   const chip = expiryChipLabel(link.expiryStatus, daysLeftIso(link.expiresAt ?? ""));
 
@@ -446,17 +427,16 @@ function buildView(
     value === null ? caption(fallback) : `${value} ${t("hoursUnit")}`;
 
   /**
-   * **ชั่วโมงที่ "ซื้อเพิ่ม" ของแถวนี้** — อ่านจาก `maHours` ของแถว `buy` **ตรง ๆ**
-   * เพราะสูตรใหม่ของ `buyHours()` คือ `ma_hours = ที่ซื้อ` ล้วน (ไม่รวมของแถวก่อน
-   * อีกต่อไป — ข้อสรุปจากผู้ใช้) · แถว `renew` → `0` (ไม่ได้ซื้อ) · แถว `buy` ที่ยัง
-   * ไม่มี `maHours` → `null` ให้โชว์ `—` **ไม่เดา**
-   *
-   * (เดิม derive `แถว buy − แถวก่อนหน้าของคู่` ซึ่งใช้ไม่ได้กับสูตรใหม่ — แถวที่
-   * สร้างก่อนสูตรใหม่ถูกแก้ค่าให้ตรงแล้วโดย migration `1825`)
+   * **ชั่วโมงที่ "ซื้อเพิ่ม" ของแถวนี้** — แถว `buy` เก็บ `ma_hours = ที่ซื้อ + ทบ`
+   * (`carried_hours` = สิทธิ์คงเหลือของแถวก่อน) จึง **ที่ซื้อ = ma − ทบ** · แถว
+   * `renew` → `0` (ไม่ได้ซื้อ) · แถว `buy` ที่ยังไม่มี `maHours` → `null` ให้โชว์
+   * `—` **ไม่เดา** · แถวเก่าที่สร้างก่อนสูตรทบ (migration `1825`) ไม่มี
+   * `carriedHours` → ทบ 0 → ที่ซื้อ = ma ✅ (ตรงกับความจริงของแถวนั้น)
    */
   const purchasedOf = (row: AppCompanyLink): number | null => {
     if (row.kind !== "buy") return 0;
-    return row.maHours == null ? null : round1(row.maHours);
+    if (row.maHours == null) return null;
+    return round1(Math.max(0, row.maHours - (row.carriedHours ?? 0)));
   };
 
   /**
@@ -466,7 +446,8 @@ function buildView(
    * จึง**บวกกันได้พอดีเสมอ** — ต้องเป็นอย่างนั้นเพราะ `maHours` ที่ฟอร์มบันทึก
    * บางครั้งรวม "ใช้ไป" ของช่วงก่อนเข้าไปด้วย (ดูสูตร `newMa` ในฟอร์มต่ออายุ)
    * จึงแยกเป็น "จำนวนที่พิมพ์" ล้วน ๆ ไม่ได้ · **แถว `buy`**: residual จะเป็น 0
-   * เสมอ (`ma = ที่ซื้อ`) จึงไม่ถูกโชว์ — ดู comment ของ "ส่วนประกอบ" ด้านล่าง
+   * เสมอ (`ma = ที่ซื้อ + ทบ` และ `ซื้อ = ma − ทบ`) จึงไม่ถูกโชว์ — ดู comment ของ
+   * "ส่วนประกอบ" ด้านล่าง
    */
   const carried = link.carriedHours ?? 0;
   const purchased = purchasedOf(link);
@@ -508,8 +489,9 @@ function buildView(
       <Divider />
 
       {/* ---- ส่วนประกอบ (บวกกันได้พอดีกับ "ชั่วโมง MA ทั้งหมด" ด้านล่าง) ----
-           แถว `buy` **ไม่โชว์บรรทัด "ต่ออายุ"** — MA ของแถวนั้นคือ "ที่ซื้อ" ล้วน
-           (residual จะเป็น 0 เสมอ) จึงเหลือแค่บรรทัด "ซื้อชั่วโมง" (ตามที่ขอ) */}
+           แถว `buy` **ไม่โชว์บรรทัด "ต่ออายุ"** — residual = `ma − ที่ซื้อ − ทบ` = 0
+           เสมอ (`ma = ที่ซื้อ + ทบ`, `ที่ซื้อ = ma − ทบ`) จึงเหลือ "ซื้อชั่วโมง"
+           (+ "ทบมาจากช่วงแรก" ถ้ามี) ซึ่งบวกกันได้พอดีกับ MA ทั้งหมด (ตามที่ขอ) */}
       {link.kind !== "buy" &&
         infoRow(
           t("renew"),
@@ -532,7 +514,7 @@ function buildView(
       )}
       {infoRow(
         t("usedLabel"),
-        usedHours === null ? caption(usageReady ? "—" : "…") : withUnit(usedHours, ""),
+        usedHours === null ? caption(usageLoading ? "…" : "—") : withUnit(usedHours, ""),
         "used",
       )}
       {infoRow(
@@ -585,7 +567,7 @@ function buildView(
             <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
               {t("columnRemaining")}
             </TableCell>
-            {/* **รายการที่ตัด** ของรอบนั้น — ปุ่มเปิดแท็บที่ 3 ของรอบที่กด */}
+            {/* **รายการที่ตัด** ของรอบนั้น — ปุ่มเปิดป๊อปอัพแยกใบของรอบที่กด */}
             <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
               {t("historyDeducted")}
             </TableCell>
@@ -599,6 +581,8 @@ function buildView(
              * ความยาวรวม
              */
             const round = history.length - index;
+            /** **ใช้ไปของรอบนั้น** (รายรอบ — แถวเพิ่งซื้อ = 0) + คงเหลือของรอบนั้น */
+            const used = usedOf(row);
             const remaining = remainingOf(row);
             /** จำนวนรายการที่ถูกตัดของรอบนี้ — ดูจาก `usage-counts` ที่ยิงตอนเปิด */
             const entry = counts?.get(row.recordId);
@@ -625,20 +609,32 @@ function buildView(
                 <TableCell align="center">
                   {row.maHours != null ? row.maHours : caption(t("notSetYet"))}
                 </TableCell>
-                {/* ใช้ไป = ค่ารวมทั้งคู่ — ตัวเลขเดียวกันทุกแถว (ตามข้อตกลง) */}
+                {/* ใช้ไป = **ของรอบนั้น** — คนละค่ากันทุกแถว (รายรอบ ไม่ใช่ยอดรวมคู่)
+                    `…` = ยังโหลด, `—` = ดึงไม่ได้ (fail-open ห้ามเดา 0) */}
                 <TableCell align="center">
-                  {usedHours === null ? caption(usageReady ? "—" : "…") : usedHours}
+                  {used === null ? caption(usageLoading ? "…" : "—") : used}
                 </TableCell>
                 <TableCell align="center">
-                  {remaining === null ? caption("—") : remaining}
+                  {remaining === null ? caption(usageLoading ? "…" : "—") : remaining}
                 </TableCell>
-                {/* ปุ่มเปิดแท็บ "งานที่ถูกตัด MA" **ของรอบนี้** — `counts === null`
-                    = ยังโหลด (`…`), Map ไม่มีคีย์ = ดึงไม่ได้ (`—`, fail-open) */}
+                {/* ปุ่ม**เปิดป๊อปอัพแยกใบ** "งานที่ถูกตัด MA" **ของรอบนี้** —
+                    `counts === null` = ยังโหลด (`…`), Map ไม่มีคีย์ = ดึงไม่ได้
+                    (`—`, fail-open) · ส่งข้อมูลรอบครบไว้ใช้ในหัวป๊อปอัพ */}
                 <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
                   <Button
                     size="small"
                     color="inherit"
-                    onClick={() => onShowDeductions(row.recordId)}
+                    onClick={() =>
+                      onShowDeductions({
+                        appId: app.id,
+                        recordId: row.recordId,
+                        round,
+                        kind: row.kind,
+                        carriedHours: row.carriedHours,
+                        appName: app.name,
+                        companyName: link.name,
+                      })
+                    }
                     sx={{
                       minWidth: 0,
                       px: 0.5,

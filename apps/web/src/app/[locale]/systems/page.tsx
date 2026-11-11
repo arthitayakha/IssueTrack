@@ -50,9 +50,11 @@ import {
   deleteAppRecord,
   fetchCompanies,
   fetchSystemsApps,
+  fetchUsageCounts,
   type App,
   type AppCompanyLink,
   type Company,
+  type UsageCount,
 } from "@/lib/apps-api";
 import {
   daysLeftIso,
@@ -62,7 +64,7 @@ import {
   type ExpiryLabelKey,
   type ExpiryStatus,
 } from "@/lib/app-expiry";
-import { fetchAppUsageAllTime, pairKey } from "@/lib/reports-api";
+import { MA_DEDUCTION_PAUSED, pairKey, periodUsedOf } from "@/lib/reports-api";
 
 /**
  * 1 แถวในตาราง = **1 คู่ แอป×บริษัท** — โชว์เฉพาะ **ช่วงเวลาล่าสุด** ของคู่นั้น
@@ -78,6 +80,23 @@ interface SystemRow {
 /** ปัดเศษ 1 ตำแหน่ง — เหมือน `round1` ของ reports (วินาที → ชม. อาจมีเศษทศนิยม) */
 function round1(n: number): number {
   return Math.round(n * 10) / 10;
+}
+
+/**
+ * `recordId` ของ**ช่วงล่าสุดของทุกคู่** — รายการที่ต้องถาม "ใช้ไป" รายรอบ
+ * (`GET /apps/usage-counts`) เพราะตารางโชว์เฉพาะช่วงล่าสุดอยู่แล้ว · กฎเดียวกับ
+ * `rows` memo ด้านล่าง (คู่ = `pairKey(appId, companyId)`, ช่วงใหม่ = `recordId` มากสุด)
+ */
+function latestRecordIds(list: App[]): number[] {
+  const latest = new Map<string, number>();
+  for (const app of list) {
+    for (const link of app.companies) {
+      const key = pairKey(app.id, link.id);
+      const prev = latest.get(key);
+      if (prev === undefined || link.recordId > prev) latest.set(key, link.recordId);
+    }
+  }
+  return [...latest.values()];
 }
 
 /** จำนวนแถวต่อหน้า — แถบ pagination ซ่อนตัวเองเมื่อไม่เกินนี้ (`totalPages <= 1`) */
@@ -155,18 +174,20 @@ export default function SystemsPage() {
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
 
   /**
-   * ตัวเลข "ใช้ไป" ต่อ **คู่ แอป×บริษัท** (ชม.) — ดึงคู่กับ `loadApps()` ตอนเปิดหน้า
-   * ผ่าน `fetchAppUsageAllTime()` จุดเดียวกับที่ `/reports` ใช้ (กติกาหัก MA
-   * จะได้ไม่ต่างกันระหว่างสองหน้า) — คีย์ด้วย `pairKey(appId, companyId)` เพราะ
-   * งานของลูกค้าบริษัทไหนต้องหักเฉพาะแถวของบริษัทนั้น ไม่ใช่ทุกแถวของแอป
+   * ตัวเลข "ใช้ไป" **รายรอบ** (ชม.) คีย์ด้วย `recordId` — ดึงผ่าน
+   * `GET /apps/usage-counts` (`periodUsedHours`) ทันทีที่ `loadApps()` ได้แถวมา
+   * (ต้องรู้ `recordId` ของช่วงล่าสุดก่อนจึงยิงได้)
+   *
+   * **รายรอบ ไม่ใช่ระดับคู่** (ข้อสรุปจากผู้ใช้: "ยังไม่ได้ใช้เลยทำไมมีใช้ไป") —
+   * แถวที่เพิ่งซื้อชั่วโม์จะใช้ไป = 0 → คงเหลือ = เต็มจำนวนที่ซื้อ · คีย์ด้วย
+   * `recordId` เพราะแถวบนตารางคือ **ช่วงล่าสุดของคู่** ต้องอ่านค่าของช่วงนั้น
    *
    * `error` ต้องแยกจาก `ready` เพราะถ้าดึงไม่ได้แล้วปล่อยให้เหลือ 0
-   * ตัวเลข "คงเหลือ" จะเท่ากับ MA ทั้งก้อนซึ่ง**ผิด**
+   * ตัวเลข "คงเหลือ" จะเท่ากับ MA ทั้งก้อนซึ่ง**ผิด** → โชว์ `—`
    *
-   * (`MA_DEDUCTION_PAUSED = false` → ฟังก์ชันนั้นยิง request จริง; ถ้าปิด
-   * กลับเป็น `true` จะคืน map ว่างทันที → "คงเหลือ" = MA เต็มก้อน)
+   * (`MA_DEDUCTION_PAUSED` ยังปิดหักได้ที่จุดเดียว — `periodUsedOf()` คืน 0 ให้เอง)
    */
-  const [usedByApp, setUsedByApp] = useState<Map<string, number>>(new Map());
+  const [usedByRecord, setUsedByRecord] = useState<Map<number, UsageCount>>(new Map());
   const [usageStatus, setUsageStatus] = useState<"loading" | "ready" | "error">("loading");
 
   useEffect(() => {
@@ -177,11 +198,16 @@ export default function SystemsPage() {
   /** แถวกำลังแก้ไข (null = เพิ่มข้อมูลใหม่) — ส่งเข้า `AppFormDialog` ตรง ๆ */
   const [editingRecord, setEditingRecord] = useState<EditingRecord | null>(null);
 
-  /** แถวกำลังลบ — ลบได้เฉพาะรายการนั้น ตัวแอปไม่หาย (อยู่ที่แท็บแอป) */
+  /**
+   * แถวกำลังลบ — **ลบทั้งคู่** (ทุกช่วง/ทุกการซื้อของ แอป×บริษัท) ไม่ใช่แค่
+   * แถวล่าสุด · ตัวแอปไม่หาย (อยู่ที่แท็บแอปใน `/master-data`) · `count` =
+   * จำนวนแถวของคู่นั้น ใช้ในข้อความยืนยัน ("พร้อมประวัติทั้งหมด {n} รายการ")
+   */
   const [deleteTarget, setDeleteTarget] = useState<{
     appId: number;
     recordId: number;
     label: string;
+    count: number;
   } | null>(null);
 
   /** แถวกำลัง**ต่ออายุ** (null = ปิดฟอร์ม) — ปุ่มขึ้นเฉพาะช่วงที่หมดอายุแล้ว (ดู `canRenew()`) */
@@ -206,7 +232,11 @@ export default function SystemsPage() {
     try {
       const result = await fetchSystemsApps();
       // แอปที่ยังไม่มีข้อมูล**ไม่มีแถว**ในหน้านี้ — ไปเพิ่ม/แก้ชื่อได้ที่แท็บแอป
-      setApps(result.data.filter((a) => a.companies.length > 0));
+      const list = result.data.filter((a) => a.companies.length > 0);
+      setApps(list);
+      // "ใช้ไป" รายรอบต้องรู้ `recordId` ของช่วงล่าสุดก่อน → ยิงตามหลังทันที
+      // (ปุ่มลองใหม่/หลังต่ออายุ-ซื้อ-ลบ ก็มาจากตรงนี้ เพราะทุกทางเรียก `loadApps`)
+      void loadUsage(latestRecordIds(list));
     } catch {
       // รายการเดิมยังอยู่บนจอ — ห้ามเคลียร์ทิ้งเพราะดึงไม่สำเร็จ
     }
@@ -222,26 +252,31 @@ export default function SystemsPage() {
   }
 
   useEffect(() => {
-    // หน้า spinner ผูกกับ apps/companies เท่านั้น — ตัวเลข "ใช้ไป" ดึงแยก
-    // เพื่อไม่ให้การช้าของ endpoint รายงานมาค้างหน้าทั้งใบ (ถ้าปิดหัก MA
-    // กลับเป็น `true` จะไม่มี request ให้รออยู่แล้ว — ข้อความนี้ไม่กระทบ)
+    // หน้า spinner ผูกกับ apps/companies เท่านั้น — ตัวเลข "ใช้ไป" ดึงตามหลัง
+    // (`loadApps()` ยิง `loadUsage()` เองทันทีที่รู้ `recordId` ของช่วงล่าสุด)
     Promise.all([loadApps(), loadCompanies()]).finally(() => setLoading(false));
-    void loadUsage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   /**
-   * ดึง "ชั่วโมงที่ใช้ไป" ต่อ **คู่ แอป×บริษัท** — `fetchAppUsageAllTime()`
-   * (ตัวเดียวกับที่หน้ารายงานใช้, นับเฉพาะงาน type feature/requirement)
-   * ล้มเหลวเองได้: คอลัมน์ "คงเหลือ" จะกลายเป็น `—` พร้อมปุ่มลองใหม่
+   * ดึง "ชั่วโมงที่ใช้ไป" **รายรอบ** ของช่วงล่าสุดทุกคู่ — `GET /apps/usage-counts`
+   * (`periodUsedHours`) ยิงครั้งเดียวต่อการโหลด ไม่ใช่ต่อแถว · ล้มเหลวเองได้:
+   * คอลัมน์ "คงเหลือ" จะกลายเป็น `—` พร้อมปุ่มลองใหม่
    */
-  async function loadUsage() {
+  async function loadUsage(recordIds: number[]) {
     setUsageStatus("loading");
+    if (MA_DEDUCTION_PAUSED) {
+      // ปิดหัก → ไม่ยิง request เปล่า ๆ (`periodUsedOf()` คืน 0 ให้เอง)
+      setUsedByRecord(new Map());
+      setUsageStatus("ready");
+      return;
+    }
     try {
-      setUsedByApp(await fetchAppUsageAllTime());
+      const list = await fetchUsageCounts(recordIds);
+      setUsedByRecord(new Map(list.map((item) => [item.recordId, item])));
       setUsageStatus("ready");
     } catch {
-      setUsedByApp(new Map());
+      setUsedByRecord(new Map());
       setUsageStatus("error");
     }
   }
@@ -251,7 +286,7 @@ export default function SystemsPage() {
    * (ใช้ได้จริงตอนนี้ เพราะ `MA_DEDUCTION_PAUSED = false` มี request ให้พัง)
    */
   function retryUsage() {
-    void loadUsage();
+    void loadUsage(latestRecordIds(apps));
   }
 
   /** ล้างตัวกรองทั้ง 3 แล้วกลับไปหน้าแรก — เรียกจากปุ่ม "ล้างทั้งหมด" ใน popover */
@@ -327,19 +362,23 @@ export default function SystemsPage() {
     if (row.link.expiryStatus === "expired") return false;
     const ma = row.link.maHours;
     if (ma == null) return false;
-    const used = usedByApp.get(pairKey(row.app.id, row.link.id)) ?? 0;
+    // **ใช้ไปรายรอบของแถวนั้น** — แถวที่เพิ่งซื้อ (ยังไม่ได้ใช้) = 0 → คงเหลือเต็ม
+    // จำนวนที่ซื้อ → ปุ่มหายเองหลังซื้อ · entry หาย = ไม่รู้ → ถือว่าไม่หมด (fail-open)
+    const used = periodUsedOf(usedByRecord, row.link.recordId) ?? 0;
     return ma - used <= 0;
   }
 
   /**
-   * เปิดกล่องยืนยันเพื่อ **ลบรายการนั้น** — ไม่ใช่ลบแอป (การลบแอปเป็นหน้าที่
-   * แท็บแอปใน `/master-data`) `label` โชว์ "แอป — บริษัท" กันลบผิดแถว
+   * เปิดกล่องยืนยันเพื่อ **ลบทั้งคู่** (ทุกช่วงของ แอป×บริษัท — `count` = จำนวน
+   * แถวนั้น) — ไม่ใช่ลบแอป (การลบแอปเป็นหน้าที่แท็บแอปใน `/master-data`)
+   * `label` โชว์ "แอป — บริษัท" กันลบผิดแถว
    */
   function handleDeleteRecord(row: SystemRow) {
     setDeleteTarget({
       appId: row.app.id,
       recordId: row.link.recordId,
       label: `${row.app.name} — ${row.link.name}`,
+      count: row.app.companies.filter((c) => c.id === row.link.id).length,
     });
   }
 
@@ -541,7 +580,7 @@ export default function SystemsPage() {
   }
 
   /**
-   * คอลัมน์ **"คงเหลือ"** = `MA ของแถวนั้น − ใช้ไป`
+   * คอลัมน์ **"คงเหลือ"** = `MA ของแถวนั้น − ใช้ไป**ของรอบนั้น**`
    *
    * แยก 4 กรณีให้ชัด เพราะข้อความต้องไม่ปนกัน:
    * - ยังดึง "ใช้ไป" ไม่สำเร็จ → spinner ระหว่างโหลด / `—` ตอนผิดพลาด
@@ -551,13 +590,13 @@ export default function SystemsPage() {
    *
    * (`MA_DEDUCTION_PAUSED = false` → "ใช้ไป" มาจริง; ถ้าปิดกลับเป็น `true`
    * จะเหลือ MA เต็มก้อน — สองกรณีแรกยังแยกไว้เผื่อปิดหักกลับ)
-   * ("ใช้ไป" นับเฉพาะ type `feature`/`requirement` — bug/NULL ไม่หัก — ดูกติกา
-   * ใน `reports-api.ts`)
+   * ("ใช้ไป" นับเฉพาะ type `feature`/`requirement` — bug/NULL ไม่หัก)
    *
-   * **ระดับคู่ แอป×บริษัท** — คีย์ `pairKey(row.app.id, row.link.id)` เพราะงานถูก
-   * โยงกับบริษัทของ**ผู้แจ้งงาน** (`users.company_id`) ดังนั้นงานของลูกค้า
-   * บริษัทไหนหักเฉพาะแถวนั้น; จับคู่ไม่ได้ (ผู้แจ้งไม่มีบริษัท / ไม่มีผู้แจ้ง)
-   * map จะไม่มีคีย์นี้ → หัก 0 ทุกแถว = ไม่ลดที่ไหนเลย (ตามกติกา)
+   * **รายรอบ ไม่ใช่ระดับคู่** (ข้อสรุปจากผู้ใช้: "ยังไม่ได้ใช้เลยทำไมมีใช้ไป") —
+   * อ่านจาก `periodUsedOf(usedByRecord, recordId)` ซึ่งผูกงานเข้ารอบด้วย
+   * `pickPeriodId()`: งานที่กรอก*ก่อน*รอบนั้นจะถูกสร้าง = ของรอบก่อนหน้า →
+   * แถวที่เพิ่งซื้อชั่วโม์ (ยังไม่ได้ใช้) ใช้ไป 0 · ยังไม่มี entry (ดึงไม่ได้ /
+   * ไม่รู้จักแถวนั้น) → `null` → โชว์ `—` **ห้ามเดา 0**
    */
   function remainingCell(row: SystemRow) {
     const caption = (text: string) => (
@@ -571,8 +610,26 @@ export default function SystemsPage() {
 
     const ma = row.link.maHours;
     if (ma == null) return caption(t("notSetYet"));
-    return round1(ma - (usedByApp.get(pairKey(row.app.id, row.link.id)) ?? 0));
+    const used = periodUsedOf(usedByRecord, row.link.recordId);
+    if (used === null) return caption("—");
+    return round1(ma - used);
   }
+
+  /**
+   * "ใช้ไป" รายรอบที่ **ฟอร์มต่ออายุ/ฟอร์มซื้อชั่วโม์** ต้องใช้ — `used` ของ
+   * **แถวนั้น** (แถวต้นทางของฟอร์ม) ไม่ใช่ยอดรวมคู่ · entry หาย (ดึงไม่ได้ /
+   * ไม่รู้จักแถวนั้น) → ส่ง `status: "error"` ให้ฟอร์ม**ไม่ทบชั่วโม์มั่ว** แล้ว
+   * บอกเหตุผลใต้ช่อง MA เอง (ฟอร์มต่ออายุ disable ตอน `loading` เหมือนเดิม)
+   */
+  const formUsage = (recordId: number | undefined) => {
+    const used = recordId == null ? null : periodUsedOf(usedByRecord, recordId);
+    return {
+      used: used ?? undefined,
+      status: usageStatus === "ready" && used === null ? ("error" as const) : usageStatus,
+    };
+  };
+  const renewUsage = formUsage(renewingRecord?.link.recordId);
+  const buyUsage = formUsage(buyingRecord?.link.recordId);
 
   return (
     <RequirePermission permission="system.view">
@@ -833,8 +890,6 @@ export default function SystemsPage() {
         <SystemDetailDialog
           open={Boolean(detailRow)}
           record={detailRow}
-          used={detailRow ? usedByApp.get(pairKey(detailRow.app.id, detailRow.link.id)) : undefined}
-          usageReady={usageStatus === "ready"}
           canRenew={detailRow ? canRenew(detailRow) : false}
           onRenew={() => {
             // **ไม่ปิด** ป๊อปอัพรายละเอียด — เปิดฟอร์มต่ออายุทับไว้ พอบันทึกเสร็จ
@@ -849,18 +904,14 @@ export default function SystemsPage() {
         {/* ฟอร์มต่ออายุ — คู่แอป×บริษัทล็อกจากแถวที่กด บันทึกแล้ว append ช่วงใหม่
             **mount ท้ายสุด = อยู่บนสุด** — MUI Dialog ทุกตัวมี zIndex เท่ากัน
             (1300) ตัวที่ mount ทีหลังจะถูกวาดทับ ถ้าสลับลำดับ ฟอร์มต่ออายุจะถูก
-            ป๊อปอัพรายละเอียดทับจนกดไม่ได้ · `used`/`usageStatus` = ข้อมูล "ใช้ไป"
-            ชุดเดียวกับคอลัมน์ "คงเหลือ" ให้ฟอร์มโชว์/ทบชั่วโมงที่เหลือได้ตรงกับ
-            ตาราง (และรอโหลดเสร็จก่อนเปิดปุ่มบันทึก) */}
+            ป๊อปอัพรายละเอียดทับจนกดไม่ได้ · `used`/`usageStatus` = "ใช้ไป"
+            **รายรอบของแถวนั้น** (`periodUsedOf`) ให้ฟอร์มโชว์/ทบชั่วโมงที่เหลือ
+            ตรงกับคอลัมน์ "คงเหลือ" (และรอโหลดเสร็จก่อนเปิดปุ่มบันทึก) */}
         <RenewFormDialog
           open={Boolean(renewingRecord)}
           record={renewingRecord}
-          used={
-            renewingRecord
-              ? usedByApp.get(pairKey(renewingRecord.app.id, renewingRecord.link.id))
-              : undefined
-          }
-          usageStatus={usageStatus}
+          used={renewUsage.used}
+          usageStatus={renewUsage.status}
           onClose={() => setRenewingRecord(null)}
           onSaved={loadApps}
         />
@@ -868,28 +919,30 @@ export default function SystemsPage() {
         {/* ฟอร์มซื้อชั่วโมง — **mount ท้ายสุด = อยู่บนสุด** (เหตุผล z-index เดียวกับ
             ฟอร์มต่ออายุด้านบน) · บันทึกแล้ว `loadApps()` ดึงช่วงใหม่ → แถวนั้นเห็น
             MA ใหม่ทันที และปุ่ม "ซื้อชั่วโมง" หายเองเพราะคงเหลือ > 0 · `used`/
-            `usageStatus` = ข้อมูล "ใช้ไป" ชุดเดียวกับคอลัมน์ "คงเหลือ" ในตาราง
-            ให้กล่องสรุป/preview ในฟอร์มตรงกับที่เห็นข้างนอก */}
+            `usageStatus` = "ใช้ไป" **รายรอบของแถวนั้น** ให้กล่องสรุป/preview ในฟอร์ม
+            ตรงกับที่เห็นข้างนอก */}
         <BuyHoursDialog
           open={Boolean(buyingRecord)}
           record={buyingRecord}
-          used={
-            buyingRecord
-              ? usedByApp.get(pairKey(buyingRecord.app.id, buyingRecord.link.id))
-              : undefined
-          }
-          usageStatus={usageStatus}
+          used={buyUsage.used}
+          usageStatus={buyUsage.status}
           onClose={() => setBuyingRecord(null)}
           onSaved={loadApps}
         />
 
-        {/* ยืนยันการ **ลบรายการ** — ไม่ต้องเช็ก "งานค้าง" แล้ว เพราะไม่ได้ลบแอป */}
+        {/* ยืนยันการ **ลบทั้งคู่** (ทุกช่วงของ แอป×บริษัท) — ข้อความคนละ key กับ
+            master-data เพราะต้องบอกจำนวนแถวด้วย · ไม่ต้องเช็ก "งานค้าง" แล้ว
+            เพราะไม่ได้ลบแอป */}
         <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} maxWidth="xs">
           <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
           <DialogContent>
             {deleteTarget && (
               <Typography variant="body2">
-                {t("deleteConfirmMessage", { type: t("data"), name: deleteTarget.label })}
+                {t("deleteRecordConfirmMessage", {
+                  type: t("data"),
+                  name: deleteTarget.label,
+                  n: deleteTarget.count,
+                })}
               </Typography>
             )}
           </DialogContent>

@@ -6,7 +6,7 @@ import { getToken } from "./rules-api";
 import { fetchCategories, fetchPriorities, fetchStatuses } from "./board-api";
 // apps-api's `fetchApps` — unlike board-api's, it types `companies[].maHours`,
 // which the MA / คงเหลือ columns need. Same endpoint, same payload.
-import { fetchCompanies, fetchApps, type AppCompanyLink } from "./apps-api";
+import { fetchCompanies, fetchApps, type AppCompanyLink, type UsageCount } from "./apps-api";
 
 /**
  * Reports data layer — every row on the /reports page comes from the real
@@ -716,6 +716,11 @@ export function pairKey(appId: number, companyId: number | null): string {
 /**
  * "ใช้ไป" ต่อ **คู่ แอป×บริษัท** — ตัวส่วนของสูตร คงเหลือ = MA − ใช้ไป
  *
+ * ⚠️ **ไม่มีหน้าเรียกใช้แล้ว** หลังเปลี่ยน "ใช้ไป/คงเหลือ" เป็น**รายรอบ**ทุกหน้า
+ * (ดู `periodUsedOf()` ด้านล่าง) — เก็บไว้เป็นตัวอ้างอิงของตัวเลขระดับคู่จาก
+ * `GET /reports/usage` เผื่อจะเพิ่มคอลัมน์ "ใช้ไปทั้งคู่" ภายหลัง ·
+ * `MA_DEDUCTION_PAUSED` ยังเป็นสวิตช์ปิดหักตัวเดิม (ตอนนี้ `periodUsedOf` อ่านด้วย)
+ *
  * - **all-time** (`EMPTY_FILTERS`) เพราะ `hoursEntered` ของแถวบนจอ **ผ่านตัว
  *   กรองวันที่/ค้นหา** อยู่แล้ว — ถ้าเอาตัวนั้นไปลบ MA พอผู้ใช้เลือกช่วงวันที่
  *   ตัวเลขคงเหลือจะขยับทั้งที่สัญญาไม่ได้เปลี่ยน (คนละค่ากับ `/systems` ด้วย)
@@ -743,6 +748,37 @@ export async function fetchAppUsageAllTime(): Promise<Map<string, number>> {
   const used = new Map<string, number>();
   for (const row of rows) used.set(pairKey(row.appId, row.companyId), row.hours);
   return used;
+}
+
+/**
+ * **"ใช้ไป" ของ "รอบนั้น"** (`recordId`) — ตัวส่วนของสูตร
+ * `คงเหลือ = MA ของแถวนั้น − ใช้ไปของรอบนั้น`
+ *
+ * เดิมทุกหน้าอ่านยอด **รวมตลอดเวลาของคู่** (`fetchAppUsageAllTime`) ซึ่งทำให้
+ * แถวที่**เพิ่งซื้อชั่วโม์ (ยังไม่ได้ใช้เลย)** โชว์ "ใช้ไป 40 / คงเหลือ 0" ทั้งที่
+ * 40 ชม. นั้นถูกใช้ไปตอน**รอบแรก** — ผู้ใช้ถามว่า "ยังไม่ได้ใช้ทำไมมีใช้ไป" จึง
+ * เปลี่ยนเป็น **รายรอบทุกหน้า** · ค่ามาจาก `GET /apps/usage-counts`
+ * (`periodUsedHours`) ซึ่งผูกงานเข้ารอบด้วย `pickPeriodId()` — งานที่กรอก
+ * *ก่อน* รอบนั้นจะถูกสร้าง = ของรอบก่อนหน้า (ดู `ma-attribution.ts`)
+ *
+ * 3 กรณี — **ห้ามเดาเป็น 0**:
+ * - `counts === null` → ยังโหลด → `null` (ให้โชว์ `…`)
+ * - ไม่มีคีย์ → ดึงไม่ได้ / ไม่รู้จักแถวนั้น → `null` (ให้โชว์ `—`)
+ * - **`MA_DEDUCTION_PAUSED` → `0`** — จุดเดียวที่ปิดหัก MA (ค่าของ
+ *   `fetchAppUsageAllTime` เดิม ยังใช้กับสูตรนี้เหมือนกัน)
+ *
+ * **งานที่กรอกก่อนระบบ** (`actual_fix_at IS NULL` = ไม่ระบุรอบ) **ไม่ถูกนับที่นี่**
+ * — ยอดรวมทุกรอบจึงอาจน้อยกว่า "ใช้ไป" เดิมเล็กน้อย; ชั่วโม์พวกนั้นถูกเล่าใน
+ * แท็บ "งานที่ถูกตัด MA" (`unattributedHours`) ไม่ได้หายไปไหน
+ */
+export function periodUsedOf(
+  counts: Map<number, UsageCount> | null,
+  recordId: number,
+): number | null {
+  if (counts === null) return null;
+  if (MA_DEDUCTION_PAUSED) return 0;
+  const entry = counts.get(recordId);
+  return entry ? round1(entry.periodUsedHours) : null;
 }
 
 /* ------------------------------------------------------------------ */

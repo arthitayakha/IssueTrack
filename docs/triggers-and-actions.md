@@ -97,7 +97,7 @@
 | 9 | **`status.timer_enabled` / `time_entry_enabled` ไม่มีโค้ดอ่าน** | ไม่มีที่ไหนอ้างถึงค่าทั้งสอง |
 | 10 | **`notifications` มีแค่ entity** | `modules/notifications/entities/notification.entity.ts` มีอย่างเดียว — ไม่มี service/controller, ไม่มี inbox UI → ตาราง 0 แถว |
 | 11 | **Migration runner ใช้ไม่ได้** | `apps/api/run-migration.ts` hardcode แค่ 2 ไฟล์; `package.json` ชี้ `dist/data-source.js` ที่ไม่มีอยู่จริง; `apps/api/src/data-source.ts` ไม่มีไฟล์ |
-| 12 | **DB ไม่ตรงกับ migration files** | ตาราง `board_columns` ยังมี 5 แถว, `issues.column_id` ยังมี; `0018-remove-is-locked.sql`, `0025-merge-board-columns-into-issue-statuses.sql`, `0026-add-programmer-user-view.sql` ไม่เคยถูก apply; ตาราง `migrations` มีแค่ 4 TypeORM migration |
+| 12 | **DB ไม่ตรงกับ migration files** | ✅ **ส่วน `board_columns` แก้แล้ว** — ตาราง `board_columns` (5 แถว) กับ `issues.column_id` **ถูกลบโดย migration TS `1826000000000-DropBoardColumnsAndIssueColumnId`** แล้ว (SQL `0025` ที่ควรจะ merge ข้อมูลไม่เคยถูก apply และถูกทำเครื่องหมาย SUPERSEDED ไว้); ยังเหลือค้าง: `0018-remove-is-locked.sql`, `0026-add-programmer-user-view.sql` ไม่เคยถูก apply; ตาราง `migrations` มี **39** แถว TypeORM migration (เดิมบันทึกว่า 4 — ข้อมูลเก่า) |
 | 13 | **ไฟล์ `.sql` ไม่ idempotent** | `0001-add-position-fk.sql` fail ทันทีบน DB ปัจจุบัน → ต้อง baseline ไม่ใช่ replay |
 
 ### 2.2 สิทธิ์ใน DB ปัจจุบัน

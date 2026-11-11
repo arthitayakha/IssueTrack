@@ -140,14 +140,23 @@ export async function updateAppRecord(
   }, getToken());
 }
 
-/** ลบรายการ — **แอปไม่หาย** (การลบแอปอยู่ที่แท็บแอปใน `/master-data`) */
+/**
+ * ลบ **ทุกแถวของคู่** แอป×บริษัท — แถวในตาราง `/systems` = 1 คู่ (โชว์แค่
+ * ช่วงล่าสุด) ปุ่มถังขยะจึงต้องหายทั้งประวัติ ไม่ใช่ทีละช่วง (ข้อสรุปจาก
+ * ผู้ใช้: "ลบทีละรอบ มันต้องลบทั้งหมด") · **แอปไม่หาย** (การลบแอปอยู่ที่
+ * แท็บแอปใน `/master-data`)
+ *
+ * `deletedRows` = จำนวนแถวที่ถูกลบจริง (ข้อความยืนยันใช้โชว์ "{n} รายการ")
+ */
 export async function deleteAppRecord(
   appId: number,
   recordId: number,
-): Promise<{ deleted: boolean }> {
-  return apiFetch<{ deleted: boolean }>(`/apps/${appId}/companies/${recordId}`, {
-    method: "DELETE",
-  }, getToken());
+): Promise<{ deleted: boolean; deletedRows?: number }> {
+  return apiFetch<{ deleted: boolean; deletedRows?: number }>(
+    `/apps/${appId}/companies/${recordId}`,
+    { method: "DELETE" },
+    getToken(),
+  );
 }
 
 /**
@@ -189,10 +198,15 @@ export async function renewAppRecord(
  *
  * ต่างจาก `AppRenewInput`: ส่งมา**แค่จำนวนชั่วโมง** (จำนวนเต็ม > 0) — วันที่สัญญา
  * คงเดิมทุกประการ ฝั่งเซิร์ฟเวอร์ append แถบใหม่ให้คู่เดิมด้วย
- * `maHours = ของเดิม + ที่ซื้อ` และ `kind = 'buy'`
+ * `maHours = ที่ซื้อ + ทบ` และ `kind = 'buy'`
+ *
+ * **`carriedHours` = สิทธิ์คงเหลือของแถวก่อน** (`MA แถวนั้น − ใช้ไปของแถวนั้น`) ที่
+ * ฟอร์มคำนวณไว้แล้ว — ส่ง `0` เมื่อไม่ทบ (เซิร์ฟเวอร์เก็บเป็น `NULL`) · ต้องเป็น
+ * จำนวนเต็ม ≥ 0 และไม่เกิน MA ของแถวนั้น (เกิน = 400)
  */
 export interface AppBuyInput {
   hours: number;
+  carriedHours: number;
 }
 
 /**

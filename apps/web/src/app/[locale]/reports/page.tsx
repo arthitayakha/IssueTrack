@@ -15,6 +15,7 @@ import {
   fetchPeriodUsage,
   fetchUsageCounts,
   type DeductionState,
+  type PeriodIssue,
   type UsageCount,
 } from "@/lib/apps-api";
 import {
@@ -23,13 +24,12 @@ import {
   DEFAULT_SORT,
   downloadCsv,
   fetchAllReportRows,
-  fetchAppUsageAllTime,
   fetchPersonTasks,
   fetchReportRows,
   loadFilterOptions,
   EMPTY_FILTER_OPTIONS,
   paginate,
-  pairKey,
+  periodUsedOf,
   REPORT_PAGE_SIZE,
   SORTABLE_FIELDS,
 } from "@/lib/reports-api";
@@ -198,6 +198,11 @@ function ReportsScreen() {
    * ตารางอ่านจาก `Settings.renew` / `Settings.kindBuy`)
    */
   const st = useTranslations("Settings");
+  /**
+   * translator ของ namespace `Boards` — ชื่อ task type (`Boards.taskType.*`)
+   * ของแถวรายละเอียด "รายการที่ตัด" ตอน export ให้คำเดียวกับที่ตารางกางบนจอ
+   */
+  const bt = useTranslations("Boards");
   const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
@@ -254,24 +259,6 @@ function ReportsScreen() {
   /* ---------------- options + rows ---------------- */
 
   const [options, setOptions] = useState<FilterOptions>(EMPTY_FILTER_OPTIONS);
-  /**
-   * "ใช้ไป" ต่อ **คู่ แอป×บริษัท** (all-time) — ตัวส่วนของ คงเหลือ = MA − ใช้ไป
-   * ใน view **ตามบริษัท**
-   *
-   * ดึง **เฉพาะตอนเปิด view ตามบริษัท** เพราะเป็นคนละ query กับตารางบนจอ
-   * (ตารางใช้ตัวกรองของผู้ใช้ ส่วนตัวเลขนี้ต้องคงที่เสมอ — ดูเหตุผลใน
-   * `fetchAppUsageAllTime`) · `status` แยกโหลด/ผิดพลาดให้ตารางโชว์ `—` ได้ถูก
-   *
-   * **MA ถูกหักแล้ว** (`MA_DEDUCTION_PAUSED = false` ใน `reports-api.ts`) →
-   * "ใช้ไป" = ผลรวมเวลาจริงเฉพาะงาน type feature/requirement (bug/NULL ไม่หัก)
-   * และ**เฉพาะคู่ที่งานถูกโยงด้วยบริษัทของผู้แจ้งงาน** — จับคู่ไม่ได้ = ไม่หัก
-   * (จอ + CSV + PDF อ่านจากตัวเลขนี้ชุดเดียว)
-   */
-  const [usage, setUsage] = useState<{
-    status: "loading" | "ready" | "error";
-    /** คีย์ `pairKey(appId, companyId)` — ไม่ใช่ระดับแอป (ดู `fetchAppUsageAllTime`) */
-    byPair: Map<string, number>;
-  }>({ status: "loading", byPair: new Map() });
   const [rows, setRows] = useState<ReportPage<ReportRows> | null>(null);
   /**
    * Which view `rows` actually belongs to. The URL flips `view` immediately on
@@ -306,27 +293,6 @@ function ReportsScreen() {
       cancelled = true;
     };
   }, [reloadKey]);
-
-  // "ใช้ไป" = ของ view ตามบริษัท เท่านั้น (view ตามแอปถอดคอลัมน์คงเหลือไปแล้ว)
-  // (`MA_DEDUCTION_PAUSED = false` → ยิง request จริง; สอง .then/.catch ล่างนี้
-  // ยังอยู่ครบ เผื่อตอนปิดหักกลับเป็น true ที่ฟังก์ชันจะคืน map ว่างทันที)
-  useEffect(() => {
-    if (view !== "company") return;
-    let cancelled = false;
-    setUsage((u) => ({ ...u, status: "loading" }));
-    fetchAppUsageAllTime()
-      .then((byPair) => {
-        if (!cancelled) setUsage({ status: "ready", byPair });
-      })
-      .catch(() => {
-        // ล้มเหลว = คงเหลือทุกแถวเป็น `—` — ห้ามเดาค่า (ดู remainingCell)
-        // (ตอน pause ฟังก์ชันไม่ reject → เส้นทางนี้เข้าไม่ถึง)
-        if (!cancelled) setUsage({ status: "error", byPair: new Map() });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [view, reloadKey]);
 
   /**
    * view "company" — contract data, **rows built in the browser** from the
@@ -417,9 +383,11 @@ function ReportsScreen() {
   /* ---------------- expandable "รายการที่ตัด" (view ตามบริษัท) ---------------- */
 
   /**
-   * **จำนวนงานที่ถูกตัดของทุกรอบในหน้านี้** — `GET /apps/usage-counts` ยิง
-   * **ครั้งเดียว** ต่อหน้า (ไม่ใช่ต่อแถว) · ต่างจาก `usage` ที่เป็นระดับ**คู่**
-   * ตัวนี้ระดับ**รอบ** เพราะแถวของ view นี้ = 1 รอบอยู่แล้ว
+   * **จำนวนงานที่ถูกตัด + "ใช้ไป" ของทุกรอบในหน้านี้** — `GET /apps/usage-counts`
+   * ยิง **ครั้งเดียว** ต่อหน้า (ไม่ใช่ต่อแถว) · **รายรอบ** เพราะแถวของ view นี้
+   * = 1 รอบอยู่แล้ว → คอลัมน์ "รายการที่ตัด" / "ใช้ไป" / "คงเหลือ" (จอ + CSV + PDF)
+   * อ่านชุดเดียวกันทั้งหมด (เดิม "ใช้ไป/คงเหลือ" แยกไปใช้ map ระดับ**คู่** ทำให้
+   * แถวที่เพิ่งซื้อชั่วโม์โชว์ "ใช้ไป 40 / คงเหลือ 0" ทั้งที่ยังไม่ได้ใช้ — ผู้ใช้ทัก)
    *
    * `status` แยก "ยังโหลด" (`…`) / "ดึงไม่ได้` (`—`) / "รู้ค่า" — ห้ามเดาเป็น 0
    */
@@ -648,8 +616,51 @@ function ReportsScreen() {
     [t],
   );
 
+  /**
+   * คอลัมน์รายละเอียดของ view **ตามบริษัท** — "รายการที่ตัด" ที่กางใต้แถวบนจอ
+   * ออกมาเป็นคอลัมน์เสริมต่อท้าย (แพตเทิร์นเดียวกับ assignee detail) · หัวข้อ
+   * ใช้ key `Settings.deduction*` เดียวกับตารางกางบนจอ จึงไม่ต้องเพิ่ม key ใหม่
+   * และ task type ใช้ `Boards.taskType.*` เหมือนกัน (จอ/CSV/PDF ห้ามต่างกัน)
+   */
+  const companyDetailExportCols = useCallback(
+    (): Array<ExportCol<PeriodIssue>> => [
+      {
+        key: "deductionIssueNo",
+        header: st("deductionIssueNo"),
+        value: (i) => i.issueNumber ?? "—",
+      },
+      { key: "deductionTitle", header: st("deductionTitle"), value: (i) => i.title },
+      {
+        key: "deductionType",
+        header: st("deductionType"),
+        value: (i) => (i.taskType ? bt(`taskType.${i.taskType}`) : "—"),
+      },
+      { key: "deductionHours", header: st("deductionHours"), value: (i) => i.hours },
+      {
+        key: "deductionAt",
+        header: st("deductionAt"),
+        // fmtDate เดียวกับตารางกางบนจอ — ห้ามใช้ formatDay (คนละฟอร์แมตกับจอ)
+        value: (i) =>
+          i.deductedAt
+            ? new Date(i.deductedAt).toLocaleDateString(locale, { dateStyle: "short" })
+            : "—",
+      },
+      {
+        key: "deductionAssignee",
+        header: st("deductionAssignee"),
+        value: (i) => i.assigneeName ?? st("deductionUnassigned"),
+      },
+    ],
+    [st, bt, locale],
+  );
+
   const buildExport = useCallback(
-    (all: ReportRows[]): CsvMatrix => {
+    /**
+     * `exportCounts` — ใช้เฉพาะตอน export: นับ "รายการที่ตัด" ของ**ทุกแถวใน
+     * ไฟล์** (state `deductionCounts` บนจอจำได้เฉพาะแถวของหน้าปัจจุบัน
+     * ถ้าไม่ส่ง แถวนอกหน้า 1 จะexportว่างเปล่า)
+     */
+    (all: ReportRows[], exportCounts?: Map<number, UsageCount>): CsvMatrix => {
       const fmt = (iso: string) =>
         new Date(iso).toLocaleString(locale, { dateStyle: "short", timeStyle: "short" });
       const fmtDay = (iso: string) =>
@@ -673,25 +684,29 @@ function ReportsScreen() {
        *
        * - บริษัท (view รายการปัญหา): **บริษัทของผู้แจ้งงาน** ชื่อเดียว
        *   (`IssueRow.companyName`) — ไม่ใช่ชื่อบริษัททั้งหมดของแอปอีกแล้ว
-       * - 3 ตัวล่าง (view ตามบริษัท): **per-pair** — ค่าของคู่นั้น ๆ
-       * - คงเหลือ ใช้ "ใช้ไป" all-time เหมือนจอ; ยังโหลด/พัง → ""
-       *   (ห้ามโชว์ MA เต็มก้อนเพราะยังไม่รู้ค่าจริง — ตรงกับ cell)
+       * - 3 ตัวล่าง (view ตามบริษัท): **รายรอบ** — ของแถวนั้น (1 แถว = 1 รอบ)
+       *   อ่านจาก `usage-counts` (`exportCounts` = ชุดที่ยิงใหม่ตอน export ทุกหน้า)
+       *   ค่าเดียวกับคอลัมน์ "ใช้ไป"/"คงเหลือ" บนจอ · ยังโหลด/ดึงไม่ได้/ไม่รู้จัก
+       *   แถวนั้น → "" (ห้ามโชว์ MA เต็มก้อนหรือ 0 เพราะยังไม่รู้ค่าจริง)
        *
-       * (`MA_DEDUCTION_PAUSED = false` → "ใช้ไป" มาจริง นับเฉพาะ type
-       * feature/requirement; ยังไม่กรอก MA → "" เหมือนเดิม)
+       * (`MA_DEDUCTION_PAUSED` → `periodUsedOf` คืน 0 ให้เอง; ยังไม่กรอก MA → "")
        */
+      const countsMap = exportCounts ?? deductionCounts.byRecord;
+      const usedOf = (r: CompanyRow): number | null =>
+        r.recordId == null ? null : periodUsedOf(countsMap, r.recordId);
       const usedHoursOf = (r: CompanyRow) => {
-        if (usage.status !== "ready") return "";
-        return round1(usage.byPair.get(pairKey(r.appId, r.companyId)) ?? 0);
+        const used = usedOf(r);
+        return used === null ? "" : used;
       };
       const remainingOf = (r: CompanyRow) => {
-        if (usage.status !== "ready" || r.maHours == null) return "";
-        return round1(r.maHours - (usage.byPair.get(pairKey(r.appId, r.companyId)) ?? 0));
+        if (r.maHours == null) return "";
+        const used = usedOf(r);
+        return used === null ? "" : round1(r.maHours - used);
       };
       /** จำนวนงานที่ถูกตัดของ **รอบนั้น** — คอลัมน์ "รายการที่ตัด" (CSV ตรงกับจอ) */
       const deductedCountOf = (r: CompanyRow) => {
         if (r.recordId == null) return "";
-        const entry = deductionCounts.byRecord.get(r.recordId);
+        const entry = (exportCounts ?? deductionCounts.byRecord).get(r.recordId);
         return entry ? entry.count : "";
       };
 
@@ -772,7 +787,101 @@ function ReportsScreen() {
           return { keys: [], headers: [], data: [] };
       }
     },
-    [view, locale, t, st, hidden, orderKeys, usage, deductionCounts],
+    [view, locale, t, st, hidden, orderKeys, deductionCounts],
+  );
+
+  /**
+   * **view ตามบริษัท — export พร้อมแถวรายละเอียด "รายการที่ตัด"** ใต้แถวสัญญา
+   * (แพตเทิร์นเดียวกับ assignee detail) · ต่างจากจอที่นับ**เฉพาะแถวของหน้า
+   * ปัจจุบัน**: export ออก**ทุกแถว**ของ filter จึงต้องยิง `usage-counts` ใหม่
+   * ครบทุก `recordId` (แยก chunk ละ 100 — `MAX_USAGE_COUNT_IDS` ตัดทิ้งเกินนั้น)
+   * ไม่งั้นแถวนอกหน้า 1 จะexport **ว่างเปล่า** (บั๊กเดิม)
+   *
+   * ดึงรายการจริง**เฉพาะแถวที่นับ > 0** และ**ทีละแถว** (กันยิงพร้อมกันเป็นสิบ
+   * เหมือน `fetchDetailForExport`) · **fail-open ทุกขั้น**: ยิงนับไม่ได้ → ใช้ตัว
+   * ที่หน้าจอโหลดไว้ (ขาดแถวต่างหน้าก็ยังดีกว่าล้มทั้งไฟล์) · ยิงรายการไม่ได้ →
+   * ข้ามรายละเอียดของแถวนั้น แถวสรุป + ตัวนับยังอยู่ครบ — ห้ามให้คำขอเดียว
+   * ทำให้ export ทั้งไฟล์พัง
+   *
+   * `summaryRows` ทำเครื่องหมายแถวสัญญาให้ PDF เติมพื้น/ตัวหนา (CSV ไม่ใช้)
+   */
+  const buildCompanyExportWithDetail = useCallback(
+    async (all: ReportRows[]): Promise<CsvMatrix> => {
+      const rs = all as CompanyRow[];
+      const recordIds = rs
+        .map((r) => r.recordId)
+        .filter((id): id is number => id != null);
+
+      /** นับของทุกแถวในไฟล์ — `null` = ยังไม่รู้ (fail-open ห้ามเดาเป็น 0) */
+      let exportCounts: Map<number, UsageCount> | undefined;
+      if (recordIds.length > 0) {
+        const merged = new Map<number, UsageCount>();
+        try {
+          for (let i = 0; i < recordIds.length; i += 100) {
+            const chunk = await fetchUsageCounts(recordIds.slice(i, i + 100));
+            for (const entry of chunk) merged.set(entry.recordId, entry);
+          }
+          exportCounts = merged;
+        } catch {
+          // ยิงนับไม่ได้ → ใช้ตัวของหน้าจอ (แถวต่างหน้าจะว่าง — ดีกว่าล้ม export)
+          exportCounts = deductionCounts.status === "ready" ? deductionCounts.byRecord : undefined;
+        }
+      }
+
+      const summary = buildExport(all, exportCounts);
+      if (recordIds.length === 0) return summary; // ไม่มีรอบผูกแอป → ไม่มีรายละเอียด
+
+      /**
+       * รายการจริงของแถวที่นับ > 0 — `recordId → งานที่ถูกตัด` · ข้ามแถวที่
+       * ไม่รู้ค่านับ (ยิงนับล้มเหลว) เพราะถ้าเดาว่า "0" แล้วจริง ๆ มีรายการ
+       * รายงานก็จะเงียบหายเหมือนกัน — ปล่อยให้แถวสรุปกับตัวนับนำทางไปเอง
+       */
+      const detailByRecord = new Map<number, PeriodIssue[]>();
+      for (const r of rs) {
+        if (r.recordId == null) continue;
+        const count = exportCounts?.get(r.recordId)?.count;
+        if (count == null || count <= 0) continue;
+        const appId = recordAppId.get(r.recordId);
+        if (appId == null) continue; // แถวหายจาก payload สัญญา → ข้าม (เหมือนฝั่งจอ)
+        try {
+          const period = await fetchPeriodUsage(appId, r.recordId);
+          detailByRecord.set(r.recordId, period.issues);
+        } catch {
+          // fail-open: ข้ามรายละเอียดของแถวนี้ เหลือแถวสรุปกับตัวนับตามเดิม
+        }
+      }
+      if (detailByRecord.size === 0) return summary; // ไม่มีรายการ → หน้าตาไฟล์เท่าเดิม
+
+      const detailCols = companyDetailExportCols();
+      const summaryKeySet = new Set(summary.keys);
+      const extra = detailCols.filter((c) => !summaryKeySet.has(c.key));
+      const companyIdx = summary.keys.indexOf("company");
+
+      const data: CsvMatrix["data"] = [];
+      const summaryRows: number[] = [];
+      summary.data.forEach((sumRow, i) => {
+        summaryRows.push(data.length);
+        data.push([...sumRow, ...extra.map(() => "")]);
+        const r = rs[i];
+        if (r?.recordId == null) return;
+        const issues = detailByRecord.get(r.recordId);
+        if (!issues || issues.length === 0) return;
+        // ชื่อบริษัทซ้ำทุกแถว detail — ให้ CSV แยกกลุ่มได้ (เหมือน assignee ซ้ำ `person`)
+        const label = r.companyName ?? "";
+        issues.forEach((issue) => {
+          const row = summary.keys.map((_k, ki) => (ki === companyIdx ? label : ""));
+          data.push([...row, ...extra.map((c) => c.value(issue, 0))]);
+        });
+      });
+
+      return {
+        keys: [...summary.keys, ...extra.map((c) => c.key)],
+        headers: [...summary.headers, ...extra.map((c) => c.header)],
+        data,
+        summaryRows,
+      };
+    },
+    [buildExport, deductionCounts, recordAppId, companyDetailExportCols],
   );
 
   /**
@@ -783,9 +892,13 @@ function ReportsScreen() {
    * ชั่วโมงจริง/ชั่วโมงกรอก, which fill from the task itself so a column never
    * appears twice. `summaryRows` records which indices are the aggregates
    * (the PDF styles them; the CSV just writes the rows out).
+   *
+   * The **company** view delegates to `buildCompanyExportWithDetail` — its
+   * "รายการที่ตัด" detail (the rows you expand on screen) rides the same way.
    */
   const buildExportWithDetail = useCallback(
     async (all: ReportRows[]): Promise<CsvMatrix> => {
+      if (view === "company") return buildCompanyExportWithDetail(all);
       const summary = buildExport(all);
       if (view !== "assignee") return summary;
 
@@ -832,7 +945,7 @@ function ReportsScreen() {
         summaryRows,
       };
     },
-    [view, buildExport, t, detailHidden, detailColumns, detailExportCols, fetchDetailForExport],
+    [view, buildExport, buildCompanyExportWithDetail, t, detailHidden, detailColumns, detailExportCols, fetchDetailForExport],
   );
 
   /**
@@ -1015,7 +1128,6 @@ function ReportsScreen() {
               personTasks={personTasks}
               personTasksLoading={personTasksLoading}
               onTogglePerson={handleTogglePerson}
-              usage={usage}
               deductions={{
                 counts: deductionCounts,
                 expandedRecordId,

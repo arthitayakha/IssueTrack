@@ -42,17 +42,23 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
  * ค่าเริ่มต้น: ช่องว่าง (ผู้ใช้กรอกเอง) — ไม่ prefill เพราะ "ซื้อกี่ชม."
  * เป็นการตัดสินใจของผู้ใช้ ไม่ใช่ค่าคำนวณจากสัญญาเดิม
  *
- * **ช่วยตัดสินใจว่าจะซื้อกี่ชม.** — กล่องสรุปโชว์ 3 ตัวเลขของคู่นี้ (MA ปัจจุบัน /
- * ใช้ไป / คงเหลือ — ตัวเดียวกับตาราง ผ่าน `used` + `usageStatus` จากหน้า), ระหว่าง
- * พิมพ์โชว์สด "MA หลังซื้อ" (= ที่ซื้อ — **สูตรใหม่: ไม่บวกของเดิม**) กับ
- * "คงเหลือหลังซื้อ" (`ที่ซื้อ − ใช้ไป`, "ใช้ไป" ไม่เปลี่ยนตอนซื้อ), และมีปุ่มด่วน
- * 10/20/50 ใต้ช่องกรอก · ข้อความ intro ย้ำว่า **ได้ MA เท่ากับที่ซื้อ ไม่รวมของ
- * เดิม และไม่ใช่การต่ออายุ**
+ * **ทบสิทธิ์คงเหลือของแถวก่อนเข้าแถวใหม่** (ข้อสรุปจากผู้ใช้: "มันเป็นช่วงเดียวกัน
+ * แต่แค่ซื้อชั่วโมง") — `carry = max(0, MA แถวนั้น − ใช้ไปของแถวนั้น)` (สูตรเดียวกับ
+ * ฟอร์มต่ออายุ) แล้วส่ง `carriedHours` ให้เซิร์ฟเวอร์ตั้ง `maHours = ที่ซื้อ + ทบ`
+ * · **ต่างจากต่ออายุ**: การซื้อทบ**ทุกครั้ง** (ไม่จำกัดเฉพาะรอบแรก) เพราะทุกแถว
+ * ซื้ออยู่ช่วงสัญญาเดียวกัน · แถวนั้นใช้หมด → ทบ 0 (มีข้อความบอกใต้ preview)
+ *
+ * **ช่วยตัดสินใจว่าจะซื้อกี่ชม.** — กล่องสรุปโชว์ 3 ตัวเลขของแถวนั้น (MA ปัจจุบัน /
+ * ใช้ไป**ของแถวนั้น** / คงเหลือ — ตัวเดียวกับตาราง ผ่าน `used` + `usageStatus` จาก
+ * หน้า), ระหว่างพิมพ์โชว์สด "MA หลังซื้อ" (= ที่ซื้อ + ทบ) กับ "คงเหลือหลังซื้อ"
+ * (เท่ากัน เพราะ**แถวใหม่ใช้ไป = 0**) พร้อมลูกศรจาก "คงเหลือตอนนี้" · มีปุ่มด่วน
+ * 10/20/50 ใต้ช่องกรอก · ข้อความ intro ย้ำว่า **ได้ MA = ที่ซื้อ + คงเหลือจาก
+ * แถวก่อน (ไม่ใช่การต่ออายุ)**
  *
  * **สถานะข้อมูล "ใช้ไป" ต้องไม่เงียบ**: ยังโหลด → ตัวเลขโชว์ "…", ดึงไม่สำเร็จ →
- * "—" พร้อมคำเตือนใต้กล่อง — ตัวเลขพวกนี้**ใช้แค่ประกอบการตัดสินใจ** ไม่ป้อนกลับ
- * ตอนบันทึก (เซิร์ฟเวอร์ตั้ง `maHours` = ที่ซื้ออย่างเดียว) จึง**ไม่ปิดปุ่ม
- * บันทึก**ตอนโหลด ต่างจากฟอร์มต่ออายุที่ต้องรู้คงเหลือเพื่อทบชั่วโมง
+ * "—" พร้อมคำเตือนใต้กล่อง · **ปุ่มบันทึก disable ตอนโหลด** เพราะต้องรู้ค่าเพื่อ
+ * ทบชั่วโมง (เดิมกดได้ทันที — ถ้าปล่อยบันทึกตอนโหลด `carry` จะเป็น 0 แล้วชั่วโมง
+ * คงเหลือหายเงียบ) · ดึงไม่สำเร็จ → บันทึกได้โดยไม่ทบ + บอกตรง ๆ (`buyHoursUsageUnknown`)
  */
 export default function BuyHoursDialog({
   open,
@@ -66,9 +72,9 @@ export default function BuyHoursDialog({
   /** null = ไม่มีอะไรให้ซื้อ (ปิดตัวเอง) */
   record: BuyingRecord | null;
   /**
-   * "ใช้ไป" ของคู่นี้จากหน้า `/systems` (`usedByApp`) — ตัวเดียวกับคอลัมน์
-   * "คงเหลือ" ในตาราง จึงทำให้ number ที่โชว์ในฟอร์มตรงกับที่เห็นข้างนอก
-   * `undefined` = คู่นี้ไม่มีงานที่หักได้ (= ใช้ 0 ชม. ตามกติกา)
+   * "ใช้ไป" **รายรอบของแถวนั้น** จากหน้า `/systems` (`periodUsedOf`) — ตัวเดียวกับ
+   * คอลัมน์ "คงเหลือ" ของแถวนั้น จึงทำให้ number ที่โชว์ในฟอร์มตรงกับที่เห็น
+   * ข้างนอก `undefined` = ยังไม่มีข้อมูล (ดู `usageStatus`)
    */
   used?: number | null;
   /**
@@ -97,33 +103,39 @@ export default function BuyHoursDialog({
 
   const unit = t("hoursUnit");
   /**
-   * MA ของแถวนั้น — ใช้โชว์ "ชั่วโมง MA ปัจจุบัน" ในกล่องสรุปเท่านั้น · **สูตร
-   * ซื้อไม่ได้ใช้ค่านี้แล้ว** (แถวใหม่ได้ `maHours = ที่ซื้อ` ล้วน)
+   * MA ของแถวนั้น — ใช้ทั้งโชว์ "ชั่วโมง MA ปัจจุบัน" ในกล่องสรุป **และคำนวณ
+   * `carry`** (สิทธิ์คงเหลือที่จะทบเข้าแถวใหม่)
    */
   const current = record?.link.maHours ?? 0;
   const usageReady = usageStatus === "ready";
   /** ยังรู้ค่า "ใช้ไป" ไม่ได้ — "…" ตอนโหลด / "—" ตอนดึงไม่สำเร็จ */
   const usagePlaceholder = usageStatus === "error" ? "—" : "…";
-  /** ใช้ไป (ชม.) — `null` = ยังไม่รู้ (ดู `usagePlaceholder`) */
+  /** ใช้ไป (ชม.) **ของแถวนั้น** (รายรอบ) — `null` = ยังไม่รู้ (ดู `usagePlaceholder`) */
   const usedNum = usageReady ? round1(used ?? 0) : null;
-  /** คงเหลือตอนนี้ = MA ของแถวนี้ − ใช้ไป (อาจติดลบ เหมือนคอลัมน์ตาราง) */
+  /** คงเหลือตอนนี้ = MA ของแถวนี้ − ใช้ไป**ของรอบนี้** (อาจติดลบ เหมือนตาราง) */
   const remainingNow = usageReady ? round1(current - (used ?? 0)) : null;
+  /**
+   * **สิทธิ์คงเหลือของแถวก่อนที่จะทบเข้าแถวใหม่** = `max(0, MA แถวนั้น − ใช้ไป
+   * ของแถวนั้น)` — สูตรเดียวกับฟอร์มต่ออายุ · ยังโหลด/ดึงไม่ได้ → 0 (แต่ปุ่มบันทึก
+   * ถูก disable ตอนโหลดอยู่แล้ว จึงไม่มีทางบันทึกตอนยังไม่รู้ค่า) · แถวนั้นใช้
+   * หมด → 0 (ไม่ทบ — มีข้อความบอกใต้ preview)
+   */
+  const carry = usageReady ? Math.max(0, Math.round(current - (used ?? 0))) : 0;
 
   const parsed = hours.trim() === "" ? null : Number(hours);
   /** ตัวเลขที่จะบันทึกได้จริง — จำนวนเต็ม > 0 (ตรงกับฝั่งเซิร์ฟเวอร์) */
   const validHours = parsed !== null && Number.isInteger(parsed) && parsed > 0 ? parsed : null;
   /**
-   * preview "MA หลังซื้อ" — **= ที่ซื้อเท่านั้น** (สูตรใหม่ของ `buyHours()` ไม่บวก
-   * ของเดิม) · แสดงสดขณะพิมพ์ (ค่าจริงฝั่งเซิร์ฟเวอร์ตอนบันทึก)
+   * preview "MA หลังซื้อ" — **= ที่ซื้อ + ทบ** (สูตรของ `buyHours()`:
+   * `maHours = ที่ซื้อ + carriedHours`) · แสดงสดขณะพิมพ์ (ค่าจริงฝั่งเซิร์ฟเวอร์ตอนบันทึก)
    */
-  const totalAfter = validHours !== null ? validHours : null;
+  const totalAfter = validHours !== null ? round1(validHours + carry) : null;
   /**
-   * preview "คงเหลือหลังซื้อ" — = `ที่ซื้อ − ใช้ไป` เพราะแถวใหม่ได้ `maHours =
-   * ที่ซื้อ` ("ใช้ไป" ไม่เปลี่ยนตอนซื้อ) · อาจติดลบได้ถ้าใช้ไปเกินที่ซื้อ —
-   * โชว์ตามจริงเหมือนคอลัมน์ "คงเหลือ" ในตาราง
+   * preview "คงเหลือหลังซื้อ" — **เท่ากับ "MA หลังซื้อ"** เพราะแถวใหม่เพิ่งถูกสร้าง →
+   * ยังไม่มีงานไหนถูกผูกเข้าแถว ("ใช้ไป" ของแถวใหม่ = 0 เสมอ) · โชว์พร้อมลูกศร
+   * จาก "คงเหลือตอนนี้" ให้เห็นว่าซื้อแล้วขึ้นเท่าไร (เช่น `0 → 70 ชม.`)
    */
-  const remainingAfter =
-    validHours !== null && remainingNow !== null ? round1(validHours - (used ?? 0)) : null;
+  const remainingAfter = totalAfter;
 
   async function handleSave() {
     if (!record || saving) return;
@@ -139,7 +151,11 @@ export default function BuyHoursDialog({
 
     setSaving(true);
     try {
-      await buyAppHours(record.app.id, record.link.recordId, { hours: validHours });
+      await buyAppHours(record.app.id, record.link.recordId, {
+        hours: validHours,
+        // **สิทธิ์คงเหลือของแถวก่อน** ที่ฟอร์มคำนวณไว้ — เซิร์ฟเวอร์บวกเป็น MA ใหม่
+        carriedHours: carry,
+      });
       notify(t("buyHoursSuccess"));
       onClose();
       onSaved();
@@ -264,7 +280,7 @@ export default function BuyHoursDialog({
               ))}
             </Box>
 
-            {/* preview สดขณะพิมพ์ — MA หลังซื้อ (รู้ได้เสมอ) + คงเหลือหลังซื้อ (ต้องรู้ "ใช้ไป") */}
+            {/* preview สดขณะพิมพ์ — MA หลังซื้อ (ที่ซื้อ + ทบ) + คงเหลือหลังซื้อ (เท่ากัน) */}
             {(totalAfter !== null || remainingAfter !== null) && (
               <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
                 {totalAfter !== null && statRow(t("buyHoursPreview"), `${totalAfter} ${unit}`)}
@@ -275,6 +291,12 @@ export default function BuyHoursDialog({
                     `${remainingNow} → ${remainingAfter} ${unit}`,
                     true,
                   )}
+                {/* แถวนั้นมี MA แต่ใช้หมด → ทบ 0 — **บอกตรง ๆ** ไม่เงียบ (แบบฟอร์มต่ออายุ) */}
+                {usageReady && carry === 0 && current > 0 && validHours !== null && (
+                  <Typography variant="caption" color="text.secondary">
+                    {t("buyNoCarry")}
+                  </Typography>
+                )}
               </Box>
             )}
           </Box>
@@ -285,9 +307,15 @@ export default function BuyHoursDialog({
         <Button onClick={onClose} disabled={saving}>
           {t("cancel")}
         </Button>
-        {/* **ไม่ disable ตอน `usageStatus === "loading"`** — ตัวเลข "ใช้ไป" เป็นแค่
-            ข้อมูลประกอบการตัดสินใจ ไม่ได้ป้อนกลับตอนบันทึก (ต่างจากฟอร์มต่ออายุ) */}
-        <Button variant="contained" onClick={handleSave} disabled={saving}>
+        {/* **disable ตอน `usageStatus === "loading"`** — ต้องรู้ "ใช้ไป" ของแถวนั้น
+            เพื่อคำนวณ `carry` (สิทธิ์คงเหลือที่ทบเข้าแถวใหม่) ถ้าปล่อยบันทึกตอน
+            โหลด `carry` จะเป็น 0 แล้วชั่วโมงคงเหลือหายเงียบ · ดึงไม่ได้ → บันทึก
+            ได้โดยไม่ทบ + คำเตือนใต้กล่อง (ต่างจากฟอร์มต่ออายุที่ห้ามบันทึกเลย) */}
+        <Button
+          variant="contained"
+          onClick={handleSave}
+          disabled={saving || usageStatus === "loading"}
+        >
           {t("buyHoursSave")}
         </Button>
       </DialogActions>
