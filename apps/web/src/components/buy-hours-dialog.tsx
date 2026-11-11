@@ -197,11 +197,6 @@ export default function BuyHoursDialog({
               {[record.link.name, record.app.name].filter(Boolean).join(" · ")}
             </Typography>
 
-            {/* ย้ำตั้งแต่บรรทัดแรกว่า "ได้ MA เท่ากับที่ซื้อ ไม่รวมของเดิม ไม่ใช่ต่ออายุ" */}
-            <Typography variant="caption" color="text.secondary">
-              {t("buyHoursIntro")}
-            </Typography>
-
             {/* กล่องสรุป 3 ตัวเลข — ตอบคำถาม "ซื้อกี่ชม. ดี?" ด้วยข้อมูลชุดเดียวกับ
                 คอลัมน์ MA/คงเหลือ ในตาราง `/systems` (ค่า `used` มาจากหน้านั้น) */}
             <Box

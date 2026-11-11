@@ -109,8 +109,9 @@ export default function RuleHistoryPage() {
 
   const header = (
     <Breadcrumbs aria-label={t("breadcrumbLabel")} separator="/">
-      <MuiLink component={Link} href="/automation" underline="hover" color="inherit">
-        {t("title")}
+      {/* หน้า list `/automation` ถูกถอด → กลับแท็บระบบอัตโนมัติใน /master-data */}
+      <MuiLink component={Link} href="/master-data?tab=automation" underline="hover" color="inherit">
+        {t("backToMasterData")}
       </MuiLink>
       <Typography color="text.primary" fontWeight={600}>
         {tRuns("title")}
@@ -119,7 +120,7 @@ export default function RuleHistoryPage() {
   );
 
   // อ่านอย่างเดียว (fetchRules + fetchRuleActivity) → gate เป็น `automation.view`
-  // ส่วนการแก้ไขจริงอยู่ที่หน้า /automation, /automation/new, /automation/[id]
+  // ส่วนสร้าง/แก้ไขกฎเป็นป๊อปอัพ (RuleWizardDialog) ในแท็บระบบอัตโนมัติของ /master-data
   return (
     <RequirePermission permission="automation.view">
       <DashboardLayout header={header}>

@@ -189,7 +189,7 @@ export class RulesEngineService {
    * Is any "unlock card" rule active? The board only offers the one-shot
    * release button on a locked card while at least one `issue.unlock` rule
    * is switched on — without it a locked status stays sealed and admins
-   * release cards by pausing the lock rule in /automation instead.
+   * release cards by pausing the lock rule (ระบบอัตโนมัติ tab in /master-data) instead.
    * Lookup errors fail closed (no button) so a hiccup never hands out
    * unlocks the rules do not allow.
    */
@@ -208,7 +208,7 @@ export class RulesEngineService {
 
   /**
    * Is the "one column at a time" drag guard on? One active rule with this
-   * action key acts as the switch: pause it in /automation and cards can be
+   * action key acts as the switch: pause it in the ระบบอัตโนมัติ tab and cards can be
    * dragged across columns freely again. The rule's conditions are ignored on
    * purpose so the board's drop preview and the server's check in
    * `IssuesService.move()` always agree on a single flag. Lookup errors fail

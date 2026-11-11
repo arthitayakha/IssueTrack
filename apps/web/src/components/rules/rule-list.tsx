@@ -30,7 +30,6 @@ import EditIcon from "@mui/icons-material/Edit";
 import LockIcon from "@mui/icons-material/Lock";
 import LockOpenIcon from "@mui/icons-material/LockOpen";
 import { useTranslations } from "next-intl";
-import { Link } from "@/i18n/navigation";
 import type { RuleDto } from "@kanban/shared";
 import { RULE_ACTIONS, RULE_TRIGGER_CATEGORIES, buildRuleSentence, getActionByKey } from "@kanban/shared";
 import {
@@ -52,6 +51,8 @@ interface RuleListProps {
   rules: RuleDto[];
   onToggle: (rule: RuleDto, isActive: boolean) => void;
   onDelete: (id: number) => void;
+  /** เปิดป๊อปอัพแก้ไขกฎ (RuleWizardDialog ที่ RulesPanel ถืออยู่) แทนการไปหน้า /automation/[id] */
+  onEdit: (rule: RuleDto) => void;
   /**
    * `false` = view-only seat (`automation.view` without `automation.update`):
    * rows still render, but the enable/disable switch, edit and delete controls
@@ -62,7 +63,7 @@ interface RuleListProps {
 
 type StatusFilter = "all" | "active" | "inactive";
 
-export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }: RuleListProps) {
+export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate = true }: RuleListProps) {
   const t = useTranslations("Automation");
   // param labels (ย้ายไปสถานะ / มอบหมายตำแหน่ง / ป้ายกำกับ …) live under the
   // wizard namespace — same source the action picker & step ③ review use
@@ -374,8 +375,7 @@ export default function RuleList({ rules, onToggle, onDelete, canUpdate = true }
                       <IconButton
                         size="small"
                         aria-label={t("edit")}
-                        component={Link}
-                        href={`/automation/${rule.id}`}
+                        onClick={() => onEdit(rule)}
                         sx={{ color: theme.palette.primary.main, flexShrink: 0 }}
                       >
                         <EditIcon fontSize="small" />

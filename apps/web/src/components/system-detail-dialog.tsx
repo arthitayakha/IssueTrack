@@ -23,7 +23,8 @@ import {
 import type { App, AppCompanyLink, UsageCount } from "@/lib/apps-api";
 import { fetchUsageCounts } from "@/lib/apps-api";
 import { periodUsedOf } from "@/lib/reports-api";
-import SystemDeductionsDialog, { type DeductionTarget } from "./system-deductions-dialog";
+import SystemDeductionsView, { type DeductionTarget } from "./system-deductions-view";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import {
   daysLeftIso,
   expiryChipLabel,
@@ -60,17 +61,21 @@ export interface DetailRecord {
  *   (ชั่วโม์ MA ทั้งหมด / ใช้ไป / คงเหลือ) คั่นด้วยเส้นแนวนอน
  * - **ประวัติการต่ออายุ** — ทุกช่วงของคู่เดียวกัน เรียงใหม่สุดก่อน
  *   คอลัมน์: **รอบที่** / ประเภท / เริ่มใช้งาน / หมดอายุ / ชั่วโม์ MA / ใช้ไป /
- *   คงเหลือ / **รายการที่ตัด** (ปุ่ม**เปิดป๊อปอัพแยกใบ** `SystemDeductionsDialog`
- *   ของรอบนั้น — เดิมเป็นแท็บที่ 3 ข้างใน ถูกย้ายออกตามข้อสรุป "dropdown ใหญ่
- *   ไป ไม่สวย … ดูได้จากลิงก์พวกนี้") — **ไม่มีหมายเหตุ** (ตัดออกตามข้อตกลง) ·
+ *   คงเหลือ / **รายการที่ตัด** (ปุ่มสลับ **มุมมองรายการในป๊อปอัพเดิม** — ไม่มี
+ *   ป๊อปอัพซ้อน ไม่มีหน้าแยก · ประวัติการแก้: แท็บที่ 3 → dropdown (ทัก "ใหญ่ไป
+ *   ไม่สวย") → Autocomplete → ป๊อปอัพแยกใบ (ทัก "จะมีป๊อปอัพขึ้นมาอีกทำไม") →
+ *   หน้า `/systems/deductions` (ทัก "ไม่เอาคนละหน้า") → **สรุปสุดท้าย: เปลี่ยน
+ *   แค่ "คำ" + เนื้อหาในใบเดิม**) — **ไม่มีหมายเหตุ** (ตัดออกตามข้อตกลง) ·
  *   ตาราง scroll ในตัว (sticky header)
  *
- * **ไม่มีแท็บที่ 3 แล้ว** — "งานที่ถูกตัด MA" เปิดจากลิงก์ในคอลัมน์
- * "รายการที่ตัด" → ป๊อปอัพ `SystemDeductionsDialog` ซ้อนบนใบเดิม (state
- * `deductionsTarget`) · ข้อมูล 2 แท็บแรกมาจาก payload ที่หน้าโหลดไว้แล้ว
- * (`GET /systems`) + **"ใช้ไป" รายรอบ** ที่อ่านจาก `GET /apps/usage-counts`
- * — ยิง**ครั้งเดียวตอนเปิดป๊อปอัพ** แล้วใช้ร่วมกันทั้ง "รายการที่ตัด" และ
- * "ใช้ไป/คงเหลือ" ของทุกรอบ (ไม่ยิงเพิ่ม)
+ * **ไม่มีแท็บที่ 3 แล้ว** — กดลิงก์ "N รายการ" ในคอลัมน์ "รายการที่ตัด" →
+ * `deductionsTarget` ทำให้ป๊อปอัพ**เปลี่ยนเป็นมุมมองรายการ** (state เดิม):
+ * `DialogTitle` = breadcrumb `← ประวัติการต่ออายุ / รายการที่ N` (ปุ่มแรก =
+ * ย้อนกลับ), `<Tabs>` + หัวการ์ด + ปุ่มต่ออายุถูกซ่อน, เนื้อหา = 
+ * `SystemDeductionsView` · ข้อมูล 2 แท็บแรกมาจาก payload ที่หน้าโหลดไว้แล้ว
+ * (`GET /systems`) + **"ใช้ไป" รายรอบ** ที่อ่านจาก
+ * `GET /apps/usage-counts` — ยิง**ครั้งเดียวตอนเปิดป๊อปอัพ** แล้วใช้ร่วมกันทั้ง
+ * "รายการที่ตัด" และ "ใช้ไป/คงเหลือ" ของทุกรอบ (ไม่ยิงเพิ่ม)
  *
  * ขนาด **ฟิกคงที่ทุกแท็บ** (`PaperProps` ด้านล่าง) — เดิมใช้ `maxWidth="md"
  * fullWidth` ทำให้กล่องหด/ขยายตามเนื้อหา สลับแท็บแล้วขยับ
@@ -96,9 +101,15 @@ export default function SystemDetailDialog({
   const [tab, setTab] = useState(0);
 
   /**
-   * ป๊อปอัพ **"งานที่ถูกตัด MA"** ที่เปิดซ้อนอยู่ — `null` = ปิด · ตั้งค่าโดย
-   * ลิงก์ "N รายการ" ในคอลัมน์ "รายการที่ตัด" ของแท็บประวัติ (ส่งข้อมูลรอบนั้น
-   * ครบ: recordId / ลำดับ / ประเภท / ทบมา) — **ไม่มีแท็บที่ 3 ในใบเดิมแล้ว**
+   * **มุมมอง "รายการงานที่ถูกตัด" ภายในป๊อปอัพนี้** — `null` = ดูตามแท็บปกติ ·
+   * ตั้งค่าโดยลิงก์ "N รายการ" ในคอลัมน์ "รายการที่ตัด" ของแท็บประวัติ
+   *
+   * ตอนมีค่า = **เปลี่ยนเฉพาะ "คำ" + เนื้อหาในป๊อปอัพเดิม** (ไม่มีป๊อปอัพซ้อน
+   * ไม่มีหน้าแยก ไม่มีแท็บ — ข้อสรุปจากผู้ใช้: "จะมีป๊อปอัพขึ้นมาอีกทำไม …
+   * มันก็อยู่ในรายละเอียดระบบ" + ตามภาพอ้างอิง): หัว `DialogTitle` เปลี่ยนเป็น
+   * breadcrumb `← ประวัติการต่ออายุ / รายการที่ N` (ปุ่มแรก = **ย้อนกลับ** →
+   * `null` กลับแท็บเดิม), `<Tabs>` ถูกซ่อน, การ์ดเปลี่ยนเนื้อหาเป็น
+   * `SystemDeductionsView` (หัวการ์ด/ปุ่มต่ออายุถูกซ่อนระหว่างเปิด)
    */
   const [deductionsTarget, setDeductionsTarget] = useState<DeductionTarget | null>(null);
 
@@ -152,8 +163,8 @@ export default function SystemDetailDialog({
 
   /**
    * ค่าที่คำนวณจากแถวที่เลือก — `null` = ยังไม่มีแถว (เนื้อหาจะไม่ถูกอ่าน) ·
-   * `onShowDeductions` = เปิดป๊อปอัพ `SystemDeductionsDialog` ของรอบที่กด
-   * (state ชุดเดียวกับ `deductionsTarget`)
+   * `onShowDeductions` = สลับป๊อปอัพเดิมเป็นมุมมอง `SystemDeductionsView`
+   * ของรอบที่กด (state ชุดเดียวกับ `deductionsTarget`)
    */
   const view = record
     ? buildView(record, {
@@ -193,22 +204,53 @@ export default function SystemDetailDialog({
       }}
     >
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pb: 1 }}>
-        <Box sx={{ flexGrow: 1 }}>{t("detailTitle")}</Box>
+        {deductionsTarget ? (
+          /**
+           * **มุมมองรายการ = เปลี่ยนเฉพาะ "คำ" ในหัวป๊อปอัพเดิม** (ตามภาพ
+           * อ้างอิง: `← ประวัติการต่ออายุ / รายการที่ N`) — ปุ่มแรกเป็น
+           * **ย้อนกลับ** กลับไปแท็บประวัติ (`null` → การ์ดกลับเป็นแท็บปกติ)
+           */
+          <>
+            <Button
+              onClick={() => setDeductionsTarget(null)}
+              size="small"
+              startIcon={<ArrowBackIcon />}
+              sx={{
+                textTransform: "none",
+                color: "text.secondary",
+                "&:hover": { color: "text.primary", bgcolor: "action.hover" },
+              }}
+            >
+              {t("tabRenewHistory")}
+            </Button>
+            <Typography variant="body2" color="text.secondary">
+              /
+            </Typography>
+            <Typography variant="body2" fontWeight={600}>
+              {t("historyRoundValue", { n: deductionsTarget.round })}
+            </Typography>
+            <Box sx={{ flexGrow: 1 }} />
+          </>
+        ) : (
+          <Box sx={{ flexGrow: 1 }}>{t("detailTitle")}</Box>
+        )}
         <Button onClick={onClose} size="small" sx={{ minWidth: 32, px: 1 }}>
           ✕
         </Button>
       </DialogTitle>
 
-      <Tabs
-        value={tab}
-        onChange={(_, v) => setTab(v)}
-        sx={{ px: 3, borderBottom: 1, borderColor: "divider", flexShrink: 0 }}
-      >
-        {/* **ไม่มีแท็บ "งานที่ถูกตัด MA" แล้ว** — เปิดจากลิงก์ในแท็บประวัติ →
-            `SystemDeductionsDialog` (ป๊อปอัพแยกใบ ซ้อนบนใบนี้) */}
-        <Tab label={t("tabGeneral")} />
-        <Tab label={t("tabRenewHistory")} />
-      </Tabs>
+      {/* **ซ่อนแถบแท็บระหว่างดูรายการ** — "ไม่ต้องมีแท็บอะไรเลยเพราะเป็น
+          รายการที่กดลิ้งเข้ามา" · กลับไปแท็บเดิม = ปุ่ม ← ในหัว */}
+      {!deductionsTarget && (
+        <Tabs
+          value={tab}
+          onChange={(_, v) => setTab(v)}
+          sx={{ px: 3, borderBottom: 1, borderColor: "divider", flexShrink: 0 }}
+        >
+          <Tab label={t("tabGeneral")} />
+          <Tab label={t("tabRenewHistory")} />
+        </Tabs>
+      )}
 
       {/**
        * `DialogContent` เป็น **แค่ padding box** (`overflow: hidden`) — ไม่ใช่
@@ -247,28 +289,35 @@ export default function SystemDetailDialog({
               overflow: "hidden",
             }}
           >
-            {/* ---- หัวการ์ด: ชื่อแอป + ชื่อบริษัท (ซ้าย) / ชิปสถานะ (ขวา) ---- */}
-            <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.5 }}>
-              <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-                {/* ฟอนต์ปกติ — `h6` default = 500 (medium) ยังดูหนา ฟิก 400 */}
-                <Typography variant="h6" sx={{ fontWeight: 400, lineHeight: 1.3 }}>
-                  {view.appName}
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {view.companyName}
-                </Typography>
-              </Box>
-              <Chip
-                label={view.chipLabel}
-                color={view.chipColor}
-                size="small"
-                variant="outlined"
-                sx={{ flexShrink: 0 }}
-              />
-            </Box>
+            {/* ---- หัวการ์ด: ชื่อแอป + ชื่อบริษัท (ซ้าย) / ชิปสถานะ (ขวา) ----
+                 **ซ่อนระหว่างดูรายการงานที่ถูกตัด** — ตามภาพอ้างอิงเนื้อหา
+                 โชว์แค่หัวข้อรายการ + ตาราง (หัวข้อ/บริษัทอยู่ที่ breadcrumb
+                 ในหัวป๊อปอัพแล้ว) */}
+            {!deductionsTarget && (
+              <>
+                <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.5 }}>
+                  <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                    {/* ฟอนต์ปกติ — `h6` default = 500 (medium) ยังดูหนา ฟิก 400 */}
+                    <Typography variant="h6" sx={{ fontWeight: 400, lineHeight: 1.3 }}>
+                      {view.appName}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {view.companyName}
+                    </Typography>
+                  </Box>
+                  <Chip
+                    label={view.chipLabel}
+                    color={view.chipColor}
+                    size="small"
+                    variant="outlined"
+                    sx={{ flexShrink: 0 }}
+                  />
+                </Box>
 
-            {/* หัวการ์ด — `my: 1` (จาก 1.5) เผื่อที่ให้กล่องเนื้อหาด้านล่าง */}
-            <Divider sx={{ my: 1 }} />
+                {/* หัวการ์ด — `my: 1` (จาก 1.5) เผื่อที่ให้กล่องเนื้อหาด้านล่าง */}
+                <Divider sx={{ my: 1 }} />
+              </>
+            )}
 
             {/**
              * **กล่องเนื้อหา = ตัว scroll จุดเดียวของป๊อปอัพ** (ทั้ง 2 แท็บ) —
@@ -289,11 +338,20 @@ export default function SystemDetailDialog({
                 flexDirection: "column",
               }}
             >
-              {tab === 0 ? view.general : view.history}
+              {deductionsTarget ? (
+                /**
+                 * **มุมมอง "รายการงานที่ถูกตัด" ในกล่อง scroll เดิม** — ไม่มี
+                 * หัวการ์ด/ปุ่มท้าย ตามภาพอ้างอิง (หัวข้อ + ตารางล้วน) · ข้อมูล
+                 * ดึงเองจาก `GET /apps/:id/companies/:recordId/usage`
+                 */
+                <SystemDeductionsView target={deductionsTarget} />
+              ) : (
+                (tab === 0 ? view.general : view.history)
+              )}
             </Box>
 
-            {/* ---- ปุ่มท้ายการ์ด: เท่ากันทั้ง 2 แท็บ ---- */}
-            {canRenew && (
+            {/* ---- ปุ่มท้ายการ์ด: เท่ากันทั้ง 2 แท็บ (ซ่อนระหว่างดูรายการ) ---- */}
+            {!deductionsTarget && canRenew && (
               <>
                 {/* `my: 1` (จาก 1.5) — เผื่อที่ให้กล่องเนื้อหาด้านบนเลื่อนได้เต็มที่ */}
                 <Divider sx={{ my: 1 }} />
@@ -305,18 +363,6 @@ export default function SystemDetailDialog({
           </Box>
         )}
       </DialogContent>
-
-      {/**
-       * **ป๊อปอัพแยกใบ "งานที่ถูกตัด MA"** — เปิดซ้อนบนใบนี้จากลิงก์ "N รายการ"
-       * ในแท็บประวัติ · วางเป็นลูกของ `<Dialog>` แต่ **portal ของมันไป body**
-       * (DOM ทับกัน → ใบที่ mount ทีหลังอยู่บนสุด, Esc/คลิก backdrop โดนแค่ใบ
-       * บนเพราะ event ไม่ผ่าน DOM ของใบล่าง) · **ปิดป๊อปอัพเดิม = ถอดลูกออกจาก
-       * tree** (Modal unmount children) → ไม่มีทางทิ้งป๊อปอัพลูกค้างบนจอ
-       */}
-      <SystemDeductionsDialog
-        target={deductionsTarget}
-        onClose={() => setDeductionsTarget(null)}
-      />
     </Dialog>
   );
 }
@@ -345,7 +391,7 @@ function buildView(
      * ด้วย จึงไม่ต้องส่ง `used` ระดับคู่เข้ามาอีก (ดู `usedOf`)
      */
     counts: Map<number, UsageCount> | null;
-    /** เปิดป๊อปอัพแยกใบ `SystemDeductionsDialog` "งานที่ถูกตัด MA" ของรอบที่กด */
+    /** สลับป๊อปอัพเป็นมุมมอง `SystemDeductionsView` "รายการงานที่ถูกตัด" ของรอบที่กด */
     onShowDeductions: (target: DeductionTarget) => void;
   },
 ): DetailView {
@@ -567,7 +613,7 @@ function buildView(
             <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
               {t("columnRemaining")}
             </TableCell>
-            {/* **รายการที่ตัด** ของรอบนั้น — ปุ่มเปิดป๊อปอัพแยกใบของรอบที่กด */}
+            {/* **รายการที่ตัด** ของรอบนั้น — ปุ่มสลับเป็นมุมมองรายการในป๊อปอัพเดิม */}
             <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
               {t("historyDeducted")}
             </TableCell>
@@ -617,10 +663,19 @@ function buildView(
                 <TableCell align="center">
                   {remaining === null ? caption(usageLoading ? "…" : "—") : remaining}
                 </TableCell>
-                {/* ปุ่ม**เปิดป๊อปอัพแยกใบ** "งานที่ถูกตัด MA" **ของรอบนี้** —
-                    `counts === null` = ยังโหลด (`…`), Map ไม่มีคีย์ = ดึงไม่ได้
-                    (`—`, fail-open) · ส่งข้อมูลรอบครบไว้ใช้ในหัวป๊อปอัพ */}
+                {/* ปุ่ม**สลับเป็นมุมมอง "รายการงานที่ถูกตัด" ในป๊อปอัพเดิม**
+                    **ของรอบนี้** — `counts === null` = ยังโหลด (`…`), Map ไม่มีคีย์
+                    = ดึงไม่ได้ (`—`, fail-open) · ส่งรอบ (`recordId` + ลำดับ) ให้
+                    breadcrumb ในหัวป๊อปอัพ · **ไม่ navigate ไปหน้าอื่น ไม่มี
+                    ป๊อปอัพซ้อน** (ข้อสรุป: "มันก็อยู่ในรายละเอียดระบบ") */}
                 <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
+                  {/**
+                   * **สีดำ + hover ขึ้นกรอบเส้นบางล้อมรอบ** (ข้อสรุปจากผู้ใช้: "มัน
+                   * ต้องเป็นสีดำดิ … เวลาที่เม้าไปโดน ก็ขึ้นกรอบแบบนี้" = ภาพ 4) ·
+                   * **ไม่ใช่ tooltip ตารางลอย** — ที่ลองทำไปผู้ใช้ปฏิเสธ ("แล้วจะให้
+                   * ขึ้นงี้ทำไม") · คลิกยังเปิดมุมมองเต็มในป๊อปอัพ (breadcrumb +
+                   * ปุ่มย้อนกลับ = ภาพ 2)
+                   */}
                   <Button
                     size="small"
                     color="inherit"
@@ -629,18 +684,25 @@ function buildView(
                         appId: app.id,
                         recordId: row.recordId,
                         round,
-                        kind: row.kind,
-                        carriedHours: row.carriedHours,
-                        appName: app.name,
-                        companyName: link.name,
                       })
                     }
                     sx={{
                       minWidth: 0,
                       px: 0.5,
+                      py: 0.25,
                       fontSize: "inherit",
-                      textDecoration: "underline",
-                      textUnderlineOffset: 3,
+                      // **สีดำ ไม่ขีดเส้น** — ไม่ใช่ลิงก์สีฟ้าแบบเดิม (ตามที่ขอ)
+                      color: "text.primary",
+                      textDecoration: "none",
+                      // **กรอบใส่ไว้เสมอ** แค่เปลี่ยนสีตอน hover → ไม่กระเด้ง layout
+                      border: 1,
+                      borderColor: "transparent",
+                      borderRadius: 1,
+                      "&:hover": {
+                        textDecoration: "none",
+                        borderColor: "divider",
+                        bgcolor: "transparent",
+                      },
                     }}
                   >
                     {entry

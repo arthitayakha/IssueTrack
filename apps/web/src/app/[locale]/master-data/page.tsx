@@ -33,7 +33,6 @@ import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
-import HistoryIcon from "@mui/icons-material/History";
 import RulesPanel from "@/components/rules/rules-panel";
 import { usePermissions } from "@/lib/permissions";
 import { apiFetch, ApiError } from "@/lib/api";
@@ -324,8 +323,6 @@ function SortableStatusRow({
 
 export default function SettingsPage() {
   const t = useTranslations("Settings");
-  // คำ/ปุ่มของแท็บระบบอัตโนมัติอยู่ใน namespace Automation ชุดเดียวกับหน้า /automation
-  const tAuto = useTranslations("Automation");
   const router = useRouter();
   const { can } = usePermissions();
   const token = useAuthStore((s) => s.token);
@@ -631,7 +628,7 @@ export default function SettingsPage() {
     };
   }, [activeContent, pages, reloadKeys, token]);
 
-  // Support deep links such as /master-data?tab=statuses — used by the back link on /automation.
+  // Support deep links such as /master-data?tab=automation — used by the back links on /automation/**.
   useEffect(() => {
     const tabParam = new URLSearchParams(window.location.search).get("tab");
     if (!tabParam) return;
@@ -1706,33 +1703,12 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
             </Box>
           )}
 
-          {/* ระบบอัตโนมัติ — รายการกฎชุดเดียวกับหน้า /automation (RulesPanel แชร์กัน)
-              เปิดด้วย `automation.view`; ปุ่มสร้าง/แก้ไข/สวิตซ์ ดูตาม `automation.update` */}
+          {/* ระบบอัตโนมัติ — รายการกฎ + ปุ่มหัวแท็บ + ป๊อปอัพสร้าง/แก้ไขกฎ อยู่ใน
+              RulesPanel ทั้งหมด (หน้า list `/automation` กับหน้า wizard ถูกถอดเป็น
+              redirect มาแท็บนี้แล้ว) เปิดด้วย `automation.view`; ปุ่มสร้าง/แก้ไข/สวิตซ์
+              ดูตาม `automation.update` ที่ส่งเข้าไป */}
           {tabs[tab]?.content === "automation" && (
-            <Box>
-              {/* ไม่มีหัวข้อ h6 — ชื่อแท็บอยู่ที่แถบแท็บด้านบนแล้ว (ตรงกับแท็บอื่นทั้ง 6) */}
-              <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", mb: 3 }}>
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <Button
-                    variant="outlined"
-                    startIcon={<HistoryIcon />}
-                    onClick={() => router.push("/automation/runs")}
-                  >
-                    {tAuto("history")}
-                  </Button>
-                  {can("automation.update") && (
-                    <Button
-                      variant="contained"
-                      startIcon={<AddIcon />}
-                      onClick={() => router.push("/automation/new")}
-                    >
-                      {tAuto("create")}
-                    </Button>
-                  )}
-                </Box>
-              </Box>
-              <RulesPanel canUpdate={can("automation.update")} />
-            </Box>
+            <RulesPanel canUpdate={can("automation.update")} />
           )}
 
           {/* ฟอร์มเพิ่ม/แก้ไขแอป = ชื่อล้วน (เหมือนแท็บบริษัท) — รายละเอียดคู่

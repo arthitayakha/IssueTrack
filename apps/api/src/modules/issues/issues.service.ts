@@ -703,7 +703,7 @@ export class IssuesService {
     }
 
     // the "one column at a time" rule (an active issue.move_step_only rule;
-    // pause it in /automation for free dragging) — checked before anything is
+    // pause it in the ระบบอัตโนมัติ tab of /master-data for free dragging) — checked before anything is
     // written, so a rejected drag leaves no notification or activity behind
     if (await this.rulesEngine.isStepOnlyMoveActive()) {
       await this.assertAdjacentMove(issue.statusId, statusId);

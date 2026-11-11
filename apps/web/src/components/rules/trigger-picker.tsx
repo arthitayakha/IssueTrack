@@ -185,7 +185,10 @@ export default function TriggerPicker({
   }
 
   return (
-    <Box>
+    // ยืดเต็มกล่องเนื้อหา (flex column ใน rule-wizard) — ให้ "รายการด้านล่าง"
+    // flex:1 เป็นคนกินพื้นที่ที่เหลือแล้วเลื่อนเอง จึงไม่มีที่ว่างตายใต้รายการ
+    // และแท็บ/คำอธิบายค้างอยู่บนจอตลอดตอนเลื่อน
+    <Box sx={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         {t("step1Intro")}
       </Typography>
@@ -197,8 +200,22 @@ export default function TriggerPicker({
         ))}
       </Tabs>
 
-      {/* trigger list — one sentence per row; each row picks trigger + template */}
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 1, mt: 2 }}>
+      {/* trigger list — one sentence per row; each row picks trigger + template
+          flex:1 = ยืดกินพื้นที่ที่เหลือ (ไม่จำกัดที่ 4 ใบเหมือนก่อน — ตัด 4 ใบแล้วมี
+          ที่ว่างตายข้างใต้ + สกอร์บาร์ทั้งที่ยังมีที่) overflow โผล่เฉพาะตอนจำนวนแถว
+          เกินพื้นที่จริง */}
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 1,
+          mt: 2,
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          pr: 0.5,
+        }}
+      >
         {triggers.flatMap((tk) =>
           tk.templates.map((tp) => {
             const active = tk.key === triggerKey && tp.key === templateKey;

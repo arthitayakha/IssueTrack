@@ -631,6 +631,7 @@
     "active": "Active",
     "inactive": "Inactive",
     "cancel": "Cancel",
+    "back": "Back",
     "save": "Save",
     "delete": "Delete",
     "app": "app",
@@ -735,6 +736,7 @@
     "deductionsCarried": "{n} hour(s) carried over",
     "deductionsRoundLabel": "Select item",
     "deductionsNoMatch": "No matching item",
+    "deductionListTitle": "Deducted tasks ({n})",
     "deductionIssueNo": "Issue #",
     "deductionTitle": "Title",
     "deductionType": "Type",
@@ -1149,6 +1151,7 @@
       "dragHint": "Drag to reorder columns (the number column stays on top)",
       "search": "Search...",
       "refresh": "Refresh",
+      "export": "Exporter",
       "exportPdf": "Export PDF",
       "exportCsv": "Export CSV"
     },

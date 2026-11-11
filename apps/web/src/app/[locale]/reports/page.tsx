@@ -1045,15 +1045,6 @@ function ReportsScreen() {
     <RequirePermission permission="report.view">
       <DashboardLayout>
         <Box>
-          <Box sx={{ mb: 3 }}>
-            <Typography variant="h4" fontWeight={700} sx={{ color: "navy.main" }}>
-              {t("title")}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              {t("subtitle")}
-            </Typography>
-          </Box>
-
           <Box sx={{ mb: 2.5 }}>
             <ReportsToolbar
               view={view}

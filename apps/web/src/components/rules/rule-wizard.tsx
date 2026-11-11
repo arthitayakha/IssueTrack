@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { Box, Alert, Button, Step, StepLabel, Stepper } from "@mui/material";
 import { useTranslations } from "next-intl";
-import { useRouter } from "@/i18n/navigation";
 import { apiFetch, isApiError } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import {
@@ -62,9 +61,24 @@ function slotValuesFromRule(rule?: RuleDto): SlotValues {
   return values;
 }
 
-export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
+interface RuleWizardProps {
+  /** undefined = สร้างกฎใหม่; มีค่า = แก้ไขกฎนั้น (prefill ทุกช่องจาก rule เดิม) */
+  initialRule?: RuleDto;
+  /** ปิด wizard — เจ้าของ (ป๊อปอัพ) เป็นคนกำหนดว่าปิดแล้วไปไหน */
+  onClose: () => void;
+  /** ยิงหลังบันทึกสำเร็จ — ให้ host (RulesPanel) รีเฟรชรายการกฎ */
+  onSaved?: () => void;
+}
+
+/**
+ * Fully wired to POST/PUT /rules — the button stays disabled with its
+ * "backend not connected" tooltip until the rules API lands.
+ * ทางเข้าเดียวตอนนี้คือ `RuleWizardDialog` (ปุ่ม "สร้างกฎ"/"แก้ไข" ในแท็บ
+ * ระบบอัตโนมัติของ /master-data) — หน้า `/automation/new` กับ `/automation/[id]`
+ * ถูกถอดเป็น redirect ไปแท็บนั้นแล้ว
+ */
+export default function RuleWizard({ initialRule, onClose, onSaved }: RuleWizardProps) {
   const t = useTranslations("Automation.wizard");
-  const router = useRouter();
   const token = useAuthStore((s) => s.token);
   const { notify } = useNotification();
 
@@ -304,8 +318,8 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
   }
 
   /**
-   * Fully wired to POST/PUT /rules — the button stays disabled with its
-   * "backend not connected" tooltip until the rules API lands.
+   * บันทึกแล้วปิดป๊อปอัพ — `onSaved` ให้ host รีเฟรชรายการ; ถ้าไม่มี host
+   * (ยังไม่เกิดขึ้น) ก็แค่ปิด
    */
   async function handleSave() {
     if (saving || !triggerKey || !actionKey) return;
@@ -315,7 +329,8 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
       if (initialRule) await updateRule(initialRule.id, payload);
       else await createRule(payload);
       notify(t("saved"), "success");
-      router.push("/automation");
+      onSaved?.();
+      onClose();
     } catch (err) {
       // 409 = the API found the same rule again (the list above could not be
       // read, e.g. no automation.view) — say it in Thai instead of server text
@@ -332,8 +347,16 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
   }
 
   return (
-    <Box>
-      <Stepper activeStep={step} sx={{ mb: 3, maxWidth: 800, mx: "auto" }}>
+    // flex column เต็มความสูงป๊อปอัพ (Dialog Paper ฟิก 680px) — กล่องเนื้อหา take
+    // ส่วนที่เหลือ ส่วน footer (ยกเลิก/ถัดไป/บันทึก) อยู่นอกกล่อง → ติดขอบล่างเสมอ
+    // ไม่จมหายตอนเนื้อหายาว (เดิมทั้งป๊อปอัพเลื่อนรวมกัน)
+    <Box sx={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      {/* mt: 4 = 32px ห่างขอบ title — DialogContent ถูก MUI บังคับ padding-top: 0
+          (.title + .content) ช่องว่างใต้หัวป๊อปอัพจึงต้องใส่ที่ Stepper เอง
+          width: 100% — root เป็น flex column แล้ว `mx: "auto"` จะขวางไม่ให้ stretch
+          → Stepper หดเหลือ fit-content แล้วเส้นเชื่อม (StepConnector flex:1) ไม่มีที่ยืด
+         จนหาย + ขั้นมารวมกันตรงกลาง ใส่ width นี้คืนความกว้าง 800px เดิมให้เส้นกลับมา */}
+      <Stepper activeStep={step} sx={{ mt: 4, mb: 3, width: "100%", maxWidth: 800, mx: "auto" }}>
         {steps.map((label, index) => (
           <Step
             key={label}
@@ -346,7 +369,23 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
         ))}
       </Stepper>
 
-      <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: { xs: 2, sm: 2.5 } }}>
+      {/* flex:1 + overflow:auto — เนื้อหาที่ยาวกว่าพื้นที่ (เช่น การ์ดที่ถูกเลือกแล้วกาง
+          ฟอร์มพารามิเตอร์) เลื่อน**ในกล่องนี้** แทนที่จะเลื่อนทั้งป๊อปอัพจนปุ่มจมหาย
+          — display:flex column เพื่อให้ picker (trigger/action) ยืดกินความสูงที่เหลือ
+          แล้ว**รายการข้างใน**เป็นคนเลื่อนเอง (ไม่ตัดที่ 4 ใบ ไม่เว้นว่างตาย) */}
+      <Box
+        sx={{
+          border: "1px solid",
+          borderColor: "divider",
+          borderRadius: 2,
+          p: { xs: 2, sm: 2.5 },
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
         {step === 0 && (
           <TriggerPicker
             triggerKey={triggerKey}
@@ -396,7 +435,7 @@ export default function RuleWizard({ initialRule }: { initialRule?: RuleDto }) {
           flexWrap: "wrap",
         }}
       >
-        <Button variant="text" onClick={() => router.push("/automation")}>
+        <Button variant="text" onClick={onClose}>
           {t("cancel")}
         </Button>
         {step < steps.length - 1 ? (

@@ -5305,7 +5305,7 @@ function BoardsPageInner() {
   const canAssign = can("issue.assign");
   // unlocking a card needs the permission *and* an active `issue.unlock`
   // rule: without one, a locked status stays sealed and admins release
-  // cards by pausing the lock rule in /automation
+  // cards by pausing the lock rule in the ระบบอัตโนมัติ tab of /master-data
   const canUnlockIssue = can("issue.all.update") && unlockAvailable;
   const canManage = canEdit || canDelete || canAssign;
   const canSeeReporter = can("issue.all.view");

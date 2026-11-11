@@ -226,7 +226,10 @@ export default function ActionPicker({
   }
 
   return (
-    <Box>
+    // ยืดเต็มกล่องเนื้อหา (flex column ใน rule-wizard) — เหมือน TriggerPicker:
+    // รายการด้านล่าง flex:1 กินพื้นที่ที่เหลือแล้วเลื่อนเอง ไม่มีที่ว่างตาย,
+    // แท็บ + คำอธิบายค้างบนจอตลอดตอนเลื่อน
+    <Box sx={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         {t("step2Intro")}
       </Typography>
@@ -238,8 +241,21 @@ export default function ActionPicker({
         ))}
       </Tabs>
 
-      {/* full-width rows — title line + description line */}
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 1, mt: 1.5 }}>
+      {/* full-width rows — title line + description line
+          flex:1 = ยืดกินพื้นที่ที่เหลือ (ไม่จำกัดที่ 4 ใบเหมือนก่อน) — การ์ดที่เลือก
+          แล้วกางฟอร์มพารามิเตอร์ก็เลื่อนในรายการนี้; overflow โผล่เฉพาะตอนเกินจริง */}
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 1,
+          mt: 1.5,
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          pr: 0.5,
+        }}
+      >
         {actions.map((action) => {
           const isSelected = action.key === actionKey;
           return (

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type DragEvent } from "react";
+import { useEffect, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import {
   Badge,
   Box,
@@ -9,6 +9,7 @@ import {
   Divider,
   IconButton,
   ListItemText,
+  Menu,
   MenuItem,
   Popover,
   Select,
@@ -22,8 +23,7 @@ import FilterListIcon from "@mui/icons-material/FilterList";
 import ViewColumnIcon from "@mui/icons-material/ViewColumn";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
-import FileDownloadIcon from "@mui/icons-material/FileDownload";
+import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import { useTranslations } from "next-intl";
 import { DateRangeIconButton, type DateRangePreset } from "@/components/date-range-select";
 import { activeFilterCount } from "@/lib/reports-api";
@@ -276,6 +276,23 @@ export function ReportsToolbar({
   const [searchInput, setSearchInput] = useState(filters.search);
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
   const [columnAnchor, setColumnAnchor] = useState<HTMLElement | null>(null);
+  const [exportAnchor, setExportAnchor] = useState<HTMLElement | null>(null);
+  /** ความกว้างของปุ่มตอนกด — ใช้เป็น minWidth ของเมนูให้กว้างเท่ากันเป๊ะ */
+  const [exportMenuWidth, setExportMenuWidth] = useState(0);
+
+  const openExportMenu = (e: ReactMouseEvent<HTMLButtonElement>) => {
+    setExportMenuWidth(Math.round(e.currentTarget.getBoundingClientRect().width));
+    setExportAnchor(e.currentTarget);
+  };
+
+  /** ปิดเมนู แล้วค่อยรัน export ที่เลือก */
+  const pickExport = (run: () => void) => () => {
+    setExportAnchor(null);
+    run();
+  };
+
+  /** รายการเมนูต้องแคบกว่าปุ่ม (ฟอนต์ 13px + padding 12px) ไม่งั้นเมนูกว้างกว่าปุ่ม */
+  const exportItemSx = { fontSize: "0.8125rem", px: 1.5 } as const;
 
   /** Preset menu for the shared date-range icon (custom comes with it). */
   const rangePresets: DateRangePreset[] = RANGE_PRESET_KEYS.map((key) => ({
@@ -454,22 +471,48 @@ export function ReportsToolbar({
 
         {canExport && (
           <>
+            {/* ปุ่มเดียว "Exporter" (ไร้ไอคอน ขนาด small ให้พอดีกับ icon buttons)
+                + เมนูเลือก PDF / CSV (ไร้ไอคอนเหมือนกัน) แทน 2 ปุ่มคู่กัน */}
             <Button
+              size="small"
               variant="outlined"
-              startIcon={<PictureAsPdfIcon />}
-              onClick={onExportPdf}
+              endIcon={<ArrowDropDownIcon fontSize="small" />}
+              onClick={openExportMenu}
               disabled={exporting}
+              aria-haspopup="menu"
+              aria-expanded={Boolean(exportAnchor)}
+              aria-label={t("toolbar.export")}
+              sx={{ textTransform: "none", whiteSpace: "nowrap" }}
             >
-              {t("toolbar.exportPdf")}
+              {t("toolbar.export")}
             </Button>
-            <Button
-              variant="contained"
-              startIcon={<FileDownloadIcon />}
-              onClick={onExportCsv}
-              disabled={exporting}
+            <Menu
+              open={Boolean(exportAnchor)}
+              anchorEl={exportAnchor}
+              onClose={() => setExportAnchor(null)}
+              // เปิดชิดขอบซ้ายของปุ่ม + กว้างเท่าปุ่ม (minWidth = ความกว้างปุ่มที่วัดไว้)
+              // → ทั้งขอบซ้ายและขอบขวาของเมนูตรงกับปุ่มเป๊ะ
+              anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+              transformOrigin={{ vertical: "top", horizontal: "left" }}
+              slotProps={{
+                paper: { sx: { minWidth: exportMenuWidth || undefined } },
+              }}
             >
-              {t("toolbar.exportCsv")}
-            </Button>
+              <MenuItem
+                onClick={pickExport(onExportPdf)}
+                disabled={exporting}
+                sx={exportItemSx}
+              >
+                {t("toolbar.exportPdf")}
+              </MenuItem>
+              <MenuItem
+                onClick={pickExport(onExportCsv)}
+                disabled={exporting}
+                sx={exportItemSx}
+              >
+                {t("toolbar.exportCsv")}
+              </MenuItem>
+            </Menu>
           </>
         )}
       </Stack>

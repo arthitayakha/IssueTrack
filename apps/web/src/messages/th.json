@@ -594,6 +594,7 @@
     "active": "เปิดใช้งาน",
     "inactive": "ปิดใช้งาน",
     "cancel": "ยกเลิก",
+    "back": "ย้อนกลับ",
     "save": "บันทึก",
     "delete": "ลบ",
     "app": "แอป",
@@ -697,6 +698,7 @@
     "deductionsCarried": "ทบมา {n} ชั่วโมง",
     "deductionsRoundLabel": "เลือกรายการ",
     "deductionsNoMatch": "ไม่มีรายการที่ตรงกัน",
+    "deductionListTitle": "รายการงานที่ถูกตัด ({n} รายการ)",
     "deductionIssueNo": "เลขงาน",
     "deductionTitle": "ชื่อเรื่อง",
     "deductionType": "ประเภท",
@@ -1116,6 +1118,7 @@
       "dragHint": "ลากเพื่อจัดลำดับคอลัมน์ (ลำดับอยู่บนสุดตลอด)",
       "search": "ค้นหา...",
       "refresh": "รีเฟรช",
+      "export": "Exporter",
       "exportPdf": "Export PDF",
       "exportCsv": "Export CSV"
     },
