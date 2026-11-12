@@ -88,6 +88,21 @@ function round1(n: number): number {
 }
 
 /**
+ * "365 ชั่วโมง 6 นาที" — ฟอร์แมตเดียวกับ `fmtDuration` บนจอ (คอลัมน์
+ * ระยะเวลา / ชั่วโมงจริง / ชั่วโมงกรอก) — **จอ/CSV/PDF ห้ามต่างกัน** ·
+ * รับ `t` เป็น param เพราะคอลัมน์ export อยู่ในคนละ scope กับตาราง
+ */
+function fmtDuration(
+  t: ReturnType<typeof useTranslations>,
+  totalSeconds: number,
+): string {
+  const totalMinutes = Math.round((totalSeconds || 0) / 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${t("duration.hours", { h })} ${t("duration.minutes", { m })}`;
+}
+
+/**
  * A CSV-only column rides right after its table counterpart: the real issue
  * number always follows the running number, even after a reorder.
  */
@@ -269,6 +284,7 @@ function ReportsScreen() {
   const [rowsView, setRowsView] = useState<ReportView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** bump โดยปุ่ม "ลองใหม่" ตอนโหลด error — ให้ retry ดึงทุกอย่างใหม่ */
   const [reloadKey, setReloadKey] = useState(0);
   /**
    * `GET /apps` เสร็จแล้วหรือยัง — เฉพาะ view ตามบริษัทที่ต้องใช้
@@ -277,7 +293,7 @@ function ReportsScreen() {
    */
   const [contractsReady, setContractsReady] = useState(false);
 
-  // refresh 🔄 ต้องดึงสัญญาใหม่ด้วย — ไม่งั้นเพิ่มบริษัท/คู่ใหม่แล้วกดรีเฟรชไม่เห็น
+  // reload (ปุ่ม "ลองใหม่" ตอน error) ต้องดึงสัญญาใหม่ด้วย — ไม่งั้นเพิ่มบริษัท/คู่ใหม่แล้ว retry ไม่เห็น
   useEffect(() => {
     let cancelled = false;
     loadFilterOptions()
@@ -610,8 +626,8 @@ function ReportsScreen() {
       { key: "title", header: t("columns.title"), value: (r) => r.title },
       { key: "status", header: t("columns.status"), value: (r) => r.statusName ?? "" },
       { key: "category", header: t("columns.category"), value: (r) => r.categoryName ?? "" },
-      { key: "hoursActual", header: t("columns.hoursActual"), value: (r) => r.hoursActual },
-      { key: "hoursEntered", header: t("columns.hoursEntered"), value: (r) => r.hoursEntered },
+      { key: "hoursActual", header: t("columns.hoursActual"), value: (r) => fmtDuration(t, r.hoursActual * 3600) },
+      { key: "hoursEntered", header: t("columns.hoursEntered"), value: (r) => fmtDuration(t, r.hoursEntered * 3600) },
     ],
     [t],
   );
@@ -672,10 +688,7 @@ function ReportsScreen() {
        */
       const fmtContractDay = (iso: string | null) =>
         iso ? formatDay(iso, locale) : "";
-      const fmtDuration = (totalSeconds: number) => {
-        const totalMinutes = Math.round((totalSeconds || 0) / 60);
-        return `${t("duration.hours", { h: Math.floor(totalMinutes / 60) })} ${t("duration.minutes", { m: totalMinutes % 60 })}`;
-      };
+      // module-scope `fmtDuration(t, seconds)` — จอ/CSV/PDF ฟอร์แมตเดียวกัน
       const sumLabel = (r: SummaryRow) =>
         r.labelKey ? t(`columns.${r.labelKey}`) : (r.label ?? "");
 
@@ -725,8 +738,8 @@ function ReportsScreen() {
             { key: "resolution", header: t("columns.resolution"), value: (r) => r.resolution ?? "" },
             { key: "workStarted", header: t("columns.workStarted"), value: (r) => (r.workStartedAt ? fmt(r.workStartedAt) : "") },
             { key: "workEnded", header: t("columns.workEnded"), value: (r) => (r.workEndedAt ? fmt(r.workEndedAt) : "") },
-            { key: "duration", header: t("columns.duration"), value: (r) => fmtDuration(r.durationSeconds) },
-            { key: "enteredTime", header: t("columns.enteredTime"), value: (r) => fmtDuration(Math.round(r.hoursEntered * 3600)) },
+            { key: "duration", header: t("columns.duration"), value: (r) => fmtDuration(t, r.durationSeconds) },
+            { key: "enteredTime", header: t("columns.enteredTime"), value: (r) => fmtDuration(t, Math.round(r.hoursEntered * 3600)) },
             { key: "operators", header: t("columns.operators"), value: (r) => r.operatorNames?.join(", ") ?? "" },
             { key: "status", header: t("columns.status"), value: (r) => r.statusName ?? "" },
             { key: "category", header: t("columns.category"), value: (r) => r.categoryName ?? "" },
@@ -743,8 +756,9 @@ function ReportsScreen() {
             { key: "person", header: t("columns.person"), value: (r) => sumLabel(r) },
             { key: "issueCount", header: t("columns.issueCount"), value: (r) => r.issueCount },
             { key: "openCount", header: t("columns.openCount"), value: (r) => r.openCount },
-            { key: "hoursActual", header: t("columns.hoursActual"), value: (r) => r.hoursActual },
-            { key: "hoursEntered", header: t("columns.hoursEntered"), value: (r) => r.hoursEntered },
+            // ชั่วโมง (ชม. ทศนิยม) → "X ชั่วโมง Y นาที" — ตรงกับจอ (ห้ามต่างกัน)
+            { key: "hoursActual", header: t("columns.hoursActual"), value: (r) => fmtDuration(t, r.hoursActual * 3600) },
+            { key: "hoursEntered", header: t("columns.hoursEntered"), value: (r) => fmtDuration(t, r.hoursEntered * 3600) },
             { key: "lastAt", header: t("columns.lastAt"), value: (r) => (r.lastAt ? fmtDay(r.lastAt) : "") },
           ];
           return matrix(cols, rs, hidden, orderKeys);
@@ -755,8 +769,18 @@ function ReportsScreen() {
             { key: "app", header: t("columns.app"), value: (r) => sumLabel(r) },
             { key: "issueCount", header: t("columns.issueCount"), value: (r) => r.issueCount },
             { key: "openCount", header: t("columns.openCount"), value: (r) => r.openCount },
-            { key: "medianActualMinutes", header: t("columns.medianActual"), value: (r) => r.medianActualMinutes ?? "" },
-            { key: "medianEnteredMinutes", header: t("columns.medianEntered"), value: (r) => r.medianEnteredMinutes ?? "" },
+            // ชั่วโมงของ view ตามแอปเป็น**ผลรวม** (ชม. ทศนิยม) → "X ชั่วโมง Y นาที"
+            // ตรงกับจอ — เดิมเป็น median ซึ่งบวกไม่ได้ (จอ/CSV/PDF ห้ามต่างกัน)
+            {
+              key: "hoursActual",
+              header: t("columns.hoursActual"),
+              value: (r) => fmtDuration(t, r.hoursActual * 3600),
+            },
+            {
+              key: "hoursEntered",
+              header: t("columns.hoursEntered"),
+              value: (r) => fmtDuration(t, r.hoursEntered * 3600),
+            },
             { key: "topAssignee", header: t("columns.topAssignee"), value: (r) => r.topAssignee ?? "" },
             { key: "lastAt", header: t("columns.lastAt"), value: (r) => (r.lastAt ? fmtDay(r.lastAt) : "") },
           ];
@@ -930,8 +954,8 @@ function ReportsScreen() {
             if (ki === personIdx) return label;
             // summary-only columns (งานทั้งหมด / ยังเปิดอยู่ / งานล่าสุด) stay empty
             if (!detailKeySet.has(k)) return "";
-            if (k === "hoursActual") return task.hoursActual;
-            if (k === "hoursEntered") return task.hoursEntered;
+            if (k === "hoursActual") return fmtDuration(t, task.hoursActual * 3600);
+            if (k === "hoursEntered") return fmtDuration(t, task.hoursEntered * 3600);
             return "";
           });
           data.push([...row, ...extra.map((c) => c.value(task, ti))]);
@@ -1052,7 +1076,6 @@ function ReportsScreen() {
               filters={filters}
               onFiltersChange={changeFilters}
               options={options}
-              onRefresh={() => setReloadKey((k) => k + 1)}
               onExportPdf={handleExportPdf}
               onExportCsv={handleExportCsv}
               canExport={canExport}

@@ -43,7 +43,7 @@ const ISSUE_DETAIL_RELATIONS = [
  * `null` = ล้างค่ากลับเป็น "ยังไม่ระบุ" (ไม่หัก MA) ซึ่ง `update()` รับผ่าน
  * เงื่อนไข `!== undefined` ด้านล่าง ไม่ต้องอยู่ในลิสต์นี้
  */
-const TASK_TYPES = ["bug", "feature", "requirement"] as const;
+const TASK_TYPES = ["bug", "ma", "requirement"] as const;
 type TaskType = (typeof TASK_TYPES)[number];
 
 /** Work-session aggregates attached per page by `?withTimeline=1`. */

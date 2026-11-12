@@ -356,7 +356,7 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
                         height: 22,
                         fontSize: 11,
                         flexShrink: 0,
-                        // params (reason 500 / comment 1000 chars) must never
+                        // params (comment 1000 chars) must never
                         // push the switch & icons off the row
                         maxWidth: 320,
                         "& .MuiChip-label": {

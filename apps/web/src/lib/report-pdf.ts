@@ -81,8 +81,9 @@ const COLUMN_WIDTHS: Record<ReportView, Record<string, number>> = {
   assignee: {
     issueCount: 44,
     openCount: 44,
-    hoursActual: 56,
-    hoursEntered: 56,
+    // "365 ชั่วโมง 6 นาที" — ฟอร์แมตเดียวกับจอ ต้องกว้างพออยู่บรรทัดเดียว
+    hoursActual: 90,
+    hoursEntered: 90,
     lastAt: 52,
     // task-detail columns riding under each summary row
     index: 20,
@@ -92,8 +93,10 @@ const COLUMN_WIDTHS: Record<ReportView, Record<string, number>> = {
   app: {
     issueCount: 44,
     openCount: 44,
-    medianActual: 60,
-    medianEntered: 60,
+    // "365 ชั่วโมง 6 นาที" — ฟอร์แมตเดียวกับจอ ต้องกว้างพออยู่บรรทัดเดียว
+    // (ชั่วโมงของ view นี้เป็นผลรวมแล้ว — คีย์ต้องตรงกับคีย์ในไฟล์ export)
+    hoursActual: 90,
+    hoursEntered: 90,
     topAssignee: 90,
     lastAt: 52,
   },

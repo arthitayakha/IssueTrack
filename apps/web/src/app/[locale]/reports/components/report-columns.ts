@@ -44,12 +44,21 @@ export const REPORT_COLUMNS: Record<ReportView, ReportColumnDef[]> = {
     { key: "hoursEntered", labelKey: "columns.hoursEntered" },
     { key: "lastAt", labelKey: "columns.lastAt" },
   ],
+  /**
+   * ชั่วโมงของ view นี้เป็น **ผลรวม** (`hoursActual`/`hoursEntered` — SUM ต่อแอป)
+   * ไม่ใช่ค่ามัชชีนอีกแล้ว: ผู้ใช้ต้องการให้บวกกันตรง ๆ แถว "รวมทั้งหมด" จึงเท่ากับ
+   * ผลรวมทุกแถว และเท่ากับยอดรวมของ view ตามผู้รับผิดชอบ (คีย์/ป้ายชุดเดียวกัน) ·
+   * เดิมสองคอลัมน์นี้เป็น `medianActualMinutes`/`medianEnteredMinutes` ซึ่งบวกไม่ได้
+   * (แถวรวมเป็น median ของงานทุกใบ ไม่เกี่ยวกับแถวบน) แต่หัวข้อใน messages
+   * ใช้คำเดียวกับผลรวมเลยดูเหมือนว่าต้องบวกกันได้ — key i18n ของ median
+   * (`columns.medianActual`/`medianEntered`) เก็บไว้ตามกติกาห้ามลบ key ที่ไม่ใช้
+   */
   app: [
     { key: "app", labelKey: "columns.app" },
     { key: "issueCount", labelKey: "columns.issueCount" },
     { key: "openCount", labelKey: "columns.openCount" },
-    { key: "medianActualMinutes", labelKey: "columns.medianActual" },
-    { key: "medianEnteredMinutes", labelKey: "columns.medianEntered" },
+    { key: "hoursActual", labelKey: "columns.hoursActual" },
+    { key: "hoursEntered", labelKey: "columns.hoursEntered" },
     { key: "topAssignee", labelKey: "columns.topAssignee" },
     { key: "lastAt", labelKey: "columns.lastAt" },
   ],
@@ -123,6 +132,31 @@ const STORAGE_KEY = "kanban-report-columns";
 /** Older store that only held the hidden keys — migrated on first read. */
 const LEGACY_STORAGE_KEY = "kanban-report-hidden-columns";
 
+/**
+ * **key ที่เคยเปลี่ยนชื่อ** ใน prefs ที่ผู้ใช้ลาก/ซ่อนคอลัมน์ไว้ (view ตามแอป
+ * เปลี่ยน median → ผลรวม): แปลงตอนอ่านเพื่อให้ตำแหน่งกับการซ่อนของคอลัมน์
+ * ชั่วโมงยังอยู่เหมือนเดิม ไม่ต้องให้คอลัมน์กระโดดไปต่อท้ายตาราง · ค่าที่
+ * บันทึกกลับจะเป็นคีย์ใหม่เอง
+ */
+const RENAMED_PREF_KEYS: Record<string, Record<string, string>> = {
+  app: { medianActualMinutes: "hoursActual", medianEnteredMinutes: "hoursEntered" },
+};
+
+/** แปลง key ตาม `RENAMED_PREF_KEYS` (key ที่ไม่รู้จักคงไว้ — registry จะกรองให้เอง) */
+function renameKeys(view: string, keys: string[]): string[] {
+  const map = RENAMED_PREF_KEYS[view];
+  if (!map) return keys;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const key of keys) {
+    const next = map[key] ?? key;
+    if (seen.has(next)) continue; // คีย์ซ้ำหลังแปลง (prefs เพี้ยน) → เก็บอันแรก
+    seen.add(next);
+    out.push(next);
+  }
+  return out;
+}
+
 function normalize(parsed: unknown): ColumnPrefsByView {
   const out: ColumnPrefsByView = {};
   if (!parsed || typeof parsed !== "object") return out;
@@ -136,6 +170,11 @@ function normalize(parsed: unknown): ColumnPrefsByView {
         hidden: Array.isArray(v.hidden) ? v.hidden : [],
         order: Array.isArray(v.order) ? v.order : [],
       };
+    }
+    const prefs = out[view];
+    if (prefs) {
+      prefs.hidden = renameKeys(view, prefs.hidden);
+      prefs.order = renameKeys(view, prefs.order);
     }
   }
   return out;

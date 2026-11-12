@@ -104,14 +104,15 @@ export class Issue {
   actualFixAt!: Date | null;
 
   /**
-   * ประเภทงาน — `bug` | `feature` | `requirement` | NULL (ยังไม่ระบุ)
+   * ประเภทงาน — `bug` | `ma` | `requirement` | NULL (ยังไม่ระบุ)
    *
    * ป้ายฝั่งแอดมิน/โปรแกรมเมอร์ตั้งที่แผงรายละเอียดการ์ด (ลูกค้าไม่ได้เลือก)
-   * ขับกฎหักชั่วโมง MA: หักเฉพาะ `feature`/`requirement` — `bug` กับ NULL
-   * ไม่นับเข้า "ใช้ไป" ดูรายละเอียดเพิ่มที่ migration 1818
+   * ขับกฎหักชั่วโมง MA: หักเฉพาะ `ma` (เดิมชื่อ `feature` — rename โดย migration
+   * `1827000000000`) — `bug`, `requirement` (เลิกหัก) และ NULL ไม่นับเข้า "ใช้ไป"
+   * ดูรายละเอียดเพิ่มที่ migration 1818 / 1827
    */
   @Column({ name: "task_type", type: "varchar", length: 16, nullable: true })
-  taskType!: "bug" | "feature" | "requirement" | null;
+  taskType!: "bug" | "ma" | "requirement" | null;
 
   /**
    * The three states of the "actual fix time" field:

@@ -69,7 +69,7 @@ function makeService(periods: PeriodFixture[], deductions: DeductionFixture[]) {
     id: d.id,
     issueNumber: `#${d.id}`,
     title: `งาน ${d.id}`,
-    taskType: "feature",
+    taskType: "ma",
     actualFixDuration: d.seconds,
     actualFixAt: d.at == null ? null : new Date(d.at),
     status: { name: "กำลังดำเนินการ" },
@@ -215,7 +215,7 @@ describe("MaUsageService.periodUsage — ผูกเข้ารอบ + invari
     expect(result.issues.map((i) => i.id)).toEqual([1]);
     expect(result.issues[0]).toMatchObject({
       issueNumber: "#1",
-      taskType: "feature",
+      taskType: "ma",
       hours: 30,
       statusName: "กำลังดำเนินการ",
       assigneeName: "โปรแกรมเมอร์",

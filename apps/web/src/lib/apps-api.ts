@@ -160,6 +160,36 @@ export async function deleteAppRecord(
 }
 
 /**
+ * **ย้อนกลับการต่ออายุ/ซื้อชั่วโมง** — ลบ **ช่วงเดียว** (แถวล่าสุดของคู่)
+ * ต่างจาก `deleteAppRecord()` ที่ลบทั้งคู่ · `recordId` = แถวนั้นจริง ๆ (ปุ่ม
+ * "ยกเลิกรายการ" ส่งมา) ไม่ใช่ตัวชี้ของคู่
+ *
+ * เซิร์ฟเวอร์บังคับ 3 อย่าง (ไม่ผ่าน = 400/404): แถวอยู่ใต้แอปนั้น / คู่เหลือ
+ * ≥ 2 แถว / แถวเป็น **ช่วงใหม่สุด** — จึงย้อนได้เฉพาะสิ่งที่เพิ่งทำ
+ *
+ * คืน payload ของแอป (เหมือน renew/buy) — ผู้เรียกดึงซ้ำผ่าน `loadApps()` อยู่แล้ว
+ */
+export async function deleteAppPeriod(appId: number, recordId: number): Promise<App> {
+  return apiFetch<App>(`/apps/${appId}/companies/${recordId}/period`, {
+    method: "DELETE",
+  }, getToken());
+}
+
+/**
+ * `recordId` ของ**ช่วงที่เพิ่งถูก append** ให้คู่ แอป×บริษัทนั้น — อ่านจาก
+ * payload ที่ `renewAppRecord()` / `buyAppHours()` คืนมา (`app_companies` ทั้ง
+ * ของแอป จึงต้องกรองด้วย `companyId` ก่อน แล้วเอา `recordId` มากสุด)
+ *
+ * ใช้ให้ปุ่ม "ยกเลิกรายการ" ใน toast รู้ว่าต้องลบแถไหน — คู่ว่าง/ไม่เจอ = `null`
+ * (ผู้เรียกจะไม่แนบปุ่ม แทนที่จะยิงลบผิดแถว)
+ */
+export function latestPeriodId(app: App, companyId: number): number | null {
+  const rows = app.companies.filter((c) => c.id === companyId);
+  if (rows.length === 0) return null;
+  return rows.reduce((max, c) => Math.max(max, c.recordId), 0);
+}
+
+/**
  * **ต่ออายุ** — ปิดช่วงเก่าแล้ว append ช่วงใหม่ให้คู่เดิม (`company_id` ยืม
  * จากแถวตั้งต้นที่เซิร์ฟเวอร์อ่านเอง ฟอร์มส่งมาแค่ 3 ช่องนี้)
  *
@@ -244,7 +274,7 @@ export interface PeriodIssue {
   id: number;
   issueNumber: string | null;
   title: string;
-  taskType: "bug" | "feature" | "requirement" | null;
+  taskType: "bug" | "ma" | "requirement" | null;
   /** ชั่วโมงของงานนี้ (ปัด 1 ตำแหน่ง) */
   hours: number;
   /** ISO datetime ที่กรอกชั่วโมง — `null` = ข้อมูลก่อนระบบ (ไม่ระบุรอบ) */

@@ -75,8 +75,6 @@ export interface NotifyInput {
 export interface NotificationIssueTarget {
   id: number;
   title: string;
-  /** `ISS-001`-style number — only used in the milestone e-mail copy. */
-  issueNumber?: string | null;
   programmerId?: number | null;
   customerId?: number | null;
   category?: { name?: string } | null;
@@ -289,7 +287,6 @@ export class NotificationsService {
           to: customer.email,
           name: customer.name,
           title: issue.title,
-          issueNumber: issue.issueNumber ?? null,
           statusName: statusName?.trim() || STATUS_EMAIL_DEFAULT_NAMES[statusId],
           url: `${this.webBase()}${this.issueLink(issue.id)}`,
         })

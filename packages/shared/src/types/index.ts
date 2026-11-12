@@ -56,10 +56,12 @@ export interface Issue {
 /**
  * ประเภทงาน — 1 ใน 3 ค่า (เก็บใน `issues.task_type`, NULL = ยังไม่ระบุ)
  *
- * ขับกฎหักชั่วโมง MA: `feature` / `requirement` หัก, `bug` ไม่หัก,
- * NULL ไม่หัก (งานเก่าปลอดภัยจนกว่าแอดมิน/โปรแกรมเมอร์จะมาตั้ง)
+ * ขับกฎหักชั่วโมง MA: มีแค่ `ma` หัก (ป้าย "MA" ใน UI — เดิมชื่อ `feature`
+ * ถูก rename ผ่าน migration `1827000000000`) — `bug` กับ `requirement` ไม่หัก
+ * (requirement เลิกหักตามข้อสรุปผู้ใช้) และ NULL ไม่หัก
+ * (งานเก่าปลอดภัยจนกว่าแอดมิน/โปรแกรมเมอร์จะมาตั้ง)
  */
-export type IssueTaskType = "bug" | "feature" | "requirement";
+export type IssueTaskType = "bug" | "ma" | "requirement";
 
 export interface Comment {
   id: string;
@@ -90,7 +92,50 @@ export interface WorkSession {
 }
 
 /** Group a log row belongs to — drives the type filter and the chip colour. */
-export type ActivityLogType = "card" | "comment" | "rule";
+export type ActivityLogType = "card" | "comment" | "rule" | "user" | "data";
+
+/**
+ * Which action prefixes belong to which group. **The single source of truth**
+ * for both the API (`ActivityLogsService` maps a row → group, and expands the
+ * type filter into an OR of prefix LIKEs) and the web (`/logs` filter chips).
+ *
+ * A group can hold several prefixes: `user` covers `user.*`, `role.*`,
+ * `position.*`, `permission.*` and `auth.*` — so filtering "ผู้ใช้ & สิทธิ์"
+ * must match all five, not just `user.%`.
+ *
+ * Keeping it here (rather than duplicated per side) is what stops the two
+ * from drifting apart the next time a prefix is added.
+ */
+export const ACTIVITY_GROUP_PREFIXES: Record<ActivityLogType, readonly string[]> = {
+  card: ["card", "attachment", "workSession"],
+  comment: ["comment"],
+  rule: ["rule"],
+  user: ["user", "role", "position", "permission", "auth"],
+  data: ["status", "priority", "category", "label", "company", "app", "contract"],
+};
+
+/** Every group, in the order the filter shows them. */
+export const ACTIVITY_GROUP_ORDER: readonly ActivityLogType[] = [
+  "card",
+  "comment",
+  "rule",
+  "user",
+  "data",
+];
+
+/**
+ * The group a row belongs to, read off its action prefix (`card.moved` →
+ * "card"). An unknown prefix lands in `data` rather than throwing: the
+ * interceptor derives actions from routes, so a future endpoint must never be
+ * able to break the feed that is meant to record it.
+ */
+export function groupOfAction(action: string): ActivityLogType {
+  const prefix = action.split(".")[0] as string;
+  const hit = (Object.keys(ACTIVITY_GROUP_PREFIXES) as ActivityLogType[]).find((group) =>
+    ACTIVITY_GROUP_PREFIXES[group].includes(prefix),
+  );
+  return hit ?? "data";
+}
 
 /**
  * One row of the system-wide activity feed (GET /activity-logs). `payload` is

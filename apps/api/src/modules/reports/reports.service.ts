@@ -37,7 +37,7 @@ export interface ReportIssueFilters {
   companyIds?: number[];
   /**
    * ประเภทงาน (`issues.task_type`) — ใช้ตอนคำนวณ "ใช้ไป" ของชั่วโมง MA:
-   * ส่ง `["feature","requirement"]` เพื่อไม่นับเวลาของงาน bug (และ NULL)
+   * ส่ง `["ma"]` เพื่อไม่นับเวลาของงาน bug / requirement (และ NULL)
    * เข้าการหัก MA. รายงานจออื่น ๆ ไม่ส่ง filter นี้ → เห็นเวลาครบทุก type
    */
   taskTypes?: string[];
@@ -364,7 +364,7 @@ export class ReportsService {
    * ที่ไม่ผูกบริษัทก็มี `companyId: null` เหมือนกัน — ปล่อยไว้จะชนคีย์กัน)
    *
    * คง filter ชุดเดียวกับรายงาน (`summaryBaseQb`) รวม visibility ของผู้อ่าน —
-   * ฝั่งเว็บส่ง `taskTypes=feature,requirement` มาเองเพื่อไม่นับเวลาของ bug/NULL
+   * ฝั่งเว็บส่ง `taskTypes=ma` มาเองเพื่อไม่นับเวลาของ bug/requirement/NULL
    */
   async usageByPair(
     f: ReportIssueFilters,

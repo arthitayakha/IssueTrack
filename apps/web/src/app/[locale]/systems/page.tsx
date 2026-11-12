@@ -47,6 +47,7 @@ import RenewFormDialog, { type RenewingRecord } from "@/components/renew-form-di
 import BuyHoursDialog, { type BuyingRecord } from "@/components/buy-hours-dialog";
 import SystemDetailDialog from "@/components/system-detail-dialog";
 import {
+  deleteAppPeriod,
   deleteAppRecord,
   fetchCompanies,
   fetchSystemsApps,
@@ -208,6 +209,18 @@ export default function SystemsPage() {
     recordId: number;
     label: string;
     count: number;
+  } | null>(null);
+
+  /**
+   * ช่วงที่กำลัง**ย้อนกลับ** (null = ปิดกล่อง) — ต่างจาก `deleteTarget` ตรงที่
+   * ลบ**แถวนั้นแถบเดียว** (ช่วงใหม่สุดของคู่) ไม่ใช่ทั้งคู่ · `n` = ลำดับ "รายการ
+   * ที่ N" ของแถวนั้น เอาไว้โชว์ในข้อความยืนยันให้รู้ว่ากำลังย้อนรายการไหน
+   */
+  const [undoTarget, setUndoTarget] = useState<{
+    appId: number;
+    recordId: number;
+    label: string;
+    n: number;
   } | null>(null);
 
   /** แถวกำลัง**ต่ออายุ** (null = ปิดฟอร์ม) — ปุ่มขึ้นเฉพาะช่วงที่หมดอายุแล้ว (ดู `canRenew()`) */
@@ -389,6 +402,39 @@ export default function SystemsPage() {
       notify(t("dataDeleted"));
       setDeleteTarget(null);
       // แถวสุดท้ายของแอปถูกลบ → แอปนั้นจะหายจากตารางเองหลังดึงใหม่
+      await loadApps();
+    } catch (err) {
+      notify(err instanceof ApiError ? err.message : t("genericError"), "error");
+    }
+  }
+
+  /**
+   * เปิดกล่องยืนยันเพื่อ **ยกเลิกรายการนั้น** — ปุ่ม "ยกเลิกรายการ" ในแท็บ
+   * "ประวัติการต่ออายุ" ส่ง `recordId` ของแถวนั้นมา (ปุ่มขึ้นเฉพาะแถวล่าสุด
+   * อยู่แล้ว ดูใน `SystemDetailDialog`) · `n` = ลำดับ "รายการที่ N" ของแถวนั้น
+   * (แถวล่าสุด = จำนวนแถวของคู่) เอาไว้โชว์ในข้อความให้รู้ว่ารายการไหน
+   *
+   * ต่างจากถังขยะ (`handleDeleteRecord`) ที่ลบทั้งคู่ — อันนี้ลบแถวนั้นแถบเดียว
+   */
+  function handleUndoRecord(recordId: number) {
+    if (!detailRow) return;
+    const pairRows = detailRow.app.companies.filter((c) => c.id === detailRow.link.id);
+    setUndoTarget({
+      appId: detailRow.app.id,
+      recordId,
+      label: `${detailRow.app.name} — ${detailRow.link.name}`,
+      n: pairRows.length,
+    });
+  }
+
+  async function confirmUndo() {
+    if (!undoTarget) return;
+    try {
+      await deleteAppPeriod(undoTarget.appId, undoTarget.recordId);
+      notify(t("undoSuccess"));
+      setUndoTarget(null);
+      // ตาราง + "ใช้ไป"รายรอบ + ป๊อปอัพ detail derive จาก `apps` ทั้งหมด →
+      // ดึงใหม่แล้วช่วงก่อนหน้ากลับเป็น latest เอง (คอลัมน์/ชิป/ปุ่มตาม)
       await loadApps();
     } catch (err) {
       notify(err instanceof ApiError ? err.message : t("genericError"), "error");
@@ -590,7 +636,7 @@ export default function SystemsPage() {
    *
    * (`MA_DEDUCTION_PAUSED = false` → "ใช้ไป" มาจริง; ถ้าปิดกลับเป็น `true`
    * จะเหลือ MA เต็มก้อน — สองกรณีแรกยังแยกไว้เผื่อปิดหักกลับ)
-   * ("ใช้ไป" นับเฉพาะ type `feature`/`requirement` — bug/NULL ไม่หัก)
+   * ("ใช้ไป" นับเฉพาะ type `ma` — bug/requirement/NULL ไม่หัก)
    *
    * **รายรอบ ไม่ใช่ระดับคู่** (ข้อสรุปจากผู้ใช้: "ยังไม่ได้ใช้เลยทำไมมีใช้ไป") —
    * อ่านจาก `periodUsedOf(usedByRecord, recordId)` ซึ่งผูกงานเข้ารอบด้วย
@@ -898,6 +944,8 @@ export default function SystemsPage() {
               setRenewingRecord({ app: detailRow.app, link: detailRow.link });
             }
           }}
+          canUndo={canUpdate || canDelete}
+          onUndo={handleUndoRecord}
           onClose={() => setDetailKey(null)}
         />
 
@@ -950,6 +998,27 @@ export default function SystemsPage() {
             <Button onClick={() => setDeleteTarget(null)}>{t("cancel")}</Button>
             <Button variant="contained" color="error" onClick={confirmDelete}>
               {t("delete")}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* ยืนยันการ **ยกเลิกรายการ** — ลบช่วงเดียว (แถวล่าสุดของคู่) ไม่ใช่ทั้งคู่ ·
+            ปุ่ม "ยกเลิกรายการ" ในแท็บ "ประวัติการต่ออายุ" เปิดกล่องนี้ — ต่างจากปุ่ม
+            ใน toast หลังบันทึกต่ออายุ/ซื้อชั่วโม์ที่กดได้ทันทีไม่ยืนยัน (อันนั้นเป็น
+            การแก้สิ่งที่เพิ่งทำเมื่อกี้) ส่วนถังขยะที่ตารางหลักยังลบทั้งคู่เหมือนเดิม */}
+        <Dialog open={!!undoTarget} onClose={() => setUndoTarget(null)} maxWidth="xs">
+          <DialogTitle>{t("undoConfirmTitle")}</DialogTitle>
+          <DialogContent>
+            {undoTarget && (
+              <Typography variant="body2">
+                {t("undoConfirmMessage", { name: undoTarget.label, n: undoTarget.n })}
+              </Typography>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setUndoTarget(null)}>{t("cancel")}</Button>
+            <Button variant="contained" onClick={confirmUndo}>
+              {t("undo")}
             </Button>
           </DialogActions>
         </Dialog>

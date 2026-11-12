@@ -16,7 +16,8 @@ import { MaUsageService } from "../modules/apps/ma-usage.service";
  * - **Fail-open ทุกขั้น** — no app / no reporter / reporter without a company /
  *   no pair row / `maHours` not set → nothing is read, written or sent
  * - **สูตร membership เดียวกับ `usage-counts`** — the query filters
- *   `task_type IN ('feature','requirement')` (bug/NULL never deduct), drops
+ *   `task_type = 'ma'` (bug / requirement / NULL never deduct — requirement
+ *   เลิกหักแล้ว, `feature` ถูก rename เป็น `ma`), drops
  *   trashed issues and keeps only hours whose reporter has a company
  * - never throws: the hook runs fire-and-forget after `save()`
  */
@@ -320,14 +321,19 @@ describe("MaUsageService.checkAndNotify — fail-open on every unpairable step",
 });
 
 describe("MaUsageService.checkAndNotify — the usage query matches usage-counts", () => {
-  it("filters bug/NULL out and keeps only hours whose reporter has a company", async () => {
+  it("filters bug/requirement/NULL out and keeps only hours whose reporter has a company", async () => {
     const { service, qb } = makeService({ reporter: REPORTER, usedSeconds: 40 * HOUR });
 
     await service.checkAndNotify(ISSUE);
 
     const clauses = qb.andWhere.mock.calls.map(([sql]) => String(sql));
-    // bug กับ NULL (ยังไม่ระบุ) ไม่หัก MA — ตรงสูตรฝั่งรายงาน
+    // bug, requirement (เลิกหักแล้ว) กับ NULL (ยังไม่ระบุ) ไม่หัก MA — ตรงสูตรฝั่งรายงาน
     expect(clauses.some((c) => c.includes("task_type IN"))).toBe(true);
+    // มีแค่ `ma` เท่านั้นใน list หัก (`feature` rename มาแล้ว, requirement ถูกตัดออก)
+    const typeFilter = qb.andWhere.mock.calls.find(([sql]) =>
+      String(sql).includes("task_type IN"),
+    )?.[1] as { types?: string[] } | undefined;
+    expect(typeFilter?.types).toEqual(["ma"]);
     // เวลาของคู่อื่นไม่มาหักแถวนี้
     expect(clauses.some((c) => c.includes("reporter.company_id"))).toBe(true);
     // งานถังขยะไม่นับ

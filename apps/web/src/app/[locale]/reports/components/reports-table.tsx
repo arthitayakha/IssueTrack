@@ -35,7 +35,6 @@ import type {
   SummaryRow,
 } from "@/lib/reports-api";
 import { formatDay } from "@/lib/app-expiry";
-import { VIEW_ICONS } from "./report-views";
 
 /** Fields that sort newest/biggest first when first clicked. */
 const DESC_DEFAULT_FIELDS = new Set([
@@ -92,8 +91,8 @@ const COL_MIN: Record<string, number> = {
   person: 150,
   issueCount: 110,
   openCount: 110,
-  hoursActual: 110,
-  hoursEntered: 110,
+  hoursActual: 150,
+  hoursEntered: 150,
   medianActualMinutes: 150,
   medianEnteredMinutes: 150,
   lastAt: 120,
@@ -393,10 +392,11 @@ export function ReportsTable({
             return th("issueCount", t("columns.issueCount"), true);
           case "openCount":
             return th("openCount", t("columns.openCount"), true);
-          case "medianActualMinutes":
-            return th("medianActualMinutes", t("columns.medianActual"), true);
-          case "medianEnteredMinutes":
-            return th("medianEnteredMinutes", t("columns.medianEntered"), true);
+          // ชั่วโมงของ view นี้เป็น**ผลรวม**ต่อแอป (เดิมเป็น median — ดู report-columns.ts)
+          case "hoursActual":
+            return th("hoursActual", t("columns.hoursActual"), true);
+          case "hoursEntered":
+            return th("hoursEntered", t("columns.hoursEntered"), true);
           case "topAssignee":
             return <DataTableCell>{t("columns.topAssignee")}</DataTableCell>;
           case "lastAt":
@@ -498,13 +498,13 @@ export function ReportsTable({
       case "hoursActual":
         return (
           <TableCell align="right" sx={{ fontSize: 12.5 }}>
-            {task.hoursActual.toFixed(1)}
+            {fmtDuration(task.hoursActual * 3600)}
           </TableCell>
         );
       case "hoursEntered":
         return (
           <TableCell align="right" sx={{ fontSize: 12.5 }}>
-            {task.hoursEntered.toFixed(1)}
+            {fmtDuration(task.hoursEntered * 3600)}
           </TableCell>
         );
       default:
@@ -517,11 +517,8 @@ export function ReportsTable({
     return (
       <DataTableRow key="detail">
         <DataTableCell colSpan={assigneeSpan} sx={{ py: 2, bgcolor: "background.default" }}>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
-            {t("detail.tasksOf", { name: row.label ?? "" })}
-          </Typography>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-            {t("detail.note")}
+            {t("detail.tasksOf", { name: row.label ?? "" })}
           </Typography>
           {personTasksLoading ? (
             <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 0.5 }}>
@@ -713,9 +710,9 @@ export function ReportsTable({
       case "openCount":
         return <DataTableCell align="right">{r.openCount}</DataTableCell>;
       case "hoursActual":
-        return <DataTableCell align="right">{r.hoursActual.toFixed(1)}</DataTableCell>;
+        return <DataTableCell align="right">{fmtDuration(r.hoursActual * 3600)}</DataTableCell>;
       case "hoursEntered":
-        return <DataTableCell align="right">{r.hoursEntered.toFixed(1)}</DataTableCell>;
+        return <DataTableCell align="right">{fmtDuration(r.hoursEntered * 3600)}</DataTableCell>;
       case "lastAt":
         return (
           <DataTableCell sx={{ whiteSpace: "nowrap" }}>
@@ -728,10 +725,12 @@ export function ReportsTable({
   }
 
   /**
-   * The "by app" grid — the label is the app name and the headline numbers
-   * are the medians (ค่ากลาง นาที/งาน) the API computed in SQL:
-   * medianActualMinutes = จับเวลา, medianEnteredMinutes = กรอกเอง. null (group
-   * has no recorded time) renders as "—".
+   * ตาราง **"ตามแอป"** — แถวละ 1 แอป · ชั่วโมงสองคอลัมน์เป็น**ผลรวม**
+   * (`hoursActual` = จับเวลา, `hoursEntered` = กรอกเอง — SUM ต่อแอป) แสดงเป็น
+   * "X ชั่วโมง Y นาที" เหมือน view ตามผู้รับผิดชอบ จึง**บวกกันตรงได้** และแถว
+   * "รวมทั้งหมด" = ผลรวมทุกแถวเท่ากับอีก view เป๊ะ · เดิมเป็น median
+   * (`medianActualMinutes`/`medianEnteredMinutes` ที่ API ยังส่งมาอยู่) ซึ่งบวก
+   * ไม่ได้และ null ต้องโชว์ "—" — เลิกใช้แล้ว แต่ key i18n ของมันยังอยู่ (ไม่ลบ key)
    */
   function appCell(key: string, r: SummaryRow): React.ReactNode {
     switch (key) {
@@ -757,18 +756,10 @@ export function ReportsTable({
         return <DataTableCell align="right">{r.issueCount}</DataTableCell>;
       case "openCount":
         return <DataTableCell align="right">{r.openCount}</DataTableCell>;
-      case "medianActualMinutes":
-        return (
-          <DataTableCell align="right">
-            {r.medianActualMinutes == null ? "—" : r.medianActualMinutes.toFixed(1)}
-          </DataTableCell>
-        );
-      case "medianEnteredMinutes":
-        return (
-          <DataTableCell align="right">
-            {r.medianEnteredMinutes == null ? "—" : r.medianEnteredMinutes.toFixed(1)}
-          </DataTableCell>
-        );
+      case "hoursActual":
+        return <DataTableCell align="right">{fmtDuration(r.hoursActual * 3600)}</DataTableCell>;
+      case "hoursEntered":
+        return <DataTableCell align="right">{fmtDuration(r.hoursEntered * 3600)}</DataTableCell>;
       case "topAssignee":
         return <DataTableCell>{r.topAssignee ?? "—"}</DataTableCell>;
       case "lastAt":
@@ -1107,8 +1098,6 @@ export function ReportsTable({
     }
   }
 
-  const ViewIcon = VIEW_ICONS[view];
-
   return (
     <Box
       sx={{
@@ -1131,7 +1120,6 @@ export function ReportsTable({
         }}
       >
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <ViewIcon fontSize="small" color="primary" />
           <Typography variant="subtitle2" fontWeight={700} sx={{ color: "navy.main" }}>
             {t(`views.${view}`)}
           </Typography>

@@ -3,28 +3,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Badge,
   Box,
   Button,
   Chip,
   CircularProgress,
   IconButton,
   InputAdornment,
-  MenuItem,
-  Select,
   TextField,
   Tooltip,
   Typography,
   useTheme,
 } from "@mui/material";
-import type { SelectChangeEvent } from "@mui/material";
-import RefreshIcon from "@mui/icons-material/Refresh";
 import HistoryIcon from "@mui/icons-material/History";
 import SearchIcon from "@mui/icons-material/Search";
-import FileDownloadIcon from "@mui/icons-material/FileDownload";
-import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
-import { DatePicker } from "@mui/x-date-pickers/DatePicker";
-import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
-import dayjs, { type Dayjs } from "dayjs";
+import FilterListIcon from "@mui/icons-material/FilterList";
+import PersonIcon from "@mui/icons-material/Person";
+import CategoryIcon from "@mui/icons-material/Category";
 import { useLocale, useTranslations } from "next-intl";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
@@ -34,8 +29,13 @@ import { usePermissions } from "@/lib/permissions";
 import { fetchActivityLogs, fetchAllLogRows, fetchLogActors } from "@/lib/logs-api";
 import type { LogFilters, PaginatedLogs } from "@/lib/logs-api";
 import { buildCsv, downloadCsv } from "@/lib/reports-api";
+import { RANGE_LABEL_KEYS, RANGE_PRESET_KEYS, rangeDates } from "@/lib/date-presets";
+import { DateRangeIconButton, type DateRangePreset, type DateRangeValue } from "@/components/date-range-select";
+import { FilterPanel, type FilterSectionData } from "@/components/filter-panel";
+import { ExportButton } from "@/components/export-button";
 import { timeAgo } from "@/lib/time-ago";
 import type { ActivityActorDto, ActivityLogDto, ActivityLogType } from "@kanban/shared";
+import { ACTIVITY_GROUP_ORDER } from "@kanban/shared";
 import DataTable, {
   DataTableBody,
   DataTableCell,
@@ -45,14 +45,26 @@ import DataTable, {
 
 const PAGE_SIZE = 10;
 
-/** The three groups the feed can be narrowed to. */
-const TYPES: Array<ActivityLogType | ""> = ["", "card", "comment", "rule"];
+/**
+ * Every group the feed can be narrowed to — the order comes from shared so the
+ * filter and the API can never disagree on what the fifth group even is.
+ */
+const TYPES: Array<ActivityLogType | ""> = ["", ...ACTIVITY_GROUP_ORDER];
 
-/** Chip colour per group — pulled from the MUI palette, never a raw hex. */
-const TYPE_COLOR: Record<ActivityLogType, "info" | "success" | "warning"> = {
+/**
+ * Chip colour per group — pulled from the MUI palette, never a raw hex.
+ * `Record<ActivityLogType, …>` is exhaustive on purpose: a new group without a
+ * colour here is a type error, not an `undefined.main` crash on the page.
+ */
+const TYPE_COLOR: Record<
+  ActivityLogType,
+  "info" | "success" | "warning" | "primary" | "secondary"
+> = {
   card: "info",
   comment: "success",
   rule: "warning",
+  user: "primary",
+  data: "secondary",
 };
 
 /** `card.edited` lists these keys — the same ones the board writes. */
@@ -124,14 +136,66 @@ function describe(row: ActivityLogDto, t: (key: string, values?: Record<string, 
       const name = str(p.ruleName);
       return name ? t("detail.ruleName", { name }) : "";
     }
-    default:
-      return "";
+    default: {
+      // Rows written by the interceptor carry the request body as payload, so
+      // the generic case renders its scalar fields — "what changed" stays
+      // visible without needing a bespoke case per action (there are ~60 of
+      // them, and more arrive with every new endpoint).
+      //
+      // Arrays/objects are skipped rather than stringified: `redacted` and the
+      // permission matrix both read worse as `a,b,c` / `[object Object]` than
+      // as nothing, and the action label already says what happened.
+      return Object.entries(p)
+        .filter(
+          ([, value]) =>
+            typeof value === "string" || typeof value === "number" || typeof value === "boolean",
+        )
+        .slice(0, 4)
+        .map(([key, value]) => `${fieldLabel(t, key)}: ${String(value)}`)
+        .join(", ");
+    }
   }
 }
 
-/** The action chip's i18n key — unknown actions show the raw string. */
+/** `name` → "ชื่อ" when a message exists, else the raw key (never the key path). */
+function fieldLabel(t: (key: string, values?: Record<string, string | number>) => string, key: string): string {
+  const label = t(`fields.${key}`);
+  return label.endsWith(`fields.${key}`) ? key : label;
+}
+
+/**
+ * The action chip's i18n key.
+ *
+ * A key with no message makes next-intl return the **key path** — showing
+ * `Logs.actions.user_created` in a table cell is worse than showing nothing,
+ * so any unresolved key falls back to a humanised form of the action itself.
+ * The interceptor invents actions for routes nobody tabled, so this path is
+ * reachable on purpose, not defensively.
+ */
 function actionKey(action: string): string {
   return `actions.${action.replace(/\./g, "_")}`;
+}
+
+/** `user.frobnicatorUpdated` → `user frobnicator updated` (last-resort label). */
+function humanizeAction(action: string): string {
+  return action
+    .replace(/\./g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase();
+}
+
+/**
+ * The action label for a cell. next-intl has no `onError` configured here, so a
+ * missing message comes back as the **key path** (`Logs.actions.user_created`) —
+ * which reads far worse in a table than the action itself, hence the fallback.
+ */
+function actionLabel(
+  t: (key: string, values?: Record<string, string | number>) => string,
+  action: string,
+): string {
+  const key = actionKey(action);
+  const label = t(key);
+  return label.endsWith(key) ? humanizeAction(action) : label;
 }
 
 /**
@@ -155,14 +219,14 @@ export default function LogsPage() {
 
   const [actorFilter, setActorFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<ActivityLogType | "">("");
-  const [from, setFrom] = useState<Dayjs | null>(null);
-  const [to, setTo] = useState<Dayjs | null>(null);
+  const [range, setRange] = useState<DateRangeValue>({ from: "", to: "" });
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
 
   const [exporting, setExporting] = useState(false);
+  const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
 
-  // the actor list only feeds the dropdown — its failure must not hide the feed
+  // the actor list only feeds the filter popover — its failure must not hide the feed
   useEffect(() => {
     let cancelled = false;
     fetchLogActors()
@@ -189,10 +253,10 @@ export default function LogsPage() {
       ...(actorFilter !== "all" ? { actorId: Number(actorFilter) } : {}),
       ...(typeFilter ? { type: typeFilter } : {}),
       ...(search ? { search } : {}),
-      ...(from ? { from: from.format("YYYY-MM-DD") } : {}),
-      ...(to ? { to: to.format("YYYY-MM-DD") } : {}),
+      ...(range.from ? { from: range.from } : {}),
+      ...(range.to ? { to: range.to } : {}),
     }),
-    [actorFilter, typeFilter, search, from, to],
+    [actorFilter, typeFilter, search, range],
   );
 
   useEffect(() => {
@@ -219,20 +283,91 @@ export default function LogsPage() {
   const resetFilters = useCallback(() => {
     setActorFilter("all");
     setTypeFilter("");
-    setFrom(null);
-    setTo(null);
+    setRange({ from: "", to: "" });
     setSearchInput("");
     setSearch("");
     setPage(1);
   }, []);
 
   const hasFilters =
-    actorFilter !== "all" || typeFilter !== "" || Boolean(search) || from !== null || to !== null;
+    actorFilter !== "all" ||
+    typeFilter !== "" ||
+    Boolean(search) ||
+    Boolean(range.from) ||
+    Boolean(range.to);
 
-  const handleTypeChange = (e: SelectChangeEvent) => {
-    setTypeFilter(e.target.value as ActivityLogType | "");
+  /** One chip per lit filter — actor / type / date range. */
+  const filterCount =
+    (actorFilter !== "all" ? 1 : 0) +
+    (typeFilter !== "" ? 1 : 0) +
+    (range.from || range.to ? 1 : 0) +
+    (search.trim() ? 1 : 0);
+
+  /** Single-select: picking a checkbox clears the other one in its section. */
+  const toggleActor = (id: number) => () => {
+    setActorFilter((prev) => (prev === String(id) ? "all" : String(id)));
     setPage(1);
   };
+
+  const toggleType = (value: ActivityLogType) => () => {
+    setTypeFilter((prev) => (prev === value ? "" : value));
+    setPage(1);
+  };
+
+  /** Same preset menu as the reports toolbar — labels come from `Logs.filters`. */
+  const rangePresets: DateRangePreset[] = RANGE_PRESET_KEYS.map((key) => ({
+    key,
+    label: t(`filters.${RANGE_LABEL_KEYS[key]}`),
+    dates: rangeDates(key) ?? { from: "", to: "" },
+  }));
+
+  /**
+   * The funnel popover: actor list (searchable in-panel past 6 entries) and
+   * the three log groups. Both sections stay single-select to match the API.
+   */
+  const filterSections: FilterSectionData[] = [
+    {
+      key: "actor",
+      title: t("filters.actor"),
+      icon: <PersonIcon sx={{ fontSize: 18 }} />,
+      count: actorFilter !== "all" ? 1 : 0,
+      options: actors.map((actor) => ({
+        id: actor.id,
+        label: actor.name,
+        checked: actorFilter === String(actor.id),
+        onToggle: toggleActor(actor.id),
+        start: <PersonIcon sx={{ fontSize: 16, flexShrink: 0, color: "primary.main" }} />,
+      })),
+      // ไม่มีอะไรเลือกเลย → เปิด section แรกไว้ (เหมือน /reports)
+      initialOpen: actorFilter !== "all" || (typeFilter === "" && !range.from && !range.to),
+    },
+    {
+      key: "type",
+      title: t("filters.type"),
+      icon: <CategoryIcon sx={{ fontSize: 18 }} />,
+      count: typeFilter !== "" ? 1 : 0,
+      options: TYPES.filter((value): value is ActivityLogType => value !== "").map((value) => ({
+        id: value,
+        label: t(`type.${value}`),
+        checked: typeFilter === value,
+        onToggle: toggleType(value),
+        // จุดสีเดียวกับ chip คอลัมน์ "ประเภท" ในตาราง — ไม่ซ้ำคำกับ label
+        start: (
+          <Box
+            component="span"
+            sx={{
+              width: 8,
+              height: 8,
+              flexShrink: 0,
+              borderRadius: "50%",
+              bgcolor: `${TYPE_COLOR[value]}.main`,
+            }}
+          />
+        ),
+      })),
+      initialOpen: typeFilter !== "",
+    },
+  ];
 
   const handleExportCsv = useCallback(async () => {
     setExporting(true);
@@ -256,7 +391,7 @@ export default function LogsPage() {
             row.actorName ?? "—",
             row.actorRole ?? "—",
             t(`type.${row.type}`),
-            t(actionKey(row.action)),
+            actionLabel(t, row.action),
             describe(row, t),
           ]),
         ),
@@ -272,102 +407,84 @@ export default function LogsPage() {
   return (
     <RequirePermission permission="log.view">
       <DashboardLayout>
-        <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale={locale === "th" ? "th" : undefined}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2, flexWrap: "wrap" }}>
-            <Select
-              size="small"
-              value={actorFilter}
-              onChange={(e) => {
-                setActorFilter(e.target.value);
-                setPage(1);
-              }}
-              sx={{ minWidth: 190 }}
-              aria-label={t("filters.actor")}
+        {/* แถวเดียวกับ toolbar ของ /reports — ค้นหาชิดซ้าย ปุ่มที่เหลือชิดขวา
+            (เดิมเป็น control เปล่า ๆ 6 ชิ้นเรียงกัน ไม่มี label ดูเท่ากันหมด) */}
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2, flexWrap: "wrap" }}>
+          <TextField
+            size="small"
+            placeholder={t("filters.searchPlaceholder")}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            sx={{ flexGrow: 1, maxWidth: 480, minWidth: 200 }}
+            inputProps={{
+              "aria-label": t("filters.searchPlaceholder"),
+              // กัน password manager เทข้อมูลที่บันทึกไว้ลงช่องค้นหา (เหมือน /reports)
+              autoComplete: "off",
+              name: "logs-search",
+            }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              ),
+            }}
+          />
+
+          <Box sx={{ flex: 1, minWidth: 8 }} />
+
+          {/* ช่วงวันที่แบบ preset — แทน DatePicker 2 ช่อง (shared กับ /reports) */}
+          <DateRangeIconButton
+            value={range}
+            onChange={(next) => {
+              setRange(next);
+              setPage(1);
+            }}
+            presets={rangePresets}
+            size="medium"
+            ariaLabel={t("filters.range")}
+          />
+
+          {/* ตัวกรอง: ผู้กระทำ + ประเภท ใน popover เดียว (shared FilterPanel) */}
+          <Tooltip title={t("filters.filtersBtn")}>
+            <IconButton
+              size="medium"
+              color={filterCount > 0 ? "primary" : "default"}
+              onClick={(e) => setFilterAnchor(e.currentTarget)}
+              aria-label={t("filters.filtersBtn")}
+              aria-expanded={Boolean(filterAnchor)}
             >
-              <MenuItem value="all">{t("filters.actorAll")}</MenuItem>
-              {actors.map((actor) => (
-                <MenuItem key={actor.id} value={String(actor.id)}>
-                  {actor.name}
-                </MenuItem>
-              ))}
-            </Select>
+              <Badge badgeContent={filterCount} color="primary">
+                <FilterListIcon fontSize="small" />
+              </Badge>
+            </IconButton>
+          </Tooltip>
+          <FilterPanel
+            open={Boolean(filterAnchor)}
+            anchorEl={filterAnchor}
+            onClose={() => setFilterAnchor(null)}
+            sections={filterSections}
+            // ล้างให้หมดทุกชิ้นที่ badge นับ (ผู้กระทำ/ประเภท/วันที่/ค้นหา) — เหมือน /reports
+            onClearAll={resetFilters}
+            selectedCount={filterCount}
+          />
 
-            <Select
-              size="small"
-              value={typeFilter}
-              onChange={handleTypeChange}
-              sx={{ minWidth: 170 }}
-              aria-label={t("filters.type")}
-            >
-              {TYPES.map((value) => (
-                <MenuItem key={value || "all"} value={value}>
-                  {value ? t(`type.${value}`) : t("filters.typeAll")}
-                </MenuItem>
-              ))}
-            </Select>
+          {hasFilters && (
+            <Button size="small" onClick={resetFilters} sx={{ textTransform: "none", fontWeight: 600 }}>
+              {t("filters.reset")}
+            </Button>
+          )}
 
-            <DatePicker
-              label={t("filters.from")}
-              value={from}
-              onChange={(value) => {
-                setFrom(value);
-                setPage(1);
-              }}
-              format="DD/MM/YYYY"
-              slotProps={{ textField: { size: "small" } }}
+          {can("log.export") && (
+            // ปุ่ม export แชร์กับ /reports — มี CSV อันเดียวจึงเป็นปุ่มกดตรง ๆ ไม่มีลูกศร
+            <ExportButton
+              label={t("exportCsv")}
+              actions={[{ key: "csv", label: t("exportCsv"), onClick: handleExportCsv }]}
+              loading={exporting}
+              loadingLabel={t("exporting")}
             />
-            <DatePicker
-              label={t("filters.to")}
-              value={to}
-              onChange={(value) => {
-                setTo(value);
-                setPage(1);
-              }}
-              format="DD/MM/YYYY"
-              minDate={from ?? undefined}
-              slotProps={{ textField: { size: "small" } }}
-            />
-
-            <TextField
-              size="small"
-              placeholder={t("filters.searchPlaceholder")}
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              sx={{ minWidth: 230 }}
-              inputProps={{ "aria-label": t("filters.searchPlaceholder") }}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon fontSize="small" />
-                  </InputAdornment>
-                ),
-              }}
-            />
-
-            {hasFilters && (
-              <Button size="small" onClick={resetFilters} sx={{ textTransform: "none", fontWeight: 600 }}>
-                {t("filters.reset")}
-              </Button>
-            )}
-
-            <Tooltip title={t("refresh")}>
-              <IconButton size="medium" onClick={() => setReloadKey((k) => k + 1)} aria-label={t("refresh")}>
-                <RefreshIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-
-            {can("log.export") && (
-              <Button
-                variant="contained"
-                startIcon={<FileDownloadIcon />}
-                onClick={handleExportCsv}
-                disabled={exporting}
-              >
-                {exporting ? t("exporting") : t("exportCsv")}
-              </Button>
-            )}
-          </Box>
-        </LocalizationProvider>
+          )}
+        </Box>
 
         {logs && (
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
@@ -443,7 +560,7 @@ export default function LogsPage() {
                     />
                   </DataTableCell>
                   <DataTableCell>
-                    <Typography variant="body2">{t(actionKey(row.action))}</Typography>
+                    <Typography variant="body2">{actionLabel(t, row.action)}</Typography>
                   </DataTableCell>
                   <DataTableCell sx={{ color: "text.secondary", maxWidth: 360 }}>
                     {describe(row, t) || "—"}

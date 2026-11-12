@@ -49,8 +49,8 @@ export interface ReportFilters {
   companyIds: number[];
   /**
    * ประเภทงาน (`IssueTaskType[]`) — ใช้ตอนคำนวณ "ใช้ไป" ของ MA
-   * (`fetchAppUsageAllTime` ส่ง `["feature","requirement"]` เพื่อไม่นับเวลา
-   * ของ bug/NULL เข้าการหัก). ตัวกรองของหน้ารายงานไม่ได้ตั้งค่านี้ →
+   * (`fetchAppUsageAllTime` ส่ง `["ma"]` เพื่อไม่นับเวลา
+   * ของ bug/requirement/NULL เข้าการหัก). ตัวกรองของหน้ารายงานไม่ได้ตั้งค่านี้ →
    * จอรายงานเห็นเวลาครบทุก type เสมอ
    */
   taskTypes?: IssueTaskType[];
@@ -140,9 +140,9 @@ export interface SummaryRow {
   openCount: number;
   hoursActual: number;
   hoursEntered: number;
-  /** ค่ากลางเวลาจับ (นาที) — computed in SQL; null = no recorded time in the group. */
+  /** Median time tracked (minutes) — computed in SQL; the screen/export show it as "X ชั่วโมง Y นาที"; null = no recorded time in the group. */
   medianActualMinutes: number | null;
-  /** ค่ากลางเวลากรอก (นาที) — same, from actual_fix_duration. */
+  /** Median time entered (minutes) — same, from actual_fix_duration. */
   medianEnteredMinutes: number | null;
   lastAt: string | null;
   topAssignee?: string | null;
@@ -161,7 +161,8 @@ export interface ReportQuery {
 export const DEFAULT_SORT: Record<ReportView, SortState> = {
   issues: { field: "createdAt", dir: "desc" },
   assignee: { field: "hoursActual", dir: "desc" },
-  app: { field: "medianActualMinutes", dir: "desc" },
+  // ตามแอปเรียงตาม "ชั่วโมงจริง" ที่เป็น**ผลรวม** (แทนที่ median เดิม — ดู report-columns.ts)
+  app: { field: "hoursActual", dir: "desc" },
   company: { field: "companyName", dir: "asc" },
 };
 
@@ -169,7 +170,8 @@ export const DEFAULT_SORT: Record<ReportView, SortState> = {
 export const SORTABLE_FIELDS: Record<ReportView, string[]> = {
   issues: ["title", "assigneeName", "receivedAt"],
   assignee: ["label", "issueCount", "openCount", "hoursActual", "hoursEntered"],
-  app: ["label", "issueCount", "openCount", "medianActualMinutes", "medianEnteredMinutes"],
+  // ตามแอปเรียงได้เฉพาะคอลัมน์ sum — ค่ากลาง (median) ถูกแทนที่แล้ว (ดู report-columns.ts)
+  app: ["label", "issueCount", "openCount", "hoursActual", "hoursEntered"],
   // contract columns only — ชั่วโมงที่ใช้ทั้งหมด/คงเหลือ ระดับแอป ไม่เรียงได้
   // เพราะแถวคือคู่ แอป×บริษัท (ค่าเดียวซ้ำได้หลายแถว)
   company: ["companyName", "appName", "startedAt", "expiresAt", "maHours"],
@@ -213,7 +215,7 @@ export interface AppContract {
  * ให้ cell หยิบจาก `usage` prop ตอน render เอง (ดู `CompanyRow`)
  *
  * MA **ถูกหักแล้ว** (`MA_DEDUCTION_PAUSED = false`) — แต่ "ใช้ไป" นับเฉพาะงาน
- * type `feature`/`requirement` (bug กับ NULL ไม่หัก); `maHours == null` ยัง
+ * type `ma` (bug, requirement กับ NULL ไม่หัก); `maHours == null` ยัง
  * แปลว่า "ยังไม่กรอก" เหมือนเดิม
  *
  * **`recordId`** = PK ของแถวนั้นใน `app_companies` — จำเป็นสำหรับคอลัมน์
@@ -684,8 +686,10 @@ export async function loadFilterOptions(): Promise<FilterOptions> {
  * **การหักชั่วโม์ MA — เปิดแล้ว** (`false` = หักจริงตามกฎด้านล่าง)
  *
  * กติกาที่เคาะไว้ (ตามตาราง "กฎการหักชั่วโมง MA"):
- * - `feature` / `requirement` → **หัก** (เอา `actual_fix_duration` เข้า "ใช้ไป")
- * - `bug` → **ไม่หัก** / ยังไม่ระบุ type (`NULL`, รวมงานเก่า) → **ไม่หัก**
+ * - `ma` → **หัก** (เอา `actual_fix_duration` เข้า "ใช้ไป" — เดิมชื่อ `feature`
+ *   rename โดย migration `1827000000000`)
+ * - `bug` / `requirement` (เลิกหักตามข้อสรุปผู้ใช้) → **ไม่หัก** /
+ *   ยังไม่ระบุ type (`NULL`, รวมงานเก่า) → **ไม่หัก**
  * - หัก **ตอนกรอกเวลาจริง** — ไม่ต้องรอสถานะปิดงาน: ตัวเลขเป็นผลรวมที่
  *   อ่านตอนโหลด พอกรอกเวลาปุ๊บ รอบโหลดถัดไป "คงเหลือ" ลดเองทันที
  * - **หักเฉพาะคู่ แอป×บริษัทของผู้แจ้งงาน** — งานลูกค้าบริษัทไหนหักคู่นั้น;
@@ -724,7 +728,7 @@ export function pairKey(appId: number, companyId: number | null): string {
  * - **all-time** (`EMPTY_FILTERS`) เพราะ `hoursEntered` ของแถวบนจอ **ผ่านตัว
  *   กรองวันที่/ค้นหา** อยู่แล้ว — ถ้าเอาตัวนั้นไปลบ MA พอผู้ใช้เลือกช่วงวันที่
  *   ตัวเลขคงเหลือจะขยับทั้งที่สัญญาไม่ได้เปลี่ยน (คนละค่ากับ `/systems` ด้วย)
- * - **`taskTypes=feature,requirement`** — ไม่นับเวลาของงาน bug และงานที่ยังไม่ระบุ
+ * - **`taskTypes=ma`** — ไม่นับเวลาของงาน bug / requirement และงานที่ยังไม่ระบุ
  *   type (NULL) เข้าการหัก (ดูกติกาที่ `MA_DEDUCTION_PAUSED`)
  * - **โยงงานกับบริษัทผ่านผู้แจ้งงาน** (`issues.customer_id` → `users.company_id`)
  *   — `GET /reports/usage` ทิ้งแถวที่จับคู่ไม่ได้ให้เอง งานที่ผู้แจ้งไม่มีบริษัท
@@ -738,7 +742,7 @@ export async function fetchAppUsageAllTime(): Promise<Map<string, number>> {
   if (MA_DEDUCTION_PAUSED) return new Map<string, number>();
 
   const params = new URLSearchParams({
-    taskTypes: ["feature", "requirement"].join(","),
+    taskTypes: "ma",
   });
   const rows = await apiFetch<AppUsageRow[]>(
     `/reports/usage?${params.toString()}`,

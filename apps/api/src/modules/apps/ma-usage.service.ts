@@ -11,9 +11,11 @@ import { pairKey, pickPeriodId, type PeriodRow } from "./ma-attribution";
 
 /**
  * ประเภทงานที่**หักจาก MA** — ตรงกับฝั่งรายงาน (`GET /reports/usage` ที่หน้าเว็บ
- * ส่ง `taskTypes=feature,requirement` มาเอง) · `bug` กับ `NULL` (ยังไม่ระบุ) ไม่หัก
+ * ส่ง `taskTypes=ma` มาเอง) · `bug`, `requirement` (เลิกหักตามข้อสรุปผู้ใช้) และ
+ * `NULL` (ยังไม่ระบุ) ไม่หัก — ค่า `feature` ถูก rename เป็น `ma` โดย
+ * migration `1827000000000`
  */
-const DEDUCTED_TASK_TYPES = ["feature", "requirement"] as const;
+const DEDUCTED_TASK_TYPES = ["ma"] as const;
 
 /** ปัดเป็น 1 ตำแหน่ง — **ตรงกับ `round1()` ใน `reports.service.ts`** ให้ตัวเลขสองฝั่งตรงกัน */
 function round1(n: number): number {
@@ -86,7 +88,7 @@ const MAX_USAGE_COUNT_IDS = 100;
  * (`IssuesService.setActualFixDuration`) แบบ fire-and-forget
  *
  * สูตรใช้ไป = **ของ "รอบนั้น"** (แถวล่าสุดของคู่) — งานที่กรอกเข้าคู่นั้นซึ่ง
- * `task_type IN ('feature','requirement')` และ **ผู้แจ้งอยู่บริษัทคู่นั้น**
+ * `task_type = 'ma'` และ **ผู้แจ้งอยู่บริษัทคู่นั้น**
  * (`customer_id` → `users.company_id`) ถูก**ผูกเข้ารอบด้วย `pickPeriodId()`**
  * (งานที่กรอก*ก่อน*รอบนั้นจะถูกสร้าง = ของรอบก่อนหน้า) — **ตรงกับคอลัมน์
  * "ใช้ไป"/"คงเหลือ" รายรอบบนจอทุกประการ** (รวมการทิ้งงานถังขยะและงานที่จับคู่

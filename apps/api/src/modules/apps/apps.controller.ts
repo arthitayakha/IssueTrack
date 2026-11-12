@@ -114,6 +114,23 @@ export class AppsController {
   }
 
   /**
+   * **ย้อนกลับการต่ออายุ/ซื้อชั่วโมง** — ลบ **ช่วงเดียว** (แถวล่าสุดของคู่)
+   * ต่างจาก route ด้านบนที่ลบทั้งคู่ · กฎ 3 ข้ออยู่ใน `removePeriod()`
+   *
+   * guard เป็น **OR** (`system.update` | `system.delete`): คนที่กดต่ออายุ/ซื้อ
+   * ชม. ได้ต้องย้อนได้ด้วย ไม่งั้นแก้ความผิดของตัวเองไม่ได้ (สองปุ่มนั้นรับ
+   * `system.update` อย่างเดียว)
+   */
+  @Delete(":id/companies/:recordId/period")
+  @Permissions("system.update", "system.delete")
+  removePeriod(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("recordId", ParseIntPipe) recordId: number,
+  ) {
+    return this.apps.removePeriod(id, recordId);
+  }
+
+  /**
    * **ต่ออายุ** — ปิดช่วงเก่าแล้ว append ช่วงใหม่ให้คู่เดิม (`company_id`
    * ยืมจากแถวตั้งต้น ฟอร์มส่งมาแค่วันที่ 2 + จำนวน MA)
    *

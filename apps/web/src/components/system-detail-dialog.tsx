@@ -65,7 +65,8 @@ export interface DetailRecord {
  *   ป๊อปอัพซ้อน ไม่มีหน้าแยก · ประวัติการแก้: แท็บที่ 3 → dropdown (ทัก "ใหญ่ไป
  *   ไม่สวย") → Autocomplete → ป๊อปอัพแยกใบ (ทัก "จะมีป๊อปอัพขึ้นมาอีกทำไม") →
  *   หน้า `/systems/deductions` (ทัก "ไม่เอาคนละหน้า") → **สรุปสุดท้าย: เปลี่ยน
- *   แค่ "คำ" + เนื้อหาในใบเดิม**) — **ไม่มีหมายเหตุ** (ตัดออกตามข้อตกลง) ·
+ *   แค่ "คำ" + เนื้อหาในใบเดิม**) / **ยกเลิกรายการ** (ปุ่มมีเฉพาะ**แถวล่าสุด**และคู่
+ *   ที่มี ≥ 2 ช่วง — กดแล้วยืนยันอีกชั้นที่หน้า `/systems`) · **ไม่มีหมายเหตุ** (ตัดออกตามข้อตกลง) ·
  *   ตาราง scroll ในตัว (sticky header)
  *
  * **ไม่มีแท็บที่ 3 แล้ว** — กดลิงก์ "N รายการ" ในคอลัมน์ "รายการที่ตัด" →
@@ -87,6 +88,14 @@ export default function SystemDetailDialog({
   canRenew,
   /** เปิดฟอร์มต่ออายุของคู่นี้ */
   onRenew,
+  /**
+   * **มีสิทธิ์ยกเลิกรายการ** (`system.update` | `system.delete`) — ปุ่ม "ยกเลิกรายการ"
+   * ของแถวล่าสุดในแท็บประวัติขึ้นเฉพาะเมื่อ `true` **และ**คู่มี ≥ 2 ช่วง
+   * (เงื่อนไขจำนวนแถวเช็กในตารางด้านล่างเอง)
+   */
+  canUndo,
+  /** ย้อนกลับช่วง `recordId` ที่กด — ผู้เรียก (`/systems`) เปิดกล่องยืนยันเอง */
+  onUndo,
   onClose,
 }: {
   open: boolean;
@@ -94,6 +103,8 @@ export default function SystemDetailDialog({
   record: DetailRecord | null;
   canRenew: boolean;
   onRenew: () => void;
+  canUndo: boolean;
+  onUndo: (recordId: number) => void;
   onClose: () => void;
 }) {
   const t = useTranslations("Settings");
@@ -172,6 +183,8 @@ export default function SystemDetailDialog({
         locale,
         counts,
         onShowDeductions: setDeductionsTarget,
+        canUndo,
+        onUndo,
       })
     : null;
 
@@ -393,10 +406,14 @@ function buildView(
     counts: Map<number, UsageCount> | null;
     /** สลับป๊อปอัพเป็นมุมมอง `SystemDeductionsView` "รายการงานที่ถูกตัด" ของรอบที่กด */
     onShowDeductions: (target: DeductionTarget) => void;
+    /** มีสิทธิ์ย้อนกลับ (`system.update` | `system.delete`) — ปุ่มในคอลัมน์สุดท้าย */
+    canUndo: boolean;
+    /** ย้อนกลับช่วง `recordId` ที่กด — ผู้เรียกเปิดกล่องยืนยันเอง */
+    onUndo: (recordId: number) => void;
   },
 ): DetailView {
   const { app, link } = record;
-  const { t, locale, counts, onShowDeductions } = opts;
+  const { t, locale, counts, onShowDeductions, canUndo, onUndo } = opts;
 
   const caption = (text: string) => (
     <Typography variant="caption" color="text.disabled">
@@ -581,7 +598,7 @@ function buildView(
      *
      * `stickyHeader` **ยังทำงานอยู่** — `position: sticky` อ้าง scrollport ของ
      * ancestor ที่ใกล้ที่สุด ซึ่งตอนนี้คือกล่องเนื้อหาตรงกลาง → หัวคอลัมน์
-     * 8 ตัวยังค้างบนสุดตอนเลื่อนลงไปดูรอบเก่า ๆ
+     * 9 ตัวยังค้างบนสุดตอนเลื่อนลงไปดูรอบเก่า ๆ
      */
     <TableContainer
       sx={{
@@ -593,7 +610,7 @@ function buildView(
       <Table size="small" stickyHeader>
         <TableHead>
           {/**
-           * `whiteSpace: "nowrap"` — หัวคอลัมน์ทั้ง 8 **ต้องอยู่บรรทัดเดียว**
+           * `whiteSpace: "nowrap"` — หัวคอลัมน์ทั้ง 9 **ต้องอยู่บรรทัดเดียว**
            * (ป๊อปอัพกว้าง 1000px มีที่พอ) ไม่งั้นข้อความไทยยาวอย่าง
            * "วันที่เริ่มใช้งาน" / "รายการที่ตัด" จะตัดบรรทัดแล้วแถวสูงไม่เท่ากัน
            */}
@@ -616,6 +633,11 @@ function buildView(
             {/* **รายการที่ตัด** ของรอบนั้น — ปุ่มสลับเป็นมุมมองรายการในป๊อปอัพเดิม */}
             <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
               {t("historyDeducted")}
+            </TableCell>
+            {/* **ยกเลิกรายการ** — ปุ่มมีเฉพาะแถวล่าสุด (ดูใต้) หัวคอลัมน์จึงว่าง
+                ไว้เกือบทุกแถว แต่ชื่อคอลัมน์ต้องมีไม่งั้นตารางไม่มีความหมาย */}
+            <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
+              {t("columnActions")}
             </TableCell>
           </TableRow>
         </TableHead>
@@ -709,6 +731,52 @@ function buildView(
                       ? t("deductionsCount", { n: entry.count })
                       : caption(counts === null ? "…" : "—")}
                   </Button>
+                </TableCell>
+                {/**
+                 * **ยกเลิกรายการ** — ปุ่มขึ้นเฉพาะ **แถวล่าสุด** (`index === 0`,
+                 * `history` เรียงใหม่สุดก่อน) **และ**คู่มี ≥ 2 ช่วง **และยังไม่คิด MA**:
+                 * - แถวก่อนหน้า = ไม่ใช่สิ่งที่เพิ่งทำ → เซิร์ฟเวอร์ก็ reject
+                 *   400 อยู่แล้ว (LIFO) การซ่อนจึงบอกเงื่อนไขตรง ๆ ดีกว่าให้กดแล้วพัง
+                 * - เหลือช่วงเดียว = นั่นคือ "ลบทั้งคู่" ซึ่งมีถังขยะที่ตารางหลักอยู่แล้ว
+                 * - **`ใช้ไป > 0`** = ช่วงนั้น "คิด MA" แล้ว → ไม่ใช่ปุ่ม แต่**โชว์เหตุผล**
+                 *   `"ใช้ MA แล้ว"` ในช่องเดิมให้รู้ว่ากดไม่ได้เพราะอะไร (ข้อสรุปจาก
+                 *   ผู้ใช้: "จะขึ้นแล้วจะหายตอนคิด ma เล้ว") · เซิร์ฟเวอร์เช็กซ้ำด้วย
+                 *   (`removePeriod` → 400) ให้สองฝั่งตรงกัน
+                 * - `used === null` (ยังโหลด / ดึงไม่ได้) = **ไม่รู้ → ห้ามเดา 0** → ช่องว่าง
+                 *   (fail-closed กับการกระทำที่ลบข้อมูล)
+                 *
+                 * กดแล้วยัง**ยืนยันอีกชั้น**ที่หน้า `/systems` (คนละกล่องกับถังขยะ)
+                 */}
+                <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
+                  {canUndo && history.length >= 2 && index === 0 && (
+                    <>
+                      {used === 0 ? (
+                        <Button
+                          size="small"
+                          color="inherit"
+                          onClick={() => onUndo(row.recordId)}
+                          sx={{
+                            minWidth: 0,
+                            px: 0.75,
+                            py: 0.25,
+                            fontSize: "0.8125rem",
+                            color: "text.secondary",
+                            border: 1,
+                            borderColor: "divider",
+                            borderRadius: 1,
+                            textTransform: "none",
+                            "&:hover": { borderColor: "text.secondary", bgcolor: "action.hover" },
+                          }}
+                        >
+                          {t("undo")}
+                        </Button>
+                      ) : used !== null ? (
+                        <Typography variant="caption" color="text.disabled">
+                          {t("undoUsed")}
+                        </Typography>
+                      ) : null}
+                    </>
+                  )}
                 </TableCell>
               </TableRow>
             );

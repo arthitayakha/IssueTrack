@@ -94,7 +94,7 @@ export interface BoardIssue {
   trackedDuration?: number;
   actualFixDuration?: number | null;
   /**
-   * ประเภทงาน (`bug` | `feature` | `requirement` | null = ยังไม่ระบุ) —
+   * ประเภทงาน (`bug` | `ma` | `requirement` | null = ยังไม่ระบุ) —
    * แอดมิน/โปรแกรมเมอร์ตั้งที่แผงรายละเอียดการ์ด ขับกฎหักชั่วโมง MA
    */
   taskType?: IssueTaskType | null;

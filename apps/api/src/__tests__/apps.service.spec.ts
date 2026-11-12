@@ -134,14 +134,14 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
   const appCompanies = {
     // `where.appId` is a plain number in the paths under test (`In(...)` falls
     // back to "every row", which only `findAll` uses and is not exercised here)
+    // · `companyId` ถูกส่งโดย `removePeriod()` (ย้อนกลับ) จึงต้องกรองด้วย
     find: jest
       .fn()
-      .mockImplementation((opts?: { where?: { appId?: number } }) => {
-        const appId = opts?.where?.appId;
-        const list =
-          typeof appId === "number"
-            ? state.rows.filter((r) => r.appId === appId)
-            : state.rows;
+      .mockImplementation((opts?: { where?: { appId?: number; companyId?: number } }) => {
+        const { appId, companyId } = opts?.where ?? {};
+        let list = state.rows;
+        if (typeof appId === "number") list = list.filter((r) => r.appId === appId);
+        if (typeof companyId === "number") list = list.filter((r) => r.companyId === companyId);
         return Promise.resolve(list.map((r) => ({ ...r })));
       }),
     findOne: jest.fn().mockImplementation((opts: { where: { id: number } }) => {
@@ -191,6 +191,11 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
 
   const issues = { count: jest.fn().mockResolvedValue(0) };
   const expiry = { reconcile: jest.fn().mockResolvedValue(false) };
+  /**
+   * `removePeriod()` ถามว่าช่วงนั้น "คิด MA" ไปหรือยัง — ค่าเริ่มต้น `[]`
+   * (= ยังไม่เคยหัก → ย้อนได้) เคสที่หักแล้ว override ในเทสต์นั้นเอง
+   */
+  const maUsage = { usageCounts: jest.fn().mockResolvedValue([]) };
 
   const service = new AppsService(
     apps as unknown as never,
@@ -198,9 +203,10 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
     issues as unknown as never,
     companies as unknown as never,
     expiry as unknown as never,
+    maUsage as unknown as never,
   );
 
-  return { service, apps, appCompanies, expiry, state };
+  return { service, apps, appCompanies, expiry, maUsage, state };
 }
 
 const POS: AppRow = { id: 7, name: "POS", isVisible: true };
@@ -387,6 +393,107 @@ describe("AppsService.removeRecord — deletes the whole pair, not the app", () 
     await expect(service.removeRecord(7, 11)).rejects.toThrow(NotFoundException);
     await expect(service.removeRecord(7, 4242)).rejects.toThrow(NotFoundException);
     expect(state.rows).toHaveLength(1);
+  });
+});
+
+describe("AppsService.removePeriod — undo deletes ONE period, never the pair", () => {
+  const period = { startedAt: "2026-11-09", expiresAt: "2027-11-09", maHours: 40 };
+
+  it("removes ONLY the newest period of that pair and leaves the others", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [
+        row({ id: 11, companyId: 1, ...period }), // ช่วงก่อนต่ออายุ — ต้องอยู่รอด
+        row({ id: 13, companyId: 1, ...period }), // ช่วงที่เพิ่ง append = แถวย้อนกลับ
+        row({ id: 12, companyId: 2, ...period }), // คู่อื่น — ต้องไม่กระทบ
+      ],
+    });
+
+    await service.removePeriod(7, 13);
+
+    // คู่ 7×1 เหลือช่วงเดิม (กลับเป็น latest เอง) + คู่อื่นอยู่ครบ · แอปไม่หาย
+    expect(state.rows.map((r) => r.id)).toEqual([11, 12]);
+    expect(state.apps).toHaveLength(1);
+  });
+
+  it("404 when the record is not under that app, and deletes nothing", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, appId: 8 }), row({ id: 12, appId: 8 })],
+    });
+
+    await expect(service.removePeriod(7, 11)).rejects.toThrow(NotFoundException);
+    await expect(service.removePeriod(7, 4242)).rejects.toThrow(NotFoundException);
+    expect(state.rows).toHaveLength(2);
+  });
+
+  it("400 when it is the only period left — that is the whole-pair delete", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, companyId: 1, ...period })],
+    });
+
+    await expect(service.removePeriod(7, 11)).rejects.toThrow(BadRequestException);
+    expect(state.rows).toHaveLength(1);
+  });
+
+  it("400 when the record is NOT the newest of its pair (undo is LIFO)", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [
+        row({ id: 11, companyId: 1, ...period }),
+        row({ id: 13, companyId: 1, ...period }),
+      ],
+    });
+
+    await expect(service.removePeriod(7, 11)).rejects.toThrow(BadRequestException);
+    expect(state.rows).toHaveLength(2);
+  });
+
+  it("finds the newest of ITS pair even when another pair has a higher id", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [
+        row({ id: 11, companyId: 1, ...period }),
+        row({ id: 12, companyId: 1, ...period }), // ใหม่สุดของคู่ 7×1
+        row({ id: 15, companyId: 2, ...period }), // คู่อื่น id ใหญ่กว่า — ไม่เกี่ยว
+      ],
+    });
+
+    await service.removePeriod(7, 12);
+
+    expect(state.rows.map((r) => r.id)).toEqual([11, 15]);
+  });
+
+  it("400 when the period already has MA hours deducted (the UI hides the button)", async () => {
+    const { service, state, maUsage } = makeService({
+      apps: [POS],
+      rows: [
+        row({ id: 11, companyId: 1, ...period }),
+        row({ id: 13, companyId: 1, ...period }),
+      ],
+    });
+    maUsage.usageCounts.mockResolvedValue([{ recordId: 13, count: 2, periodUsedHours: 2.5 }]);
+
+    await expect(service.removePeriod(7, 13)).rejects.toThrow(BadRequestException);
+    expect(state.rows).toHaveLength(2);
+    // ถามเฉพาะแถวนั้น — ไม่ใช่ทั้งคู่
+    expect(maUsage.usageCounts).toHaveBeenCalledWith([13]);
+  });
+
+  it("removes a period whose usage came back as 0 (ยังไม่เคยคิด MA)", async () => {
+    const { service, state, maUsage } = makeService({
+      apps: [POS],
+      rows: [
+        row({ id: 11, companyId: 1, ...period }),
+        row({ id: 13, companyId: 1, ...period }),
+      ],
+    });
+    maUsage.usageCounts.mockResolvedValue([{ recordId: 13, count: 0, periodUsedHours: 0 }]);
+
+    await service.removePeriod(7, 13);
+
+    expect(state.rows.map((r) => r.id)).toEqual([11]);
   });
 });
 

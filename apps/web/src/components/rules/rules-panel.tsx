@@ -5,7 +5,6 @@ import { Alert, Box, Button, CircularProgress, Typography, useTheme } from "@mui
 import AddIcon from "@mui/icons-material/Add";
 import HistoryIcon from "@mui/icons-material/History";
 import { useTranslations } from "next-intl";
-import { Link } from "@/i18n/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { useNotification } from "@/components/notification";
 import { fetchRules, deleteRule, toggleRule } from "@/lib/rules-api";
@@ -13,6 +12,7 @@ import { isApiError } from "@/lib/api";
 import type { RuleDto } from "@kanban/shared";
 import RuleList from "@/components/rules/rule-list";
 import RuleWizardDialog from "@/components/rules/rule-wizard-dialog";
+import RunHistoryDialog from "@/components/rules/run-history-dialog";
 
 interface RulesPanelProps {
   /**
@@ -26,11 +26,12 @@ interface RulesPanelProps {
 
 /**
  * The rules list **body** (fetch + loading/error/empty + `RuleList`) + ปุ่มหัวแท็บ
- * ("ดูประวัติการทำงาน" / "สร้างกฎ") + ป๊อปอัพสร้าง/แก้ไขกฎ — หน้า `/automation`
- * (list) ถูกถอดออกแล้ว (redirect ไปแท็บนี้) เหลือ host เดียวคือแท็บ "ระบบอัตโนมัติ"
- * ใน `/master-data` ซึ่งตอนนี้ส่งมาแค่ `canUpdate` — ปุ่ม "สร้างกฎ" ย้ายเข้ามาอยู่
- * ใน component นี้เพราะป๊อปอัพ (RuleWizardDialog) กับการรีเฟรชรายการหลังบันทึก
- * ต้องอยู่ที่เดียวกับ state ของรายการ
+ * ("ดูประวัติการทำงาน" / "สร้างกฎ") + ป๊อปอัพสร้าง/แก้ไขกฎ (`RuleWizardDialog`)
+ * + ป๊อปอัพประวัติการทำงาน (`RunHistoryDialog`) — หน้า `/automation` (list),
+ * `/automation/new`, `/automation/[id]` และ `/automation/runs` (ประวัติ) ถูกถอด
+ * ออกเป็น 307 redirect ไปแท็บนี้ทั้งหมด เหลือ host เดียวคือแท็บ "ระบบอัตโนมัติ"
+ * ใน `/master-data` ซึ่งตอนนี้ส่งมาแค่ `canUpdate` — ปุ่มเปิดป๊อปอัพทั้งสองจึง
+ * อยู่ใน component นี้เพราะ state ของป๊อปอัพกับการรีเฟรชรายการต้องอยู่ที่เดียวกัน
  */
 export default function RulesPanel({ canUpdate }: RulesPanelProps) {
   const t = useTranslations("Automation");
@@ -48,6 +49,12 @@ export default function RulesPanel({ canUpdate }: RulesPanelProps) {
    * state ใหม่ (โหลด reference + duplicate list ใหม่) ไม่ใช่ค่าค้างจากครั้งก่อน
    */
   const [wizard, setWizard] = useState<null | { rule?: RuleDto }>(null);
+  /**
+   * ป๊อปอัพ "ประวัติการทำงาน" — `false` = ปิด, `true` = เปิด (mount เฉพาะตอนเปิด
+   * เหมือน wizard: เปิดใหม่ fetch ตาราง + dropdown กรอง ใหม่ทุกครั้ง) เดิมเป็น
+   * <Link> ไปหน้าเต็ม `/automation/runs` ซึ่งตอนนี้ถูกถอดเป็น 307 redirect แล้ว
+   */
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,13 +118,18 @@ export default function RulesPanel({ canUpdate }: RulesPanelProps) {
   /**
    * แถวปุ่มหัวแท็บ — ย้ายมาจาก `/master-data` (เดิมเป็น chrome ของ host) เพราะ
    * ปุ่ม "สร้างกฎ" เปิดป๊อปอัพที่ component นี้ถือ state อยู่
-   * — ปุ่ม "ดูประวัติการทำงาน" เป็น <Link> ไม่ใช่ router.push: Next prefetch +
-   * compile route ล่วงหน้าตอนปุ่มอยู่ในจอ (ดูปุ่มเดิมที่ master-data)
+   * — ปุ่ม "ดูประวัติการทำงาน" เดิมเป็น <Link> ไป `/automation/runs` ตอนนี้เป็น
+   * onClick เปิดป๊อปอัพ (RunHistoryDialog) แทน — หน้านั้นถูกถอดเป็น 307 redirect
+   * ไปแท็บเดียวกันแล้ว เหมือนหน้า list/wizard/edit ที่ถอดไปก่อนหน้า
    */
   const header = (
     <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", mb: 3 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-        <Button variant="outlined" startIcon={<HistoryIcon />} component={Link} href="/automation/runs">
+        <Button
+          variant="outlined"
+          startIcon={<HistoryIcon />}
+          onClick={() => setHistoryOpen(true)}
+        >
           {t("history")}
         </Button>
         {canUpdate && (
@@ -179,6 +191,8 @@ export default function RulesPanel({ canUpdate }: RulesPanelProps) {
           onSaved={() => setReloadKey((k) => k + 1)}
         />
       )}
+
+      {historyOpen && <RunHistoryDialog onClose={() => setHistoryOpen(false)} />}
     </Box>
   );
 }

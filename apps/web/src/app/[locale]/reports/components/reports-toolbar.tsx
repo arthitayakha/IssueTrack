@@ -1,15 +1,13 @@
 "use client";
 
-import { useEffect, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useState, type DragEvent } from "react";
 import {
   Badge,
   Box,
-  Button,
   Checkbox,
   Divider,
   IconButton,
   ListItemText,
-  Menu,
   MenuItem,
   Popover,
   Select,
@@ -22,77 +20,16 @@ import SearchIcon from "@mui/icons-material/Search";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import ViewColumnIcon from "@mui/icons-material/ViewColumn";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
-import RefreshIcon from "@mui/icons-material/Refresh";
-import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import { useTranslations } from "next-intl";
 import { DateRangeIconButton, type DateRangePreset } from "@/components/date-range-select";
+import { ExportButton } from "@/components/export-button";
+import { RANGE_LABEL_KEYS, RANGE_PRESET_KEYS, rangeDates } from "@/lib/date-presets";
 import { activeFilterCount } from "@/lib/reports-api";
 import type { FilterOptions, ReportFilters, ReportView } from "@/lib/reports-api";
 import { REPORT_VIEW_ORDER } from "./report-views";
 import { PINNED_COLUMNS } from "./report-columns";
 import type { ReportColumnDef } from "./report-columns";
 import { ReportsFilterPanel } from "./reports-filter-panel";
-
-/* ---------------- date-range presets ---------------- */
-
-type RangeKey = "all" | "today" | "week" | "thisMonth" | "lastMonth" | "d90" | "custom";
-
-function isoLocal(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-/** Monday of the current week (ISO week start). */
-function weekFirst(now: Date): Date {
-  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const dow = (d.getDay() + 6) % 7; // Mon = 0 … Sun = 6
-  d.setDate(d.getDate() - dow);
-  return d;
-}
-
-function rangeDates(key: RangeKey): { from: string; to: string } | null {
-  const now = new Date();
-  const today = isoLocal(now);
-  if (key === "all") return { from: "", to: "" };
-  if (key === "today") return { from: today, to: today };
-  if (key === "week") return { from: isoLocal(weekFirst(now)), to: today };
-  if (key === "thisMonth") {
-    return { from: isoLocal(new Date(now.getFullYear(), now.getMonth(), 1)), to: today };
-  }
-  if (key === "lastMonth") {
-    return {
-      from: isoLocal(new Date(now.getFullYear(), now.getMonth() - 1, 1)),
-      to: isoLocal(new Date(now.getFullYear(), now.getMonth(), 0)),
-    };
-  }
-  if (key === "d90") {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 89);
-    return { from: isoLocal(d), to: today };
-  }
-  return null;
-}
-
-/* ---------------- date-range presets (the control itself is shared) --------- */
-
-/** Preset keys in menu order — the shared control appends "custom". */
-const RANGE_PRESET_KEYS: Exclude<RangeKey, "custom">[] = [
-  "all",
-  "today",
-  "week",
-  "thisMonth",
-  "lastMonth",
-  "d90",
-];
-
-const RANGE_LABEL_KEYS: Record<Exclude<RangeKey, "custom">, string> = {
-  all: "rangeAll",
-  today: "rangeToday",
-  week: "rangeWeek",
-  thisMonth: "rangeThisMonth",
-  lastMonth: "rangeLastMonth",
-  d90: "range90",
-};
 
 /* ---------------- column list (one menu section) ---------------- */
 
@@ -224,7 +161,6 @@ export interface ReportsToolbarProps {
   filters: ReportFilters;
   onFiltersChange: (filters: ReportFilters) => void;
   options: FilterOptions;
-  onRefresh: () => void;
   onExportPdf: () => void;
   onExportCsv: () => void;
   canExport: boolean;
@@ -246,7 +182,7 @@ export interface ReportsToolbarProps {
 /**
  * Row 1: **search on the left (same box as the board's toolbar), then every
  * other control pushed right with `ml: auto` — view, the date-range calendar
- * icon, the filter popover button, columns, refresh and export**. Checkbox
+ * icon, the filter popover button, columns and export**. Checkbox
  * sections live inside the filter panel, mirroring the board's filter popover;
  * the calendar icon opens a preset menu (same entries the old Select listed),
  * and choosing "กำหนดเอง" in it opens a range popover (two MUI date pickers)
@@ -258,7 +194,6 @@ export function ReportsToolbar({
   filters,
   onFiltersChange,
   options,
-  onRefresh,
   onExportPdf,
   onExportCsv,
   canExport,
@@ -276,23 +211,6 @@ export function ReportsToolbar({
   const [searchInput, setSearchInput] = useState(filters.search);
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
   const [columnAnchor, setColumnAnchor] = useState<HTMLElement | null>(null);
-  const [exportAnchor, setExportAnchor] = useState<HTMLElement | null>(null);
-  /** ความกว้างของปุ่มตอนกด — ใช้เป็น minWidth ของเมนูให้กว้างเท่ากันเป๊ะ */
-  const [exportMenuWidth, setExportMenuWidth] = useState(0);
-
-  const openExportMenu = (e: ReactMouseEvent<HTMLButtonElement>) => {
-    setExportMenuWidth(Math.round(e.currentTarget.getBoundingClientRect().width));
-    setExportAnchor(e.currentTarget);
-  };
-
-  /** ปิดเมนู แล้วค่อยรัน export ที่เลือก */
-  const pickExport = (run: () => void) => () => {
-    setExportAnchor(null);
-    run();
-  };
-
-  /** รายการเมนูต้องแคบกว่าปุ่ม (ฟอนต์ 13px + padding 12px) ไม่งั้นเมนูกว้างกว่าปุ่ม */
-  const exportItemSx = { fontSize: "0.8125rem", px: 1.5 } as const;
 
   /** Preset menu for the shared date-range icon (custom comes with it). */
   const rangePresets: DateRangePreset[] = RANGE_PRESET_KEYS.map((key) => ({
@@ -463,57 +381,26 @@ export function ReportsToolbar({
           </Box>
         </Popover>
 
-        <Tooltip title={t("toolbar.refresh")}>
-          <IconButton size="medium" onClick={onRefresh} aria-label={t("toolbar.refresh")}>
-            <RefreshIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-
         {canExport && (
-          <>
-            {/* ปุ่มเดียว "Exporter" (ไร้ไอคอน ขนาด small ให้พอดีกับ icon buttons)
-                + เมนูเลือก PDF / CSV (ไร้ไอคอนเหมือนกัน) แทน 2 ปุ่มคู่กัน */}
-            <Button
-              size="small"
-              variant="outlined"
-              endIcon={<ArrowDropDownIcon fontSize="small" />}
-              onClick={openExportMenu}
-              disabled={exporting}
-              aria-haspopup="menu"
-              aria-expanded={Boolean(exportAnchor)}
-              aria-label={t("toolbar.export")}
-              sx={{ textTransform: "none", whiteSpace: "nowrap" }}
-            >
-              {t("toolbar.export")}
-            </Button>
-            <Menu
-              open={Boolean(exportAnchor)}
-              anchorEl={exportAnchor}
-              onClose={() => setExportAnchor(null)}
-              // เปิดชิดขอบซ้ายของปุ่ม + กว้างเท่าปุ่ม (minWidth = ความกว้างปุ่มที่วัดไว้)
-              // → ทั้งขอบซ้ายและขอบขวาของเมนูตรงกับปุ่มเป๊ะ
-              anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-              transformOrigin={{ vertical: "top", horizontal: "left" }}
-              slotProps={{
-                paper: { sx: { minWidth: exportMenuWidth || undefined } },
-              }}
-            >
-              <MenuItem
-                onClick={pickExport(onExportPdf)}
-                disabled={exporting}
-                sx={exportItemSx}
-              >
-                {t("toolbar.exportPdf")}
-              </MenuItem>
-              <MenuItem
-                onClick={pickExport(onExportCsv)}
-                disabled={exporting}
-                sx={exportItemSx}
-              >
-                {t("toolbar.exportCsv")}
-              </MenuItem>
-            </Menu>
-          </>
+          // ปุ่มเดียวพร้อมเมนูเลือก PDF / CSV — shared กับหน้า /logs
+          // (เดิมเป็น Button+Menu inline คนละสไตล์กับปุ่ม export หน้าอื่น)
+          <ExportButton
+            label={t("toolbar.export")}
+            actions={[
+              {
+                key: "pdf",
+                label: t("toolbar.exportPdf"),
+                onClick: onExportPdf,
+              },
+              {
+                key: "csv",
+                label: t("toolbar.exportCsv"),
+                onClick: onExportCsv,
+              },
+            ]}
+            loading={exporting}
+            loadingLabel={t("toolbar.exporting")}
+          />
         )}
       </Stack>
     </Stack>

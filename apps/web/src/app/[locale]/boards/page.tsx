@@ -2511,7 +2511,7 @@ function IssueDetailDialog({
             transformOrigin={{ vertical: "top", horizontal: "left" }}
             PaperProps={{ sx: { p: 0.5, minWidth: 180 } }}
           >
-            {(["bug", "feature", "requirement"] as const).map((tt) => {
+            {(["bug", "ma", "requirement"] as const).map((tt) => {
               const selected = draftTaskType === tt;
               return (
                 <Box

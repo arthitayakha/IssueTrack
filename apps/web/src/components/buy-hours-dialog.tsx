@@ -14,7 +14,13 @@ import {
   Typography,
 } from "@mui/material";
 import { ApiError } from "@/lib/api";
-import { buyAppHours, type App, type AppCompanyLink } from "@/lib/apps-api";
+import {
+  buyAppHours,
+  deleteAppPeriod,
+  latestPeriodId,
+  type App,
+  type AppCompanyLink,
+} from "@/lib/apps-api";
 import { useNotification } from "@/components/notification";
 
 /** แถบที่กำลังซื้อชั่วโมง — ส่งมาจากตาราง `/systems` (1 แถบ = 1 ช่วงล่าสุดของคู่) */
@@ -151,12 +157,37 @@ export default function BuyHoursDialog({
 
     setSaving(true);
     try {
-      await buyAppHours(record.app.id, record.link.recordId, {
+      const appId = record.app.id;
+      const updated = await buyAppHours(appId, record.link.recordId, {
         hours: validHours,
         // **สิทธิ์คงเหลือของแถวก่อน** ที่ฟอร์มคำนวณไว้ — เซิร์ฟเวอร์บวกเป็น MA ใหม่
         carriedHours: carry,
       });
-      notify(t("buyHoursSuccess"));
+      /**
+       * แถบที่เพิ่ง append — แนบปุ่ม **"ยกเลิกรายการ"** บน toast ให้ลบแถวนี้ทิ้ง
+       * ได้เลย (1 คลิก ไม่ยืนยัน · เหตุผลเดียวกับฟอร์มต่ออายุ) · หาแถวไม่เจอ
+       * → ไม่แนบปุ่ม
+       */
+      const newPeriodId = latestPeriodId(updated, record.link.id);
+      notify(
+        t("buyHoursSuccess"),
+        "success",
+        newPeriodId === null
+          ? undefined
+          : {
+              label: t("undo"),
+              onClick: () => {
+                void deleteAppPeriod(appId, newPeriodId)
+                  .then(() => {
+                    notify(t("undoSuccess"));
+                    onSaved();
+                  })
+                  .catch((err: unknown) =>
+                    notify(err instanceof ApiError ? err.message : t("genericError"), "error"),
+                  );
+              },
+            },
+      );
       onClose();
       onSaved();
     } catch (err) {

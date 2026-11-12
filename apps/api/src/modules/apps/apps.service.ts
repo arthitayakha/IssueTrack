@@ -11,6 +11,7 @@ import { AppCompany } from "./entities/app-company.entity";
 import { Company } from "../companies/entities/company.entity";
 import { Issue } from "../issues/entities/issue.entity";
 import { AppExpiryService } from "./app-expiry.service";
+import { MaUsageService } from "./ma-usage.service";
 import { isIsoDate, toIsoDate } from "../../common/dates";
 import { paginate, PaginationParams } from "../../common/pagination";
 
@@ -97,6 +98,7 @@ export class AppsService {
     @InjectRepository(Company)
     private readonly companies: Repository<Company>,
     private readonly expiry: AppExpiryService,
+    private readonly maUsage: MaUsageService,
   ) {}
 
   /**
@@ -268,6 +270,68 @@ export class AppsService {
       companyId: row.companyId,
     });
     return { deleted: true, deletedRows: result.affected ?? 0 };
+  }
+
+  /**
+   * **ย้อนกลับการต่ออายุ/ซื้อชั่วโมง** — ลบ **ช่วงเดียว** (แถวล่าสุดของคู่)
+   * ต่างจาก `removeRecord()` ที่ลบทั้งคู่ · เหตุผลที่ทำได้จริง: ทั้ง `renewRecord()`
+   * และ `buyHours()` เป็น **append ล้วน ๆ ไม่แตะช่วงเก่า** → ลบแถวล่าสุดทิ้งแล้ว
+   * คู่จะกลับเป็นสภาพก่อนต่ออายุเป๊ะ (ช่วงก่อนหน้ากลับเป็น latest เอง)
+   *
+   * **4 เงื่อนไข** (ย้อนได้เฉพาะสิ่งที่เพิ่งทำ = LIFO):
+   * - แถวต้องอยู่ใต้แอปนั้น (ไม่งั้น 404)
+   * - คู่ต้องเหลือ **≥ 2 แถว** — เหลือแถวกี่เดียว = ใช้ถังขยะ (`removeRecord`)
+   *   ลบทั้งคู่แทน · ป้องกันการย้อนจนคู่หายไปเกลี้ยง
+   * - แถวต้องเป็น **ช่วงใหม่สุด** ของคู่ — กันลบช่วงเก่าที่มีชั่วโมงผูกอยู่
+   *   (ชั่วโมงจะถูกผูกย้อนไปช่วงเก่ากว่าอีกที ประวัติงง)
+   * - ช่วงนั้นต้อง **ยังไม่ "คิด MA"** (`periodUsedHours === 0`) — ปุ่มฝั่ง UI
+   *   หายไปเองตั้งแต่เริ่มหักชั่วโมง (ข้อสรุปจากผู้ใช้: "จะขึ้นแล้วจะหายตอนคิด
+   *   ma เล้ว") ฝั่งเซิร์ฟเวอร์ต้องเช็กตรงกัน ไม่งั้นข้าม UI ย้อนได้เอง ·
+   *   ไม่รู้ค่า (หา `usageCounts` ไม่เจอ) = fail-open ผ่านไป — แถวมีอยู่จริง
+   *   ต้องถูกคืนเสมอ กรณีนี้จึงไม่ควรเกิด
+   *
+   * **ชั่วโมงที่หักไปแล้ว (กรณีที่หลุดมาได้จริง)** จะถูกผูกกลับรอบก่อนหน้าเอง
+   * เพราะ `pickPeriodId()` เลือกแถวจาก `created_at <= actual_fix_at` → invariant
+   * `Σ ทุกรอบ + unattributed = pairUsed` ยังคง (ไม่ต้องเขียนอะไรเพิ่ม)
+   *
+   * คืน payload ของแอป (เหมือน renew/buy) — หน้า `/systems` ดึงซ้ำอยู่แล้ว
+   */
+  async removePeriod(appId: number, recordId: number) {
+    const app = await this.apps.findOne({ where: { id: appId } });
+    if (!app) throw new NotFoundException(`App with id ${appId} not found`);
+
+    const row = await this.appCompanies.findOne({ where: { id: recordId } });
+    if (!row || row.appId !== appId) {
+      throw new NotFoundException(`Record with id ${recordId} not found`);
+    }
+
+    const pair = await this.appCompanies.find({
+      where: { appId, companyId: row.companyId },
+      order: { id: "ASC" },
+    });
+    if (pair.length < 2) {
+      throw new BadRequestException(
+        "This is the only period left — delete the whole record instead",
+      );
+    }
+    // หา "ใหม่สุด" ด้วย max ไม่ใช่ element สุดท้ายของ array — ไม่ผูกกับลำดับที่
+    // query คืนมา (ผลลัพธ์จาก mock/DB อาจไม่เรียงก็ยังถูก)
+    const newestId = pair.reduce((max, r) => Math.max(max, r.id), 0);
+    if (recordId !== newestId) {
+      throw new BadRequestException("Only the newest period can be undone");
+    }
+
+    // **ยังไม่ "คิด MA"** — ปุ่มฝั่ง UI หายไปเองตั้งแต่ช่วงนั้นมีชั่วโมงถูกหัก
+    // (`system-detail-dialog` ซ่อนปุ่ม/ขึ้น "ใช้ MA แล้ว") ต้องเช็กตรงกันตรงนี้
+    // ไม่งั้นข้าม UI ย้อนได้เอง · `usageCounts` คืนทุกแถวที่มีจริง (0 เมื่อยัง
+    // ไม่เคยหัก) — หาไม่เจอ = fail-open เพราะแถวเพิ่งเช็กว่ามีอยู่แล้ว
+    const [usage] = await this.maUsage.usageCounts([recordId]);
+    if (usage && (usage.count > 0 || usage.periodUsedHours > 0)) {
+      throw new BadRequestException("This period already has hours deducted");
+    }
+
+    await this.appCompanies.delete({ id: recordId });
+    return this.appPayload(app);
   }
 
   /**

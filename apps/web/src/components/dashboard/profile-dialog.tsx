@@ -447,6 +447,12 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
         updateUser({ name: updated.name });
       }
       notify(t("profileSaved"), "success");
+      // close the confirm popup — success is the only path that never touched
+      // `editor`, so without this the "ยืนยันการเปลี่ยนอีเมล" box stayed open
+      // forever under the green toast (the form fields are dropped too, the
+      // next save re-asks from a clean slate anyway)
+      setEditor(null);
+      setConfirmPassword("");
       // back to view mode instead of closing — the user sees the result and
       // can still hit ✕ themselves (the footer disappears with it)
       setEditMode(false);

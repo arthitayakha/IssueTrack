@@ -19,7 +19,13 @@ import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import dayjs from "dayjs";
 import "dayjs/locale/th";
 import { ApiError } from "@/lib/api";
-import { renewAppRecord, type App, type AppCompanyLink } from "@/lib/apps-api";
+import {
+  renewAppRecord,
+  deleteAppPeriod,
+  latestPeriodId,
+  type App,
+  type AppCompanyLink,
+} from "@/lib/apps-api";
 import {
   daysLeftIso,
   expiryChipLabel,
@@ -215,7 +221,8 @@ export default function RenewFormDialog({
 
     setSaving(true);
     try {
-      await renewAppRecord(record.app.id, record.link.recordId, {
+      const appId = record.app.id;
+      const updated = await renewAppRecord(appId, record.link.recordId, {
         startedAt,
         expiresAt,
         // ช่วงใหม่ = สูตรเดียวกับที่โชว์ใต้ช่อง (ดู `newMa` ใน docblock) —
@@ -230,7 +237,32 @@ export default function RenewFormDialog({
          */
         carriedHours: carry > 0 ? Math.round(carryShown) : 0,
       });
-      notify(t("renewSuccess"));
+      /**
+       * แถบที่เพิ่ง append จริง = `recordId` มากสุดของคู่นั้น — แนบปุ่ม
+       * **"ยกเลิกรายการ"** ให้กดลบแถวนี้ทิ้งจาก toast ได้เลย (1 คลิก ไม่ยืนยัน:
+       * เป็นการแก้สิ่งที่เพิ่งทำเมื่อกี้) · หาแถวไม่เจอ → ไม่แนบปุ่ม ดีกว่า
+       * ยิงลบผิดแถว · ย้อนจากแท็บ "ประวัติการต่ออายุ" ยังใช้ได้ตลอด
+       */
+      const newPeriodId = latestPeriodId(updated, record.link.id);
+      notify(
+        t("renewSuccess"),
+        "success",
+        newPeriodId === null
+          ? undefined
+          : {
+              label: t("undo"),
+              onClick: () => {
+                void deleteAppPeriod(appId, newPeriodId)
+                  .then(() => {
+                    notify(t("undoSuccess"));
+                    onSaved();
+                  })
+                  .catch((err: unknown) =>
+                    notify(err instanceof ApiError ? err.message : t("genericError"), "error"),
+                  );
+              },
+            },
+      );
       onClose();
       onSaved();
     } catch (err) {

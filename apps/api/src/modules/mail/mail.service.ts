@@ -8,8 +8,6 @@ export interface StatusMailParams {
   to: string;
   name: string;
   title: string;
-  /** `ISS-001`-style number — absent on old cards, then only the title shows. */
-  issueNumber?: string | null;
   /** The target column's real name (admins may rename columns by hand). */
   statusName: string;
   /** Absolute URL of the card (APP_URL + /boards?issue=id). */
@@ -72,12 +70,12 @@ export class MailService {
     const text = [
       `สวัสดี ${name},`,
       "",
-      "มีคำขอเปลี่ยนรหัสผ่านสำหรับบัญชีนี้",
+      "มีคำขอเปลี่ยนรหัสผ่านสำหรับบัญชีของคุณ",
       "",
-      `เปิดลิงก์นี้เพื่อตั้งรหัสผ่านใหม่ (อายุ ${RESET_TTL_MINUTES} นาที ใช้ได้ครั้งเดียว):`,
+      `ตั้งรหัสผ่านใหม่ (อายุ ${RESET_TTL_MINUTES} นาที ใช้ได้ครั้งเดียว):`,
       resetUrl,
       "",
-      "ถ้าคุณไม่ได้ขอ โปรดเพิกเฉยต่ออีเมลนี้ — รหัสผ่านจะไม่ถูกเปลี่ยน",
+      "หากคุณไม่ได้เป็นคนขอ โปรดเพิกเฉย — รหัสผ่านจะยังไม่ถูกเปลี่ยน",
     ].join("\n");
 
     await this.send({
@@ -97,24 +95,23 @@ export class MailService {
    * reset mail; `statusName` is the live column name so a rename shows up here.
    */
   async sendIssueStatusUpdate(params: StatusMailParams): Promise<void> {
-    const ref = params.issueNumber ? `${params.issueNumber} · ${params.title}` : params.title;
-    const subject = `อัปเดตสถานะ ${params.statusName} — ${ref}`;
+    const subject = `อัปเดตสถานะ "${params.statusName}" — ${params.title}`;
     const text = [
       `สวัสดี ${params.name},`,
       "",
-      `เรื่อง "${ref}" เปลี่ยนสถานะเป็น "${params.statusName}" แล้ว`,
+      `งาน "${params.title}" ถูกเปลี่ยนสถานะเป็น "${params.statusName}" แล้ว`,
       "",
       "เปิดลิงก์นี้เพื่อดูรายละเอียด:",
       params.url,
       "",
-      "อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker",
+      "อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker — ไม่ต้องตอบกลับ",
     ].join("\n");
 
     await this.send({
       to: params.to,
       subject,
       text,
-      html: this.statusHtml(params, ref),
+      html: this.statusHtml(params),
       context: "issue status mail",
       devNote: `issue status mail for ${params.to}: ${subject}`,
     });
@@ -132,9 +129,10 @@ export class MailService {
     const text = [
       `สวัสดี ${params.name},`,
       "",
-      `ชั่วโมง MA ของแอป "${params.appName}"${scope} ใช้ครบ ${params.maHours} ชม. แล้ว (ใช้ไป ${params.usedHours} ชม.)`,
+      `ชั่วโมง MA ของแอป "${params.appName}"${scope} ใช้ครบ ${params.maHours} ชม. แล้ว`,
+      `(ใช้ไปแล้ว ${params.usedHours} ชม.)`,
       "",
-      "หากต้องการใช้งานต่อ กรุณาต่ออายุหรือซื้อชั่วโมงเพิ่ม",
+      "หากต้องการใช้งานต่อ กรุณาต่ออายุหรือซื้อชั่วโมงเพิ่ม:",
       params.url,
       "",
       "อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker",
@@ -190,27 +188,28 @@ export class MailService {
   private resetHtml(name: string, resetUrl: string): string {
     return [
       `<p>สวัสดี ${escapeHtml(name)},</p>`,
-      `<p>มีคำขอเปลี่ยนรหัสผ่านสำหรับบัญชีนี้</p>`,
-      `<p><a href="${escapeHtml(resetUrl)}">เปิดลิงก์เพื่อตั้งรหัสผ่านใหม่</a></p>`,
-      `<p>ลิงก์อายุ ${RESET_TTL_MINUTES} นาทีและใช้ได้ครั้งเดียว ถ้าคุณไม่ได้ขอ โปรดเพิกเฉยต่ออีเมลนี้</p>`,
+      `<p>มีคำขอเปลี่ยนรหัสผ่านสำหรับบัญชีของคุณ</p>`,
+      `<p>ตั้งรหัสผ่านใหม่ (อายุ ${RESET_TTL_MINUTES} นาที ใช้ได้ครั้งเดียว):</p>`,
+      `<p><a href="${escapeHtml(resetUrl)}">${escapeHtml(resetUrl)}</a></p>`,
+      `<p>หากคุณไม่ได้เป็นคนขอ โปรดเพิกเฉย — รหัสผ่านจะยังไม่ถูกเปลี่ยน</p>`,
     ].join("");
   }
 
-  private statusHtml(params: StatusMailParams, ref: string): string {
+  private statusHtml(params: StatusMailParams): string {
     return [
       `<p>สวัสดี ${escapeHtml(params.name)},</p>`,
-      `<p>เรื่อง <strong>${escapeHtml(ref)}</strong> เปลี่ยนสถานะเป็น <strong>${escapeHtml(params.statusName)}</strong> แล้ว</p>`,
+      `<p>งาน <strong>${escapeHtml(params.title)}</strong> ถูกเปลี่ยนสถานะเป็น <strong>${escapeHtml(params.statusName)}</strong> แล้ว</p>`,
       `<p><a href="${escapeHtml(params.url)}">เปิดลิงก์นี้เพื่อดูรายละเอียด</a></p>`,
-      `<p>อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker</p>`,
+      `<p>อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker — ไม่ต้องตอบกลับ</p>`,
     ].join("");
   }
 
   private maDepletedHtml(params: MaDepletedMailParams, scope: string): string {
     return [
       `<p>สวัสดี ${escapeHtml(params.name)},</p>`,
-      `<p>ชั่วโมง MA ของแอป <strong>${escapeHtml(params.appName)}</strong>${escapeHtml(scope)} ใช้ครบ <strong>${params.maHours} ชม.</strong> แล้ว (ใช้ไป ${params.usedHours} ชม.)</p>`,
-      `<p>หากต้องการใช้งานต่อ กรุณาต่ออายุหรือซื้อชั่วโมงเพิ่ม</p>`,
-      `<p><a href="${escapeHtml(params.url)}">เปิดลิงก์นี้</a></p>`,
+      `<p>ชั่วโมง MA ของแอป <strong>${escapeHtml(params.appName)}</strong>${escapeHtml(scope)} ใช้ครบ <strong>${params.maHours} ชม.</strong> แล้ว<br>(ใช้ไปแล้ว ${params.usedHours} ชม.)</p>`,
+      `<p>หากต้องการใช้งานต่อ กรุณาต่ออายุหรือซื้อชั่วโมงเพิ่ม:</p>`,
+      `<p><a href="${escapeHtml(params.url)}">${escapeHtml(params.url)}</a></p>`,
       `<p>อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker</p>`,
     ].join("");
   }

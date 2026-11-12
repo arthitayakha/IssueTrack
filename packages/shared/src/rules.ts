@@ -381,7 +381,10 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     status: "supported",
     label: { th: "ล็อกการ์ด", en: "Lock card" },
     description: { th: "ล็อกการ์ดนี้เพื่อไม่ให้แก้ไขหรือลากย้าย", en: "Lock the card so it cannot be edited or moved" },
-    configSchema: { reason: { type: "string", required: false, maxLength: 500 } },
+    // no configSchema on purpose — the old `reason` field is removed (user: "ไม่ต้อง
+    // มีใส่เหตุผล ทุกอันเลย"); clicking the card now just selects it, nothing expands.
+    // The engine never read `config.reason` (actionConfig is free-form JSON), so no
+    // API/migration/test change; i18n keys + param-labels case stay per the keep-keys rule.
   },
   {
     key: "issue.unlock",

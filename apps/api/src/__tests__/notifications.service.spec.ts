@@ -174,7 +174,6 @@ describe("NotificationsService.notifyStatusChange — milestone e-mail", () => {
       to: "arthitaya@gmail.com",
       name: "Arthitaya",
       title: "POS error",
-      issueNumber: null,
       statusName: "รอดำเนินการ",
       url: expect.stringContaining("/boards?issue=5"),
     });
@@ -187,7 +186,7 @@ describe("NotificationsService.notifyStatusChange — milestone e-mail", () => {
     users.findOne.mockResolvedValue(REPORTER);
 
     await service.notifyStatusChange({
-      issue: { ...ISSUE, issueNumber: "ISS-0042" },
+      issue: ISSUE,
       statusId: 4,
       statusName: "เสร็จสิ้น",
       actor: { actorId: 3 },
@@ -197,7 +196,6 @@ describe("NotificationsService.notifyStatusChange — milestone e-mail", () => {
     expect(mail.sendIssueStatusUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "arthitaya@gmail.com",
-        issueNumber: "ISS-0042",
         statusName: "เสร็จสิ้น",
       }),
     );

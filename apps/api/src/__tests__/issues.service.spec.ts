@@ -756,7 +756,7 @@ describe("IssuesService.update — task type (MA deduction gate)", () => {
 
   it("null clears the type back to ยังไม่ระบุ (no deduction until set)", async () => {
     const { service, issues } = makeService();
-    issues.findOne.mockResolvedValue(issueRow({ taskType: "feature" }));
+    issues.findOne.mockResolvedValue(issueRow({ taskType: "ma" }));
 
     await service.update(5, { taskType: null }, ACTOR);
 

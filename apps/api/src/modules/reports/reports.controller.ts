@@ -35,8 +35,8 @@ function parseFilters(query: Record<string, string | undefined>): ReportIssueFil
   };
 }
 
-/** `?taskTypes=feature,requirement` → whitelist the 3 known values, drop the rest. */
-const TASK_TYPES = new Set(["bug", "feature", "requirement"]);
+/** `?taskTypes=ma,requirement` → whitelist the 3 known values, drop the rest. */
+const TASK_TYPES = new Set(["bug", "ma", "requirement"]);
 function parseTaskTypes(value?: string): string[] | undefined {
   const list = (value ?? "")
     .split(",")
@@ -75,7 +75,7 @@ export class ReportsController {
 
   /**
    * "ใช้ไป" ระดับคู่ แอป×บริษัท (สูตรคงเหลือ MA) — โยงงานกับบริษัทของผู้แจ้งงาน
-   * แล้วกรองด้วย `?taskTypes=feature,requirement` ให้คงเหลือไม่โดนหักผิดคู่
+   * แล้วกรองด้วย `?taskTypes=ma` ให้คงเหลือไม่โดนหักผิดคู่
    */
   @Get("usage")
   @Permissions("report.view")

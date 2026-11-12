@@ -71,8 +71,8 @@ export class AppCompany {
    * ยังไม่กำหนด/ยังไม่ได้กรอก (ตั้งใจแยกจาก `0` ซึ่งหมายถึงตกลงให้ 0 ชม.)
    *
    * ฝั่งเว็บหักจาก `issues.actual_fix_duration` แล้ว (ดู `MA_DEDUCTION_PAUSED`
-   * ใน `reports-api.ts`) — นับเฉพาะงาน type `feature`/`requirement`
-   * (`bug` กับ NULL ไม่หัก) ระดับ**แอป** (ทุกแถวของแอปเดียวกันหักค่าเดียวกัน)
+   * ใน `reports-api.ts`) — นับเฉพาะงาน type `ma` (`bug`, `requirement` กับ NULL
+   * ไม่หัก) ระดับ**แอป** (ทุกแถวของแอปเดียวกันหักค่าเดียวกัน)
    */
   @Column({ name: "ma_hours", type: "int", nullable: true })
   maHours!: number | null;

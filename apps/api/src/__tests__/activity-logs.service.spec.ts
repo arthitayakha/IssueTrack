@@ -76,7 +76,7 @@ function logRow(overrides: Record<string, unknown> = {}): Record<string, unknown
 
 describe("ActivityLogsService", () => {
   describe("findByIssue", () => {
-    it("excludes rule.* rows and maps the actor join", async () => {
+    it("restricts to card/comment rows and maps the actor join", async () => {
       const { service, logs } = makeService();
       logs.find.mockResolvedValue([logRow()]);
 
@@ -89,16 +89,18 @@ describe("ActivityLogsService", () => {
         entityId: 42,
         detail: JSON.stringify({ from: "Backlog", to: "Doing" }),
       });
-      const where = logs.find.mock.calls[0][0].where as {
+
+      // Top-level array = TypeORM's OR. Each branch carries its own entityId so
+      // the card timeline can never pick up a `user.*`/`app.*` row that happens
+      // to share the number — the interceptor writes those with entity ids too.
+      const where = logs.find.mock.calls[0][0].where as Array<{
         entityId: number;
-        // Not(Like(...)) — `value` unwraps to the inner literal, the wrapper
-        // operator (the "like") is reachable through `child`
-        action: { type: string; value: string; child: { type: string } };
-      };
-      expect(where.entityId).toBe(42);
-      expect(where.action.type).toBe("not");
-      expect(where.action.value).toBe("rule.%");
-      expect(where.action.child.type).toBe("like");
+        action: { type: string; value: string };
+      }>;
+      expect(where).toHaveLength(2);
+      expect(where.map((branch) => branch.action.value)).toEqual(["card.%", "comment.%"]);
+      for (const branch of where) expect(branch.entityId).toBe(42);
+      for (const branch of where) expect(branch.action.type).toBe("like");
     });
   });
 
@@ -150,16 +152,41 @@ describe("ActivityLogsService", () => {
 
       await service.findAll({ type: "comment", actorId: "7", search: " bug " });
 
-      const where = logs.findAndCount.mock.calls[0][0].where as {
+      // one prefix → a one-branch OR array; the shared filters ride along on it
+      const where = logs.findAndCount.mock.calls[0][0].where as Array<{
         action: { type: string; value: string };
         actorId: number;
         detail: { type: string; value: string };
-      };
-      expect(where.action.type).toBe("like");
-      expect(where.action.value).toBe("comment.%");
-      expect(where.actorId).toBe(7);
-      expect(where.detail.type).toBe("ilike");
-      expect(where.detail.value).toBe("%bug%");
+      }>;
+      expect(where).toHaveLength(1);
+      expect(where[0].action.type).toBe("like");
+      expect(where[0].action.value).toBe("comment.%");
+      expect(where[0].actorId).toBe(7);
+      expect(where[0].detail.type).toBe("ilike");
+      expect(where[0].detail.value).toBe("%bug%");
+    });
+
+    it("expands a multi-prefix group into one branch per prefix", async () => {
+      const { service, logs } = makeService();
+      logs.findAndCount.mockResolvedValue([[], 0]);
+
+      // `user` = user/role/position/permission/auth — filtering on `user.%`
+      // alone would hide the other four groups' rows
+      await service.findAll({ type: "user", actorId: "7" });
+
+      const where = logs.findAndCount.mock.calls[0][0].where as Array<{
+        action: { value: string };
+        actorId: number;
+      }>;
+      expect(where.map((branch) => branch.action.value)).toEqual([
+        "user.%",
+        "role.%",
+        "position.%",
+        "permission.%",
+        "auth.%",
+      ]);
+      // every branch keeps the actor filter, or the OR would drop it
+      for (const branch of where) expect(branch.actorId).toBe(7);
     });
 
     it("ignores an unknown type instead of hiding every row", async () => {
