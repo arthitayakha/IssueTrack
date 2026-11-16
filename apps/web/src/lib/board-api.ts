@@ -3,6 +3,7 @@
 import { PaginatedResponse, type IssueTaskType } from "@kanban/shared";
 import { apiFetch } from "./api";
 import { useAuthStore } from "./auth-store";
+import type { AppCompanyLink } from "./apps-api";
 
 export interface IssueStatus {
   id: number;
@@ -98,6 +99,13 @@ export interface BoardIssue {
    * แอดมิน/โปรแกรมเมอร์ตั้งที่แผงรายละเอียดการ์ด ขับกฎหักชั่วโมง MA
    */
   taskType?: IssueTaskType | null;
+  /**
+   * Editable now: the value is still empty, no `issue.require_task_type`
+   * rule is active, or the card sits in a status one of those rules names —
+   * the server enforces the same answer in `update()`. Absent = editable
+   * (fail open on a payload from an older API).
+   */
+  canEditTaskType?: boolean;
   /** An active start-timer rule covers this card's status (computed). */
   timerRuleApplies?: boolean;
   /** "Actual fix time" field states: editable now / shown at least once. */
@@ -218,6 +226,16 @@ export async function fetchIssues(
      * never sends it, so it still shows every card.
      */
     hideStaleDone?: boolean;
+    /**
+     * Card order — only the Kanban column fetch sets it: `statusChangedAt`
+     * desc = "entered this column when", so a card that was just dragged in
+     * lands on TOP of its new column instead of falling back to its creation
+     * date. The table / folder / reports leave it out and keep the API
+     * default (`createdAt` desc). Whatever is chosen, `KanbanColumn`'s
+     * comparator mirrors it exactly — each column pages 20 cards at a time
+     * and appends the next page on scroll, so server and screen must agree.
+     */
+    sort?: { field: string; dir: "asc" | "desc" };
   },
 ): Promise<PaginatedResponse<BoardIssue>> {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
@@ -250,6 +268,10 @@ export async function fetchIssues(
   }
   if (filters?.hideStaleDone) {
     params.set("hideStaleDone", "1");
+  }
+  if (filters?.sort) {
+    params.set("sortBy", filters.sort.field);
+    params.set("sortOrder", filters.sort.dir);
   }
   return apiFetch<PaginatedResponse<BoardIssue>>(
     `/issues?${params.toString()}`,
@@ -434,20 +456,24 @@ export async function fetchStatuses(
 
 /**
  * Board drag policy: the "one column at a time" guard (drives the drop
- * preview), whether any `issue.unlock` rule is on (a locked card only offers
- * its unlock button while the rules allow a release), the active stale
- * rules the board/folder turn into a red border, and the active hide rules
- * the folder filters its cards with client-side (the board asks the API
- * instead via `hideStaleDone=1`). Every field fails open.
+ * preview), the statuses demanding a ประเภทงาน before a card may leave them
+ * (the same preview refuses an untyped card there), whether any
+ * `issue.unlock` rule is on (a locked card only offers its unlock button
+ * while the rules allow a release), the active stale rules the board/folder
+ * turn into a red border, and the active hide rules the folder filters its
+ * cards with client-side (the board asks the API instead via
+ * `hideStaleDone=1`). Every field fails open.
  */
 export async function fetchMovePolicy(): Promise<{
   stepOnly: boolean;
+  requireTaskTypeStatusIds: number[];
   unlockAvailable: boolean;
   staleRules: StaleRule[];
   hideStaleRules: StaleRule[];
 }> {
   return apiFetch<{
     stepOnly: boolean;
+    requireTaskTypeStatusIds: number[];
     unlockAvailable: boolean;
     staleRules: StaleRule[];
     hideStaleRules: StaleRule[];
@@ -512,11 +538,23 @@ export interface App {
   isVisible: boolean;
   issueCount: number;
   /**
-   * บริษัทที่ผูกอยู่ผ่าน `app_companies` — `GET /apps` sends it with every row;
+   * **คู่ "แอป × บริษัทของผู้เรียก" หมดอายุแล้วหรือยัง** — เซิร์ฟเวอร์คำนวณ
+   * (จาก `expiresAt` ของ**ช่วงล่าสุด**ของคู่) แล้วคืนเป็น boolean เดียว เพราะ
+   * แถว `companies` ถูกตัดออกจากลูกค้า (`viewer-scope.ts` → `mode: "none"`)
+   * ฟอร์มแจ้งปัญหาจึงอ่านวันที่จาก payload ไม่ได้อีก — ใช้บล็อกผ่าน
+   * `isMaExpired()` ใน `lib/app-expiry.ts` · `undefined` = payload ถูก strip
+   * → fail-open ฝั่ง web = ไม่บล็อก
+   */
+  maExpired?: boolean;
+  /**
+   * บริษัทที่ผูกอยู่ผ่าน `app_companies` — `GET /apps` sends it with every row
+   * (**ทุกช่วงเวลา** ของแต่ละคู่ เรียง `recordId ASC` แถวใหม่อยู่ท้ายสุด)
    * optional here only so a stripped-down payload cannot crash the board.
    * The company filter resolves itself through this list.
+   * ⚠️ ลูกค้าได้ `[]` จาก `viewer-scope.ts` — อย่าใช้แถวนี้เช็กอายุสัญญา
+   * ของลูกค้า (ใช้ `maExpired` แทน)
    */
-  companies?: Array<{ id: number; name: string }>;
+  companies?: AppCompanyLink[];
 }
 
 export async function fetchApps(): Promise<PaginatedResponse<App>> {
@@ -529,10 +567,14 @@ export async function fetchApps(): Promise<PaginatedResponse<App>> {
 
 /**
  * **รายการแอปสำหรับฟอร์มรายงานปัญหา** (`/issues/new`) — `?visible=1` ให้
- * เซิร์ฟเวอร์คืนเฉพาะแอปที่เปิดใช้งาน (`is_visible = true`) **ไม่ว่าจะผูกกับ
- * บริษัทของผู้เรียกหรือไม่ก็ตาม** (ข้อสรุปจากพี่: เชื่อมหรือไม่เชื่อม ลูกค้าก็
- * เห็นแอปทุกตัว — จึงไม่มีการกรองด้วย `users.company_id` และไม่มี guard
- * ตอนสร้างงานอีกแล้ว)
+ * เซิร์ฟเวอร์คืนเฉพาะแอปที่เปิดใช้งาน (`is_visible = true`) และ **`?mine=1`
+ * กรองเหลือเฉพาะแอปที่ผูกกับบริษัทของผู้เรียก** (`app_companies` ×
+ * `users.company_id`)
+ *
+ * **Fail-open ทุกทาง** (เซิร์ฟเวอร์คืนรายการเต็ม = เหมือนไม่ได้กรอง): ไม่มี
+ * บริษัท / บริษัทยังไม่ผูกแอป / สตาฟฟ์ / แอปที่ผูกถูกปิดสถานะหมด — กติกา
+ * เดียวคือ `scope.mine && linked.length > 0` ใน `AppsService.findAll` จึงเป็น
+ * ไปไม่ได้ที่ dropdown จะว่างเพราะการกรอง (ช่องแอปบังคับ)
  *
  * แอปที่ปิดสถานะใน /master-data ถูกฝั่งเซิร์ฟเวอร์กรองตอน query แล้ว (หน้านี้
  * ยังกรอง `a.isVisible` ซ้ำก็ได้ ไร้พิษภัย) ส่วนการไม่ส่ง flag เลย = ทุกแอป
@@ -540,7 +582,7 @@ export async function fetchApps(): Promise<PaginatedResponse<App>> {
  */
 export async function fetchVisibleApps(): Promise<PaginatedResponse<App>> {
   return apiFetch<PaginatedResponse<App>>(
-    "/apps?page=1&limit=100&visible=1",
+    "/apps?page=1&limit=100&visible=1&mine=1",
     {},
     getToken(),
   );

@@ -12,8 +12,9 @@ import { Company } from "../companies/entities/company.entity";
 import { Issue } from "../issues/entities/issue.entity";
 import { AppExpiryService } from "./app-expiry.service";
 import { MaUsageService } from "./ma-usage.service";
-import { isIsoDate, toIsoDate } from "../../common/dates";
+import { daysBetween, isIsoDate, toIsoDate, todayIso } from "../../common/dates";
 import { paginate, PaginationParams } from "../../common/pagination";
+import { ViewerScope } from "./viewer-scope";
 
 /**
  * 1 รายการข้อมูลที่ฟอร์มส่งมา — **append หรือแก้แถวเดียว** ไม่ใช่ส่ง list
@@ -104,31 +105,105 @@ export class AppsService {
   /**
    * **ขอบเขตการอ่านรายการแอป** — `scope.visible` มาจาก `?visible=1` ของฟอร์ม
    * รายงานปัญหา (`/issues/new` → `fetchVisibleApps()`) เมื่อตั้ง flag จะคืนเฉพาะ
-   * แอปที่ **เปิดใช้งาน** (`is_visible = true`) เท่านั้น — **ไม่สนว่าแอปนั้นจะผูก
-   * กับบริษัทของผู้เรียกหรือไม่** (ข้อสรุปจากพี่: เชื่อมหรือไม่เชื่อม ลูกค้าก็
-   * เห็นแอปทุกตัว การผูก `app_companies` จึงไม่ได้ปิดกั้นอะไรอีกแล้ว)
+   * แอปที่ **เปิดใช้งาน** (`is_visible = true`) เท่านั้น
+   *
+   * `scope.mine` มาจาก **`?mine=1`** (ฟอร์มแจ้งปัญหาส่งคู่กับ `visible=1`) —
+   * กรองเหลือเฉพาะแอปที่ผูกกับบริษัทของผู้เรียก (`app_companies` คู่กับ
+   * `contract.companyId`) **แต่ fail-open ทุกทาง**: ไม่มีบริษัท / บริษัทไม่มี
+   * แถวผูก / สตาฟฟ์ (`mode: "all"` → `callerLinks` ว่าง) / แอปที่ผูกถูกปิด
+   * สถานะหมด (`linked` ว่าง) → คืนรายการเต็มเหมือนไม่ได้กรอง — กติกาเดียว
+   * คือ `scope.mine && linked.length > 0` จึงเป็นไปไม่ได้ที่ dropdown จะว่าง
+   * เพราะการกรอง (ช่องแอปบังคับ ว่าง = แจ้งปัญหาไม่ได้) · กรอง **ใน JS
+   * หลัง query** ไม่ใช่ `andWhere` — ไม่มีเงื่อนไขบริษัทหลุดเข้า SQL
    *
    * ไม่ส่ง flag (แท็บแอปใน `/master-data`, `/systems`, `/reports`, ชิปบนบอร์ด)
    * = พฤติกรรมเดิมทุกประการ: คืน **ทุกแอปรวมที่ปิดสถานะ** เพราะหน้าเหล่านั้น
-   * ต้องเห็นแอปที่ปิดเพื่อเปิดกลับได้ / ดูชั่วโมง MA ย้อนหลัง
+   * ต้องเห็นแอปที่ปิดเพื่อเปิดกลับได้ / ดูชั่วโมง MA ย้อนหลัง · ส่ง `visible=1`
+   * อย่างเดียว (ไม่ส่ง `mine`) = ทุกแอปที่เปิดใช้งาน ไม่สนการผูก (ข้อสรุปเดิม
+   * ของพี่ยังใช้ได้กับ path นี้)
    *
    * **ไม่กรองอายุสัญญา** — คู่เดิมมีได้หลายช่วงต่ออายุ (append แถวใหม่) การจะ
    * บอกว่า "หมดอายุ" ต้องดูช่วงล่าสุด ไม่ใช่แถวเก่าที่ expiresAt ผ่านไปแล้ว
+   *
+   * `scope.contract` (`viewer-scope.ts`) จำกัด**แถวด้านใน** (`companies`) ไม่ใช่
+   * ตัวรายการแอป — จึงแยกกันได้ 3 แบบ: `all` = เหมือนเดิมทุกประการ · `own` =
+   * เฉพาะคู่ของบริษัทผู้เรียก (`GET /systems` ของลูกค้า) · `none` = ไม่คืนแถว
+   * สัญญาเลย (`GET /apps` ของลูกค้า — รายชื่อแอปยังครบ ฟอร์มแจ้งปัญหาใช้ได้
+   * ตามเดิม) · ลูกค้าไม่มีบริษัท (`own` + `companyId: null`) = คืนว่าง**ทั้งหน้า**
+   * โดย**ไม่ query รายการแอป**และไม่ reconcile อะไรเลย เพื่อไม่ให้คำสั่งนั้นไป
+   * แตะรอบ/ยิงกระดิ่งหมดอายุของบริษัทอื่น (การ expire ยังมี cron 09:00 ของ
+   * `AppExpiryService` คุมอยู่แล้ว)
    */
-  async findAll(params: PaginationParams, scope: { visible?: boolean } = {}) {
-    const apps = scope.visible
-      ? await this.apps
-          .createQueryBuilder("app")
-          .where("app.is_visible = true")
-          .orderBy("app.id", "ASC")
-          .getMany()
-      : await this.apps.find({ order: { id: "ASC" } });
-    const { links, companyName } = await this.loadLinks();
+  async findAll(
+    params: PaginationParams,
+    scope: { visible?: boolean; contract?: ViewerScope; mine?: boolean } = {},
+  ) {
+    const contract = scope.contract ?? { mode: "all" as const, companyId: null };
+    /** ลูกค้าไม่มีบริษัท → ไม่มีแถวสัญญาให้เห็นเลย (คืนว่าง ไม่ query ไม่ reconcile) */
+    const noAccess = contract.mode === "own" && contract.companyId == null;
+    const apps = noAccess
+      ? []
+      : scope.visible
+        ? await this.apps
+            .createQueryBuilder("app")
+            .where("app.is_visible = true")
+            .orderBy("app.id", "ASC")
+            .getMany()
+        : await this.apps.find({ order: { id: "ASC" } });
+    const loaded = await this.loadLinks();
+    const companyName = loaded.companyName;
+    // กรอง**ก่อน** loop reconcile ด้านล่าง — ลูกค้าห้ามไปแตะรอบ/ยิงกระดิ่ง
+    // หมดอายุของบริษัทอื่น และ `mode: "none"` = ไม่ reconcile อะไรเลย
+    // (การ expire รายวันยังมี cron 09:00 ของ `AppExpiryService` คุมอยู่แล้ว)
+    const links = noAccess || contract.mode === "none"
+      ? []
+      : contract.mode === "all"
+        ? loaded.links
+        : loaded.links.filter((link) => link.companyId === contract.companyId);
     const linksByApp = this.groupByApp(links);
+
+    // **ธง `maExpired`** — ฟอร์มแจ้งปัญหา (`/issues/new`) บล็อกเมื่อ "คู่ของ
+    // ผู้เรียก" หมดอายุ แต่ `mode: "none"` (ลูกค้า) ไม่คืนแถวสัญญาอยู่แล้ว
+    // (ข้อตกลงใน `viewer-scope.ts`: ลูกค้าอ่านวันที่/ชั่วโมงของตัวเองไม่ได้
+    // จากช่องนี้) → คำนวณเป็น **boolean อย่างเดียว** ที่นี่แทน
+    //
+    // - อ่านจาก `loaded.links` **ตรง ๆ** ไม่สน `links` ด้านบน (ซึ่งว่างสำหรับ
+    //   ลูกค้า) และ **ไม่เรียก `reconcile()`** — endpoint นี้ห้ามแตะรอบ/ยิง
+    //   กระดิ่งของคู่ไหนเลย (หน้าที่ของ cron 09:00 ใน `AppExpiryService`)
+    // - **`mode: "all"` (สตาฟฟ์) → ไม่คำนวณเลย** (`false` ทุกแถว — ไม่ถูกบล็อก
+    //   ตาม design) · ที่เหลือใช้ **`contract.companyId`** ซึ่ง `viewerScope()`
+    //   ส่งมาเฉพาะลูกค้าเท่านั้น — ⚠️ **ห้ามเช็ค `mode === "own"`** เพราะ
+    //   `GET /apps` ของลูกค้ามาในโหมด **`none`** (แถวสัญญาถูกตัด) แต่ยังคง
+    //   `companyId` ของผู้เรียกมาด้วย → ฟอร์มแจ้งปัญหาคือจุดที่ต้องการธงนี้ ·
+    //   ไม่มีบริษัท / ไม่มีแถวคู่ / ไม่กรอกวันหมดอายุ → fail-open `false`
+    // - ดู**ช่วงล่าสุดของคู่เท่านั้น** (max `link.id`) — ช่วงเก่าหมดอายุแต่
+    //   เพิ่งต่ออายุ = ยังไม่หมด · คำนวณจาก `expiresAt` สด ๆ ไม่พึ่ง
+    //   `expiryStatus` ที่เก็บไว้ (กันค่าเก่า)
+    const callerLinks =
+      contract.mode !== "all" && contract.companyId != null
+        ? loaded.links.filter((link) => link.companyId === contract.companyId)
+        : [];
+    const latestByApp = new Map<number, AppCompany>();
+    for (const link of callerLinks) {
+      const prev = latestByApp.get(link.appId);
+      if (!prev || link.id > prev.id) latestByApp.set(link.appId, link);
+    }
+    const expiredAppIds = new Set<number>();
+    for (const link of latestByApp.values()) {
+      if (this.isPeriodExpired(link)) expiredAppIds.add(link.appId);
+    }
+
+    // **`?mine=1` — กรอง dropdown ตามบริษัทผู้แจ้ง** (ดู JSDoc หัว method):
+    // เอาเฉพาะแอปที่ผูกกับบริษัทผู้เรียก แล้ว fail-open ทุกทางที่รายการจะ
+    // ว่างลง — ไม่มีบริษัท / ไม่มีแถวผูก / สตาฟฟ์ (`callerLinks` ว่างเพราะ
+    // `mode: "all"`) / แอปที่ผูกถูกปิดหมด (`linked` ว่าง) → คืน `apps` เต็ม
+    const callerAppIds = new Set(callerLinks.map((link) => link.appId));
+    const linked = apps.filter((a) => callerAppIds.has(a.id));
+    const pickerApps = scope.mine && linked.length > 0 ? linked : apps;
 
     // The tab is the most reliable clock we have: refresh each pair's stored
     // status (and ring the bell on a transition) while the list is being built.
-    for (const app of apps) {
+    for (const app of pickerApps) {
       for (const link of linksByApp.get(app.id) ?? []) {
         await this.expiry.reconcile(link, {
           appName: app.name,
@@ -138,16 +213,29 @@ export class AppsService {
     }
 
     const result = await Promise.all(
-      apps.map(async (a) => ({
+      pickerApps.map(async (a) => ({
         id: a.id,
         name: a.name,
         isVisible: a.isVisible,
         companies: this.companyLinks(linksByApp.get(a.id) ?? [], companyName),
+        /** คู่ของ**ผู้เรียก**หมดอายุแล้วหรือยัง — ฟอร์มแจ้งปัญหาใช้บล็อก (fail-open) */
+        maExpired: expiredAppIds.has(a.id),
         createdAt: a.createdAt,
         issueCount: await this.issues.count({ where: { appId: a.id } }),
       })),
     );
     return paginate(result, params);
+  }
+
+  /**
+   * **ช่วงเดียวหมดอายุหรือยัง** — `วันหมดอายุวันนี้พอดี = หมดอายุ` (`<= 0`)
+   * ตรงกับชิป "หมดอายุแล้ว" และเงื่อนไขปุ่ม "ต่ออายุ" ฝั่ง UI · **อ่านอย่าง
+   * เดียว**: ห้ามเรียก `reconcile()` ที่นี่ (endpoint ต้องไม่ไปแตะรอบ/ยิง
+   * กระดิ่งของคู่ไหน — การ expire ยังมี cron 09:00 ของ `AppExpiryService` คุม)
+   */
+  private isPeriodExpired(link: AppCompany): boolean {
+    if (!link.expiresAt) return false;
+    return daysBetween(todayIso(), toIsoDate(link.expiresAt)) <= 0;
   }
 
   /**

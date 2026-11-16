@@ -8,6 +8,7 @@ import { Issue } from "../issues/entities/issue.entity";
 import { User } from "../auth/entities/user.entity";
 import { NotificationsService } from "../notifications/notifications.service";
 import { pairKey, pickPeriodId, type PeriodRow } from "./ma-attribution";
+import { ViewerScope } from "./viewer-scope";
 
 /**
  * ประเภทงานที่**หักจาก MA** — ตรงกับฝั่งรายงาน (`GET /reports/usage` ที่หน้าเว็บ
@@ -289,10 +290,24 @@ export class MaUsageService {
    * **รายการที่ถูกตัดจากช่วง MA นี้** — ของ `recordId` ที่ระบุ (ต้องเป็นของ `appId`
    * ด้วย มิฉะนั้น 404) · คืนทั้งตัวเลขสรุปและรายการจริงให้ป๊อปอัพ `/systems`
    * กับ drill-down ของรายงาน `/reports` ใช้ร่วมกัน
+   *
+   * `contract` (`viewer-scope.ts`) — ลูกค้าอ่านของคู่**บริษัทอื่น**ไม่ได้: คืน 404
+   * เหมือน recordId ที่ไม่มีจริง เพราะ payload มีชื่อ/เลขงานของคู่นั้นอยู่
    */
-  async periodUsage(appId: number, recordId: number): Promise<PeriodUsageResult> {
+  async periodUsage(
+    appId: number,
+    recordId: number,
+    contract?: ViewerScope,
+  ): Promise<PeriodUsageResult> {
     const link = await this.links.findOne({ where: { id: recordId } });
     if (!link || link.appId !== appId) {
+      throw new NotFoundException(`App company record ${recordId} not found`);
+    }
+    if (
+      contract?.mode === "own" &&
+      (contract.companyId == null || link.companyId !== contract.companyId)
+    ) {
+      // ข้อความเดิมเป๊ะ — ห้ามบอกคนเรียกว่า "มีแถวอยู่ แต่ไม่ใช่ของคุณ"
       throw new NotFoundException(`App company record ${recordId} not found`);
     }
 
@@ -330,14 +345,24 @@ export class MaUsageService {
    * ไม่โหลดรายการ จึงยิงครั้งเดียวต่อหน้ารายงาน ไม่ใช่ต่อแถว) · `recordIds`
    * เกิน `MAX_USAGE_COUNT_IDS` ถูกตัดทิ้งส่วนที่เกิน และ id ที่ไม่มีแถวจริง
    * **ไม่ถูกคืนเป็น 0** — ไม่มี entry = "ไม่รู้" ให้ฝั่งเว็บโชว์ `—` (ห้ามเดา)
+   *
+   * `contract` (`viewer-scope.ts`) — ลูกค้าถามได้เฉพาะ recordId ของบริษัทตัวเอง:
+   * แถวต่างบริษัทถูก**ตัดทิ้งก่อน** (ผลลัพธ์ = ไม่คืนแถว ไม่ใช่คืน 0 จึงยังตรง
+   * กับกติกา "ไม่รู้ = โชว์ `—`" เดิมทุกประการ)
    */
-  async usageCounts(recordIds: number[]): Promise<UsageCountResult[]> {
+  async usageCounts(recordIds: number[], contract?: ViewerScope): Promise<UsageCountResult[]> {
     const ids = [...new Set(recordIds)]
       .filter((id) => Number.isInteger(id) && id > 0)
       .slice(0, MAX_USAGE_COUNT_IDS);
     if (ids.length === 0) return [];
 
-    const links = await this.links.find({ where: { id: In(ids) } });
+    const found = await this.links.find({ where: { id: In(ids) } });
+    const links =
+      contract?.mode === "own"
+        ? found.filter(
+            (link) => contract.companyId != null && link.companyId === contract.companyId,
+          )
+        : found;
     if (links.length === 0) return [];
 
     // ต้องเอาแถว *ทั้งคู่* มาผูกด้วย (ไม่ใช่แค่ recordIds ที่ขอ) เพราะกติกาผูก

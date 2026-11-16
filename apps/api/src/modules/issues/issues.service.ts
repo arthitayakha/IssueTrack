@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
   ForbiddenException,
+  UnprocessableEntityException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DeepPartial, Not, IsNull, Repository } from "typeorm";
@@ -67,6 +68,20 @@ const SORT_COLUMNS: Record<string, string> = {
   hoursActual: "issue.trackedDuration",
   hoursEntered: "issue.actualFixDuration",
   assigneeName: "sortUser.name",
+  /**
+   * "entered this column when" — the board's Kanban columns ask for it
+   * (`?sortBy=statusChangedAt&sortOrder=desc`), so a card that was just
+   * dragged in lands on TOP of its new column instead of falling back to its
+   * creation date. The stamp is written on create, on move and by the rules
+   * engine's `issue.move_status`, and migration 1806 backfilled the old rows,
+   * so NULLs are a rare gap — the shared `NULLS LAST` puts them at the
+   * bottom (the web comparator mirrors exactly that).
+   *
+   * ⚠️ It is also the "sitting clock" of the stale rules (`notify_stale` /
+   * `hide_from_board`), which is why a drag INSIDE one column must never
+   * re-stamp it: nudging a card would reset its stale counter.
+   */
+  statusChangedAt: "issue.statusChangedAt",
 };
 
 /**
@@ -123,6 +138,15 @@ export class IssuesService {
       priorityIds?: number[];
       categoryIds?: number[];
       appIds?: number[];
+      /**
+       * "ไม่มีแอป" / "ไม่มีหมวดหมู่" — the dashboard's NULL slices (`id: null`)
+       * have no id to filter by, so the list carries a flag instead. It is an
+       * **OR-part of its own dimension**: ticking POS *and* "ไม่มีแอป" means
+       * `app_id IN (POS) OR app_id IS NULL`, never an AND (which would always
+       * be empty). Absent flag → the old `IN`-only clause, byte for byte.
+       */
+      noApp?: boolean;
+      noCategory?: boolean;
       companyIds?: number[];
       assigneeIds?: number[];
       reporterIds?: number[];
@@ -167,10 +191,22 @@ export class IssuesService {
       qb.andWhere("issue.priority_id IN (:...priorityIds)", { priorityIds: filters.priorityIds });
     }
     if (filters.categoryIds && filters.categoryIds.length > 0) {
-      qb.andWhere("issue.category_id IN (:...categoryIds)", { categoryIds: filters.categoryIds });
+      qb.andWhere(
+        filters.noCategory
+          ? "(issue.category_id IS NULL OR issue.category_id IN (:...categoryIds))"
+          : "issue.category_id IN (:...categoryIds)",
+        { categoryIds: filters.categoryIds },
+      );
+    } else if (filters.noCategory) {
+      qb.andWhere("issue.category_id IS NULL");
     }
     if (filters.appIds && filters.appIds.length > 0) {
-      qb.andWhere("issue.app_id IN (:...appIds)", { appIds: filters.appIds });
+      qb.andWhere(
+        filters.noApp ? "(issue.app_id IS NULL OR issue.app_id IN (:...appIds))" : "issue.app_id IN (:...appIds)",
+        { appIds: filters.appIds },
+      );
+    } else if (filters.noApp) {
+      qb.andWhere("issue.app_id IS NULL");
     }
     /**
      * Company filter — a card reaches a company **through its reporter**
@@ -454,6 +490,8 @@ export class IssuesService {
         programmerId: resolvedProgrammerId,
         customerId: resolvedCustomerId,
         category: createdCategory,
+        // ความสำคัญของแจ้งเตือนยืมจากบัตร (notify() แปลงจากชื่อ priority เอง)
+        priorityId: issue.priorityId ?? null,
       },
       action: "created",
       recipients: [resolvedProgrammerId],
@@ -589,6 +627,9 @@ export class IssuesService {
     if (data.taskType !== undefined) {
       const next = data.taskType ?? null;
       if (next !== (issue.taskType ?? null)) {
+        // only while the card sits in a status the active rule names —
+        // same answer as canEditTaskType (an empty value is NOT an exception)
+        await this.assertTaskTypeEditable(issue);
         updates.taskType = next;
         changes.push("taskType");
       }
@@ -679,6 +720,33 @@ export class IssuesService {
     throw new BadRequestException(`The ${field} field is not editable in this status`);
   }
 
+  /**
+   * The ประเภทงาน field may only change while the card sits in a status an
+   * *active* `issue.require_task_type` rule names (รอรับเรื่อง in the seeded
+   * rule) — the same answer `toResponse()` hands the popup as
+   * `canEditTaskType`, so the dropdown and the server can never disagree.
+   * NO escape hatch beyond that: an empty value is locked like a set one (a
+   * card that drifted out of the gate untyped must be dragged back there),
+   * and so is a card with no status. The single pass is having no rule active
+   * at all (fail open — deleting/pausing the rule frees the field, the same
+   * stance as the move guards). Asked only when a value would actually change
+   * (re-saving the same value must never 400); an unreadable rule list fails
+   * open too.
+   */
+  private async assertTaskTypeEditable(issue: Issue): Promise<void> {
+    let gates: StatusGates | null = null;
+    try {
+      gates = await this.rulesEngine.statusGates([issue.statusId]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`task-type field gate lookup failed for issue ${issue.id}: ${message}`);
+    }
+    if (!gates) return; // fail open — a broken lookup must not wedge the field
+    if (gates.taskType.size === 0) return; // no active rule → no lock
+    if (issue.statusId != null && gates.taskType.has(issue.statusId)) return;
+    throw new BadRequestException("The task type field is not editable in this status");
+  }
+
   async move(id: number, statusId: number, actor?: ActorInfo | null) {
     const issue = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
     if (!issue) {
@@ -707,6 +775,21 @@ export class IssuesService {
     // written, so a rejected drag leaves no notification or activity behind
     if (await this.rulesEngine.isStepOnlyMoveActive()) {
       await this.assertAdjacentMove(issue.statusId, statusId);
+    }
+
+    // "ประเภทงานก่อนลาก" — an active `issue.require_task_type` rule naming the
+    // card's status freezes it while `task_type` is still NULL (the admin
+    // fills the type at the detail popup, then the card can be dragged on).
+    // Checked before anything is written, like the other two guards, so a
+    // rejected drag leaves no notification or activity behind. 422 — neither
+    // 400 (step-only) nor 409 (status lock) — so the board can tell this
+    // refusal apart and print its own message. Fail open: no rule / paused /
+    // unreadable rules → the set is empty → dragging stays free.
+    const taskTypeGates = await this.rulesEngine.taskTypeGateStatuses();
+    if (issue.statusId != null && taskTypeGates.has(issue.statusId) && !issue.taskType) {
+      throw new UnprocessableEntityException(
+        "Choose a task type for this card before moving it out of this status",
+      );
     }
 
     const sourceStatus = issue.statusId
@@ -770,6 +853,10 @@ export class IssuesService {
       stepOnly: await this.rulesEngine.isStepOnlyMoveActive(),
       // the unlock button on a locked card only exists while a rule offers it
       unlockAvailable: await this.rulesEngine.isUnlockRuleActive(),
+      // statuses where an active `issue.require_task_type` rule demands a
+      // ประเภทงาน before the card may leave — the board refuses the drop
+      // preview for an untyped card sitting in one of them ([] = no rule)
+      requireTaskTypeStatusIds: [...(await this.rulesEngine.taskTypeGateStatuses())],
       // active stale rules ({statusId, days}) — the board/folder draw the red
       // border from these + each card's statusChangedAt; [] = fail open
       staleRules: await this.rulesEngine.staleRules(),
@@ -1158,6 +1245,15 @@ export class IssuesService {
       canEditAnalysis: covered(gates.analysis),
       isResolutionOpen: Boolean(issue.resolution) || atOrAfter(gates.resolution),
       canEditResolution: covered(gates.resolution),
+      // the ประเภทงาน lock: editable ONLY inside a status the active rule
+      // names (waiting-to-be-triaged), or everywhere while no rule is active
+      // (fail open — deleting/pausing the rule frees the field again).
+      // No other escape: an empty value outside the gate is locked too (the
+      // card has to go back to the gated status to be typed), and so is a
+      // card with no status (`covered()` is false for a null statusId, so it
+      // can never be typed while the rule stands) — `update()` enforces this
+      // same answer before writing.
+      canEditTaskType: gates.taskType.size === 0 || covered(gates.taskType),
       // locked = per-card flag or an active `issue.lock` rule covering the
       // status; a one-shot unlock releases it (the move consumes the flag)
       isLocked:

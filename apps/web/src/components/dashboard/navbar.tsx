@@ -16,6 +16,7 @@ import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import { useAuthStore } from "@/lib/auth-store";
 import { useOwnAvatar } from "@/lib/avatar";
+import { boardsNavKey, usePermissions } from "@/lib/permissions";
 import { usePathname, useRouter } from "@/i18n/navigation";
 import LanguageSwitcher from "./language-switcher";
 import ProfileDialog from "./profile-dialog";
@@ -74,6 +75,7 @@ export default function Navbar({
   const router = useRouter();
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
+  const { roleName } = usePermissions();
   const ownAvatar = useOwnAvatar();
 
   const routeTitleMap: Record<string, string> = {
@@ -84,6 +86,12 @@ export default function Navbar({
   const routeTitleKey =
     routeTitleMap[pathname] ??
     (pathname.replace(/^\//, "").split("/")[0] || "dashboard");
+  /**
+   * หน้า `/boards` — เมื่อผู้ใช้เป็นบทบาทลูกค้า หัวข้อเปลี่ยนจาก "บอร์ด" เป็น
+   * **"ประวัติการแจ้งปัญหา"** (ลูกค้าเห็นเฉพาะงานที่ตัวเองแจ้ง) — ใช้ helper
+   * `boardsNavKey()` ตัวเดียวกับที่ sidebar เลือกเมนู ทั้งสองจุดจึงไม่มีทางเพี้ยนจากกัน
+   */
+  const titleKey = routeTitleKey === "boards" ? boardsNavKey(roleName) : routeTitleKey;
 
   function handleLogout() {
     logout();
@@ -242,9 +250,9 @@ export default function Navbar({
         )}
         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
           {header ??
-            (routeTitleKey ? (
+            (titleKey ? (
               <Typography variant="h6" fontWeight={700} color="text.primary">
-                {t(routeTitleKey)}
+                {t(titleKey)}
               </Typography>
             ) : null)}
         </Box>

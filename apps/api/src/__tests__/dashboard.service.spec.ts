@@ -18,6 +18,11 @@ import { AuthUser } from "../modules/auth/auth-user";
  *     context pair (`statuses` + `total`): the ring that sets the filter keeps
  *     its columns and its total (the client highlights the choice instead of
  *     collapsing the ring).
+ *   - `companyIds` is a data scope instead: it narrows EVERY aggregate
+ *     including `statuses` + `total`, through the reporter-company EXISTS the
+ *     board and `/reports` already use (card → `issue.customer_id` →
+ *     `users.company_id`), and the drill-downs inherit it so their lists keep
+ *     matching the numbers they came from.
  *   - trendIssues() (one bar's drill-down) reuses that exact scope + trunc.
  *   - drilldown() / dimensionIssues() (one donut slice) reuse that scope too,
  *     and only a level-2 slice carries the extra parent-app filter.
@@ -633,6 +638,97 @@ describe("DashboardService status cross-filter", () => {
     await expect(service.drilldown("assigned", "status", "12", USER)).rejects.toThrow("dim");
 
     expect(builders).toHaveLength(0);
+  });
+});
+
+describe("DashboardService company filter", () => {
+  const EXISTS_SQL =
+    "EXISTS (SELECT 1 FROM users u WHERE u.id = issue.customer_id AND u.company_id IN (:...companyIds))";
+
+  /** The `companyIds` parameter bound to one builder's company clause. */
+  function companyParams(b: BuilderStub): number[] | undefined {
+    for (const call of b.andWhere.mock.calls) {
+      if (typeof call[0] === "string" && call[0].includes("company_id IN")) {
+        return (call[1] as { companyIds?: number[] } | undefined)?.companyIds;
+      }
+    }
+    return undefined;
+  }
+
+  it("narrows EVERY aggregate — including the status ring and the total", async () => {
+    const { service, builders } = makeService([statusesRaw(), [], [], [], [], []], [7]);
+
+    const result = await service.summary("assigned", "week", USER, {}, undefined, [6]);
+
+    // echoed back so the client keeps rendering what the server really applied
+    expect(result.companyIds).toEqual([6]);
+    expect(result.total).toBe(7);
+
+    // unlike statusId, the company picker is a DATA SCOPE: the ring's context
+    // pair (total + statuses) narrows with everything else on the page
+    for (const b of builders) {
+      expect(b.conditions.join(" ")).toContain(EXISTS_SQL);
+      expect(companyParams(b)).toEqual([6]);
+    }
+  });
+
+  it("follows the REPORTER's company, not the app's contract row", async () => {
+    const { service, builders } = makeService([statusesRaw(), [], [], [], [], []], [0]);
+
+    await service.summary("assigned", "week", USER, {}, undefined, [4, 6]);
+
+    // the same path GET /issues and GET /reports filter by — one definition
+    // of "which company owns this card" across the three screens
+    expect(builders[0].conditions.join(" ")).toContain("u.id = issue.customer_id");
+    expect(companyParams(builders[0])).toEqual([4, 6]);
+    expect(builders[0].conditions.join(" ")).not.toContain("issue.app_id");
+  });
+
+  it("filters nothing and echoes [] when no company is picked", async () => {
+    const { service, builders } = makeService([statusesRaw(), [], [], [], [], []], [0]);
+
+    const result = await service.summary("assigned", "week", USER);
+
+    expect(result.companyIds).toEqual([]);
+    for (const b of builders) {
+      expect(b.conditions.join(" ")).not.toContain("company_id IN");
+    }
+  });
+
+  it("narrows the workload too (open cards of that company's reporters)", async () => {
+    const { service, permissions, builders } = makeService(allScopeQueue(), [0]);
+    permissions.getUserPermissions.mockResolvedValue([OWN, OVERVIEW]);
+
+    await service.summary("all", "week", ADMIN_USER, {}, undefined, [6]);
+
+    // builder order: total, statuses, priorities, apps, categories, trend, workload
+    expect(builders[6].conditions.join(" ")).toContain(EXISTS_SQL);
+    expect(companyParams(builders[6])).toEqual([6]);
+  });
+
+  it("carries the filter into a trend bar's list so it still matches the bar", async () => {
+    const { service, builders } = makeService([], [], [[]]);
+
+    await service.trendIssues("assigned", "week", "2026-09-28", USER, undefined, [6]);
+
+    expect(builders[0].andWhere).toHaveBeenCalledWith(EXISTS_SQL, { companyIds: [6] });
+  });
+
+  it("carries the filter into a donut slice's list", async () => {
+    const { service, builders } = makeService([], [], [[]]);
+
+    await service.dimensionIssues("assigned", "category", "5", undefined, USER, undefined, [6]);
+
+    expect(builders[0].andWhere).toHaveBeenCalledWith(EXISTS_SQL, { companyIds: [6] });
+  });
+
+  it("carries the filter into the level-2 drilldown", async () => {
+    const { service, permissions, builders } = makeService([[]]);
+    permissions.getUserPermissions.mockResolvedValue([OWN, OVERVIEW]);
+
+    await service.drilldown("all", "category", "12", ADMIN_USER, undefined, [6]);
+
+    expect(builders[0].andWhere).toHaveBeenCalledWith(EXISTS_SQL, { companyIds: [6] });
   });
 });
 

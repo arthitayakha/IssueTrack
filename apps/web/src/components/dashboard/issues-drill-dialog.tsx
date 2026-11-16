@@ -64,6 +64,7 @@ export default function IssuesDrillDialog({
   source,
   scope,
   statusId,
+  companyIds,
   onClose,
 }: {
   /** Already formatted by the caller ("POS · 10 งาน"). */
@@ -78,6 +79,12 @@ export default function IssuesDrillDialog({
    * when the source *is* that status filter, where it would only restate it.
    */
   statusId?: number | null;
+  /**
+   * The page's company filter — rides along for the same reason as
+   * `statusId`: the list must add up to the number on the bar/slice it came
+   * from, which was cut with that filter already applied.
+   */
+  companyIds?: number[];
   onClose: () => void;
 }) {
   const theme = useTheme();
@@ -96,13 +103,17 @@ export default function IssuesDrillDialog({
   const dim = kind === "dimension" ? source.dim : null;
   const dimId = kind === "dimension" ? source.id : 0;
   const parentApp = kind === "dimension" ? (source.app ?? null) : null;
+  // same deal for the company filter array — a comma key keeps the dep list
+  // primitive so a re-render with a fresh (identical) array refetches nothing
+  const companyKey = companyIds?.length ? companyIds.join(",") : "";
 
   useEffect(() => {
     let cancelled = false;
     setStatus("loading");
+    const companyList = companyKey ? companyKey.split(",").map(Number) : [];
     const load =
       kind === "trend" && period
-        ? fetchTrendIssues({ bucket, period, scope, statusId })
+        ? fetchTrendIssues({ bucket, period, scope, statusId, companyIds: companyList })
         : kind === "dimension" && dim
           ? fetchDimensionIssues({
               dim,
@@ -110,6 +121,7 @@ export default function IssuesDrillDialog({
               ...(parentApp != null ? { app: parentApp } : {}),
               scope,
               statusId,
+              companyIds: companyList,
             })
           : Promise.resolve<DashboardTrendIssue[]>([]);
     load
@@ -124,7 +136,7 @@ export default function IssuesDrillDialog({
     return () => {
       cancelled = true;
     };
-  }, [kind, bucket, period, dim, dimId, parentApp, scope, statusId, attempt]);
+  }, [kind, bucket, period, dim, dimId, parentApp, scope, statusId, companyKey, attempt]);
 
   /** The caller formats the title — only it knows which chart was clicked. */
   const truncated = status === "ready" && rows.length < count;

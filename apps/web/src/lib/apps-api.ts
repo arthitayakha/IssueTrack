@@ -63,6 +63,17 @@ export interface App {
   id: number;
   name: string;
   isVisible: boolean;
+  /**
+   * **คู่ "แอป × บริษัทของผู้เรียก" หมดอายุแล้วหรือยัง** — เซิร์ฟเวอร์คำนวณ
+   * (จาก `expiresAt` ของ**ช่วงล่าสุด**ของคู่) แล้วคืนเป็น boolean เดียว เพราะ
+   * แถว `companies` ถูกตัดออกจากลูกค้า (`viewer-scope.ts` → `mode: "none"`)
+   * จึงอ่านวันที่จาก payload นี้ไม่ได้อีก — ฟอร์มแจ้งปัญหาใช้บล็อกผ่าน
+   * `isMaExpired()` ใน `lib/app-expiry.ts`
+   *
+   * `undefined` = payload ถูก strip → fail-open ฝั่ง web = ไม่บล็อก ·
+   * สตาฟฟ์ / ไม่มีบริษัท / ไม่มีแถวคู่ / ไม่กรอกวัน → เซิร์ฟเวอร์ส่ง `false`
+   */
+  maExpired?: boolean;
   /** บริษัทที่ผูกอยู่ พร้อมวันที่ของแต่ละคู่ — many-to-many (`app_companies`) */
   companies: AppCompanyLink[];
   /** ISO datetime from `created_at` */

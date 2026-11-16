@@ -69,7 +69,19 @@ export interface DashboardSummary {
    * own numbers.
    */
   statusId: number | null;
-  /** Page-wide total — never narrowed by `statusId` (see above). */
+  /**
+   * Echoed company filter — every aggregate (INCLUDING `statuses` + `total`)
+   * was cut to the cards whose REPORTER belongs to one of these companies
+   * (`[]` = no filter). Unlike `statusId`, this is a data-scope filter like
+   * `scope`, so the status ring narrows with the rest of the page.
+   */
+  companyIds: number[];
+  /**
+   * Page-wide total — never narrowed by `statusId` (see above), but it IS
+   * narrowed by `companyIds`: the company filter is a data scope, not a
+   * cross-highlight, so the ring answers "how many cards does this company
+   * have in each column?".
+   */
   total: number;
   /** Every board column, zero-filled, in column order. */
   statuses: DashboardCountRow[];

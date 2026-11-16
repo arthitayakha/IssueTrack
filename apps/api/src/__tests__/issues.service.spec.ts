@@ -1,4 +1,9 @@
-import { ConflictException, BadRequestException, NotFoundException } from "@nestjs/common";
+import {
+  ConflictException,
+  BadRequestException,
+  NotFoundException,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { IssuesService } from "../modules/issues/issues.service";
 
 /**
@@ -81,10 +86,13 @@ function makeService() {
       analysis: new Set<number>(),
       resolution: new Set<number>(),
       locked: new Set<number>(),
+      taskType: new Set<number>(),
     }),
     startTimerApplies: jest.fn().mockResolvedValue(new Set<number>()),
     // the step-only drag guard: off by default so every test opts in
     isStepOnlyMoveActive: jest.fn().mockResolvedValue(false),
+    // the "task type before moving" gate: no gated status by default
+    taskTypeGateStatuses: jest.fn().mockResolvedValue(new Set<number>()),
     // the unlock-button switch: off by default so every test opts in
     isUnlockRuleActive: jest.fn().mockResolvedValue(false),
     // the stale policy (red border + 09:00 bell): no active rule by default
@@ -167,6 +175,7 @@ function fieldGates(analysis: number[], resolution: number[] = []) {
     analysis: new Set<number>(analysis),
     resolution: new Set<number>(resolution),
     locked: new Set<number>(),
+    taskType: new Set<number>(),
   };
 }
 
@@ -389,6 +398,65 @@ describe("IssuesService.move — step-only guard (issue.move_step_only rule)", (
   });
 });
 
+describe("IssuesService.move — task-type gate (issue.require_task_type rule)", () => {
+  /** Turns the gate on: status 1 (รอรับเรื่อง) demands a ประเภทงาน. */
+  function gateOn() {
+    const ctx = makeService();
+    ctx.rulesEngine.taskTypeGateStatuses.mockResolvedValue(new Set([1]));
+    return ctx;
+  }
+
+  it("refuses leaving the gated status while the card has no task type, before writing", async () => {
+    const { service, issues } = gateOn();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, taskType: null }));
+
+    await expect(service.move(5, 2, ACTOR)).rejects.toThrow(UnprocessableEntityException);
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("allows the same drag once a task type is set", async () => {
+    const { service, issues } = gateOn();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, taskType: "bug" }));
+
+    await service.move(5, 2, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, {
+      statusId: 2,
+      timeEntryUnlocked: false,
+      lockExempted: false,
+      statusChangedAt: expect.any(Date),
+      staleNotifiedAt: null,
+    });
+  });
+
+  it("never blocks a card sitting outside the gated statuses", async () => {
+    const { service, issues } = gateOn();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 2, taskType: null }));
+
+    await service.move(5, 3, ACTOR);
+
+    expect(issues.update).toHaveBeenCalled();
+  });
+
+  it("fails open while no rule is active (the default empty set)", async () => {
+    const { service, issues } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, taskType: null }));
+
+    await service.move(5, 2, ACTOR);
+
+    expect(issues.update).toHaveBeenCalled();
+  });
+
+  it("lets a card with no status land anywhere", async () => {
+    const { service, issues } = gateOn();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: null, taskType: null }));
+
+    await service.move(5, 1, ACTOR);
+
+    expect(issues.update).toHaveBeenCalled();
+  });
+});
+
 describe("IssuesService.move — status lock (issue.lock rule)", () => {
   it("rejects leaving a locked status before writing (409, not 400)", async () => {
     const { service, issues, rulesEngine } = makeService();
@@ -398,6 +466,7 @@ describe("IssuesService.move — status lock (issue.lock rule)", () => {
       analysis: new Set<number>(),
       resolution: new Set<number>(),
       locked: new Set<number>([4]),
+      taskType: new Set<number>(),
     });
 
     await expect(service.move(5, 3, ACTOR)).rejects.toThrow(ConflictException);
@@ -412,6 +481,7 @@ describe("IssuesService.move — status lock (issue.lock rule)", () => {
       analysis: new Set<number>(),
       resolution: new Set<number>(),
       locked: new Set<number>([4]),
+      taskType: new Set<number>(),
     });
 
     await service.move(5, 3, ACTOR);
@@ -489,6 +559,7 @@ describe("IssuesService.findOne — the lock the board renders", () => {
       analysis: new Set<number>(),
       resolution: new Set<number>(),
       locked: new Set<number>([4]),
+      taskType: new Set<number>(),
     });
 
     const result = await service.findOne(5);
@@ -504,6 +575,7 @@ describe("IssuesService.findOne — the lock the board renders", () => {
       analysis: new Set<number>(),
       resolution: new Set<number>(),
       locked: new Set<number>([4]),
+      taskType: new Set<number>(),
     });
 
     const result = await service.findOne(5);
@@ -517,10 +589,12 @@ describe("IssuesService.movePolicy — what the card menu keys off", () => {
     const { service, rulesEngine } = makeService();
     rulesEngine.isStepOnlyMoveActive.mockResolvedValue(true);
     rulesEngine.isUnlockRuleActive.mockResolvedValue(true);
+    rulesEngine.taskTypeGateStatuses.mockResolvedValue(new Set([1, 2]));
 
     await expect(service.movePolicy()).resolves.toEqual({
       stepOnly: true,
       unlockAvailable: true,
+      requireTaskTypeStatusIds: [1, 2],
       staleRules: [],
       hideStaleRules: [],
     });
@@ -773,6 +847,120 @@ describe("IssuesService.update — task type (MA deduction gate)", () => {
   });
 });
 
+describe("IssuesService.update — the task-type field lock (issue.require_task_type)", () => {
+  /** statusGates with the gate naming status 1 (รอรับเรื่อง). */
+  function gateGates() {
+    return {
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+      locked: new Set<number>(),
+      taskType: new Set<number>([1]),
+    };
+  }
+
+  it("refuses to change a set type while the card sits outside the gated status", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 2, taskType: "bug" }));
+    rulesEngine.statusGates.mockResolvedValue(gateGates());
+
+    await expect(service.update(5, { taskType: "ma" }, ACTOR)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("allows the change inside the status the rule names", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, taskType: "bug" }));
+    rulesEngine.statusGates.mockResolvedValue(gateGates());
+
+    await service.update(5, { taskType: "ma" }, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: "ma" });
+  });
+
+  it("refuses to FILL an empty type outside the gated status too — no escape hatch", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 9, taskType: null }));
+    rulesEngine.statusGates.mockResolvedValue(gateGates());
+
+    await expect(service.update(5, { taskType: "bug" }, ACTOR)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("refuses a card with NO status as well (the gate covers every other case)", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: null, taskType: null }));
+    rulesEngine.statusGates.mockResolvedValue(gateGates());
+
+    await expect(service.update(5, { taskType: "bug" }, ACTOR)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("still lets a write through when the rule lookup breaks (fail open)", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 9, taskType: null }));
+    rulesEngine.statusGates.mockRejectedValueOnce(new Error("connection lost"));
+
+    await service.update(5, { taskType: "bug" }, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: "bug" });
+  });
+
+  it("locks nothing while no rule is active (fail open)", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 2, taskType: "bug" }));
+    rulesEngine.statusGates.mockResolvedValue({
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+      locked: new Set<number>(),
+      taskType: new Set<number>(),
+    });
+
+    await service.update(5, { taskType: "ma" }, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: "ma" });
+  });
+
+  it("payload: canEditTaskType mirrors the same lock — no empty/null escape", async () => {
+    const { service, issues, rulesEngine } = makeService();
+
+    // set + outside the gate → locked
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 2, taskType: "bug" }));
+    rulesEngine.statusGates.mockResolvedValue(gateGates());
+    expect((await service.findOne(5)).canEditTaskType).toBe(false);
+
+    // empty + outside → STILL locked (the card goes back to the gate to be typed)
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 2, taskType: null }));
+    expect((await service.findOne(5)).canEditTaskType).toBe(false);
+
+    // no status at all → locked while a rule stands
+    issues.findOne.mockResolvedValue(issueRow({ statusId: null, taskType: null }));
+    expect((await service.findOne(5)).canEditTaskType).toBe(false);
+
+    // set + inside the rule's status → editable
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, taskType: "bug" }));
+    expect((await service.findOne(5)).canEditTaskType).toBe(true);
+
+    // no rule active → editable everywhere (fail open)
+    rulesEngine.statusGates.mockResolvedValue({
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+      locked: new Set<number>(),
+      taskType: new Set<number>(),
+    });
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 2, taskType: "bug" }));
+    expect((await service.findOne(5)).canEditTaskType).toBe(true);
+  });
+});
+
 describe("IssuesService.movePolicy — the stale rules the board paints from", () => {
   it("passes the engine's active rules straight through", async () => {
     const { service, rulesEngine } = makeService();
@@ -867,6 +1055,73 @@ describe("IssuesService.findAll — ?hideStaleDone=1 cuts stale cards for the bo
   });
 });
 
+describe("IssuesService.findAll — the board's card order (sortBy)", () => {
+  const PARAMS = { page: 1, limit: 20 };
+
+  /** The `orderBy` calls the single query builder received during findAll. */
+  function orderByCalls(issues: { createQueryBuilder: jest.Mock }): unknown[][] {
+    const builder = issues.createQueryBuilder.mock.results.at(-1)?.value;
+    return builder?.orderBy?.mock.calls ?? [];
+  }
+
+  it("orders by status_changed_at DESC NULLS LAST — a dragged card lands on TOP", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {
+      sortBy: "statusChangedAt",
+      sortOrder: "desc",
+    });
+
+    const calls = orderByCalls(issues);
+    expect(calls.length).toBeGreaterThan(0);
+    // the newest *entry into this column* first; the shared NULLS LAST keeps a
+    // rare unstamped row at the bottom, where the web comparator puts it too
+    expect(calls[0]).toEqual(["issue.statusChangedAt", "DESC", "NULLS LAST"]);
+    // ties break the same way on every page so "load more" cannot shuffle
+    const builder = issues.createQueryBuilder.mock.results.at(-1)?.value;
+    expect(builder.addOrderBy).toHaveBeenCalledWith("issue.createdAt", "DESC");
+    expect(builder.addOrderBy).toHaveBeenCalledWith("issue.id", "DESC");
+  });
+
+  it("flips ONLY the primary direction for sortOrder=asc — the toggle's order", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {
+      sortBy: "statusChangedAt",
+      sortOrder: "asc",
+    });
+
+    // asc = longest-sitting first (the toolbar toggle's other side)
+    expect(orderByCalls(issues)[0]).toEqual(["issue.statusChangedAt", "ASC", "NULLS LAST"]);
+    // the tie-breaks are addOrderBy and stay DESC in BOTH directions — if the
+    // server flipped them too, page 2 would disagree with the web comparator
+    const builder = issues.createQueryBuilder.mock.results.at(-1)?.value;
+    expect(builder.addOrderBy).toHaveBeenCalledWith("issue.createdAt", "DESC");
+    expect(builder.addOrderBy).toHaveBeenCalledWith("issue.id", "DESC");
+    // NULLS LAST is direction-independent: an unstamped card sinks in asc too
+    expect(orderByCalls(issues)[0][2]).toBe("NULLS LAST");
+  });
+
+  it("falls back to createdAt for a sort the whitelist does not know", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {
+      sortBy: "createdAt",
+      sortOrder: "asc",
+    });
+
+    expect(orderByCalls(issues)[0]).toEqual(["issue.createdAt", "ASC", "NULLS LAST"]);
+  });
+
+  it("ignores an unknown sortBy — creation date, newest first (the default)", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { sortBy: "nonsense" });
+
+    expect(orderByCalls(issues)[0]).toEqual(["issue.createdAt", "DESC", "NULLS LAST"]);
+  });
+});
+
 describe("IssuesService.findAll — the company filter follows the REPORTER", () => {
   const PARAMS = { page: 1, limit: 20 };
 
@@ -909,5 +1164,79 @@ describe("IssuesService.findAll — the company filter follows the REPORTER", ()
     const clauses = whereCalls(issues).filter(([sql]) => String(sql).includes("u.company_id"));
     expect(clauses).toHaveLength(1);
     expect((clauses[0] as [string, Record<string, unknown>])[1].companyIds).toEqual([4, 6]);
+  });
+});
+
+describe("IssuesService.findAll — noApp / noCategory (the dashboard's NULL slices)", () => {
+  const PARAMS = { page: 1, limit: 20 };
+
+  /** The `andWhere` calls the single query builder received during findAll. */
+  function whereCalls(issues: { createQueryBuilder: jest.Mock }): unknown[][] {
+    const builder = issues.createQueryBuilder.mock.results.at(-1)?.value;
+    return builder?.andWhere?.mock.calls ?? [];
+  }
+
+  it("noApp alone → app_id IS NULL", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { noApp: true });
+
+    const clause = whereCalls(issues).find(([sql]) => String(sql).includes("app_id"));
+    expect(clause).toBeDefined();
+    expect(String((clause as [string])[0])).toBe("issue.app_id IS NULL");
+  });
+
+  it("noCategory alone → category_id IS NULL", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { noCategory: true });
+
+    const clause = whereCalls(issues).find(([sql]) => String(sql).includes("category_id"));
+    expect(clause).toBeDefined();
+    expect(String((clause as [string])[0])).toBe("issue.category_id IS NULL");
+  });
+
+  /**
+   * Ticking "ไม่มีแอป" *and* a real app must OR inside ONE clause — two ANDed
+   * clauses (`IS NULL` AND `IN (…)`) could never match a row, and the panel
+   * offers both checkboxes side by side.
+   */
+  it("noApp + appIds → ONE OR clause, never two ANDed clauses", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { noApp: true, appIds: [3, 5] });
+
+    const clauses = whereCalls(issues).filter(([sql]) => String(sql).includes("app_id"));
+    expect(clauses).toHaveLength(1);
+    const [sql, params] = clauses[0] as [string, Record<string, unknown>];
+    expect(sql).toBe("(issue.app_id IS NULL OR issue.app_id IN (:...appIds))");
+    expect(params.appIds).toEqual([3, 5]);
+  });
+
+  it("noCategory + categoryIds → ONE OR clause", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { noCategory: true, categoryIds: [7] });
+
+    const clauses = whereCalls(issues).filter(([sql]) => String(sql).includes("category_id"));
+    expect(clauses).toHaveLength(1);
+    expect(String((clauses[0] as [string])[0])).toBe(
+      "(issue.category_id IS NULL OR issue.category_id IN (:...categoryIds))",
+    );
+  });
+
+  /** The flag is opt-in: every other caller must keep the plain `IN` clause. */
+  it("neither flag set → the plain IN clause, unchanged", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { appIds: [3], categoryIds: [7] });
+
+    const clauses = whereCalls(issues).filter(
+      ([sql]) => String(sql).includes("app_id") || String(sql).includes("category_id"),
+    );
+    expect(clauses.map(([sql]) => String(sql))).toEqual([
+      "issue.category_id IN (:...categoryIds)",
+      "issue.app_id IN (:...appIds)",
+    ]);
   });
 });

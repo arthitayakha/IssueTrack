@@ -8,6 +8,7 @@ import {
   Breadcrumbs,
   Box,
   Button,
+  Chip,
   CircularProgress,
   IconButton,
   Link as MuiLink,
@@ -41,6 +42,16 @@ function initials(name: string): string {
     .join("")
     .toUpperCase();
 }
+
+/**
+ * สี chip ตามระดับ — จากพาเลตต์ของธีม (ไม่ hardcode hex) · แดง = สูง,
+ * เหลือง = กลาง, เทา = ต่ำ — ชุดเดียวกับ notification-popover.tsx
+ */
+const PRIORITY_COLOR: Record<string, "error" | "warning" | "default"> = {
+  high: "error",
+  medium: "warning",
+  low: "default",
+};
 
 /**
  * The full notification inbox — same data and actions as the navbar bell.
@@ -110,6 +121,15 @@ export default function NotificationsPage() {
     app_expiring: t("actions.app_expiring"),
     app_expired: t("actions.app_expired"),
     ma_depleted: t("actions.ma_depleted"),
+    // แถวเตือน 09:00 ที่ DailyReminderService สร้างให้ (ไม่ใช่เหตุการณ์จริง)
+    daily_digest: t("actions.daily_digest"),
+  };
+
+  // map เหมือนฝั่ง popover — lookup ทับค่าที่ไม่รู้จักได้ ห้ามยิง t() ตรง ๆ
+  const priorityLabels: Record<string, string> = {
+    high: t("priority.high"),
+    medium: t("priority.medium"),
+    low: t("priority.low"),
   };
 
   const header = (
@@ -200,7 +220,12 @@ export default function NotificationsPage() {
               const isSystemRow =
                 item.action === "app_expiring" ||
                 item.action === "app_expired" ||
-                item.action === "ma_depleted";
+                item.action === "ma_depleted" ||
+                // digest 09:00 ก็ไม่มีคนกระทำ — ขึ้นหัวด้วยจำนวนที่ค้าง
+                item.action === "daily_digest";
+              // ระดับที่รู้จักเท่านั้น — payload แปลก/ไม่มีค่า = ไม่ต้องมี chip
+              const priorityLabel = priorityLabels[item.priority];
+              const priorityColor = PRIORITY_COLOR[item.priority];
               return (
                 <ListItem
                   key={item.id}
@@ -257,10 +282,38 @@ export default function NotificationsPage() {
                       </Typography>
                     }
                     secondary={
-                      <Typography variant="caption" color="text.secondary" component="span">
-                        {timeAgo(item.createdAt, locale)}
-                        {item.context ? ` • ${item.context}` : ""}
-                      </Typography>
+                      <Box
+                        component="span"
+                        sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}
+                      >
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          component="span"
+                          sx={{
+                            minWidth: 0,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {timeAgo(item.createdAt, locale)}
+                          {item.context ? ` • ${item.context}` : ""}
+                        </Typography>
+                        {priorityLabel && priorityColor && (
+                          <Chip
+                            label={priorityLabel}
+                            color={priorityColor}
+                            size="small"
+                            sx={{
+                              flexShrink: 0,
+                              height: 18,
+                              fontSize: "0.625rem",
+                              fontWeight: 700,
+                            }}
+                          />
+                        )}
+                      </Box>
                     }
                   />
                 </ListItem>

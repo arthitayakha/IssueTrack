@@ -266,6 +266,8 @@ export default function RuleWizard({ initialRule, onClose, onSaved }: RuleWizard
     switch (key) {
       case "targetStatus":
         return refs.statuses.find((s) => s.id === Number(value))?.name ?? value;
+      case "status":
+        return refs.statuses.find((s) => s.id === Number(value))?.name ?? value;
       case "position":
         return refs.positions.find((p) => p.id === Number(value))?.name ?? value;
       case "priority":

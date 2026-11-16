@@ -221,6 +221,20 @@ describe("getPickerActions — wizard step ② list", () => {
     expect(flags).toEqual([...flags].sort((x, y) => Number(y) - Number(x)));
   });
 
+  it("offers each move guard only for the card-moved trigger", () => {
+    // both are switches read on the way into a move — anywhere else they
+    // would silently act as a global switch nobody meant to create
+    const guards = ["issue.move_step_only", "issue.require_task_type"];
+    for (const trigger of RULE_TRIGGERS) {
+      const offered = RULE_ACTION_CATEGORIES.flatMap((cat) =>
+        getPickerActions(trigger.key, cat.key).map((a) => a.key),
+      );
+      for (const guard of guards) {
+        expect(offered.includes(guard)).toBe(trigger.key === "issue.moved");
+      }
+    }
+  });
+
   it("keeps the whole supported list minus parked / incompatible entries", () => {
     const offered = RULE_ACTION_CATEGORIES.flatMap((cat) =>
       getPickerActions("issue.moved", cat.key).map((a) => a.key),

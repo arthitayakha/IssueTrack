@@ -30,6 +30,12 @@ import { PermissionsService } from "../permissions/permissions.service";
  * Scoping mirrors GET /issues: a caller without `dashboard.overview.view`
  * only ever sees cards they reported or were assigned ("own"), computed
  * server-side. No schema writes — every query here is read-only.
+ *
+ * `companyIds` is the company filter and uses the SAME rule as GET /issues
+ * and GET /reports (card → REPORTER → `users.company_id`), so all three
+ * screens agree on which company a card belongs to. It is a data scope like
+ * `scope`, NOT a cross-highlight like `statusId`: it narrows every aggregate
+ * including the status ring and `total`.
  */
 
 /** Requested/returned data scope. `"own"` = assigned-to-me OR reported-by-me. */
@@ -92,7 +98,14 @@ export interface DashboardSummary {
    * value, never the one it asked for.
    */
   statusId: number | null;
-  /** Page-wide total — never narrowed by `statusId` (see above). */
+  /**
+   * Echoed company filter — every aggregate (INCLUDING `statuses` + `total`)
+   * was cut to cards whose REPORTER belongs to one of these companies
+   * (`[]` = no filter). A data scope like `scope`, not a cross-highlight:
+   * the status ring narrows with the rest of the page.
+   */
+  companyIds: number[];
+  /** Page-wide total — narrowed by `companyIds`, never by `statusId`. */
   total: number;
   statuses: DashboardCountRow[];
   priorities: DashboardCountRow[];
@@ -215,17 +228,31 @@ export class DashboardService {
   }
 
   /**
-   * Base visibility filter: live cards, narrowed to the caller's scope and —
-   * when the page is cross-filtered — to one status (`statusId`).
+   * Base visibility filter: live cards, narrowed to the caller's scope, to one
+   * status when the page is cross-filtered (`statusId`) and to the selected
+   * companies (`companyIds`).
+   *
+   * The company clause follows the SAME path as `GET /issues` / `GET /reports`
+   * (card → REPORTER → `users.company_id`) so the three screens can never
+   * disagree about which company a card belongs to. It sits in `baseQb` — i.e.
+   * it narrows EVERY aggregate including the status ring and `total`, because
+   * unlike `statusId` (a cross-highlight) the company picker is a data scope.
    */
   private baseQb(
     scope: DashboardScope,
     uid: number,
     statusId?: number,
+    companyIds?: number[],
   ): SelectQueryBuilder<Issue> {
     const qb = this.issues.createQueryBuilder("issue").where("issue.deleted_at IS NULL");
     if (statusId != null) {
       qb.andWhere("issue.status_id = :statusId", { statusId });
+    }
+    if (companyIds && companyIds.length > 0) {
+      qb.andWhere(
+        "EXISTS (SELECT 1 FROM users u WHERE u.id = issue.customer_id AND u.company_id IN (:...companyIds))",
+        { companyIds },
+      );
     }
     if (scope === "assigned") {
       qb.andWhere("issue.programmer_id = :uid", { uid });
@@ -246,12 +273,17 @@ export class DashboardService {
    * Together with `total` this is the ring's context pair, and it IGNORES
    * `statusId`: it is the ring the user clicks to set the cross-filter, so it
    * must keep every column — the client highlights the selected slice rather
-   * than collapsing the ring.
+   * than collapsing the ring. The company filter DOES apply (it is a data
+   * scope), so the ring answers "how is THIS COMPANY's work spread?".
    */
-  private async statusCounts(scope: DashboardScope, uid: number): Promise<DashboardCountRow[]> {
+  private async statusCounts(
+    scope: DashboardScope,
+    uid: number,
+    companyIds?: number[],
+  ): Promise<DashboardCountRow[]> {
     const [statuses, raw] = await Promise.all([
       this.statuses.find({ order: { position: "ASC" } }),
-      this.baseQb(scope, uid)
+      this.baseQb(scope, uid, undefined, companyIds)
         .select("issue.status_id", "id")
         .addSelect("COUNT(*)::int", "count")
         .groupBy("issue.status_id")
@@ -272,8 +304,9 @@ export class DashboardService {
     scope: DashboardScope,
     uid: number,
     statusId?: number,
+    companyIds?: number[],
   ): Promise<DashboardCountRow[]> {
-    const raw = await this.baseQb(scope, uid, statusId)
+    const raw = await this.baseQb(scope, uid, statusId, companyIds)
       .leftJoin("issue.priority", "dim")
       .select("dim.id", "id")
       .addSelect("dim.name", "name")
@@ -291,8 +324,9 @@ export class DashboardService {
     scope: DashboardScope,
     uid: number,
     statusId?: number,
+    companyIds?: number[],
   ): Promise<DashboardCountRow[]> {
-    return this.namedCounts(scope, uid, "app", undefined, statusId);
+    return this.namedCounts(scope, uid, "app", undefined, statusId, companyIds);
   }
 
   /** Counts per category — cards with no category land in the `id: null` slice. */
@@ -300,8 +334,9 @@ export class DashboardService {
     scope: DashboardScope,
     uid: number,
     statusId?: number,
+    companyIds?: number[],
   ): Promise<DashboardCountRow[]> {
-    return this.namedCounts(scope, uid, "category", undefined, statusId);
+    return this.namedCounts(scope, uid, "category", undefined, statusId, companyIds);
   }
 
   /**
@@ -319,7 +354,9 @@ export class DashboardService {
    * grouping and the same ordering as the top-level ring, so a child slice can
    * never disagree with the parent slice it came from. `statusId` keeps that
    * promise too: a level-2 ring must honour the page's cross-filter or its
-   * numbers would not add up to the filtered parent slice.
+   * numbers would not add up to the filtered parent slice. `companyIds` rides
+   * along for exactly the same reason (and applies to the top-level rings too
+   * — it is a data scope, see `baseQb`).
    */
   private async namedCounts(
     scope: DashboardScope,
@@ -327,8 +364,9 @@ export class DashboardService {
     dim: "app" | "category",
     parentAppId?: number,
     statusId?: number,
+    companyIds?: number[],
   ): Promise<DashboardCountRow[]> {
-    const qb = this.baseQb(scope, uid, statusId).leftJoin(`issue.${dim}`, "dim");
+    const qb = this.baseQb(scope, uid, statusId, companyIds).leftJoin(`issue.${dim}`, "dim");
     if (parentAppId != null) {
       qb.andWhere("issue.app_id = :parentAppId", { parentAppId });
     }
@@ -362,6 +400,7 @@ export class DashboardService {
     app: string,
     user?: AuthUser | null,
     statusId?: number,
+    companyIds?: number[],
   ): Promise<DashboardCountRow[]> {
     const dimName = parseDim(dim);
     // a status has no level-2 ring — this endpoint only ever nests in an app
@@ -371,7 +410,7 @@ export class DashboardService {
     const parentAppId = parsePositiveId(app, "app");
     const scope = await this.effectiveScope(requestedScope, user);
     const uid = Number(user?.id ?? 0);
-    return this.namedCounts(scope, uid, dimName, parentAppId, statusId);
+    return this.namedCounts(scope, uid, dimName, parentAppId, statusId, companyIds);
   }
 
   /**
@@ -382,7 +421,8 @@ export class DashboardService {
    * Window: a custom `from`/`to` (Bangkok days) wins; a missing bound falls
    * back to the period's look-back — counted back from `to` when only `to`
    * was given, from now otherwise. Only the trend honours the date range; the
-   * status cross-filter (`statusId`) applies to every aggregate on the page.
+   * status cross-filter (`statusId`) and the company filter (`companyIds`)
+   * apply to every aggregate on the page.
    */
   private async trendCounts(
     scope: DashboardScope,
@@ -390,12 +430,13 @@ export class DashboardService {
     period: DashboardPeriod,
     range: DashboardRange = {},
     statusId?: number,
+    companyIds?: number[],
   ): Promise<DashboardTrendRow[]> {
     const upperExclusive = bkkDayAfter(range.to);
     const lower =
       bkkDayStart(range.from) ??
       new Date((upperExclusive?.getTime() ?? Date.now()) - TREND_WINDOW_DAYS[period] * DAY_MS);
-    const qb = this.baseQb(scope, uid, statusId).andWhere("issue.created_at >= :trendFrom", {
+    const qb = this.baseQb(scope, uid, statusId, companyIds).andWhere("issue.created_at >= :trendFrom", {
       trendFrom: lower,
     });
     if (upperExclusive) {
@@ -416,10 +457,10 @@ export class DashboardService {
   /**
    * The issues behind one trend bar — GET /dashboard/trend-issues.
    *
-   * Same `baseQb` (scope + the page's status cross-filter) and the very same
-   * Bangkok `date_trunc` expression as `trendCounts`, so the list always adds
-   * up to the number on the bar. Rows are capped: a bucket can never return
-   * more than TREND_ISSUES_LIMIT.
+   * Same `baseQb` (scope + the page's status cross-filter + its company
+   * filter) and the very same Bangkok `date_trunc` expression as
+   * `trendCounts`, so the list always adds up to the number on the bar. Rows
+   * are capped: a bucket can never return more than TREND_ISSUES_LIMIT.
    */
   async trendIssues(
     requestedScope: DashboardScope,
@@ -427,13 +468,14 @@ export class DashboardService {
     bucket: string,
     user?: AuthUser | null,
     statusId?: number,
+    companyIds?: number[],
   ): Promise<DashboardTrendIssue[]> {
     if (!YMD_RE.test(bucket)) {
       throw new BadRequestException("bucket must be a yyyy-mm-dd date");
     }
     const scope = await this.effectiveScope(requestedScope, user);
     const uid = Number(user?.id ?? 0);
-    const rows = await this.baseQb(scope, uid, statusId)
+    const rows = await this.baseQb(scope, uid, statusId, companyIds)
       .andWhere(
         `to_char(date_trunc('${period}', issue.created_at AT TIME ZONE '${TREND_TIMEZONE}'), 'YYYY-MM-DD') = :bucket`,
         { bucket },
@@ -460,8 +502,9 @@ export class DashboardService {
    * no id, and a dead legend button would hide the very cards the slice counts.
    * `statusId` is the page's cross-filter and rides along for the same reason
    * — the list must match the filtered slice it came from (the client leaves
-   * it out when `dim` itself is the status filter, so the two never conflict).
-   * Same `baseQb` scope and the same 200-row cap as the trend drill-down, so
+   * it out when `dim` itself is the status filter, so the two never conflict)
+   * — and `companyIds` rides along for the very same reason. Same `baseQb`
+   * scope and the same 200-row cap as the trend drill-down, so
    * a personal scope can never leak someone else's cards here either.
    */
   async dimensionIssues(
@@ -471,6 +514,7 @@ export class DashboardService {
     app: string | undefined,
     user?: AuthUser | null,
     statusId?: number,
+    companyIds?: number[],
   ): Promise<DashboardTrendIssue[]> {
     const dimName = parseDim(dim);
     const none = id === "none";
@@ -481,8 +525,13 @@ export class DashboardService {
 
     // `id=none` → the NULL slice; dimName is already validated by parseDim
     const qb = none
-      ? this.baseQb(scope, uid, statusId).andWhere(`issue.${dimName}_id IS NULL`)
-      : this.baseQb(scope, uid, statusId).andWhere(`issue.${dimName}_id = :dimId`, { dimId });
+      ? this.baseQb(scope, uid, statusId, companyIds).andWhere(
+          `issue.${dimName}_id IS NULL`,
+        )
+      : this.baseQb(scope, uid, statusId, companyIds).andWhere(
+          `issue.${dimName}_id = :dimId`,
+          { dimId },
+        );
     if (parentAppId != null) {
       qb.andWhere("issue.app_id = :appId", { appId: parentAppId });
     }
@@ -542,10 +591,11 @@ export class DashboardService {
     scope: DashboardScope,
     uid: number,
     statusId?: number,
+    companyIds?: number[],
   ): Promise<DashboardWorkloadRow[]> {
     if (scope !== "all") return [];
     const openFilter = `COALESCE(issue.status_id, 0) <> ${DONE_STATUS_ID}`;
-    const raw = await this.baseQb(scope, uid, statusId)
+    const raw = await this.baseQb(scope, uid, statusId, companyIds)
       .innerJoin("issue.programmer", "person")
       .innerJoin("person.role", "role")
       .leftJoin("person.position", "pos")
@@ -579,6 +629,11 @@ export class DashboardService {
    * status ring's context pair (`statuses` + `total`), so the ring that set
    * the filter keeps its columns and its total while the rest of the page
    * answers "what does this status look like?".
+   *
+   * `companyIds` is a **data scope** instead (like `scope`): it narrows EVERY
+   * aggregate including `statuses` + `total`, so picking a company re-cuts the
+   * whole page — ring, priorities, usage, trend and workload alike. The list
+   * is echoed back so the client renders what the server really applied.
    */
   async summary(
     requestedScope: DashboardScope,
@@ -586,20 +641,23 @@ export class DashboardService {
     user?: AuthUser | null,
     range: DashboardRange = {},
     statusId?: number,
+    companyIds: number[] = [],
   ): Promise<DashboardSummary> {
     const scope = await this.effectiveScope(requestedScope, user);
     const uid = Number(user?.id ?? 0);
+    const companies = companyIds.length > 0 ? companyIds : [];
 
     const [total, statuses, priorities, apps, categories, trend, workload] = await Promise.all([
       // the ring's context pair — total + statuses are NEVER narrowed by the
       // cross-filter, so the card that sets it never changes its own numbers
-      this.baseQb(scope, uid).getCount(),
-      this.statusCounts(scope, uid), // never filtered — it is the chart that sets the filter
-      this.priorityCounts(scope, uid, statusId),
-      this.appCounts(scope, uid, statusId),
-      this.categoryCounts(scope, uid, statusId),
-      this.trendCounts(scope, uid, period, range, statusId),
-      this.workload(scope, uid, statusId),
+      // (the company scope DOES narrow them — see the docblock above)
+      this.baseQb(scope, uid, undefined, companies).getCount(),
+      this.statusCounts(scope, uid, companies), // never narrowed by statusId — it is the chart that sets the filter
+      this.priorityCounts(scope, uid, statusId, companies),
+      this.appCounts(scope, uid, statusId, companies),
+      this.categoryCounts(scope, uid, statusId, companies),
+      this.trendCounts(scope, uid, period, range, statusId, companies),
+      this.workload(scope, uid, statusId, companies),
     ]);
 
     return {
@@ -608,6 +666,7 @@ export class DashboardService {
       from: range.from ?? null,
       to: range.to ?? null,
       statusId: statusId ?? null,
+      companyIds: companies,
       total,
       statuses,
       priorities,

@@ -610,6 +610,77 @@ describe("RulesEngineService.isStepOnlyMoveActive — the drag guard switch", ()
   });
 });
 
+describe("RulesEngineService.taskTypeGateStatuses — the type-before-move gate", () => {
+  it("collects the status every active rule of that action names", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({ actionKey: "issue.require_task_type", actionConfig: { status: 1 } }),
+      rule({ id: 2, actionKey: "issue.require_task_type", actionConfig: { status: "3" } }),
+    ]);
+
+    const gated = await engine.taskTypeGateStatuses();
+
+    expect([...gated].sort()).toEqual([1, 3]);
+    expect(rules.find).toHaveBeenCalledWith({
+      where: { actionKey: "issue.require_task_type", isActive: true },
+    });
+  });
+
+  it("skips a rule whose status is missing or garbage instead of gating everything", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({ actionKey: "issue.require_task_type", actionConfig: {} }),
+      rule({ id: 2, actionKey: "issue.require_task_type", actionConfig: { status: "abc" } }),
+      rule({ id: 3, actionKey: "issue.require_task_type", actionConfig: { status: 0 } }),
+    ]);
+
+    expect((await engine.taskTypeGateStatuses()).size).toBe(0);
+  });
+
+  it("fails open when the lookup breaks, so a hiccup never freezes the cards", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockRejectedValue(new Error("connection lost"));
+
+    expect((await engine.taskTypeGateStatuses()).size).toBe(0);
+  });
+});
+
+describe("RulesEngineService.statusGates — the taskType set (field lock)", () => {
+  it("collects actionConfig.status of active rules, unfiltered by the asked statuses", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({ actionKey: "issue.require_task_type", actionConfig: { status: 4 } }),
+    ]);
+
+    // asked only about status 2 — status 4 must still show, so an empty set
+    // keeps meaning "no rule" and a rule elsewhere still locks the field
+    const gates = await engine.statusGates([2]);
+
+    expect([...gates.taskType]).toEqual([4]);
+  });
+
+  it("skips a rule whose status is missing or garbage instead of gating everything", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([
+      rule({ actionKey: "issue.require_task_type", actionConfig: {} }),
+      rule({ id: 2, actionKey: "issue.require_task_type", actionConfig: { status: "abc" } }),
+    ]);
+
+    const gates = await engine.statusGates([1]);
+
+    expect(gates.taskType.size).toBe(0);
+  });
+
+  it("leaves the set empty while no rule is active (fail open for canEditTaskType)", async () => {
+    const { engine, rules } = makeEngine();
+    rules.find.mockResolvedValue([rule({ actionKey: "issue.lock" })]);
+
+    const gates = await engine.statusGates([1]);
+
+    expect(gates.taskType.size).toBe(0);
+  });
+});
+
 describe("RulesEngineService.statusGates — the locked set (status locks)", () => {
   it("locks only the statuses a lock rule names", async () => {
     const { engine, rules } = makeEngine();

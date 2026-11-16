@@ -402,6 +402,22 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     configSchema: { targetStatus: { type: "status", required: true } },
   },
   {
+    // the same shape as `issue.move_step_only`: a switch read before the move,
+    // not a per-event action. The gated column lives in `actionConfig.status`
+    // (not in the trigger's conditions) so the board's drop preview and the
+    // server's check in `IssuesService.move()` read one source, and admins can
+    // repoint the gate at another status — or pause it — from the rules list.
+    key: "issue.require_task_type",
+    category: "card",
+    status: "supported",
+    label: { th: "บังคับเลือกประเภทงานก่อนลาก", en: "Require a task type before moving" },
+    description: {
+      th: "เปิดกฎนี้แล้วการ์ดในสถานะที่เลือกจะลากไปสถานะไหนไม่ได้เลย จนกว่าจะเลือกประเภทงาน (บั๊ก / MA / Requirement) ที่รายละเอียดการ์ด — เลือกสถานะด้านล่างเพื่อกำหนดว่าคอลัมน์ไหนถูกบังคับ, pause กฎเมื่อไหร่ก็ลากได้ตามเดิม",
+      en: "While this rule is on, cards in the chosen status cannot be dragged anywhere until a task type (Bug / MA / Requirement) is set in the card detail — pick the status below to choose which column is gated; pause the rule to drag freely again",
+    },
+    configSchema: { status: { type: "status", required: true } },
+  },
+  {
     // acts as an on/off switch, not a per-event action: while any rule with
     // this key is active the server refuses a drag that skips a column, and
     // pausing it brings free dragging back. Its conditions are ignored on
@@ -657,21 +673,17 @@ export const INVALID_ACTION_COMBOS: Array<{ trigger: string; action: string }> =
   // a brand-new card has no timer to stop/reset yet
   { trigger: "issue.created", action: "work_session.stop" },
   { trigger: "issue.created", action: "work_session.reset" },
-  // the move guard is only consulted on the way into a move — for every other
-  // trigger it would silently act as a global switch nobody meant to create
-  { trigger: "issue.assigned", action: "issue.move_step_only" },
-  { trigger: "issue.created", action: "issue.move_step_only" },
-  { trigger: "comment.created", action: "issue.move_step_only" },
-  { trigger: "attachment.created", action: "issue.move_step_only" },
-  { trigger: "issue.title_changed", action: "issue.move_step_only" },
-  { trigger: "issue.description_changed", action: "issue.move_step_only" },
-  { trigger: "issue.priority_changed", action: "issue.move_step_only" },
-  { trigger: "issue.category_changed", action: "issue.move_step_only" },
-  { trigger: "issue.deleted", action: "issue.move_step_only" },
-  { trigger: "issue.restored", action: "issue.move_step_only" },
-  { trigger: "work_session.started", action: "issue.move_step_only" },
-  { trigger: "work_session.stopped", action: "issue.move_step_only" },
 ];
+
+/**
+ * The move guards — switches consulted on the way INTO a move (the server
+ * checks them in `IssuesService.move()` before writing), never as reactions
+ * to some other event: paired with any trigger but `issue.moved` they would
+ * silently act as a global switch nobody meant to create, so the picker
+ * hides them everywhere else. Shared by both guards so a third one cannot
+ * forget the rule.
+ */
+const MOVE_GUARD_ACTIONS = new Set(["issue.move_step_only", "issue.require_task_type"]);
 
 /**
  * The board-policy actions — read at query time (border/sweep/SQL filter),
@@ -685,6 +697,8 @@ export function isActionCompatible(triggerKey: string | null, actionKey: string)
   if (!triggerKey) return true;
   if (triggerKey === "board.policy") return BOARD_POLICY_ACTIONS.has(actionKey);
   if (BOARD_POLICY_ACTIONS.has(actionKey)) return false;
+  // a move guard only makes sense on the way into a move (`issue.moved`)
+  if (MOVE_GUARD_ACTIONS.has(actionKey)) return triggerKey === "issue.moved";
   return !INVALID_ACTION_COMBOS.some((c) => c.trigger === triggerKey && c.action === actionKey);
 }
 
@@ -692,6 +706,7 @@ export function isActionCompatible(triggerKey: string | null, actionKey: string)
 export const RULE_ACTION_RECOMMENDATIONS: Record<string, string[]> = {
   "issue.moved": [
     "issue.move_step_only",
+    "issue.require_task_type",
     "work_session.start",
     "work_session.stop",
     "work_session.reset",

@@ -1,5 +1,8 @@
 import { BadRequestException, ConflictException, NotFoundException } from "@nestjs/common";
 import { AppsService } from "../modules/apps/apps.service";
+import { viewerScope } from "../modules/apps/viewer-scope";
+import type { AuthUser } from "../modules/auth/auth-user";
+import { todayIso } from "../common/dates";
 
 /**
  * AppsService with in-memory stub repositories — no database, no Nest testing
@@ -94,9 +97,10 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
      * `?visible=1` path — a fake builder that *evaluates* the one condition the
      * service asks for instead of running SQL (`app.is_visible = true`), so the
      * tests assert real output rather than "where() was called". There is no
-     * `andWhere` on purpose: company linkage must never reach this query
-     * (ข้อสรุปจากพี่ — เชื่อมหรือไม่เชื่อม ลูกค้าก็เห็นแอปทุกตัว), so a stray
-     * extra clause would throw here instead of passing quietly.
+     * `andWhere` on purpose: company linkage must never reach this query —
+     * `?mine=1` filters **in JS after `getMany()`** (`AppsService.findAll`),
+     * never in SQL, so a stray extra clause would throw here instead of passing
+     * quietly.
      */
     createQueryBuilder: jest.fn(() => {
       // Named (recursive) type instead of letting `qb` infer from itself —
@@ -845,9 +849,10 @@ describe("AppsService.create / update — name only (แท็บแอปใน
 describe("AppsService.findAll — the ?visible=1 scope (ฟอร์มรายงานปัญหา)", () => {
   const params = { page: 1, limit: 100 };
 
-  it("returns every switched-on app, linked to a company or not (ข้อสรุปจากพี่)", async () => {
-    // POS is linked to company 1, CRM to nobody — linkage must not matter, so
-    // both belong in the customer's dropdown
+  it("returns every switched-on app, linked to a company or not (ไม่ส่ง `mine` = ไม่กรอง)", async () => {
+    // POS is linked to company 1, CRM to nobody — without `?mine=1` linkage
+    // must not matter, so both belong in the dropdown (ข้อสรุปเดิมของพี่ยัง
+    // ใช้ได้กับ path ที่ไม่ส่ง flag — /master-data, /reports, ชิปบนบอร์ด)
     const { service, apps } = makeService({
       apps: [POS, CRM],
       rows: [row({ id: 11, appId: 7, companyId: 1 })],
@@ -885,5 +890,349 @@ describe("AppsService.findAll — the ?visible=1 scope (ฟอร์มราย
     // the un-scoped path reads straight from the table — no picker query at all
     expect(apps.createQueryBuilder).not.toHaveBeenCalled();
     expect(apps.find).toHaveBeenCalledWith({ order: { id: "ASC" } });
+  });
+});
+
+/**
+ * **`?mine=1` — dropdown ของฟอร์มแจ้งปัญหากรองตามบริษัทผู้แจ้ง** (`fetchVisibleApps()`
+ * ส่งคู่กับ `visible=1`) — เอาเฉพาะแอปที่ผูกกับ `contract.companyId` แล้ว
+ * **fail-open ทุกทาง** ที่รายการจะว่างลง: ไม่มีบริษัท / ไม่มีแถวผูก / สตาฟฟ์
+ * (`mode: "all"` → `callerLinks` ว่าง) / แอปที่ผูกถูกปิดหมด (`linked` ว่าง) →
+ * คืนรายการเต็มเหมือนไม่ได้กรอง — ช่องแอปบังคับ การกรองจึงห้ามทำให้ว่าง
+ */
+describe("AppsService.findAll — ?mine=1 (กรองแอปตามบริษัทผู้แจ้ง + fail-open)", () => {
+  const params = { page: 1, limit: 100 };
+  /** `GET /apps` ของฟอร์มแจ้งปัญหา = `viewerScope(user, "none")` — คง `companyId` ไว้ */
+  const reportScope = (companyId: number | null) => ({ mode: "none" as const, companyId });
+
+  it("keeps only apps linked to the caller's company (ผูก = เห็น, ไม่ผูก = ไม่เห็น)", async () => {
+    const { service, apps } = makeService({
+      apps: [POS, CRM],
+      rows: [
+        row({ id: 11, appId: 7, companyId: 1 }), // POS ↔ บริษัท 1
+        row({ id: 12, appId: 11, companyId: 2 }), // CRM ↔ บริษัทอื่น
+      ],
+    });
+
+    const res = await service.findAll(params, {
+      visible: true,
+      mine: true,
+      contract: reportScope(1),
+    });
+
+    expect(res.data.map((a) => a.name)).toEqual(["POS"]);
+    expect(res.total).toBe(1); // pagination นับจากหลังกรอง
+    // กรองใน JS หลัง query — เงื่อนไขบริษัทห้ามหลุดเข้า SQL (stub ไม่มี andWhere)
+    expect(apps.createQueryBuilder.mock.results[0].value.where).toHaveBeenCalledWith(
+      "app.is_visible = true",
+    );
+    // และยังคงตัดแถวด้านในตาม viewer-scope (ไม่รั่ววันที่สัญญา)
+    expect(res.data[0].companies).toEqual([]);
+  });
+
+  it("fail-open: customer with NO company sees every switched-on app (ไม่มีบริษัท = ไม่กรอง)", async () => {
+    const { service } = makeService({
+      apps: [POS, CRM],
+      rows: [row({ id: 11, appId: 7, companyId: 2 })],
+    });
+
+    const res = await service.findAll(params, {
+      visible: true,
+      mine: true,
+      contract: reportScope(null),
+    });
+
+    expect(res.data.map((a) => a.name)).toEqual(["POS", "CRM"]);
+  });
+
+  it("fail-open: a company with no linked rows keeps the full list (ยังไม่ผูกแอป = ไม่กรอง)", async () => {
+    const { service } = makeService({ apps: [POS, CRM], rows: [] });
+
+    const res = await service.findAll(params, {
+      visible: true,
+      mine: true,
+      contract: reportScope(1),
+    });
+
+    expect(res.data.map((a) => a.name)).toEqual(["POS", "CRM"]);
+  });
+
+  it("fail-open: staff (`all` scope) is never filtered even with ?mine=1 (สตาฟฟ์เห็นทุกแอป)", async () => {
+    const { service } = makeService({
+      apps: [POS, CRM],
+      rows: [row({ id: 11, appId: 7, companyId: 1 })],
+    });
+
+    const res = await service.findAll(params, {
+      visible: true,
+      mine: true,
+      contract: { mode: "all", companyId: null },
+    });
+
+    expect(res.data.map((a) => a.name)).toEqual(["POS", "CRM"]);
+  });
+
+  it("fail-open: when every linked app is switched off the full visible list comes back (ผูกแต่ปิดหมด = ไม่กรอง)", async () => {
+    // บริษัท 1 ผูกแค่ CRM Classic ที่ปิดอยู่ → `linked` ว่าง (visible query ไม่คืนมัน)
+    // → ต้องได้ POS กลับมา ไม่ใช่ dropdown ว่าง
+    const { service } = makeService({
+      apps: [POS, CRM_OFF],
+      rows: [row({ id: 11, appId: 12, companyId: 1 })],
+    });
+
+    const res = await service.findAll(params, {
+      visible: true,
+      mine: true,
+      contract: reportScope(1),
+    });
+
+    expect(res.data.map((a) => a.name)).toEqual(["POS"]);
+  });
+
+  it("without the flag nothing changes even when a company is set (ไม่ส่ง `mine` = ไม่แตะ)", async () => {
+    const { service } = makeService({
+      apps: [POS, CRM],
+      rows: [row({ id: 11, appId: 7, companyId: 1 })],
+    });
+
+    const res = await service.findAll(params, { visible: true, contract: reportScope(1) });
+
+    expect(res.data.map((a) => a.name)).toEqual(["POS", "CRM"]);
+  });
+
+  it("maExpired still flags the caller's expired pair on the FILTERED list (ธงบล็อกไม่หาย)", async () => {
+    const { service } = makeService({
+      apps: [POS, CRM],
+      rows: [
+        row({ id: 11, appId: 7, companyId: 1, expiresAt: "2020-01-01" }), // ผูก + หมดอายุ
+        row({ id: 12, appId: 11, companyId: 2 }), // ของบริษัทอื่น → ถูกกรองทิ้ง
+      ],
+    });
+
+    const res = await service.findAll(params, {
+      visible: true,
+      mine: true,
+      contract: reportScope(1),
+    });
+
+    expect(res.data.map((a) => a.name)).toEqual(["POS"]);
+    expect(res.data[0].maExpired).toBe(true);
+  });
+});
+
+/**
+ * **ขอบเขตสัญญาของลูกค้า** (`apps/viewer-scope.ts`) — เหตุผลที่ยก `system.view`
+ * ให้ role `customer` ได้โดยไม่รั่ว: หน้า `/systems` ของลูกค้าต้องเห็นเฉพาะคู่
+ * แอป×บริษัทของตัวเอง และ `GET /apps` ต้องไม่คืนแถวด้านในให้อ่านสัญญาคนอื่น
+ */
+describe("AppsService.findAll — contract scope (ลูกค้าเห็นเฉพาะของตัวเอง)", () => {
+  const params = { page: 1, limit: 100 };
+
+  it("own scope keeps the caller's pairs, drops everyone else's, reconciles only its own", async () => {
+    const { service, expiry } = makeService({
+      apps: [POS, CRM],
+      rows: [
+        row({ id: 11, appId: 7, companyId: 1 }),
+        row({ id: 12, appId: 11, companyId: 2 }),
+      ],
+    });
+
+    const res = await service.findAll(params, { contract: { mode: "own", companyId: 1 } });
+
+    // รายการชื่อแอป**ไม่ถูกจำกัด** — ทุกตัวยังอยู่ (ไม่ส่ง `mine` → ไม่กรอง;
+    // ฟอร์มแจ้งปัญหาจะกรองก็ต่อเมื่อส่ง `?mine=1` — ดู describe `?mine=1` ล่างสุด)
+    expect(res.data.map((a) => a.name)).toEqual(["POS", "CRM"]);
+    expect(res.data[0].companies.map((c) => c.id)).toEqual([1]);
+    // CRM มีแค่แถวของบริษัท 2 → ของบริษัท 1 ไม่มีให้เห็น
+    expect(res.data[1].companies).toEqual([]);
+    // และห้ามไป reconcile แถวของบริษัทอื่น (ไม่งั้นการเปิดหน้าลูกค้าจะยิง
+    // กระดิ่ง "ใกล้หมดอายุ" ของบริษัทอื่นด้วย)
+    expect(expiry.reconcile).toHaveBeenCalledTimes(1);
+    expect(expiry.reconcile.mock.calls[0][0].companyId).toBe(1);
+  });
+
+  it("own scope with NO company returns an empty page without touching the app table", async () => {
+    const { service, apps, expiry } = makeService({
+      apps: [POS, CRM],
+      rows: [row({ id: 11, appId: 7, companyId: 1 })],
+    });
+
+    const res = await service.findAll(params, { contract: { mode: "own", companyId: null } });
+
+    expect(res.data).toEqual([]);
+    expect(res.total).toBe(0);
+    // ไม่ query รายการแอปเลย และไม่ reconcile อะไรทั้งสิ้น
+    expect(apps.find).not.toHaveBeenCalled();
+    expect(apps.createQueryBuilder).not.toHaveBeenCalled();
+    expect(expiry.reconcile).not.toHaveBeenCalled();
+  });
+
+  it("none scope strips every contract row while the app list stays complete (ฟอร์มแจ้งปัญหา)", async () => {
+    const { service, expiry } = makeService({
+      apps: [POS, CRM],
+      rows: [
+        row({ id: 11, appId: 7, companyId: 1 }),
+        row({ id: 12, appId: 11, companyId: 2 }),
+      ],
+    });
+
+    const res = await service.findAll(params, {
+      contract: { mode: "none", companyId: null },
+    });
+
+    // ชื่อแอปยังครบ (ไม่ส่ง `mine` → ไม่กรอง — ฟอร์มส่ง `mine=1` จึงจะกรอง)
+    // แต่**ทุกแถวสัญญาหายหมด**
+    expect(res.data.map((a) => a.name)).toEqual(["POS", "CRM"]);
+    expect(res.data.every((a) => a.companies.length === 0)).toBe(true);
+    expect(expiry.reconcile).not.toHaveBeenCalled();
+  });
+
+  it("all scope is untouched — แอดมิน/โปรแกรมเมอร์ยังเห็นทุกบริษัท", async () => {
+    const { service, expiry } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, appId: 7, companyId: 1 })],
+    });
+
+    const res = await service.findAll(params, { contract: { mode: "all", companyId: null } });
+
+    expect(res.data[0].companies.map((c) => c.id)).toEqual([1]);
+    expect(expiry.reconcile).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * **ธง `maExpired`** — ฟอร์มแจ้งปัญหา (`/issues/new`) บล็อกการแจ้งเมื่อ "คู่ของ
+ * ผู้เรียก" หมดอายุ แต่ `GET /apps` ของลูกค้าถูกตัด `companies` ทิ้งหมด
+ * (`viewer-scope.ts`) → เซิร์ฟเวอร์จึงคำนวณเป็น boolean ส่งกลับไปแทน
+ * (ไม่มีวันที่/ชั่วโมงรั่วออกมา และไม่ reconcile อะไรทั้งสิ้น)
+ */
+describe("AppsService.findAll — maExpired (บล็อกฟอร์มแจ้งปัญหา)", () => {
+  const params = { page: 1, limit: 100 };
+  /** วันหมดอายุในอดีต/อนาคตแบบตายตัว — ไม่เน่าตามเวลาที่เทสต์รัน */
+  const PAST = "2020-01-01";
+  const FUTURE = "2999-12-31";
+  /** `GET /apps` ของลูกค้า = `viewerScope(user, "none")` — ยังคง `companyId` ด้วย */
+  const reportScope = (companyId: number | null) => ({ mode: "none" as const, companyId });
+
+  it("none scope raises the flag for the caller's expired pair while stripping every row", async () => {
+    const { service, expiry } = makeService({
+      apps: [POS, CRM],
+      rows: [row({ id: 11, appId: 7, companyId: 1, expiresAt: PAST })],
+    });
+
+    const res = await service.findAll(params, { contract: reportScope(1) });
+
+    const pos = res.data.find((a) => a.name === "POS")!;
+    const crm = res.data.find((a) => a.name === "CRM")!;
+    expect(pos.maExpired).toBe(true);
+    // ไม่มีแถวคู่ของแอปนี้ → fail-open (ไม่บล็อก)
+    expect(crm.maExpired).toBe(false);
+    // ยังคงไม่คืนแถวสัญญา (ข้อตกลง viewer-scope) และไม่ reconcile อะไรเลย
+    expect(res.data.every((a) => a.companies.length === 0)).toBe(true);
+    expect(expiry.reconcile).not.toHaveBeenCalled();
+  });
+
+  it("a foreign company's expiry never flags the caller's list (ไม่บล็อกคนอื่น)", async () => {
+    const { service } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, appId: 7, companyId: 2, expiresAt: PAST })],
+    });
+
+    const res = await service.findAll(params, { contract: reportScope(1) });
+
+    expect(res.data[0].maExpired).toBe(false);
+  });
+
+  it("only the LATEST period counts — an old expired row with a renewal is not expired", async () => {
+    const { service } = makeService({
+      apps: [POS],
+      rows: [
+        row({ id: 11, appId: 7, companyId: 1, expiresAt: PAST }), // ช่วงเก่า หมดอายุ
+        row({ id: 12, appId: 7, companyId: 1, expiresAt: FUTURE }), // เพิ่งต่ออายุ
+      ],
+    });
+
+    const res = await service.findAll(params, { contract: reportScope(1) });
+
+    expect(res.data[0].maExpired).toBe(false);
+
+    // กลับด้าน: ช่วง**ใหม่**หมดอายุ → ต้องบล็อก (แม้ช่วงแรกยังไม่หมดก็ตาม)
+    const { service: renewed } = makeService({
+      apps: [POS],
+      rows: [
+        row({ id: 11, appId: 7, companyId: 1, expiresAt: FUTURE }),
+        row({ id: 12, appId: 7, companyId: 1, expiresAt: PAST }),
+      ],
+    });
+    const res2 = await renewed.findAll(params, { contract: reportScope(1) });
+    expect(res2.data[0].maExpired).toBe(true);
+  });
+
+  it("expires TODAY counts as expired (<= 0) and a missing date fails open", async () => {
+    const { service } = makeService({
+      apps: [POS, CRM],
+      rows: [
+        row({ id: 11, appId: 7, companyId: 1, expiresAt: todayIso() }), // หมดอายุวันนี้พอดี
+        row({ id: 12, appId: 11, companyId: 1, expiresAt: null }), // ไม่กรอกวัน
+      ],
+    });
+
+    const res = await service.findAll(params, { contract: reportScope(1) });
+
+    expect(res.data.find((a) => a.name === "POS")!.maExpired).toBe(true);
+    expect(res.data.find((a) => a.name === "CRM")!.maExpired).toBe(false);
+  });
+
+  it("staff (`all`) never gets the flag; a company-less customer gets an empty page", async () => {
+    const { service } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, appId: 7, companyId: 1, expiresAt: PAST })],
+    });
+
+    const res = await service.findAll(params, { contract: { mode: "all", companyId: null } });
+
+    expect(res.data[0].maExpired).toBe(false);
+
+    // ลูกค้าไม่มีบริษัท (`own` + null) → หน้าว่างตามเดิม ไม่มีทางได้ true
+    const { service: noCompany } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, appId: 7, companyId: 1, expiresAt: PAST })],
+    });
+    const res2 = await noCompany.findAll(params, { contract: { mode: "own", companyId: null } });
+    expect(res2.data).toEqual([]);
+  });
+
+  it("`own` scope (หน้า /systems ของลูกค้า) carries the same flag", async () => {
+    const { service } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, appId: 7, companyId: 1, expiresAt: PAST })],
+    });
+
+    const res = await service.findAll(params, { contract: { mode: "own", companyId: 1 } });
+
+    expect(res.data[0].maExpired).toBe(true);
+  });
+});
+
+describe("viewerScope — role customer เท่านั้นที่ถูกจำกัด", () => {
+  const user = (roleName: string | null, companyId: number | null): AuthUser => ({
+    id: "1",
+    email: "x@example.com",
+    name: "X",
+    roleId: 1,
+    roleName,
+    positionId: null,
+    companyId,
+  });
+
+  it("a customer is scoped to their own company (own mode)", () => {
+    expect(viewerScope(user("customer", 6), "own")).toEqual({ mode: "own", companyId: 6 });
+    expect(viewerScope(user("customer", null), "none")).toEqual({ mode: "none", companyId: null });
+  });
+
+  it("every other role gets `all` — the requested mode is ignored", () => {
+    expect(viewerScope(user("admin", null), "own")).toEqual({ mode: "all", companyId: null });
+    expect(viewerScope(user("programmer", 9), "none")).toEqual({ mode: "all", companyId: null });
+    expect(viewerScope(user(null, 9), "own")).toEqual({ mode: "all", companyId: null });
   });
 });

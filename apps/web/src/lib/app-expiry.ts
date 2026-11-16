@@ -128,6 +128,41 @@ export function expiryColor(
 }
 
 /**
+ * โครงของแถวแอปที่ `isMaExpired()` ต้องอ่าน — **เฉพาะธง**ที่เซิร์ฟเวอร์คำนวณ
+ * ให้ (ไม่อ่าน `companies` อีกแล้ว: `viewer-scope.ts` สั่งไม่ให้คืนแถวสัญญา
+ * ของลูกค้าจาก `GET /apps` จึงไม่มีวันอ่านวันที่จากฝั่ง web ได้อีก)
+ */
+interface ExpirableApp {
+  /**
+   * คู่ "แอป × บริษัทของผู้เรียก" หมดอายุแล้วหรือยัง — `AppsService.findAll`
+   * คำนวณจาก `expiresAt` ของ**ช่วงล่าสุด**ของคู่ แล้วคืนเป็น boolean เดียว
+   */
+  maExpired?: boolean;
+}
+
+/**
+ * **บล็อกแจ้งปัญหาเมื่อสัญญา MA หมดอายุ** (`/issues/new`) — ชั่วคราวตาม
+ * คำสั่ง "บล็อกไว้ก่อน แล้วค่อยไปถามพี่" สวิตช์เปิด/ปิดอยู่ที่
+ * `MA_EXPIRED_BLOCKS_REPORT` ในหน้าฟอร์ม
+ *
+ * **Fail-open เสมอ** — สงสัย = ไม่บล็อก:
+ *
+ * - `undefined` (payload ถูก strip / endpoint อื่น) → `false`
+ * - สตาฟฟ์ (ไม่ใช่ลูกค้า) / ไม่มีบริษัท / ไม่มีแถวคู่ / ไม่กรอกวันหมดอายุ →
+ *   เซิร์ฟเวอร์ส่ง `false` มาเอง
+ * - ช่วงเก่าหมดอายุแต่เพิ่งต่ออายุ → เซิร์ฟเวอร์ดู**ช่วงล่าสุดเท่านั้น**
+ *
+ * เหตุผลที่ต้องเป็นธงจากเซิร์ฟเวอร์ (ไม่ใช่การกรอง `companies` ฝั่ง web แบบ
+ * เดิม): `GET /apps` ของลูกค้าถูกตัด `companies` ทิ้งหมดเพื่อไม่ให้ขุดอ่าน
+ * สัญญาบริษัทอื่นได้ — การบล็อกนี้จึงเป็น "ข้อยกเว้นเดียว" ที่ส่งกลับมา
+ * (แค่ true/false ไม่มีวันที่/ชั่วโมง) · วันหมดอายุ**วันนี้พอดี = บล็อก**
+ * (`<= 0`) ตรงชิป "หมดอายุแล้ว" กับปุ่ม "ต่ออายุ" ฝั่ง `/systems`
+ */
+export function isMaExpired(app: ExpirableApp | null | undefined): boolean {
+  return app?.maExpired === true;
+}
+
+/**
  * `2026-12-04` (a DATE column) or an ISO datetime → `4 ธ.ค. 2026`. A bare date
  * is parsed as *local* midnight so it never slides back a day in UTC+7, the
  * same rule the API uses when it formats `app_companies.expires_at`.

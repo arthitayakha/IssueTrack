@@ -1,7 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Box, Button, CircularProgress, Typography } from "@mui/material";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  CircularProgress,
+  MenuItem,
+  Select,
+  Typography,
+} from "@mui/material";
 import { useTranslations } from "next-intl";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequireAuth from "@/components/require-auth";
@@ -12,6 +20,8 @@ import UsageCard from "@/components/dashboard/usage-card";
 import PriorityBars from "@/components/dashboard/priority-bars";
 import { usePermissions } from "@/lib/permissions";
 import { fetchDashboardSummary } from "@/lib/dashboard-api";
+import { fetchCompanies, type Company } from "@/lib/apps-api";
+import { useAuthStore } from "@/lib/auth-store";
 import { isNetworkError } from "@/lib/api";
 import type {
   DashboardCountRow,
@@ -38,10 +48,19 @@ import type {
  * status. The ring keeps its columns (the server ignores the filter for
  * `statuses`) and just highlights the choice, so it never collapses to the one
  * status it filtered by.
+ *
+ * `companyId` is the COMPANY picker at the top of the page — a data scope, not
+ * a cross-filter: the server narrows EVERY aggregate (ring + total included)
+ * to the cards whose reporter belongs to that company, the same rule the
+ * board and `/reports` use. It is plain state (reloading the page starts on
+ * "all companies" again) and the picker is only rendered when the seat has
+ * something to pick (overview readers → every visible company, a customer →
+ * their own company only, nobody-without-a-company customers → hidden).
  */
 export default function HomePage() {
   const t = useTranslations("Dashboard");
   const { can, roleName } = usePermissions();
+  const user = useAuthStore((s) => s.user);
 
   const scope: DashboardScope = can("dashboard.overview.view")
     ? "all"
@@ -53,11 +72,69 @@ export default function HomePage() {
   const [range, setRange] = useState<DashboardRange>({ from: "", to: "" });
   /** The status ring's cross-filter — null = the whole dashboard. */
   const [statusFilter, setStatusFilter] = useState<{ id: number; name: string } | null>(null);
+  /** The company picker — null = every company (server side: `companyIds=[]`). */
+  const [companyId, setCompanyId] = useState<number | null>(null);
+  const [companies, setCompanies] = useState<Company[]>([]);
+  /** Once the picker's source settled, a stale selection can be dropped. */
+  const [companiesLoaded, setCompaniesLoaded] = useState(false);
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /** Newest request wins — the retry below must not clobber a fresher run. */
   const seqRef = useRef(0);
+
+  /** The company ids actually sent with the summary (empty = no filter). */
+  const companyIds = useMemo(() => (companyId == null ? [] : [companyId]), [companyId]);
+
+  /**
+   * The picker's options — decided by how much of the system the seat can
+   * already see (display only; the server never trusts this list):
+   *
+   *   - `dashboard.overview.view` → every visible company,
+   *   - a customer → their OWN company only (their scope already limits them
+   *     to their cards, so any other pick would just render zeros; `isVisible`
+   *     is ignored here so master-data hiding never hides their own filter),
+   *   - anyone else (e.g. a programmer) → every visible company,
+   *   - a customer with no company → no options → the picker stays hidden.
+   */
+  const companyOptions = useMemo(() => {
+    const visible = companies.filter((c) => c.isVisible);
+    if (can("dashboard.overview.view")) return visible;
+    if (roleName === "customer") {
+      if (user?.companyId == null) return [];
+      const own = companies.find((c) => c.id === user.companyId);
+      return own ? [own] : [];
+    }
+    return visible;
+  }, [companies, can, roleName, user?.companyId]);
+
+  /**
+   * The company list is fetched once; if it fails (or a company disappears)
+   * the selection must not outlive its own option — otherwise the filter
+   * would keep narrowing the page while its picker is gone. Fail-open: drop
+   * the filter and show everything.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    fetchCompanies()
+      .then((res) => {
+        if (!cancelled) setCompanies(res.data);
+      })
+      .catch(() => {
+        // no options → the picker hides itself; nothing else to do
+      })
+      .finally(() => {
+        if (!cancelled) setCompaniesLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!companiesLoaded || companyId == null) return;
+    if (!companyOptions.some((c) => c.id === companyId)) setCompanyId(null);
+  }, [companiesLoaded, companyId, companyOptions]);
 
   const load = useCallback(async () => {
     const seq = ++seqRef.current;
@@ -66,7 +143,13 @@ export default function HomePage() {
 
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const summary = await fetchDashboardSummary(scope, period, range, statusFilter?.id);
+        const summary = await fetchDashboardSummary(
+          scope,
+          period,
+          range,
+          statusFilter?.id,
+          companyIds,
+        );
         if (seq !== seqRef.current) return;
         setData(summary);
         setError(null);
@@ -92,7 +175,7 @@ export default function HomePage() {
     if (seq !== seqRef.current) return;
     setError(failure);
     setLoading(false);
-  }, [scope, period, range, statusFilter, t]);
+  }, [scope, period, range, statusFilter, companyIds, t]);
 
   useEffect(() => {
     load();
@@ -137,6 +220,38 @@ export default function HomePage() {
             </Alert>
           )}
 
+          {/* company picker — a data scope for the WHOLE page (ring + total
+              included); hidden when the seat has nothing to pick */}
+          {companyOptions.length > 0 && (
+            <Box
+              sx={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 1 }}
+            >
+              <Typography sx={{ fontSize: 13, color: "text.secondary" }}>
+                {t("company.label")}
+              </Typography>
+              <Select
+                value={companyId == null ? "" : String(companyId)}
+                onChange={(e) => setCompanyId(e.target.value === "" ? null : Number(e.target.value))}
+                displayEmpty
+                size="small"
+                aria-label={t("company.label")}
+                sx={{
+                  minWidth: 220,
+                  fontSize: 13,
+                  bgcolor: "background.paper",
+                  "& .MuiSelect-select": { py: 0.75, pr: "28px !important" },
+                }}
+              >
+                <MenuItem value="">{t("company.all")}</MenuItem>
+                {companyOptions.map((c) => (
+                  <MenuItem key={c.id} value={String(c.id)}>
+                    {c.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </Box>
+          )}
+
           {loading && !data ? (
             <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
               <CircularProgress />
@@ -158,12 +273,14 @@ export default function HomePage() {
                   selectedId={statusId}
                   onSelect={handleStatusSelect}
                   scope={data.scope}
+                  companyIds={data.companyIds}
                 />
                 <UsageCard
                   apps={data.apps}
                   categories={data.categories}
                   scope={data.scope}
                   statusId={statusId}
+                  companyIds={data.companyIds}
                 />
                 <PriorityBars rows={data.priorities} />
               </Box>
@@ -185,6 +302,7 @@ export default function HomePage() {
                   range={range}
                   onRangeChange={setRange}
                   statusId={statusId}
+                  companyIds={data.companyIds}
                 />
                 {showWorkload && <WorkloadCard rows={data.workload} />}
               </Box>

@@ -15,6 +15,20 @@ export function roleLabel(name: string | null | undefined): string {
   return ROLE_LABELS[name] ?? name;
 }
 
+/**
+ * ป้ายเมนู/หัวข้อของหน้า `/boards` (`Nav.boards`) เฉพาะผู้ใช้บทบาทลูกค้า:
+ * หน้าเดิม เส้นทางเดิม แต่คำเปลี่ยนเป็น **"ประวัติการแจ้งปัญหา"** (`reportHistory`)
+ * เพราะลูกค้าเห็นเฉพาะงานที่ตัวเองแจ้ง (ตารางถูกบังคับ) — สตาฟฟ์เห็น "บอร์ด" เหมือนเดิม
+ *
+ * อยู่รวมกันที่นี่ที่เดียวเพื่อให้ sidebar (`sidebar.tsx`) กับหัวข้อใน navbar
+ * (`navbar.tsx`) เลือกคำเดียวกันเป๊ะ — สองจุดนี้คือที่เดียวที่คำว่า "บอร์ด"
+ * โชว์ให้ลูกค้าเห็น (breadcrumb รากของ folder view กับปุ่มสลับมุมมอง
+ * ลูกค้าเข้าไม่ถึงอยู่แล้ว)
+ */
+export function boardsNavKey(roleName: string | null | undefined): "boards" | "reportHistory" {
+  return roleName === "customer" ? "reportHistory" : "boards";
+}
+
 /* ------------------------------------------------------------------ */
 /* One `/permissions/my` request per page load, shared by every caller  */
 /* ------------------------------------------------------------------ */

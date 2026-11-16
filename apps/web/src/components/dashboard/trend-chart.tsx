@@ -197,6 +197,7 @@ export default function TrendChart({
   range,
   onRangeChange,
   statusId,
+  companyIds,
 }: {
   rows: DashboardTrendRow[];
   period: DashboardPeriod;
@@ -207,6 +208,8 @@ export default function TrendChart({
   onRangeChange: (range: DashboardRange) => void;
   /** The page's status cross-filter — a bar's list must match its count. */
   statusId?: number | null;
+  /** The page's company filter — carried into /reports and the drill list. */
+  companyIds?: number[];
 }) {
   const theme = useTheme();
   const t = useTranslations("Dashboard");
@@ -364,11 +367,12 @@ export default function TrendChart({
                     const payload = clicked?.payload as Partial<Bucket> | undefined;
                     if (!payload?.bucket) return;
                     // to /reports with this bar's window (+ the status
-                    // cross-filter as context); the dialog is only for seats
-                    // without report.view, who cannot open the reports page
+                    // cross-filter and the company filter as context); the
+                    // dialog is only for seats without report.view, who
+                    // cannot open the reports page
                     if (can("report.view")) {
                       const { from, to } = bucketToRange(payload.bucket, period);
-                      router.push(reportsHref({ from, to, status: statusId }));
+                      router.push(reportsHref({ from, to, status: statusId, company: companyIds }));
                       return;
                     }
                     const count = Number(payload.count ?? 0);
@@ -407,6 +411,7 @@ export default function TrendChart({
           source={drill.source}
           scope={scope}
           statusId={statusId}
+          companyIds={companyIds}
           onClose={() => setDrill(null)}
         />
       )}

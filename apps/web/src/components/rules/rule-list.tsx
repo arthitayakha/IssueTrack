@@ -201,7 +201,7 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
   function resolveConfigValue(key: string, value: unknown): string {
     if (value == null) return "";
     const raw = String(value);
-    if (key === "targetStatus") {
+    if (key === "targetStatus" || key === "status") {
       return statuses.find((s) => s.id === Number(value))?.name ?? raw;
     }
     if (key === "position") {

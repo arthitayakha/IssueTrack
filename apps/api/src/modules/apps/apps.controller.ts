@@ -19,6 +19,9 @@ import {
   AppWriteInput,
 } from "./apps.service";
 import { MaUsageService } from "./ma-usage.service";
+import { viewerScope } from "./viewer-scope";
+import { AuthUser } from "../auth/auth-user";
+import { CurrentUser } from "../auth/current-user.decorator";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -36,15 +39,41 @@ export class AppsController {
   // also carry company names + expiry — both are master data the board shows.
   //
   // `?visible=1` = **รายการแอปที่ฟอร์มรายงานปัญหาใช้** — คืนเฉพาะแอปที่เปิดใช้
-  // งาน (`is_visible = true`) **ไม่ว่าจะผูกกับบริษัทของผู้เรียกหรือไม่ก็ตาม**
-  // (ข้อสรุปจากพี่: เชื่อมหรือไม่เชื่อม ลูกค้าก็เห็นแอปทุกตัว — จึงไม่มีการกรอง
-  // ตาม `users.company_id` และไม่มี guard ตอนสร้างงานอีกแล้ว)
+  // งาน (`is_visible = true`)
+  //
+  // `?mine=1` (ฟอร์มส่งคู่กับ `visible=1`) = **กรองเหลือเฉพาะแอปที่ผูกกับ
+  // บริษัทของผู้เรียก** — fail-open ทุกทาง (ไม่มีบริษัท / ไม่มีแถวผูก / สตาฟฟ์ /
+  // แอปที่ผูกถูกปิดหมด) = คืนรายการเต็มเหมือนไม่ได้กรอง ดูเงื่อนไขเต็มใน
+  // `AppsService.findAll` · ไม่ส่ง `mine` = เหมือนเดิมทุกประการ (ข้อสรุปเก่า
+  // "เชื่อมหรือไม่เชื่อม ลูกค้าก็เห็นแอปทุกตัว" ยังใช้ได้กับ path ที่ไม่ส่ง flag)
   // ที่อื่น (แท็บแอปใน /master-data, /systems, /reports, ชิปบนบอร์ด) ไม่ส่ง flag
   // → ได้ทุกแอปรวมที่ปิดสถานะ เพราะหน้าเหล่านั้นต้องเห็นแอปที่ปิดเพื่อเปิดกลับได้
+  //
+  // ⚠️ นี่คือ**การแสดงผลเท่านั้น** — `IssuesService.create` ยังไม่มี guard
+  // cross-company (400 ตัวเดิมถูกถอดออกไปพร้อมกัน) อย่าเพิ่มกลับโดยไม่ถามก่อน
+  //
+  // **แถวด้านใน (`companies`) ถูกตัดออกจากลูกค้า** (`viewer-scope.ts` →
+  // `mode: "none"`): รายชื่อแอปยังครบ**ทุกตัว**ตามข้อสรุปด้านบน แต่วันที่สัญญา +
+  // ชั่วโมง MA ของบริษัท**ไหนก็ตาม**อ่านไม่ได้จาก route นี้อีก — เดิมมันเป็นประตู
+  // ที่สองที่ลูกค้าขุด API แล้วเห็นสัญญาของบริษัทอื่นได้ (ของตัวเองดูที่ `/systems`)
   @Get()
-  findAll(@Query() query: { page?: string; limit?: string; visible?: string }) {
+  findAll(
+    @CurrentUser() user: AuthUser,
+    @Query() query: { page?: string; limit?: string; visible?: string; mine?: string },
+  ) {
     const visible = query.visible === "1" || query.visible === "true";
-    return this.apps.findAll(normalizePagination(query), { visible });
+    const mine = query.mine === "1" || query.mine === "true";
+    // `maExpired` (boolean) — **ธงเดียว**ที่ route นี้คืนให้ลูกค้าเพิ่มจากชื่อแอป:
+    // ฟอร์มแจ้งปัญหาใช้บล็อกเมื่อ "คู่ของผู้เรียก" หมดอายุ (`/issues/new` →
+    // `isMaExpired()`) คำนวณใน `AppsService.findAll` จาก `expiresAt` ของ**ช่วง
+    // ล่าสุด**ของคู่ตัวเอง แล้วคืนแค่ true/false — ไม่เปิดวันที่/ชั่วโมงกลับมา
+    // (แถว `companies` ยังถูกตัดตาม `viewer-scope.ts`) · สตาฟฟ์/ไม่มีบริษัท/
+    // ไม่มีแถวคู่ = `false` (fail-open) · route นี้ไม่เรียก `reconcile()` เลย
+    return this.apps.findAll(normalizePagination(query), {
+      visible,
+      mine,
+      contract: viewerScope(user, "none"),
+    });
   }
 
   /**
@@ -55,15 +84,22 @@ export class AppsController {
    *
    * guard เป็น ANY-of: หน้า `/systems` มาด้วย `system.view` หน้ารายงานมาด้วย
    * `report.view` — สอง surface คนละ permission card จึงแชร์ endpoint เดียว
+   *
+   * **ลูกค้าถูกจำกัดให้เหลือเฉพาะ recordId ของบริษัทตัวเอง** (`viewer-scope.ts`)
+   * — ไม่งั้น route นี้จะเป็นช่องทางอ่าน "กี่งาน/ใช้ไปกี่ชม." ของคู่บริษัทอื่นได้
+   * ถึงจะไม่มีชื่องานก็ตาม (id แปลกหน้าถูกตัดทิ้ง = ไม่คืนแถว)
    */
   @Get("usage-counts")
   @Permissions("system.view", "report.view")
-  usageCounts(@Query("recordIds") recordIds?: string) {
+  usageCounts(
+    @CurrentUser() user: AuthUser,
+    @Query("recordIds") recordIds?: string,
+  ) {
     const ids = (recordIds ?? "")
       .split(",")
       .map((value) => Number.parseInt(value.trim(), 10))
       .filter((value) => Number.isInteger(value));
-    return this.maUsage.usageCounts(ids);
+    return this.maUsage.usageCounts(ids, viewerScope(user, "own"));
   }
 
   // The CRUD below serves TWO surfaces with separate permission cards:
@@ -174,14 +210,18 @@ export class AppsController {
    * และ `Σ ทุกรอบ + unattributedHours` จะเท่ากับมันเสมอ (มีเทสต์คุม)
    *
    * ANY-of guard เหมือน `usage-counts`: `/systems` → `system.view`, รายงาน → `report.view`
+   *
+   * **ลูกค้าอ่านของบริษัทตัวเองไม่ได้** (`viewer-scope.ts`) — คืน 404 เหมือน
+   * recordId ที่ไม่มีจริง เพราะ payload มี**ชื่อ/เลขงาน**ของคู่นั้นอยู่
    */
   @Get(":id/companies/:recordId/usage")
   @Permissions("system.view", "report.view")
   periodUsage(
+    @CurrentUser() user: AuthUser,
     @Param("id", ParseIntPipe) id: number,
     @Param("recordId", ParseIntPipe) recordId: number,
   ) {
-    return this.maUsage.periodUsage(id, recordId);
+    return this.maUsage.periodUsage(id, recordId, viewerScope(user, "own"));
   }
 
   @Patch(":id/active")

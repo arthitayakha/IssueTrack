@@ -10,6 +10,15 @@ import { Issue } from "../../issues/entities/issue.entity";
 import { User } from "../../auth/entities/user.entity";
 
 /**
+ * How loud a bell row is — drives the inbox order (high first), the chip
+ * colour, and the daily reminder window (7 / 3 / 1 days at 09:00, see
+ * `DailyReminderService`). Written by `NotificationsService.notify()`: the
+ * card's own priority when the row has an issue, the `FIXED_PRIORITY` map for
+ * system rows, `medium` otherwise. The DB enforces the three values.
+ */
+export type NotificationPriority = "high" | "medium" | "low";
+
+/**
  * The bell inbox — every row here is *unread* (reading one deletes it), so the
  * table carries no read/archived state. The actor's name is read off `users`
  * through `actor` instead of being copied into a column.
@@ -54,6 +63,15 @@ export class Notification {
 
   @Column({ type: "varchar", length: 50 })
   type!: string;
+
+  /**
+   * `high` / `medium` / `low` — see `NotificationPriority` above. The entity
+   * default makes TypeORM omit the column when a caller does not set one, so
+   * the migration's `DEFAULT 'medium'` (which the DB really has) is the
+   * backstop — never `NULL`.
+   */
+  @Column({ type: "varchar", length: 10, default: "medium" })
+  priority!: NotificationPriority;
 
   @CreateDateColumn({ name: "created_at", type: "timestamptz" })
   createdAt!: Date;

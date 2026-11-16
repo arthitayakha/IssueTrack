@@ -150,8 +150,10 @@ export default function SystemsPage() {
   /** ข้อความ chrome ของ popover ตัวกรอง (หัวเรื่อง / ปุ่มล้าง) — namespace แชร์ */
   const tf = useTranslations("Filters");
   const locale = useLocale();
-  const { can } = usePermissions();
+  const { can, roleName } = usePermissions();
   const token = useAuthStore((s) => s.token);
+  /** โปรไฟล์ของตัวเอง — `companyId` ใช้บอกลูกค้าที่ยังไม่ผูกบริษัท (ดู `emptyLabel`) */
+  const user = useAuthStore((s) => s.user);
   const { notify } = useNotification();
 
   const [apps, setApps] = useState<App[]>([]);
@@ -240,6 +242,24 @@ export default function SystemsPage() {
 
   const canUpdate = can("system.update");
   const canDelete = can("system.delete");
+
+  /**
+   * ข้อความตารางว่าง — **คนละกรณีกัน 3 แบบ** เพราะลูกค้าถูกเซิร์ฟเวอร์จำกัดให้
+   * เห็นเฉพาะแถวของบริษัทตัวเอง (`apps/viewer-scope.ts`) ดังนั้น "ว่าง" ของลูกค้า
+   * กับ "ว่าง" ของแอดมินไม่ใช่เรื่องเดียวกัน:
+   *
+   * - ลูกค้า**ไม่มี**บริษัท → บอกตรง ๆ ว่าบัญชียังไม่ได้ผูก (ไม่งั้นดูเหมือนบั๊ก)
+   * - ลูกค้ามีบริษัทแต่ยังไม่มีแถว → "ของบริษัทของคุณ"
+   * - ไม่ใช่ลูกค้า → ข้อความเดิม `noRows`
+   *
+   * **เป็นการแสดงผลเท่านั้น** — การจำกัดข้อมูลทำที่เซิร์ฟเวอร์ทั้งหมด ตรงนี้
+   * แค่เลือกคำให้ตรงกับสิ่งที่เซิร์ฟเวอร์ส่งกลับมา
+   */
+  const ownCompanyId = user?.companyId ?? null;
+  const emptyLabel = useMemo(() => {
+    if (roleName !== "customer") return t("noRows");
+    return ownCompanyId == null ? t("noCompany") : t("noRowsOwn");
+  }, [roleName, ownCompanyId, t]);
 
   async function loadApps() {
     try {
@@ -881,12 +901,13 @@ export default function SystemsPage() {
                   </DataTableRow>
                 );
               })}
-              {/* ว่าง 2 กรณี — ไม่มีข้อมูลเลย vs กรอง/ค้นจนไม่เหลือ (คนละข้อความ) */}
+              {/* ว่าง 2 กรณี — ไม่มีข้อมูลเลย vs กรอง/ค้นจนไม่เหลือ (คนละข้อความ);
+                  กรณีแรกมี 3 คำตาม `emptyLabel` ด้านบน */}
               {pageRows.length === 0 && (
                 <DataTableRow>
                   <DataTableCell colSpan={8}>
                     <Typography variant="caption" color="text.disabled">
-                      {apps.length === 0 ? t("noRows") : t("noMatch")}
+                      {apps.length === 0 ? emptyLabel : t("noMatch")}
                     </Typography>
                   </DataTableCell>
                 </DataTableRow>

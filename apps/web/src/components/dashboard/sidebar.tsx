@@ -21,7 +21,7 @@ import PeopleIcon from "@mui/icons-material/People";
 import PostAddIcon from "@mui/icons-material/PostAdd";
 import HistoryIcon from "@mui/icons-material/History";
 import { DRAWER_WIDTH } from "./navbar";
-import { usePermissions } from "@/lib/permissions";
+import { boardsNavKey, usePermissions } from "@/lib/permissions";
 import { Link, usePathname } from "@/i18n/navigation";
 
 export default function Sidebar({
@@ -35,7 +35,7 @@ export default function Sidebar({
   onClose?: () => void;
 }) {
   const t = useTranslations("Nav");
-  const { can } = usePermissions();
+  const { can, roleName } = usePermissions();
   const pathname = usePathname();
 
   const navItems = [
@@ -43,7 +43,7 @@ export default function Sidebar({
     ...(can("issue.create")
       ? [{ label: t("reportIssue"), href: "/issues/new", icon: <PostAddIcon /> }]
       : []),
-    { label: t("boards"), href: "/boards", icon: <ViewKanbanIcon /> },
+    { label: t(boardsNavKey(roleName)), href: "/boards", icon: <ViewKanbanIcon /> },
     ...(can("user.view") || can("role.view") || can("position.view")
       ? [{ label: t("users"), href: "/users", icon: <PeopleIcon /> }]
       : []),

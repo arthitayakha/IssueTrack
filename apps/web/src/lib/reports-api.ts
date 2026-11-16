@@ -46,6 +46,13 @@ export interface ReportFilters {
   statusIds: number[];
   priorityIds: number[];
   appIds: number[];
+  /**
+   * "ไม่มีแอป" / "ไม่มีหมวดหมู่" — ชิ้นโดนัท NULL ของ dashboard ไม่มี id ให้กรอง
+   * จึงส่งธงแทน (`?noApp=1` / `?noCategory=1`). เป็น **OR ของ dimension
+   * เดียวกัน** เหมือน backend: ติ๊ก POS + "ไม่มีแอป" = `app_id IS NULL OR IN (…)`
+   */
+  noApp: boolean;
+  noCategory: boolean;
   companyIds: number[];
   /**
    * ประเภทงาน (`IssueTaskType[]`) — ใช้ตอนคำนวณ "ใช้ไป" ของ MA
@@ -66,6 +73,8 @@ export const EMPTY_FILTERS: ReportFilters = {
   statusIds: [],
   priorityIds: [],
   appIds: [],
+  noApp: false,
+  noCategory: false,
   companyIds: [],
 };
 
@@ -289,10 +298,10 @@ export function activeFilterCount(f: ReportFilters, view?: ReportView): number {
   if (f.search.trim()) n += 1;
   if (f.assigneeIds.length) n += 1;
   if (f.reporterIds.length) n += 1;
-  if (f.categoryIds.length) n += 1;
+  if (f.categoryIds.length || f.noCategory) n += 1;
   if (f.statusIds.length) n += 1;
   if (f.priorityIds.length) n += 1;
-  if (f.appIds.length) n += 1;
+  if (f.appIds.length || f.noApp) n += 1;
   if (f.companyIds.length) n += 1;
   return n;
 }
@@ -503,9 +512,11 @@ function filterParams(f: ReportFilters): URLSearchParams {
   if (f.assigneeIds.length) p.set("assigneeIds", f.assigneeIds.join(","));
   if (f.reporterIds.length) p.set("reporterIds", f.reporterIds.join(","));
   if (f.categoryIds.length) p.set("categoryIds", f.categoryIds.join(","));
+  if (f.noCategory) p.set("noCategory", "1");
   if (f.statusIds.length) p.set("statuses", f.statusIds.join(","));
   if (f.priorityIds.length) p.set("priorityIds", f.priorityIds.join(","));
   if (f.appIds.length) p.set("appIds", f.appIds.join(","));
+  if (f.noApp) p.set("noApp", "1");
   if (f.companyIds.length) p.set("companyIds", f.companyIds.join(","));
   if (f.taskTypes?.length) p.set("taskTypes", f.taskTypes.join(","));
   return p;

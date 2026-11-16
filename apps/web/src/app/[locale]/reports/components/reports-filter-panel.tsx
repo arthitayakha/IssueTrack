@@ -127,6 +127,16 @@ export function ReportsFilterPanel({
     });
   };
 
+  /**
+   * "ไม่มีแอป" / "ไม่มีหมวดหมู่" — the NULL bucket of each dimension, which has
+   * no id to sit in `appIds`/`categoryIds` (the dashboard's `id: null` slices
+   * land here via `?noApp=1`). A plain boolean beside the id list, so ticking
+   * it together with a real app means OR on the server, never an empty AND.
+   */
+  const toggleFlag = (key: "noApp" | "noCategory") => {
+    onFiltersChange({ ...filters, [key]: !filters[key] });
+  };
+
   const statusOptions: FilterOption[] = options.statuses.map((status) => ({
     id: status.id,
     label: status.name,
@@ -153,6 +163,20 @@ export function ReportsFilterPanel({
     onToggle: () => toggleIn("appIds", app.id),
     start: <AppsIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main" }} />,
   }));
+  /**
+   * The NULL bucket sits at the end of the list. Skipped in the `company` view:
+   * its rows are contract pairs (แอป×บริษัท) and every one of them has an app,
+   * so "ไม่มีแอป" would only ever show an empty table there.
+   */
+  if (view !== "company") {
+    appOptions.push({
+      id: "no-app",
+      label: t("filters.noApp"),
+      checked: filters.noApp,
+      onToggle: () => toggleFlag("noApp"),
+      start: <AppsIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main", opacity: 0.55 }} />,
+    });
+  }
 
   const companyOptions: FilterOption[] = options.companies.map((company) => ({
     id: company.id,
@@ -179,6 +203,15 @@ export function ReportsFilterPanel({
     onToggle: () => toggleIn("categoryIds", category.id),
     start: <CategoryIcon sx={{ fontSize: 16, flexShrink: 0, color: "secondary.main" }} />,
   }));
+  // NULL bucket, same deal as the app section (the company view never shows
+  // this section — its rows are contracts, not issues)
+  categoryOptions.push({
+    id: "no-category",
+    label: t("filters.noCategory"),
+    checked: filters.noCategory,
+    onToggle: () => toggleFlag("noCategory"),
+    start: <CategoryIcon sx={{ fontSize: 16, flexShrink: 0, color: "secondary.main", opacity: 0.55 }} />,
+  });
 
   const assigneeOptions: FilterOption[] = options.people.map((person) => ({
     id: person.id,
@@ -222,13 +255,13 @@ export function ReportsFilterPanel({
     category: {
       title: t("filters.category"),
       icon: <CategoryIcon sx={{ fontSize: 18 }} />,
-      count: filters.categoryIds.length,
+      count: filters.categoryIds.length + (filters.noCategory ? 1 : 0),
       options: categoryOptions,
     },
     app: {
       title: t("filters.app"),
       icon: <AppsIcon sx={{ fontSize: 18 }} />,
-      count: filters.appIds.length,
+      count: filters.appIds.length + (filters.noApp ? 1 : 0),
       options: appOptions,
     },
     company: {

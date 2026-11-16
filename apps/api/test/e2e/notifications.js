@@ -49,9 +49,9 @@ async function login(email) {
 }
 
 (async () => {
-  const adminToken = await login("aom@gmail.com"); // id 1
+  const adminToken = await login("arthitayakha@gmail.com"); // id 1
   const assigneeToken = await login("programmer@gmail.com"); // id 13
-  const reporterToken = await login("arthitaya@gmail.com"); // id 2
+  const reporterToken = await login("a@gmail.com"); // id 2 (customer)
   check("logins", !!adminToken && !!assigneeToken && !!reporterToken);
   if (!adminToken || !assigneeToken || !reporterToken) {
     console.log(`\n${failures} FAILURES`);
@@ -78,6 +78,11 @@ async function login(email) {
   check("GET /notifications shape",
     Array.isArray(before.body?.data) && typeof before.body?.unreadCount === "number",
     `rows=${before.body?.data?.length} unread=${before.body?.unreadCount}`);
+  // priority rides on every row — one of the three levels, never missing
+  const priorities = [...new Set((before.body?.data ?? []).map((r) => r.priority))];
+  check("every row carries a priority (high|medium|low)",
+    priorities.every((p) => ["high", "medium", "low"].includes(p)),
+    `priorities=${JSON.stringify(priorities)}`);
   const baseUnread = before.body.unreadCount;
 
   // ── the badge endpoint: a bare number, matching the list's own total ──
@@ -223,17 +228,25 @@ async function login(email) {
     `actor=${fanoutCreated?.actorName}`);
 
   // a non-admin move (the assignee drags the card) notifies the admins too —
-  // the actor (assignee) is skipped for themselves but the admins still get it
-  const secondStatus = st[1] ?? st[0];
+  // the actor (assignee) is skipped for themselves but the admins still get it.
+  // Only the MILESTONE columns still fan out to admins on a move (status 1
+  // unassigned → needs_assignment, status 4 → completed); a routine drag to
+  // รอดำเนินการ reaches the reporter + assignee only, so the card is dragged
+  // to เสร็จสิ้น here to keep proving the admin fan-out.
+  const doneStatus = st.find((s) => s.id === 4) ?? st[st.length - 1];
+  // the task-type gate (issue.require_task_type) freezes untyped cards sitting
+  // in รอรับเรื่อง (status 1) — stamp a type the way the admin would before
+  // dragging, so the move below tests the fan-out, not the guard
+  await db.query("UPDATE issues SET task_type = 'bug' WHERE id = $1", [unassignedId]);
   const moveRes = await call(`/issues/${unassignedId}/move`, {
     method: "PUT",
     token: assigneeToken,
-    body: { statusId: secondStatus.id },
+    body: { statusId: doneStatus.id },
   });
   check("non-admin move succeeds", moveRes.status < 300, `status=${moveRes.status}`);
   const adminAfterMove = await listFor(adminToken);
   const fanoutMoved = (adminAfterMove?.data ?? []).find(
-    (n) => n.action === "moved" && n.target === "E2E unassigned card",
+    (n) => n.action === "completed" && n.target === "E2E unassigned card",
   );
   check("move notifies the admin (fan-out)", !!fanoutMoved, `actor=${fanoutMoved?.actorName}`);
 

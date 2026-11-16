@@ -37,15 +37,21 @@ export default function StatusDonut({
   selectedId,
   onSelect,
   scope,
+  companyIds,
 }: {
-  /** Every board column, zero-filled, in board order — never narrowed. */
+  /** Every board column, zero-filled, in board order — never narrowed by `statusId`. */
   rows: DashboardCountRow[];
-  /** The page-wide total; the cross-filter does not touch it. */
+  /**
+   * The page-wide total — the status cross-filter never touches it, but the
+   * company filter does (it is a data scope, see the page).
+   */
   total: number;
   selectedId: number | null;
   /** Toggle — picking the selected status again clears the cross-filter. */
   onSelect: (row: DashboardCountRow) => void;
   scope: DashboardScope;
+  /** The page's company filter — carried into /reports and the drill list. */
+  companyIds?: number[];
 }) {
   const theme = useTheme();
   const t = useTranslations("Dashboard");
@@ -97,10 +103,11 @@ export default function StatusDonut({
               size="small"
               variant="outlined"
               onClick={() => {
-                // to /reports with this status; the dialog only stays for
-                // seats without report.view, who cannot open the reports page
+                // to /reports with this status (+ the page's company filter as
+                // context); the dialog only stays for seats without
+                // report.view, who cannot open the reports page
                 if (can("report.view") && selected.id != null) {
-                  router.push(reportsHref({ status: selected.id }));
+                  router.push(reportsHref({ status: selected.id, company: companyIds }));
                   return;
                 }
                 setListFor(selected);
@@ -143,6 +150,7 @@ export default function StatusDonut({
           count={listFor.count}
           source={{ kind: "dimension", dim: "status", id: listFor.id }}
           scope={scope}
+          companyIds={companyIds}
           onClose={() => setListFor(null)}
         />
       )}

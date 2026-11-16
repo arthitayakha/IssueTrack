@@ -1,0 +1,165 @@
+import { Injectable, Logger } from "@nestjs/common";
+import { Cron } from "@nestjs/schedule";
+import { InjectRepository } from "@nestjs/typeorm";
+import { MoreThan, Repository } from "typeorm";
+import {
+  Notification,
+  type NotificationPriority,
+} from "./entities/notification.entity";
+import { User } from "../auth/entities/user.entity";
+import { MailService } from "../mail/mail.service";
+
+const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
+
+/**
+ * หน้าต่างเตือนซ้ำของแต่ละระดับ — **นับจากอายุแถวดั้งเดิม** (ไม่มีตาราง state):
+ * แถวอายุ < window จะถูกเตือนทุกครั้งที่ cron รัน ดังนั้นหนึ่งแถวจะได้
+ * digest row พอดี N วัน (cron ห่างกัน 24h → แถวแรกที่เจอ age < window เสมอ):
+ * สูง 7 วัน · กลาง 3 วัน · ต่ำ 1 วัน (เด้งเช้าวันรุ่งขึ้นครั้งเดียว) ·
+ * อ่าน/ล้างกล่อง = แถวหาย = เงียบเอง (อ่าน = ลบ อยู่แล้ว)
+ */
+const REMINDER_WINDOWS: Record<NotificationPriority, number> = {
+  high: 7 * DAY_MS,
+  medium: 3 * DAY_MS,
+  low: DAY_MS,
+};
+
+/** ไม่ให้วนซ้ำถ้า cron รัน 2 รอบ (สตาร์ทซ้ำ/หลาย instance) — 20h < ช่วงห่าง 24h */
+const DIGEST_DEDUP_MS = 20 * HOUR_MS;
+
+/**
+ * ไม่รู้จักค่า (ข้อมูลเก่า/เพี้ยน) → เงียบสุด = ปรับเป็นต่ำ — fail toward quiet
+ */
+function normalizePriority(value: string): NotificationPriority {
+  return value === "high" || value === "medium" ? value : "low";
+}
+
+/**
+ * **เสียงเตือนรายวัน 09:00** — สร้าง digest row + (เฉพาะวันแรก) อีเมล ให้ผู้ใช้
+ * ที่ยังมีแถวยังไม่อ่านภายในหน้าต่างของระดับนั้น
+ *
+ * กติกาที่ควรรู้:
+ * - **แถวเดียวต่อผู้ใช้ต่อวัน**: `type: "daily_digest"`, `priority` = ระดับสูงสุดที่
+ *   ยัง active, `context` แยกจำนวนตามระดับ (`สูง 3 · กลาง 2`), link `/notifications`
+ * - **ไม่นับตัวเอง**: แถว digest ถูกกันออกจากการคำนวณ → ไม่มีทางทบเพิ่มเอง
+ * - **อีเมลเฉพาะสูงวันแรกเท่านั้น** (แถวสูงอายุ < 24 ชม.) — หนึ่ง episode ได้เมล
+ *   สูงสุด 1 ครั้ง · ถ้า API ดับตอนวันแรก =  episode นั้นเงียบ (fail-open) แต่แถว
+ *   in-app ยังทำงานวันถัดไป — เหมือนข้อตกลง "เมลครั้งเดียวต่อ episode"
+ * - **สวิตซ์ต่อผู้ใช้**: query ลง `users.daily_reminder_enabled = true` → ปิดแล้วคนนั้น
+ *   ไม่ได้ทั้งแถวเตือนและอีเมล การแจ้งเตือนปกติไม่เกี่ยว
+ * - fail-open ทั้งหมด: try/catch + `logger.warn` — sweep ห้ามเอา API ล้ม
+ *   (แพตเทิร์นเดียวกับ `stale-cards.service` / `app-expiry.service`)
+ */
+@Injectable()
+export class DailyReminderService {
+  private readonly logger = new Logger(DailyReminderService.name);
+
+  constructor(
+    @InjectRepository(Notification)
+    private readonly notifications: Repository<Notification>,
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
+    private readonly mail: MailService,
+  ) {}
+
+  /** Every day, once — the window only moves when the calendar does. */
+  @Cron("0 9 * * *", { name: "daily-notification-reminder", timeZone: "Asia/Bangkok" })
+  async remind(): Promise<void> {
+    try {
+      const users = await this.users.find({
+        where: { isActive: true, dailyReminderEnabled: true },
+      });
+      const now = Date.now();
+      for (const user of users) await this.remindUser(user, now);
+    } catch (error) {
+      this.logger.warn(`daily reminder failed: ${(error as Error).message}`);
+    }
+  }
+
+  /** One user's digest — own try/catch so a bad row never stops the others. */
+  private async remindUser(user: User, now: number): Promise<void> {
+    try {
+      // อะไรที่แก่กว่าหน้าต่างใหญ่สุด (7 วัน) ไม่มีทาง active แล้ว — ตัดออกตั้งแต่ query
+      const rows = await this.notifications.find({
+        where: {
+          userId: user.id,
+          createdAt: MoreThan(new Date(now - REMINDER_WINDOWS.high)),
+        },
+        order: { createdAt: "DESC" },
+      });
+      if (rows.length === 0) return;
+      // digest ของวันนี้มีแล้ว (รันซ้ำ) → อย่าโพสต์ซ้ำ
+      const postedToday = rows.some(
+        (row) => row.type === "daily_digest" && now - row.createdAt.getTime() < DIGEST_DEDUP_MS,
+      );
+      if (postedToday) return;
+
+      const active = rows.filter(
+        (row) =>
+          row.type !== "daily_digest" &&
+          now - row.createdAt.getTime() < REMINDER_WINDOWS[normalizePriority(row.priority)],
+      );
+      if (active.length === 0) return;
+
+      // นับตามระดับ — priority ใน DB ถูก CHECK คุมแล้ว แต่ normalize กันข้อมูลเก่า
+      const counts: Record<NotificationPriority, number> = { high: 0, medium: 0, low: 0 };
+      for (const row of active) counts[normalizePriority(row.priority)] += 1;
+      const top: NotificationPriority =
+        counts.high > 0 ? "high" : counts.medium > 0 ? "medium" : "low";
+      const total = active.length;
+      // แถวเตือนตัวเองก็สูง (ถ้ามีของสูงค้าง) — ให้ลอยขึ้นบนสุดเหมือนของจริง
+      const context = (
+        [
+          counts.high > 0 ? `สูง ${counts.high}` : null,
+          counts.medium > 0 ? `กลาง ${counts.medium}` : null,
+          counts.low > 0 ? `ต่ำ ${counts.low}` : null,
+        ].filter(Boolean) as string[]
+      ).join(" · ");
+
+      await this.notifications.save(
+        this.notifications.create({
+          userId: user.id,
+          issueId: null,
+          // system sender — ไม่มีคนกระทำ ไม่มีใครถูกข้าม
+          actorId: null,
+          type: "daily_digest",
+          priority: top,
+          title: `${total} รายการยังไม่อ่าน`,
+          context,
+          link: "/notifications",
+        }),
+      );
+
+      // อีเมล = เฉพาะตอนมีแถว "สูง" ที่ยังอยู่ในวันแรก (< 24 ชม.) — ครั้งเดียวต่อ episode
+      const freshHigh = active.some(
+        (row) =>
+          normalizePriority(row.priority) === "high" &&
+          now - row.createdAt.getTime() < DAY_MS,
+      );
+      if (!freshHigh || !user.email) return;
+      const titles = active
+        .filter((row) => normalizePriority(row.priority) === "high")
+        .slice(0, 10)
+        .map((row) => row.title);
+      void this.mail
+        .sendDailyReminder({
+          to: user.email,
+          name: user.name,
+          count: counts.high,
+          titles,
+          url: `${this.webBase()}/notifications`,
+        })
+        .catch((error) => this.logger.warn(`daily reminder mail failed: ${(error as Error).message}`));
+    } catch (error) {
+      this.logger.warn(
+        `daily reminder for user #${user.id} failed: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  /** Absolute base for links inside e-mails — same env the other mails use. */
+  private webBase(): string {
+    return (process.env.APP_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+  }
+}

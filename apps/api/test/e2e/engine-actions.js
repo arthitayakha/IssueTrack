@@ -58,7 +58,7 @@ const db = connectDb();
   cardsBefore = await countTestCards(db);
   const login = await call("/auth/login", {
     method: "POST",
-    body: { email: "aom@gmail.com", password: "123456" },
+    body: { email: "arthitayakha@gmail.com", password: "123456" },
     auth: false,
   });
   token = login.body?.token ?? login.body?.accessToken ?? login.body?.access_token;

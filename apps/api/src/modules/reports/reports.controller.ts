@@ -30,6 +30,11 @@ function parseFilters(query: Record<string, string | undefined>): ReportIssueFil
     statuses: parseIdList(query.statuses),
     priorityIds: parseIdList(query.priorityIds),
     appIds: parseIdList(query.appIds),
+    // "ไม่มีแอป" / "ไม่มีหมวดหมู่" — OR-part of the same dimension (see
+    // ReportsService.applyIssueDims); mirrors GET /issues so one filter set
+    // drives every report view the same way
+    noCategory: query.noCategory === "1" || query.noCategory === "true",
+    noApp: query.noApp === "1" || query.noApp === "true",
     companyIds: parseIdList(query.companyIds),
     taskTypes: parseTaskTypes(query.taskTypes),
   };

@@ -17,6 +17,8 @@ export function getParamLabel(t: TranslateFn, key: string): string {
       return t("message");
     case "targetStatus":
       return t("paramTargetStatus");
+    case "status":
+      return t("paramStatus");
     case "position":
       return t("paramPosition");
     case "priority":

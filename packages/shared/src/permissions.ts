@@ -225,6 +225,11 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "board.column.update",
     "board.column.delete",
     "time.actual.view",
+    // หน้า `/systems` ของลูกค้า (อ่านอย่างเดียว — เห็นเฉพาะคู่แอป×บริษัทของ
+    // ตัวเอง, ดู `apps/viewer-scope.ts`): ดูวันที่หมดอายุ + ชั่วโมง MA คงเหลือ
+    // · **จงใจไม่**ใส่ `system.create/update/delete` → ปุ่มเพิ่ม/แก้/ลบ/ต่ออายุ/
+    // ซื้อชม. ทุกปุ่มซ่อนอยู่แล้ว และทุก write route คืน 403
+    "system.view",
   ],
 };
 

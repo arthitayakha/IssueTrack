@@ -1,7 +1,6 @@
 "use client";
 
 import type {
-  DashboardCountRow,
   DashboardPeriod,
   DashboardRange,
   DashboardScope,
@@ -17,7 +16,7 @@ export type DashboardDim = "app" | "category" | "status";
 /**
  * Dashboard data layer — the `/` page's single round trip.
  *
- *   GET /dashboard/summary?scope=...&period=...&from=...&to=...&statusId=...
+ *   GET /dashboard/summary?scope=...&period=...&from=...&to=...&statusId=...&companyIds=...
  *
  * The server returns aggregates only (counts / trend buckets / workload) and
  * downgrades `scope=all` to `own` when the caller lacks
@@ -28,34 +27,42 @@ export type DashboardDim = "app" | "category" | "status";
  * `statusId` is the status cross-filter set by clicking the status ring: it
  * narrows every aggregate except the ring's context pair (`statuses` +
  * `total`), and the echoed `summary.statusId` is what the server really used.
+ *
+ * `companyIds` is the company filter (comma list → `companyIds=1,2`). Unlike
+ * `statusId` it is a DATA SCOPE: it narrows everything including `statuses`
+ * + `total`, following the same reporter-company rule as the board and the
+ * reports page. Echoed back as `summary.companyIds`.
  */
 export async function fetchDashboardSummary(
   scope: DashboardScope,
   period: DashboardPeriod,
   range: DashboardRange = {},
   statusId?: number | null,
+  companyIds?: number[],
 ): Promise<DashboardSummary> {
   const params = new URLSearchParams({ scope, period });
   if (range.from) params.set("from", range.from);
   if (range.to) params.set("to", range.to);
   if (statusId != null) params.set("statusId", String(statusId));
+  if (companyIds && companyIds.length > 0) params.set("companyIds", companyIds.join(","));
   return apiFetch<DashboardSummary>(`/dashboard/summary?${params}`, {}, getToken());
 }
 
 /**
  * The issues behind one trend bar:
  *
- *   GET /dashboard/trend-issues?bucket=yyyy-mm-dd&period=...&scope=...&statusId=...
+ *   GET /dashboard/trend-issues?bucket=yyyy-mm-dd&period=...&scope=...&statusId=...&companyIds=...
  *
  * Same scope + the same Bangkok `date_trunc` as the count on the bar, so the
  * list always matches the number (capped server-side at 200 rows). `statusId`
- * keeps it matching while the page is cross-filtered.
+ * and `companyIds` keep it matching while the page is filtered.
  */
 export async function fetchTrendIssues(input: {
   bucket: string;
   period: DashboardPeriod;
   scope: DashboardScope;
   statusId?: number | null;
+  companyIds?: number[];
 }): Promise<DashboardTrendIssue[]> {
   const params = new URLSearchParams({
     bucket: input.bucket,
@@ -63,43 +70,20 @@ export async function fetchTrendIssues(input: {
     scope: input.scope,
   });
   if (input.statusId != null) params.set("statusId", String(input.statusId));
+  if (input.companyIds?.length) params.set("companyIds", input.companyIds.join(","));
   return apiFetch<DashboardTrendIssue[]>(`/dashboard/trend-issues?${params}`, {}, getToken());
-}
-
-/**
- * Level-2 donut counts — the categories that still have cards inside the app
- * the user clicked:
- *
- *   GET /dashboard/drilldown?dim=category&app=<id>&scope=...&statusId=...
- *
- * Same scope as the summary's top-level ring, so the child never disagrees
- * with the parent slice — and the same status cross-filter, for the same
- * reason. `dim` stays app|category here: a status has no level-2 ring.
- */
-export async function fetchDrilldown(input: {
-  dim: "app" | "category";
-  app: number;
-  scope: DashboardScope;
-  statusId?: number | null;
-}): Promise<DashboardCountRow[]> {
-  const params = new URLSearchParams({
-    dim: input.dim,
-    app: String(input.app),
-    scope: input.scope,
-  });
-  if (input.statusId != null) params.set("statusId", String(input.statusId));
-  return apiFetch<DashboardCountRow[]>(`/dashboard/drilldown?${params}`, {}, getToken());
 }
 
 /**
  * The issues behind one donut slice:
  *
- *   GET /dashboard/dimension-issues?dim=category&id=<id>&app=<id>&scope=...&statusId=...
+ *   GET /dashboard/dimension-issues?dim=category&id=<id>&app=<id>&scope=...&statusId=...&companyIds=...
  *
- * `app` is only sent for a level-2 slice (a category inside a drilled app), so
- * the list adds up to the number printed on that slice (capped at 200 rows).
- * `statusId` rides along for the same reason — except when `dim` is itself the
- * status filter, where it would only ever restate the same constraint.
+ * `app` narrows the list to one app's worth of rows, so the list adds up to
+ * the number printed on that slice (capped at 200 rows). `statusId` rides along
+ * for the same reason — except when `dim` is itself the status filter, where it
+ * would only ever restate the same constraint — and `companyIds` rides along
+ * always, so the list keeps matching the filtered slice it came from.
  */
 export async function fetchDimensionIssues(input: {
   dim: DashboardDim;
@@ -108,6 +92,7 @@ export async function fetchDimensionIssues(input: {
   app?: number;
   scope: DashboardScope;
   statusId?: number | null;
+  companyIds?: number[];
 }): Promise<DashboardTrendIssue[]> {
   const params = new URLSearchParams({
     dim: input.dim,
@@ -118,5 +103,6 @@ export async function fetchDimensionIssues(input: {
   if (input.statusId != null && input.dim !== "status") {
     params.set("statusId", String(input.statusId));
   }
+  if (input.companyIds?.length) params.set("companyIds", input.companyIds.join(","));
   return apiFetch<DashboardTrendIssue[]>(`/dashboard/dimension-issues?${params}`, {}, getToken());
 }

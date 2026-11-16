@@ -4,7 +4,6 @@ import { cloneElement, Fragment, isValidElement } from "react";
 import {
   Box,
   Button,
-  Chip,
   CircularProgress,
   Table,
   TableBody,
@@ -800,10 +799,10 @@ export function ReportsTable({
       case "app":
         return <DataTableCell>{r.appName}</DataTableCell>;
       /**
-       * **ประเภทของแถวนั้น** — chip แบบเดียวกับแท็บ "ประวัติการต่ออายุ" ใน
-       * ป๊อปอัพ `/systems` (`system-detail-dialog.tsx`): ซื้อชั่วโมง = info,
-       * ต่ออายุ/เพิ่มรายการ = default · ค่ามาจาก `app_companies.kind` ·
-       * แอปยังไม่ผูกบริษัท (`kind == null`) → `—` ไม่เดา
+       * **ประเภทของแถวนั้น** — **ข้อความธรรมดา** (ผู้ใช้: "ประเภทต้องไม่เป็นชิปดิ")
+       * ไม่ใช่ chip เหมือนแท็บ "ประวัติการต่ออายุ" ในป๊อปอัพ `/systems` ·
+       * คำ/ค่ามาจาก `app_companies.kind` เหมือนเดิม (`buy` = ซื้อชั่วโมง,
+       * `renew` = ต่ออายุ/เพิ่มรายการ) · แอปยังไม่ผูกบริษัท (`kind == null`) → `—`
        */
       case "kind":
         if (r.kind == null) {
@@ -817,12 +816,9 @@ export function ReportsTable({
         }
         return (
           <DataTableCell sx={{ whiteSpace: "nowrap" }}>
-            <Chip
-              label={r.kind === "buy" ? st("kindBuy") : st("renew")}
-              color={r.kind === "buy" ? "info" : "default"}
-              size="small"
-              variant="outlined"
-            />
+            <Typography variant="body2">
+              {r.kind === "buy" ? st("kindBuy") : st("renew")}
+            </Typography>
           </DataTableCell>
         );
       case "startedAt":
@@ -899,17 +895,6 @@ export function ReportsTable({
     if (r.recordId == null || deductions.expandedRecordId !== r.recordId) return null;
     const detail = deductions.detail;
 
-    const head = (
-      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-        {st("tabDeductions")}
-        {detail.status === "ready"
-          ? ` · ${st("deductionsCount", { n: detail.data.count })} · ${st("deductionsUsed", {
-              n: detail.data.periodUsedHours,
-            })}`
-          : ""}
-      </Typography>
-    );
-
     const innerTable = (data: PeriodUsage) => (
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
         <Table size="small">
@@ -973,8 +958,6 @@ export function ReportsTable({
     return (
       <DataTableRow key="deduction-detail">
         <DataTableCell colSpan={visible.length} sx={{ py: 2, bgcolor: "background.default" }}>
-          {head}
-
           {detail.status === "loading" ? (
             <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 0.5 }}>
               <CircularProgress size={18} />

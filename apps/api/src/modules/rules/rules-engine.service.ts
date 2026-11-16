@@ -44,6 +44,14 @@ export interface StatusGates {
   resolution: Set<number>;
   /** statuses frozen by an active `issue.lock` rule — cards there can't move */
   locked: Set<number>;
+  /**
+   * statuses an active `issue.require_task_type` rule names (its
+   * `actionConfig.status`) — **every** one of them, never filtered by the
+   * `statusIds` asked for: an empty set must keep meaning "no rule active"
+   * so `canEditTaskType` can fail open, while a rule naming ANOTHER status
+   * must still read as "a rule exists" (and therefore locks the field).
+   */
+  taskType: Set<number>;
 }
 
 /**
@@ -149,6 +157,7 @@ export class RulesEngineService {
       analysis: new Set<number>(),
       resolution: new Set<number>(),
       locked: new Set<number>(),
+      taskType: new Set<number>(),
     };
     const candidates = [...new Set(statusIds.filter((id): id is number => id != null))];
     if (candidates.length === 0) return gates;
@@ -161,6 +170,15 @@ export class RulesEngineService {
     };
     const rules = await this.rules.find({ where: { isActive: true } });
     for (const rule of rules) {
+      // the task-type gate names its status in `actionConfig`, not in the
+      // trigger's conditions — the SAME source `IssuesService.move()` and
+      // move-policy read — and the id is collected unfiltered (see the field's
+      // doc) so "no rule" and "a rule on another status" stay distinguishable
+      if (rule.actionKey === "issue.require_task_type") {
+        const gateId = this.taskTypeGateStatus(rule);
+        if (gateId != null) gates.taskType.add(gateId);
+        continue;
+      }
       const target = buckets[rule.actionKey];
       if (!target) continue; // actions without a status gate drive no field
       const statusConditions = (rule.conditions ?? []).filter((c) => c.field === "to_status");
@@ -225,6 +243,47 @@ export class RulesEngineService {
       this.logger.error(`move guard lookup failed: ${message}`);
       return false;
     }
+  }
+
+  /**
+   * Which statuses an active `issue.require_task_type` rule gates — the
+   * `actionConfig.status` of every such rule, read fresh like
+   * `isStepOnlyMoveActive()` (pause/edit applies on the next drag). A card
+   * sitting in one of these statuses whose `task_type` is still NULL cannot
+   * leave it (`IssuesService.move()` refuses before writing); the board gets
+   * the same set through move-policy so its drop preview agrees. A rule with
+   * a missing/garbage status is skipped and an unreadable rules table returns
+   * an empty set — fail open, the same stance as the step-only lookup: a
+   * hiccup must never wedge every card in place.
+   */
+  async taskTypeGateStatuses(): Promise<Set<number>> {
+    try {
+      const rules = await this.rules.find({
+        where: { actionKey: "issue.require_task_type", isActive: true },
+      });
+      const gated = new Set<number>();
+      for (const rule of rules) {
+        const gateId = this.taskTypeGateStatus(rule);
+        if (gateId != null) gated.add(gateId);
+      }
+      return gated;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`task-type gate lookup failed: ${message}`);
+      return new Set();
+    }
+  }
+
+  /**
+   * The status one `issue.require_task_type` rule gates — its
+   * `actionConfig.status`, an integer id, or null when it is missing/garbage.
+   * The single parser behind BOTH readers (the field lock in `statusGates()`
+   * and the move guard in `taskTypeGateStatuses()`), so the two can never
+   * drift apart; an unusable value is skipped rather than gating everything.
+   */
+  private taskTypeGateStatus(rule: Rule): number | null {
+    const id = Number(rule.actionConfig?.status);
+    return Number.isInteger(id) && id > 0 ? id : null;
   }
 
   /**
@@ -349,6 +408,10 @@ export class RulesEngineService {
         // not an event action — `IssuesService.move()` consults it before the
         // write via isStepOnlyMoveActive(); returning early here keeps a rule
         // with this key harmless when the engine runs after a real move
+        return { applied: false, reason: "checked before the move, not on it" };
+      case "issue.require_task_type":
+        // same deal as the step-only guard: the status gate is read before the
+        // write via taskTypeGateStatuses(), so nothing runs on the event itself
         return { applied: false, reason: "checked before the move, not on it" };
       case "issue.notify_stale":
         // policy, not an event: the daily 09:00 sweep (stale-cards.service)

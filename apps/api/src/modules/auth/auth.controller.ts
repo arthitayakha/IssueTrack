@@ -22,6 +22,7 @@ import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { UpdateProfileDto } from "./dto/update-profile.dto";
 import { ChangeEmailDto } from "./dto/change-email.dto";
 import { ChangePasswordDto } from "./dto/change-password.dto";
+import { SetDailyReminderDto } from "./dto/set-daily-reminder.dto";
 import { ResetOwnPasswordDto } from "./dto/reset-own-password.dto";
 import { RolesGuard } from "./roles.guard";
 import { CurrentUser } from "./current-user.decorator";
@@ -95,6 +96,17 @@ export class AuthController {
   @Patch("profile/password")
   changePassword(@CurrentUser() user: User, @Body() dto: ChangePasswordDto) {
     return this.auth.changePassword(user.id, dto.currentPassword, dto.newPassword);
+  }
+
+  /**
+   * Self-service daily-reminder switch — `false` silences the 09:00 digest rows
+   * and the day-1 e-mail for THIS user only (normal notifications never touch
+   * it). No `@Permissions`, like every other `/auth/profile*` route: it only
+   * ever changes the caller's own row.
+   */
+  @Patch("profile/reminder")
+  setDailyReminder(@CurrentUser() user: User, @Body() dto: SetDailyReminderDto) {
+    return this.auth.setDailyReminder(user.id, dto.enabled);
   }
 
   /**

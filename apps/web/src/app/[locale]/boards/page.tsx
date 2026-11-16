@@ -112,6 +112,7 @@ import FlagIcon from "@mui/icons-material/Flag";
 import LabelIcon from "@mui/icons-material/Label";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import TimerOutlinedIcon from "@mui/icons-material/TimerOutlined";
+import SwapVertIcon from "@mui/icons-material/SwapVert";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { usePermissions } from "@/lib/permissions";
@@ -183,6 +184,9 @@ const PRIORITY_COLORS: Record<string, "error" | "warning" | "success" | "default
   medium: "warning",
   low: "success",
 };
+
+/** localStorage key for the board's card order toggle (see `cardOrder`). */
+const BOARD_CARD_ORDER_KEY = "kanban-board-card-order";
 
 /**
  * Priority wording lives in `messages/{th,en}.json` under `Boards.priorityLabel.*`
@@ -453,6 +457,7 @@ function TrelloCardContent({
   nowMs,
   showTime = true,
   canUnlockIssue = false,
+  staleDays = null,
   onUnlock,
 }: {
   issue: BoardIssue;
@@ -465,6 +470,12 @@ function TrelloCardContent({
   showTime?: boolean;
   /** May the viewer unlock a rule-locked card from the bottom bar? */
   canUnlockIssue?: boolean;
+  /**
+   * Days past a stale rule's limit — renders the always-visible
+   * "ค้าง N วัน" chip (the red border's owner passes it down; the
+   * drag overlay can omit it). Null = no chip, same fail-open as the border.
+   */
+  staleDays?: number | null;
   onUnlock?: (issue: BoardIssue) => void;
 }) {
   const t = useTranslations("Boards");
@@ -481,14 +492,25 @@ function TrelloCardContent({
   // bottom bar: lock + tracked time — hidden when the card has neither
   const timeVisible = showTime && (isRunning || totalSeconds > 0);
   const showBottomBar = Boolean(issue.isLocked || timeVisible);
-  // Trello-style label strips on top of the card (they replaced the chips)
-  const labelBars = (issue.labels ?? []).slice(0, 4);
+  // Trello-style label strips on top of the card (they replaced the chips).
+  // Only the first 4 render; a 5th+ becomes ONE "+N" stub so the card still
+  // says there is more (hover lists every hidden name) instead of dropping
+  // them silently. The detail popup shows all labels uncapped.
+  const allLabels = issue.labels ?? [];
+  const labelBars = allLabels.slice(0, 4);
+  const hiddenLabels = allLabels.slice(4);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
-      {/* label colour strips — Trello style, they replace the old label chips */}
-      {labelBars.length > 0 && (
-        <Box sx={{ display: "flex", gap: 0.5, mb: 0.75 }}>
+      {/* label colour strips — Trello style, they replace the old label chips.
+          The row also carries the stale notice: plain red text, NO background
+          (a filled band read as a second card edge), pushed to the RIGHT of
+          the stubs with `ml: "auto"` so the labels keep the left edge. It
+          renders when EITHER half exists — a stale card with no labels still
+          says "ค้าง N วัน" (alone, on the right), a labelled card that is not
+          stale shows only its stubs, exactly as before. */}
+      {(staleDays != null || labelBars.length > 0) && (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mb: 0.75 }}>
           {labelBars.map((lbl) => (
             <Box
               key={lbl.id}
@@ -503,6 +525,42 @@ function TrelloCardContent({
               }}
             />
           ))}
+          {hiddenLabels.length > 0 && (
+            <Box
+              title={hiddenLabels.map((l) => l.name).join(", ")}
+              sx={{
+                flex: "0 0 auto",
+                minWidth: 28,
+                height: 14,
+                px: 0.4,
+                borderRadius: "4px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                bgcolor: "action.selected",
+                color: "text.secondary",
+                fontSize: "0.575rem",
+                fontWeight: 700,
+                lineHeight: 1,
+              }}
+            >
+              +{hiddenLabels.length}
+            </Box>
+          )}
+          {staleDays != null && (
+            <Typography
+              sx={{
+                ml: "auto",
+                color: "error.main",
+                fontSize: "0.7rem",
+                fontWeight: 700,
+                lineHeight: 1,
+                flexShrink: 0,
+              }}
+            >
+              {t("staleBadge", { days: staleDays })}
+            </Typography>
+          )}
         </Box>
       )}
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.25 }}>
@@ -734,6 +792,7 @@ function TrelloCard({
         nowMs={nowMs}
         showTime={showTime}
         canUnlockIssue={canUnlockIssue}
+        staleDays={staleDays}
         onUnlock={onUnlock}
         actions={
           (canEdit || canDelete || canUnlockIssue) ? (
@@ -813,6 +872,7 @@ function KanbanColumn({
   timers,
   showTime,
   staleRules,
+  order,
   onOpenIssue,
   onEditIssue,
   onDeleteIssue,
@@ -837,6 +897,12 @@ function KanbanColumn({
   showTime: boolean;
   /** Active stale rules — each card paints its red border from these. */
   staleRules: StaleRule[];
+  /**
+   * The column order direction, mirroring `?sortOrder=` exactly: `desc` =
+   * newest entry on top, `asc` = longest-sitting on top. Tie-breaks and
+   * NULLS LAST never flip — the server keeps them fixed too.
+   */
+  order: "desc" | "asc";
   onOpenIssue: (issue: BoardIssue) => void;
   onEditIssue: (issue: BoardIssue) => void;
   onDeleteIssue: (issue: BoardIssue) => void;
@@ -851,9 +917,26 @@ function KanbanColumn({
   const theme = useTheme();
 
   const color = resolveStatusColor(theme, status.color, status.name);
-  // Match the API ordering (created_at DESC, id DESC) so the newest card is
-  // always first and "load more" appends older cards underneath.
+  // Mirror the API ordering exactly (`?sortBy=statusChangedAt&sortOrder=<order>`
+  // → status_changed_at <dir> NULLS LAST, created_at DESC, id DESC): `desc`
+  // (default) puts a card that was just dragged in on TOP of its new column,
+  // `asc` puts the longest-sitting card on top (the stale rules' targets).
+  // Only the primary direction flips — the server's tie-breaks (createdAt,
+  // id) and NULLS LAST stay fixed in both directions, so "load more" appends
+  // pages consistently either way. A missing stamp (a rare backfill gap) sorts
+  // last, matching the server's NULLS LAST.
+  const enteredAt = (issue: BoardIssue) =>
+    issue.statusChangedAt ? new Date(issue.statusChangedAt).getTime() : null;
   const visibleIssues = [...items].sort((a, b) => {
+    const ea = enteredAt(a);
+    const eb = enteredAt(b);
+    if (ea !== eb) {
+      // null (never entered) loses to every real timestamp → bottom of column
+      if (ea === null) return 1;
+      if (eb === null) return -1;
+      return order === "asc" ? ea - eb : eb - ea;
+    }
+    // tie-breaks mirror the server's fixed addOrderBy: always newest-first
     const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     return diff !== 0 ? diff : b.id - a.id;
   });
@@ -1760,6 +1843,14 @@ function IssueDetailDialog({
   const status = current?.statusId ? statuses.find((s) => s.id === current.statusId) : null;
   const statusName = status ? (status.customName ?? status.name) : null;
   const categoryName = current ? getCategoryLabel(current) : "—";
+  /**
+   * Empty value → "ยังไม่ระบุ" (key `detail.notSet`), never a bare "—": an
+   * unfilled field should read as "not filled in yet", the same word the
+   * task-type field already uses. `getCategoryLabel()` answers "—" for a card
+   * with no category, so that placeholder is folded in here too — the helper
+   * itself stays in this popup (the table keeps its "—" columns on purpose).
+   */
+  const emptyLabel = (v?: string | null) => (v && v !== "—" ? v : t("detail.notSet"));
   const draftPriority = priorities.find((p) => p.id === draftPriorityId) ?? null;
   const draftPriorityName = draftPriority?.name ?? null;
   // Viewers never load that list (the fetch above is gated by canSetPriority),
@@ -1787,6 +1878,9 @@ function IssueDetailDialog({
   // active rule opens them for (the API sends that answer as canEdit*)
   const canFillAnalysis = canEditIssue && Boolean(current?.canEditAnalysis);
   const canFillResolution = canEditIssue && Boolean(current?.canEditResolution);
+  // the ประเภทงาน lock (issue.require_task_type) — false only when the SERVER
+  // says so; an absent flag (older API) stays editable, fail open
+  const canFillTaskType = canEditIssue && current?.canEditTaskType !== false;
 
   return (
     <Dialog
@@ -1897,8 +1991,8 @@ function IssueDetailDialog({
               <Typography variant="caption" color="text.secondary" display="block">
                 {t("detail.app")}
               </Typography>
-              <Typography variant="body2" sx={{ mt: 0.5 }}>
-                {current?.appName ?? "—"}
+              <Typography variant="body2" sx={{ mt: 0.5, color: current?.appName ? "text.primary" : "text.secondary" }}>
+                {emptyLabel(current?.appName)}
               </Typography>
             </Grid>
             {/* บริษัทของผู้แจ้ง — read-only; มาจาก `customerCompanyName` ใน
@@ -1914,7 +2008,7 @@ function IssueDetailDialog({
                   color: current?.customerCompanyName ? "text.primary" : "text.secondary",
                 }}
               >
-                {current?.customerCompanyName ?? "—"}
+                {emptyLabel(current?.customerCompanyName)}
               </Typography>
             </Grid>
             <Grid item xs={12} sm={4}>
@@ -1925,15 +2019,18 @@ function IssueDetailDialog({
                 variant="body2"
                 sx={{ mt: 0.5, color: statusName ? "text.primary" : "text.secondary" }}
               >
-                {statusName ?? "—"}
+                {emptyLabel(statusName)}
               </Typography>
             </Grid>
             <Grid item xs={12} sm={4}>
               <Typography variant="caption" color="text.secondary" display="block">
                 {t("detail.category")}
               </Typography>
-              <Typography variant="body2" sx={{ mt: 0.5 }}>
-                {categoryName}
+              <Typography
+                variant="body2"
+                sx={{ mt: 0.5, color: categoryName !== "—" ? "text.primary" : "text.secondary" }}
+              >
+                {emptyLabel(categoryName)}
               </Typography>
             </Grid>
             <Grid item xs={12} sm={4}>
@@ -1972,14 +2069,16 @@ function IssueDetailDialog({
                   {priorityLabel(t, displayPriorityName)}
                 </Typography>
               ) : (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>—</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {t("detail.notSet")}
+                </Typography>
               )}
             </Grid>
             <Grid item xs={12} sm={4}>
               <Typography variant="caption" color="text.secondary" display="block">
                 {t("detail.taskType")}
               </Typography>
-              {canEditIssue ? (
+              {canFillTaskType ? (
                 <Box
                   onClick={saving ? undefined : (e) => setTaskTypeAnchor(e.currentTarget)}
                   sx={{
@@ -2009,8 +2108,17 @@ function IssueDetailDialog({
                   {t(`taskType.${current.taskType}`)}
                 </Typography>
               ) : (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>—</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {/* locked by the rule before anything was chosen — say
+                      "ยังไม่ระบุ" so it reads as a locked empty field; the bare
+                      "—" stays for users who simply may not edit the card */}
+                  {canEditIssue ? t("detail.taskTypeUnset") : "—"}
+                </Typography>
               )}
+              {/* no caption here on purpose: the locked field just shows its
+                  value (ยังไม่ระบุ / —) — the rule's explanation was dropped
+                  from the popup; key `detail.taskTypeLockedHint` stays in the
+                  messages (keep-unused-keys) should it ever come back */}
             </Grid>
             <Grid item xs={12} sm={4}>
               <Typography variant="caption" color="text.secondary" display="block">
@@ -2029,7 +2137,12 @@ function IssueDetailDialog({
                 >
                   {current?.customerName ? current.customerName.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 15 }} />}
                 </Avatar>
-                <Typography variant="body2">{current?.customerName ?? "—"}</Typography>
+                <Typography
+                  variant="body2"
+                  color={current?.customerName ? "text.primary" : "text.secondary"}
+                >
+                  {emptyLabel(current?.customerName)}
+                </Typography>
               </Box>
             </Grid>
             <Grid item xs={12} sm={4}>
@@ -3350,7 +3463,9 @@ function KanbanView({
   toolbar,
   roleName,
   stepOnlyMoves,
+  taskTypeGateIds,
   staleRules,
+  cardOrder,
 }: {
   statuses: IssueStatus[];
   labels: Label[];
@@ -3376,8 +3491,20 @@ function KanbanView({
   roleName: string;
   /** The step-only drag rule is on — columns must refuse a jump-over drop. */
   stepOnlyMoves: boolean;
+  /**
+   * Statuses where an active `issue.require_task_type` rule demands a
+   * ประเภทงาน before the card may leave — the drop preview refuses an
+   * untyped card sitting in one of them ([] = no rule, fail open).
+   */
+  taskTypeGateIds: number[];
   /** Active stale rules ({statusId, days}) — the red card border. */
   staleRules: StaleRule[];
+  /**
+   * Column card order — `desc` = "entered this column when", newest on top
+   * (the default); `asc` = longest-sitting on top. Drives both the request
+   * (`sortOrder`) and `KanbanColumn`'s comparator, which must mirror it.
+   */
+  cardOrder: "desc" | "asc";
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
@@ -3396,6 +3523,8 @@ function KanbanView({
   const dragTargetStatusId = useRef<number | null>(null);
   /** Last column the step-only rule refused during this drag (drop feedback). */
   const blockedTargetStatusId = useRef<number | null>(null);
+  /** Which guard refused the last preview — step-only or the task-type gate. */
+  const blockedReasonRef = useRef<"step" | "taskType" | null>(null);
   /**
    * The column the dragged card currently sits in *during the preview*.
    * `issueMap` is a render-time snapshot — a fast second `dragOver` reads the
@@ -3453,6 +3582,11 @@ function KanbanView({
             // the board hides stale cards AT THE API — column counts, pages
             // and search all drop them together (the table never sends this)
             hideStaleDone: true,
+            // cards are ordered by "entered this column when" — newest first
+            // (desc) or longest-sitting first (asc), per the toolbar toggle.
+            // `cardOrder` is a dep below, so flipping it reloads every column
+            // through the mount effect; KanbanColumn mirrors this direction.
+            sort: { field: "statusChangedAt", dir: cardOrder },
           },
         );
         if (requestSeqRef.current[statusId] !== seq) return;
@@ -3477,6 +3611,7 @@ function KanbanView({
     [
       debouncedSearch,
       roleName,
+      cardOrder,
       selectedPriorityIds,
       selectedCategoryIds,
       selectedAppIds,
@@ -3514,6 +3649,22 @@ function KanbanView({
       void Promise.all(targets.map((id) => loadColumn(id, 1, false)));
     },
     [loadColumn, visibleStatuses],
+  );
+
+  /**
+   * A drag that ended WITHOUT writing (released outside every column, a rule
+   * refused it, ESC) must refresh BOTH columns the card could be showing in:
+   * the preview pulled it out of its own column, and the target column still
+   * holds the preview copy — which carries the "entered now" stamp, so it
+   * would sit at the TOP of a column the card is not really in until that
+   * column reloads for some unrelated reason.
+   */
+  const reloadDragColumns = useCallback(
+    (...ids: (number | null)[]) => {
+      const unique = [...new Set(ids.filter((id): id is number => id !== null))];
+      if (unique.length > 0) reloadColumns(unique);
+    },
+    [reloadColumns],
   );
 
   useEffect(() => {
@@ -3637,11 +3788,26 @@ function KanbanView({
     // stays put and handleDragEnd explains it on release
     if (stepOnlyMoves && !isAdjacentStatus(sourceStatusId, targetStatusId)) {
       blockedTargetStatusId.current = targetStatusId;
+      blockedReasonRef.current = "step";
+      dragTargetStatusId.current = null;
+      setHoverStatusId(null);
+      return;
+    }
+    // "ประเภทงานก่อนลาก": the card sits in a gated status with no task type —
+    // same snap-back as the step-only refusal, its own message on release
+    if (
+      sourceStatusId != null &&
+      taskTypeGateIds.includes(sourceStatusId) &&
+      !activeIssue.taskType
+    ) {
+      blockedTargetStatusId.current = targetStatusId;
+      blockedReasonRef.current = "taskType";
       dragTargetStatusId.current = null;
       setHoverStatusId(null);
       return;
     }
     blockedTargetStatusId.current = null;
+    blockedReasonRef.current = null;
     dragTargetStatusId.current = targetStatusId;
     previewSourceStatusId.current = targetStatusId;
     setHoverStatusId(targetStatusId);
@@ -3664,7 +3830,23 @@ function KanbanView({
         ...target,
         items: target.items.some((i) => i.id === activeId)
           ? target.items
-          : [...target.items, { ...(moved ?? activeIssue), statusId: targetStatusId }],
+          : // Stamp "entered this column now" on the preview copy: the columns
+            // are sorted by `statusChangedAt`, so without it the card would
+            // hover at its OLD spot in the target column. Where "now" lands
+            // follows the toolbar toggle — on TOP in desc (default), at the
+            // BOTTOM in asc — which is exactly where the real stamp will put
+            // it after release, so nothing jumps. Purely local: every path in
+            // handleDragEnd reloads both the source and this column
+            // (reloadDragColumns), so `move()`'s `now()` replaces it, and a
+            // refused or abandoned drag cannot leave this copy behind.
+            [
+              ...target.items,
+              {
+                ...(moved ?? activeIssue),
+                statusId: targetStatusId,
+                statusChangedAt: new Date().toISOString(),
+              },
+            ],
       };
       return next;
     });
@@ -3672,6 +3854,10 @@ function KanbanView({
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
+    // where the card renders RIGHT NOW — the preview may already have moved it
+    // into another column, and every path below that does not write must put
+    // it back there too (see reloadDragColumns)
+    const previewedStatusId = previewSourceStatusId.current;
     setActiveIssue(null);
     setActiveStatus(null);
     setHoverStatusId(null);
@@ -3680,7 +3866,7 @@ function KanbanView({
 
     if (!over) {
       blockedTargetStatusId.current = null;
-      if (dragStartStatusId !== null) reloadColumns([dragStartStatusId]);
+      reloadDragColumns(dragStartStatusId, previewedStatusId);
       setDragStartStatusId(null);
       return;
     }
@@ -3716,7 +3902,7 @@ function KanbanView({
 
     const issue = issueMap.get(issueId);
     if (!issue || issue.isLocked) {
-      if (dragStartStatusId !== null) reloadColumns([dragStartStatusId]);
+      reloadDragColumns(dragStartStatusId, previewedStatusId);
       setDragStartStatusId(null);
       return;
     }
@@ -3727,12 +3913,14 @@ function KanbanView({
 
     if (targetStatusId === null) {
       const blockedId = blockedTargetStatusId.current;
+      const blockedReason = blockedReasonRef.current;
       blockedTargetStatusId.current = null;
+      blockedReasonRef.current = null;
       if (blockedId !== null) {
-        // released over a column the step-only rule refuses — say why
-        setError(t("invalidTransition"));
+        // released over a column the rules refuse — say which guard did it
+        setError(blockedReason === "taskType" ? t("taskTypeRequired") : t("invalidTransition"));
       }
-      if (sourceStatusId !== null) reloadColumns([sourceStatusId]);
+      reloadDragColumns(sourceStatusId, previewedStatusId);
       setDragStartStatusId(null);
       return;
     }
@@ -3752,15 +3940,22 @@ function KanbanView({
     } catch (e) {
       // 409 = the server's status lock refused the drag (client state was
       // stale — a locked card's handle is disabled, so this is the backstop);
-      // 400 = the step-only guard rejected the jump (policy lookup had failed
-      // open, so the preview slipped through to the API)
+      // 400 = the step-only guard rejected the jump; 422 = the card still has
+      // no ประเภทงาน (both guards' policy lookups can fail open, so a refusal
+      // may slip through the preview to the API)
       setError(
-        isApiError(e, 409)
-          ? t("lockedCard")
-          : isApiError(e, 400)
-            ? t("invalidTransition")
-            : getErrorMessage(e, "เกิดข้อผิดพลาด"),
+        isApiError(e, 422)
+          ? t("taskTypeRequired")
+          : isApiError(e, 409)
+            ? t("lockedCard")
+            : isApiError(e, 400)
+              ? t("invalidTransition")
+              : getErrorMessage(e, "เกิดข้อผิดพลาด"),
       );
+      // the write was refused: the card is still where it started, so the
+      // preview copy in the target column has to go (onRefresh reloads the
+      // table/folder sources, not the per-column state)
+      reloadDragColumns(dragStartStatusId, previewedStatusId);
       onRefresh();
     } finally {
       setDragStartStatusId(null);
@@ -3770,12 +3965,15 @@ function KanbanView({
   const handleDragCancel = () => {
     setActiveIssue(null);
     setActiveStatus(null);
-    if (dragStartStatusId !== null) reloadColumns([dragStartStatusId]);
+    // ESC mid-drag: same two columns as a refused drop (the preview copy must
+    // not stay behind in the column it hovered into)
+    reloadDragColumns(dragStartStatusId, previewSourceStatusId.current);
     setDragStartStatusId(null);
     setHoverStatusId(null);
     isDraggingRef.current = false;
     dragTargetStatusId.current = null;
     blockedTargetStatusId.current = null;
+    blockedReasonRef.current = null;
     previewSourceStatusId.current = null;
   };
 
@@ -3876,6 +4074,7 @@ function KanbanView({
                 timers={timers}
                 showTime={showTime}
                 staleRules={staleRules}
+                order={cardOrder}
                 onOpenIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
                 onEditIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
                 onDeleteIssue={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
@@ -3902,6 +4101,7 @@ function KanbanView({
                   runningSince={timers.running[activeIssue.id] ?? null}
                   nowMs={timers.now}
                   showTime={showTime}
+                  staleDays={staleDaysFor(activeIssue, staleRules)}
                 />
               </Box>
             ) : activeStatus ? (
@@ -4822,13 +5022,16 @@ function FolderView({
       await moveIssue(issue.id, statusId);
       onRefresh();
     } catch (e) {
-      // Same mapping as the drag handler: 409 = status lock, 400 = step-only guard
+      // Same mapping as the drag handler: 422 = task type missing, 409 =
+      // status lock, 400 = step-only guard
       setError(
-        isApiError(e, 409)
-          ? t("lockedCard")
-          : isApiError(e, 400)
-            ? t("invalidTransition")
-            : getErrorMessage(e, "เกิดข้อผิดพลาด"),
+        isApiError(e, 422)
+          ? t("taskTypeRequired")
+          : isApiError(e, 409)
+            ? t("lockedCard")
+            : isApiError(e, 400)
+              ? t("invalidTransition")
+              : getErrorMessage(e, "เกิดข้อผิดพลาด"),
       );
       onRefresh();
     } finally {
@@ -4948,8 +5151,12 @@ function FolderView({
                 const assignee =
                   issue.programmerName ?? (canSeeReporter ? issue.customerName : null);
                 const statusColor = statusColorOf(issue);
-                // Trello-style label stubs, same as the Kanban card
-                const labelBars = (issue.labels ?? []).slice(0, 4);
+                // Trello-style label stubs, same as the Kanban card — first 4
+                // render, the rest collapse into ONE "+N" stub (hover lists
+                // the hidden names) instead of vanishing silently
+                const allLabels = issue.labels ?? [];
+                const labelBars = allLabels.slice(0, 4);
+                const hiddenLabels = allLabels.slice(4);
                 const statusEditable = canEdit && !issue.isLocked && movingId !== issue.id;
                 const staleDays = staleDaysFor(issue, staleRules);
                 return (
@@ -4980,7 +5187,7 @@ function FolderView({
                     }}
                   >
                     {labelBars.length > 0 && (
-                      <Box sx={{ display: "flex", gap: 0.5 }}>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                         {labelBars.map((lbl) => (
                           <Box
                             key={lbl.id}
@@ -4993,6 +5200,27 @@ function FolderView({
                             }}
                           />
                         ))}
+                        {hiddenLabels.length > 0 && (
+                          <Box
+                            title={hiddenLabels.map((l) => l.name).join(", ")}
+                            sx={{
+                              minWidth: 28,
+                              height: 14,
+                              px: 0.4,
+                              borderRadius: "4px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              bgcolor: "action.selected",
+                              color: "text.secondary",
+                              fontSize: "0.575rem",
+                              fontWeight: 700,
+                              lineHeight: 1,
+                            }}
+                          >
+                            +{hiddenLabels.length}
+                          </Box>
+                        )}
                       </Box>
                     )}
                     {/* No `#issueNumber` line here — the number lives in the
@@ -5070,6 +5298,18 @@ function FolderView({
                           variant="outlined"
                           label={priorityLabel(t, issue.priorityName)}
                           color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
+                          sx={{ height: 16, fontSize: "0.6rem", fontWeight: 600 }}
+                        />
+                      )}
+                      {/* Stale past a rule's day count — the same always-on
+                          badge as the Kanban card, folder metrics */}
+                      {staleDays != null && (
+                        <Chip
+                          icon={<AccessTimeIcon sx={{ fontSize: 12, color: "error.main" }} />}
+                          label={t("staleBadge", { days: staleDays })}
+                          size="small"
+                          color="error"
+                          variant="outlined"
                           sx={{ height: 16, fontSize: "0.6rem", fontWeight: 600 }}
                         />
                       )}
@@ -5221,6 +5461,33 @@ function BoardsPageInner() {
   const isTableView = view === "table";
   const isFolderView = view === "folder";
   /**
+   * Kanban column card order — "entered this column when": `desc` (default,
+   * newest entry on top) or `asc` (longest-sitting on top, which floats the
+   * cards the stale rules are about to catch). Only the board reads it; the
+   * table / folder / reports keep their own order. The choice survives a
+   * reload (localStorage) — read in an effect because SSR has no `localStorage`,
+   * and a stored `desc` equals the default so it never costs a re-render.
+   */
+  const [cardOrder, setCardOrder] = useState<"desc" | "asc">("desc");
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(BOARD_CARD_ORDER_KEY) === "asc") setCardOrder("asc");
+    } catch {
+      // storage unavailable (private mode / blocked) — keep the default
+    }
+  }, []);
+  const toggleCardOrder = useCallback(() => {
+    setCardOrder((prev) => {
+      const next = prev === "desc" ? "asc" : "desc";
+      try {
+        window.localStorage.setItem(BOARD_CARD_ORDER_KEY, next);
+      } catch {
+        // not remembering is fine — the order still flips for this visit
+      }
+      return next;
+    });
+  }, []);
+  /**
    * Folder drill path (app → category → priority → status) — owned **here**,
    * not inside `FolderView`, so the breadcrumb that mirrors it can render in
    * the Navbar header (in place of the "บอร์ด" title) while the grid drills.
@@ -5234,6 +5501,11 @@ function BoardsPageInner() {
   // the "one column at a time" rule — false also while the lookup fails, so
   // the board degrades to free dragging and the server's 400 stays the backstop
   const [stepOnlyMoves, setStepOnlyMoves] = useState(false);
+  // statuses where an active `issue.require_task_type` rule demands a
+  // ประเภทงาน before the card may leave — the preview refuses an untyped card
+  // there ([] = no rule / lookup failed → fail open, the server's 422 is the
+  // backstop)
+  const [taskTypeGateIds, setTaskTypeGateIds] = useState<number[]>([]);
   // any active `issue.unlock` rule — a locked card only offers its unlock
   // button while the rules allow a release (false while the lookup fails)
   const [unlockAvailable, setUnlockAvailable] = useState(false);
@@ -5396,6 +5668,7 @@ function BoardsPageInner() {
         // fail-open: a rejected policy lookup must not raise the load error
         fetchMovePolicy().catch(() => ({
           stepOnly: false,
+          requireTaskTypeStatusIds: [] as number[],
           unlockAvailable: false,
           staleRules: [],
           hideStaleRules: [],
@@ -5413,6 +5686,7 @@ function BoardsPageInner() {
       if (usr.status === "fulfilled") setUsers(usr.value);
       if (policy.status === "fulfilled") {
         setStepOnlyMoves(policy.value.stepOnly);
+        setTaskTypeGateIds(policy.value.requireTaskTypeStatusIds ?? []);
         setUnlockAvailable(Boolean(policy.value.unlockAvailable));
         setStaleRules(policy.value.staleRules ?? []);
         setHideStaleRules(policy.value.hideStaleRules ?? []);
@@ -5752,6 +6026,30 @@ function BoardsPageInner() {
                   <FolderIcon fontSize="small" />
                 </IconButton>
               </Tooltip>
+              {isBoardView && (
+                // Flips the columns between "newest entry on top" (desc) and
+                // "longest-sitting on top" (asc) — the stale rules' targets
+                // float up in asc. Board-only: the table/folder/reports order
+                // is untouched, and customers never reach this view.
+                <Tooltip title={cardOrder === "desc" ? t("cardOrderNewest") : t("cardOrderOldest")}>
+                  <IconButton
+                    size="small"
+                    aria-label={cardOrder === "desc" ? t("cardOrderNewest") : t("cardOrderOldest")}
+                    onClick={toggleCardOrder}
+                    sx={{ width: 36, height: 36, color: "text.secondary" }}
+                  >
+                    <SwapVertIcon
+                      fontSize="small"
+                      sx={{
+                        // the glyph points the way the list reads: ↓ newest
+                        // first (default), ↑ oldest first after the flip
+                        transform: cardOrder === "asc" ? "rotate(180deg)" : "none",
+                        transition: "transform 150ms ease-in-out",
+                      }}
+                    />
+                  </IconButton>
+                </Tooltip>
+              )}
             </>
           )}
           {can("issue.trash.view") && (
@@ -5907,7 +6205,9 @@ function BoardsPageInner() {
                 onRefresh={() => loadData(false)}
                 roleName={roleName}
                 stepOnlyMoves={stepOnlyMoves}
+                taskTypeGateIds={taskTypeGateIds}
                 staleRules={staleRules}
+                cardOrder={cardOrder}
                 toolbar={toolbar}
               />
             ) : (

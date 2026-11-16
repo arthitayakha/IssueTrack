@@ -56,6 +56,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       // ผ่าน `@CurrentUser()` (ตอนนี้เป็นข้อมูลอ้างอิง: ไม่มีที่ไหนใช้กรองแอป
       // ตามบริษัทแล้ว ดู `AuthUser.companyId`)
       companyId: user.companyId ?? null,
+      // ⚠️ ต้องส่งตัวนี้จากแถว DB — ถ้าเติมจาก payload (ซึ่งไม่มี field นี้)
+      // `GET /auth/me` จะตอบ true เสมอ แล้วสวิตซ์ในโปรไฟล์จะ "เด้งกลับเปิด"
+      // ทั้งที่ฐานข้อมูลเก็บ false ไว้แล้ว (ตรงจุดเดียวกับ companyId ด้านบน)
+      dailyReminderEnabled: user.dailyReminderEnabled ?? true,
     };
   }
 }

@@ -57,7 +57,7 @@ const list = (b) => (Array.isArray(b) ? b : (b?.data ?? []));
   // login as the admin account that exists in this DB
   const login = await call("/auth/login", {
     method: "POST",
-    body: { email: "aom@gmail.com", password: "123456" },
+    body: { email: "arthitayakha@gmail.com", password: "123456" },
     auth: false,
   });
   token = login.body?.token ?? login.body?.accessToken ?? login.body?.access_token ?? login.body?.jwt;
@@ -89,7 +89,7 @@ const list = (b) => (Array.isArray(b) ? b : (b?.data ?? []));
   check("GET /rules without token => 401", anon.status === 401, `status=${anon.status}`);
   const customerLogin = await call("/auth/login", {
     method: "POST",
-    body: { email: "arthitaya@gmail.com", password: "123456" },
+    body: { email: "a@gmail.com", password: "123456" },
     auth: false,
   });
   const customerToken =

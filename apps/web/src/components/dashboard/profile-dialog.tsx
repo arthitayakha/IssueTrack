@@ -15,6 +15,7 @@ import {
   ListItemIcon,
   Menu,
   MenuItem,
+  Switch,
   TextField,
   Tooltip,
   Typography,
@@ -240,6 +241,8 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   const [removing, setRemoving] = useState(false);
   // the camera badge's menu (เปลี่ยนรูปภาพ / ลบภาพ) — anchor = the badge itself
   const [photoMenuEl, setPhotoMenuEl] = useState<HTMLElement | null>(null);
+  // daily-reminder switch — save-on-toggle (own PATCH), never part of edit mode
+  const [reminderSaving, setReminderSaving] = useState(false);
 
   // re-sync when reopened (or after an external rename / e-mail change)
   useEffect(() => {
@@ -283,6 +286,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
       positionName: string | null;
       companyId: number | null;
       companyName: string | null;
+      dailyReminderEnabled: boolean;
     }>("/auth/me", {}, token)
       .then((me) => {
         if (cancelled) return;
@@ -295,6 +299,10 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
         if (me.positionName !== current?.positionName) patch.positionName = me.positionName;
         if (me.companyId !== current?.companyId) patch.companyId = me.companyId;
         if (me.companyName !== current?.companyName) patch.companyName = me.companyName;
+        // session เก่าไม่มี field นี้ → `undefined !== true/false` = patch เสมอ
+        if (me.dailyReminderEnabled !== current?.dailyReminderEnabled) {
+          patch.dailyReminderEnabled = me.dailyReminderEnabled;
+        }
         if (Object.keys(patch).length > 0) updateUser(patch);
       })
       .catch(() => {
@@ -587,6 +595,28 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
     setEditor("passwordReset");
   }
 
+  /**
+   * บันทึกทันทีตอนกดสวิตซ์ (PATCH แยกจาก edit mode — ปุ่ม "หยุดเตือน" ต้องใช้
+   * ได้ตลอด ไม่ต้องมากด "แก้ไข" ก่อน) · ฝั่ง store อัปเดนตามคำตอบจริงของ API
+   */
+  async function toggleReminder(enabled: boolean) {
+    if (!token || reminderSaving) return;
+    setReminderSaving(true);
+    try {
+      await apiFetch(
+        "/auth/profile/reminder",
+        { method: "PATCH", body: JSON.stringify({ enabled }) },
+        token,
+      );
+      updateUser({ dailyReminderEnabled: enabled });
+    } catch (err) {
+      // ล้มเหลว = ค่าเดิมยังอยู่ — ไม่ต้อง rollback เพราะยังไม่ได้แตะ store
+      notify(err instanceof Error ? err.message : t("genericError"), "error");
+    } finally {
+      setReminderSaving(false);
+    }
+  }
+
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { maxWidth: 560 } }}>
       <DialogTitle
@@ -836,6 +866,27 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
               </Typography>
             </InfoRow>
           )}
+
+          {/* daily reminder — live toggle with its own PATCH (ไม่ใช่ส่วนหนึ่งของ
+              edit mode): `undefined` ของ session เก่า = ยังเปิดอยู่ (fail-open
+              เหมือนฝั่งเซิร์ฟเวอร์) · ปิดแล้วแถวนอกรายวัน 09:00 + อีเมลเตือนเงียบ
+              การแจ้งเตือนปกติไม่กระทบ */}
+          <InfoRow label={t("dailyReminder")}>
+            <Box
+              sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}
+            >
+              <Switch
+                size="small"
+                checked={user?.dailyReminderEnabled !== false}
+                disabled={reminderSaving}
+                inputProps={{ "aria-label": t("dailyReminder") }}
+                onChange={(_, checked) => void toggleReminder(checked)}
+              />
+              <Typography variant="caption" color="text.secondary">
+                {t("dailyReminderHint")}
+              </Typography>
+            </Box>
+          </InfoRow>
         </Box>
       </DialogContent>
 

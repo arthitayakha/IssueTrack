@@ -154,6 +154,10 @@
     "filter": {
       "viewAll": "View {count} issues"
     },
+    "company": {
+      "label": "Company",
+      "all": "All companies"
+    },
     "cards": "cards",
     "errorTitle": "Could not open the dashboard",
     "errorDesc": "An unexpected error occurred — try again or refresh the page",
@@ -166,7 +170,9 @@
     "comingSoon": "This page is under development",
     "invalidTransition": "Cards can only move one column at a time (to an adjacent column) — pause the step-by-step rule in Automation to drag across columns",
     "lockedCard": "This card is locked in its status by an automation rule — use Unlock on the card first",
+    "taskTypeRequired": "Set this card's task type before moving it out of this status — open the card and pick a task type in the detail panel",
     "staleDays": "Sitting in this status for {days} days",
+    "staleBadge": "{days} days stuck",
     "errorTitle": "The board could not be opened",
     "errorDesc": "Something unexpected went wrong — try again, or refresh this page.",
     "errorRetry": "Try again",
@@ -177,6 +183,7 @@
     "app": "App",
     "appPlaceholder": "Select an app",
     "noCompanyApps": "No apps are available for your account. Please contact an administrator.",
+    "maExpiredBlock": "The MA contract for this app has expired, so you cannot report an issue yet. Please renew it or contact an administrator.",
     "category": "Category",
     "categoryPlaceholder": "Select a category",
     "other": "Other",
@@ -209,6 +216,8 @@
     "folderLoadMore": "Load more",
     "folderShowLess": "Show less",
     "folderSortDate": "Date created (newest first)",
+    "cardOrderNewest": "Order: newest on top (latest into this column)",
+    "cardOrderOldest": "Order: longest-sitting on top (oldest into this column)",
     "folderNoApp": "No app",
     "folderNoCat": "No category",
     "folderNoPrio": "No priority",
@@ -302,6 +311,7 @@
       "priority": "Priority",
       "taskType": "Task type",
       "taskTypeUnset": "Not set",
+      "notSet": "Not set",
       "labels": "Labels",
       "description": "Description",
       "descriptionPlaceholder": "Add a detailed description...",
@@ -310,6 +320,7 @@
       "resolution": "Resolution",
       "resolutionPlaceholder": "Explain how it was fixed...",
       "lockedHint": "These fields unlock once the card reaches the status configured by a rule",
+      "taskTypeLockedHint": "The task type can only be changed while the card is in the status configured by a rule",
       "attachments": "Attachments",
       "createdAt": "Created",
       "updatedAt": "Updated",
@@ -548,6 +559,8 @@
     "profileEmail": "Email",
     "profileRole": "Role",
     "profilePosition": "Position",
+    "dailyReminder": "Daily reminders",
+    "dailyReminderHint": "Repeats until read (high 7 days · medium 3 days · low 1 day)",
     "profileCompany": "Company",
     "profileUploadPhoto": "Upload photo",
     "profilePhotoUploading": "Uploading…",
@@ -751,6 +764,8 @@
     "deductionAssignee": "Assignee",
     "deductionUnassigned": "Unassigned",
     "noRows": "No system data yet",
+    "noRowsOwn": "No system data for your company yet",
+    "noCompany": "Your account is not linked to a company yet",
     "noMatch": "No data matches the filters",
     "searchPlaceholder": "Search app or company...",
     "expiryNone": "No expiry",
@@ -820,7 +835,13 @@
       "stale": "sitting too long",
       "app_expiring": "expiring soon",
       "app_expired": "expired",
-      "ma_depleted": "MA exhausted"
+      "ma_depleted": "MA exhausted",
+      "daily_digest": "daily reminder"
+    },
+    "priority": {
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
     },
     "emptyInbox": {
       "title": "No new notifications",
@@ -1004,6 +1025,7 @@
   "Nav": {
     "dashboard": "Dashboard",
     "boards": "Boards",
+    "reportHistory": "Report History",
     "reportIssue": "Report Issue",
     "labels": "Labels",
     "users": "Users",
@@ -1186,6 +1208,7 @@
       "appliesTo": "This action applies to the card that matches the conditions",
       "selectOption": "— Select —",
       "paramTargetStatus": "Move to status",
+      "paramStatus": "Status to gate",
       "defaultStatusHint": "New cards are moved here by default",
       "defaultStatusActionLabel": "Set the default status for new cards",
       "paramAssignee": "Assign to",
@@ -1254,6 +1277,8 @@
       "status": "Status",
       "priority": "Priority",
       "app": "App",
+      "noApp": "No app",
+      "noCategory": "No category",
       "company": "Company",
       "sectionAssignee": "Programmer",
       "sectionReporter": "Reporter",

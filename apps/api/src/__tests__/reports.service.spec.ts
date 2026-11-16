@@ -101,3 +101,78 @@ describe("ReportsService — the company filter follows the REPORTER", () => {
     expect(whereCalls().some(([sql]) => String(sql).includes("app_companies"))).toBe(false);
   });
 });
+
+describe("ReportsService — noApp / noCategory (the dashboard's NULL slices)", () => {
+  it("noApp alone → app_id IS NULL", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", { noApp: true });
+
+    const clause = whereCalls().find(([sql]) => String(sql).includes("app_id"));
+    expect(clause).toBeDefined();
+    expect(String((clause as [string])[0])).toBe("issue.app_id IS NULL");
+  });
+
+  it("noCategory alone → category_id IS NULL", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", { noCategory: true });
+
+    const clause = whereCalls().find(([sql]) => String(sql).includes("category_id"));
+    expect(clause).toBeDefined();
+    expect(String((clause as [string])[0])).toBe("issue.category_id IS NULL");
+  });
+
+  /**
+   * Both checkboxes sit side by side in the panel, so together they must OR
+   * inside ONE clause — ANDing `IS NULL` with `IN (…)` could never match.
+   */
+  it("noApp + appIds → ONE OR clause, never two ANDed clauses", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", { noApp: true, appIds: [3, 5] });
+
+    const clauses = whereCalls().filter(([sql]) => String(sql).includes("app_id"));
+    expect(clauses).toHaveLength(1);
+    const [sql, params] = clauses[0] as [string, Record<string, unknown>];
+    expect(sql).toBe("(issue.app_id IS NULL OR issue.app_id IN (:...appIds))");
+    expect(params.appIds).toEqual([3, 5]);
+  });
+
+  it("noCategory + categoryIds → ONE OR clause", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", { noCategory: true, categoryIds: [7] });
+
+    const clauses = whereCalls().filter(([sql]) => String(sql).includes("category_id"));
+    expect(clauses).toHaveLength(1);
+    expect(String((clauses[0] as [string])[0])).toBe(
+      "(issue.category_id IS NULL OR issue.category_id IN (:...categoryIds))",
+    );
+  });
+
+  /** Every issue-shaped reader shares `applyIssueDims` — usage must agree. */
+  it("usageByPair applies the same NULL clause (shared applyIssueDims)", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.usageByPair({ noApp: true });
+
+    const clause = whereCalls().find(([sql]) => String(sql).includes("app_id"));
+    expect(String((clause as [string])[0])).toBe("issue.app_id IS NULL");
+  });
+
+  /** The flag is opt-in: no flag → the plain `IN` clause, byte for byte. */
+  it("no flags → the plain IN clause, unchanged", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", { appIds: [3], categoryIds: [7] });
+
+    const clauses = whereCalls().filter(
+      ([sql]) => String(sql).includes("app_id") || String(sql).includes("category_id"),
+    );
+    expect(clauses.map(([sql]) => String(sql))).toEqual([
+      "issue.category_id IN (:...categoryIds)",
+      "issue.app_id IN (:...appIds)",
+    ]);
+  });
+});

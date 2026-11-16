@@ -21,7 +21,19 @@ export type NotificationAction =
   | "rule_updated"
   | "rule_deleted"
   // a card sat past a board-policy rule's days (daily 09:00 sweep)
-  | "stale";
+  | "stale"
+  // system rows the API can also send (not in every older payload)
+  | "app_expiring"
+  | "app_expired"
+  | "ma_depleted"
+  // the 09:00 digest of unread rows (one per user per day)
+  | "daily_digest";
+
+/**
+ * ความสำคัญ — chip สี (แดง/เหลือง/เทา) + ลำดับในกล่องเข้า (สูงก่อน) +
+ * หน้าต่างเตือนซ้ำรายวันฝั่งเซิร์ฟเวอร์ (สูง 7 / กลาง 3 / ต่ำ 1 วัน)
+ */
+export type NotificationPriority = "high" | "medium" | "low";
 
 export interface AppNotification {
   id: number;
@@ -35,6 +47,8 @@ export interface AppNotification {
   /** Card behind the notification — used to rebuild deep links for old rows. */
   issueId: number | null;
   createdAt: string;
+  /** ระดับของแถว — chip สี + ลำดับเรียง + หน้าต่างเตือน (เซิร์ฟเวอร์ส่งมาเสมอ) */
+  priority: NotificationPriority;
 }
 
 /** One page of the single inbox — every stored row is unread. */

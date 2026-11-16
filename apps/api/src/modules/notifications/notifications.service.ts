@@ -1,9 +1,15 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { In, Repository } from "typeorm";
-import { Notification } from "./entities/notification.entity";
+import {
+  Notification,
+  type NotificationPriority,
+} from "./entities/notification.entity";
 import { User } from "../auth/entities/user.entity";
+import { IssuePriority } from "../issue-priorities/entities/issue-priority.entity";
 import { MailService } from "../mail/mail.service";
+
+export type { NotificationPriority };
 
 export type NotificationAction =
   | "created"
@@ -33,7 +39,49 @@ export type NotificationAction =
   | "app_expired" // หมดอายุแล้ว
   // MA quota ran out (used ≥ ma_hours of the pair) — rings once per episode
   // from the time-entry hook, to the company's customers + every admin
-  | "ma_depleted";
+  | "ma_depleted"
+  // the 09:00 digest of unread rows (DailyReminderService) — one row per user
+  // per day, excluded from its own count so the episode never compounds
+  | "daily_digest";
+
+/**
+ * ระดับความสำคัญของ**ชนิดที่ไม่ผูกการ์ด** — hardcode ที่นี่ที่เดียว (ข้อตกลง:
+ * ไม่มีตาราง config ไม่มี UI ตั้งค่า — แก้ภายหลังก็แก้โค้ดเท่านั้น)
+ *
+ * การ์ดที่ผูก `issue_id` **ไม่ได้ map จากตรงนี้** — ยืม `issues.priority_id`
+ * ผ่าน `priorityForIssue()` แทน (Critical/High → สูง, Medium → กลาง, Low → ต่ำ,
+ * ไม่ได้ตั้งค่า → กลาง), และ `notify()` ให้ `input.priority` มาก่อนเสมอ
+ */
+const FIXED_PRIORITY: Partial<Record<NotificationAction, NotificationPriority>> = {
+  // สองอันนี้คือ "ต้องจัดการเดี๋ยวนี้" — เตือนซ้ำ 7 วัน + อีเมลวันแรก
+  ma_depleted: "high",
+  app_expired: "high",
+  // แถวเตือนตัวเอง (สร้างโดย DailyReminderService) ก็สูง — ต้องถูกเห็นก่อน
+  daily_digest: "high",
+  app_expiring: "medium",
+  // เสียงของการแก้กฎทุกวัน — 483/921 แถวเป็น rule_updated, เตือนวันเดียวจบ
+  rule_created: "low",
+  rule_updated: "low",
+  rule_deleted: "low",
+};
+
+/**
+ * ชื่อความสำคัญ → ระดับการแจ้งเตือน — **match แบบ exact ตามชื่อที่แก้ได้เอง**,
+ * เหมือน `PRIORITY_COLORS` ฝั่งบอร์ด (board ใช้ `name.toLowerCase()` lookup เดียวกัน)
+ * · ชื่อที่ไม่รู้จัก → `medium` (fail-open กลาง ไม่ใช่เงียบ ไม่ใช่กรี๊ด)
+ */
+const ISSUE_PRIORITY_LEVELS: Record<string, NotificationPriority> = {
+  critical: "high",
+  urgent: "high",
+  high: "high",
+  สูง: "high",
+  วิกฤต: "high",
+  ด่วน: "high",
+  low: "low",
+  ต่ำ: "low",
+  medium: "medium",
+  กลาง: "medium",
+};
 
 /**
  * Milestone columns, keyed by id — the names get renamed by hand
@@ -70,6 +118,11 @@ export interface NotifyInput {
   issueId?: number | null;
   link?: string | null;
   actor?: NotificationActor | null;
+  /**
+   * ข้ามการแปลงอัตโนมัติ — ผู้ช่วยที่ถือ `issue` อยู่แล้วส่งค่าที่แปลงจาก
+   * `issues.priority_id` มาให้ (แปลงครั้งเดียวต่อ event ไม่ใช่ต่อผู้รับ)
+   */
+  priority?: NotificationPriority;
 }
 
 export interface NotificationIssueTarget {
@@ -78,6 +131,8 @@ export interface NotificationIssueTarget {
   programmerId?: number | null;
   customerId?: number | null;
   category?: { name?: string } | null;
+  /** ใช้แปลงความสำคัญของการ์ด → ของแจ้งเตือน (optional: ไม่ส่งก็ fail-open กลาง) */
+  priorityId?: number | null;
 }
 
 @Injectable()
@@ -90,11 +145,34 @@ export class NotificationsService {
     @InjectRepository(User)
     private readonly users: Repository<User>,
     private readonly mail: MailService,
+    @InjectRepository(IssuePriority)
+    private readonly priorities: Repository<IssuePriority>,
   ) {}
 
   /** Deep link straight to the card's detail dialog; the plain board when there is no issue. */
   private issueLink(issueId?: number | null): string {
     return issueId ? `/boards?issue=${issueId}` : "/boards";
+  }
+
+  /**
+   * ความสำคัญของบัตร → ของแจ้งเตือน — แปลง **ครั้งเดียวต่อ event** (ก่อนวนหาผู้รับ)
+   * · `priorityId` ว่าง = `undefined` → `notify()` ใช้ FIXED_PRIORITY/กลางตามเดิม
+   * · โหลดชื่อพัง/ชื่อไม่รู้จัก = fail-open `medium` — การแจ้งเตือนห้ามหายเพราะ lookup
+   */
+  private async priorityForIssue(
+    priorityId?: number | null,
+  ): Promise<NotificationPriority | undefined> {
+    if (!priorityId) return undefined;
+    try {
+      const priority = await this.priorities.findOne({ where: { id: priorityId } });
+      if (!priority) return undefined;
+      return ISSUE_PRIORITY_LEVELS[priority.name.trim().toLowerCase()] ?? "medium";
+    } catch (error) {
+      this.logger.warn(
+        `could not resolve issue priority ${priorityId}: ${(error as Error).message}`,
+      );
+      return undefined;
+    }
   }
 
   /**
@@ -142,6 +220,8 @@ export class NotificationsService {
           link: input.link ?? this.issueLink(input.issueId),
           type: input.action,
           title: input.title.slice(0, 200),
+          // explicit (from the card) → hardcoded system map → medium
+          priority: input.priority ?? FIXED_PRIORITY[input.action] ?? "medium",
         }),
       );
     } catch (error) {
@@ -179,6 +259,8 @@ export class NotificationsService {
         userIds.add(id);
       }
     }
+    // ครั้งเดียวต่อ event — ทุกผู้รับของ event นี้ได้ระดับเดียวกันเป๊ะ
+    const priority = userIds.size > 0 ? await this.priorityForIssue(issue.priorityId) : undefined;
     for (const userId of userIds) {
       await this.notify({
         userId,
@@ -190,6 +272,7 @@ export class NotificationsService {
         // only points at the board
         link: action === "deleted" ? "/boards" : this.issueLink(issue.id),
         actor,
+        priority,
       });
     }
   }
@@ -355,6 +438,8 @@ export class NotificationsService {
       this.logger.warn(`could not load admins for stale fan-out: ${(error as Error).message}`);
     }
     const context = `${statusName ?? "?"} · ${days} วัน`;
+    // same rule as every card-linked event: resolved once, applied to the fan-out
+    const priority = await this.priorityForIssue(issue.priorityId);
     for (const userId of ids) {
       await this.notify({
         userId,
@@ -363,6 +448,7 @@ export class NotificationsService {
         context,
         issueId: issue.id,
         link: this.issueLink(issue.id),
+        priority,
       });
     }
   }
@@ -459,17 +545,25 @@ export class NotificationsService {
   async list(userId: number, options: { limit?: number; offset?: number } = {}) {
     const limit = Math.min(Math.max(options.limit ?? 5, 1), 200);
     const offset = Math.max(options.offset ?? 0, 0);
-    const [data, total] = await Promise.all([
-      this.notifications.find({
-        where: { userId },
-        order: { createdAt: "DESC", id: "DESC" },
-        take: limit,
-        skip: offset,
-        // the actor's name comes off `users` — nothing is stored per row
-        relations: ["actor"],
-      }),
-      this.notifications.count({ where: { userId } }),
-    ]);
+    // สูง → กลาง → ต่ำ แล้วค่อยใหม่สุดก่อน — `priority` เป็น varchar ซึ่งเรียง
+    // alphabetical ได้ `high < low < medium` (ผิดทิศ) จึงต้อง CASE กำหนด rank เอง;
+    // ทำที่ server เพราะหน้าจอโหลดทีละ 20 แถว (client sort จะขัด pagination)
+    //
+    // ⚠️ ใช้ `.limit/.offset` — **ไม่ใช่ `.take/.skip`**: take/skip + join จะสลับไป
+    // ใช้กลยุทธ์ "ดึง id ก่อน 2 รอบ" ของ TypeORM ซึ่งแปลงนิพจน์ ORDER BY ทุกตัว
+    // โดยตัดข้อความก่อนจุดแรกเป็น alias → `CASE n.priority` ถูกอ่านเป็น alias
+    // "CASE n" แล้วโยน "alias was not found" — กับ join ฝั่ง to-one (actor) LIMIT
+    // ตรง ๆ ถูกต้องอยู่แล้ว ไม่มีทางคูงแถว
+    const [data, total] = await this.notifications
+      .createQueryBuilder("n")
+      .leftJoinAndSelect("n.actor", "actor")
+      .where("n.user_id = :userId", { userId })
+      .orderBy("CASE n.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END", "ASC")
+      .addOrderBy("n.created_at", "DESC")
+      .addOrderBy("n.id", "DESC")
+      .offset(offset)
+      .limit(limit)
+      .getManyAndCount();
     return {
       data: data.map((n) => this.toResponse(n)),
       page: Math.floor(offset / limit) + 1,
@@ -516,6 +610,8 @@ export class NotificationsService {
       // still points at the removed "/issues" page
       issueId: n.issueId,
       createdAt: n.createdAt,
+      // chip colour + the 7/3/1-day reminder window are both keyed off this
+      priority: n.priority ?? "medium",
     };
   }
 }

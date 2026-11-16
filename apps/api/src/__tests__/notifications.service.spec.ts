@@ -21,6 +21,30 @@ interface Stub {
   save: jest.Mock;
   create: jest.Mock;
   count: jest.Mock;
+  createQueryBuilder: jest.Mock;
+}
+
+/** The chainable `createQueryBuilder` stub `list()` runs — order assertions live here. */
+interface StubQueryBuilder {
+  leftJoinAndSelect: jest.Mock;
+  where: jest.Mock;
+  orderBy: jest.Mock;
+  addOrderBy: jest.Mock;
+  offset: jest.Mock;
+  limit: jest.Mock;
+  getManyAndCount: jest.Mock;
+}
+
+function queryBuilder(rows: unknown[] = [], total = 0): StubQueryBuilder {
+  const qb = {} as StubQueryBuilder;
+  qb.leftJoinAndSelect = jest.fn(() => qb);
+  qb.where = jest.fn(() => qb);
+  qb.orderBy = jest.fn(() => qb);
+  qb.addOrderBy = jest.fn(() => qb);
+  qb.offset = jest.fn(() => qb);
+  qb.limit = jest.fn(() => qb);
+  qb.getManyAndCount = jest.fn(() => Promise.resolve([rows, total]));
+  return qb;
 }
 
 function repo(overrides: Partial<Stub> = {}): Stub {
@@ -30,6 +54,7 @@ function repo(overrides: Partial<Stub> = {}): Stub {
     save: jest.fn(async (value: Record<string, unknown>) => value),
     create: jest.fn((value: unknown) => value),
     count: jest.fn().mockResolvedValue(0),
+    createQueryBuilder: jest.fn(() => queryBuilder()),
     ...overrides,
   };
 }
@@ -49,10 +74,12 @@ function makeService() {
   // two active admins by default — the fan-out target
   const users = repo({ find: jest.fn().mockResolvedValue([{ id: 80 }, { id: 81 }]) });
   const mail = mailStub();
+  // issue_priorities lookup — null by default = "card has no priority" (medium)
+  const priorities = repo();
   const service = new NotificationsService(
-    ...([notifications, users, mail] as unknown as ServiceArgs),
+    ...([notifications, users, mail, priorities] as unknown as ServiceArgs),
   );
-  return { service, notifications, users, mail };
+  return { service, notifications, users, mail, priorities };
 }
 
 const ISSUE = {
@@ -421,5 +448,176 @@ describe("NotificationsService.notifyStaleCard — the 09:00 bell", () => {
 
     const rows = notifications.save.mock.calls.map(([row]) => row.userId);
     expect(rows).toEqual([7]);
+  });
+});
+
+/**
+ * ความสำคัญของแถวแจ้งเตือน — 2 ทางผสมกัน (ข้อตกลงกับผู้ใช้):
+ *  การ์ดที่ผูก issue → ยืม `issues.priority_id` (แปลงจากชื่อ ครั้งเดียวต่อ event)
+ *  ชนิดระบบ → hardcode `FIXED_PRIORITY` → ไม่มีอะไรเลย → medium (fail-open)
+ *
+ * ค่านี้ขับ 3 อย่าง: ลำดับเรียงในกล่องเข้า, สี chip, หน้าต่างเตือน 7/3/1 วัน
+ */
+describe("NotificationsService — notification priority", () => {
+  function written(notifications: Stub) {
+    return notifications.save.mock.calls.map(([row]) => row as Record<string, unknown>);
+  }
+
+  it("a card-linked event borrows the card's priority — Critical → high", async () => {
+    const { service, notifications, priorities } = makeService();
+    priorities.findOne.mockResolvedValue({ id: 4, name: "Critical" });
+
+    await service.notifyStatusChange({
+      issue: { ...ISSUE, priorityId: 4 },
+      statusId: 4, // เสร็จสิ้น → 4 ผู้รับ
+      actor: { actorId: 3 },
+    });
+
+    const rows = written(notifications);
+    expect(rows.length).toBe(4);
+    expect(new Set(rows.map((r) => r.priority))).toEqual(new Set(["high"]));
+    // resolved ONCE for the whole event — not once per recipient
+    expect(priorities.findOne).toHaveBeenCalledTimes(1);
+    expect(priorities.findOne).toHaveBeenCalledWith({ where: { id: 4 } });
+  });
+
+  it("a Low card → low rows (no floor — the card decides)", async () => {
+    const { service, notifications, priorities } = makeService();
+    priorities.findOne.mockResolvedValue({ id: 1, name: "Low" });
+
+    await service.notifyStatusChange({
+      issue: { ...ISSUE, priorityId: 1 },
+      statusId: 7,
+      actor: { actorId: 3 },
+    });
+
+    expect(new Set(written(notifications).map((r) => r.priority))).toEqual(new Set(["low"]));
+  });
+
+  it("a renamed/unknown priority name falls back to medium (fail-open)", async () => {
+    const { service, notifications, priorities } = makeService();
+    priorities.findOne.mockResolvedValue({ id: 9, name: "เร่งด่วนมาก" });
+
+    await service.notifyStatusChange({
+      issue: { ...ISSUE, priorityId: 9 },
+      statusId: 7,
+      actor: { actorId: 3 },
+    });
+
+    expect(new Set(written(notifications).map((r) => r.priority))).toEqual(new Set(["medium"]));
+  });
+
+  it("a card with no priority set → medium, without touching the lookup", async () => {
+    const { service, notifications, priorities } = makeService();
+
+    await service.notifyStatusChange({ issue: ISSUE, statusId: 7, actor: { actorId: 3 } });
+
+    expect(priorities.findOne).not.toHaveBeenCalled();
+    expect(new Set(written(notifications).map((r) => r.priority))).toEqual(new Set(["medium"]));
+  });
+
+  it("a broken priority lookup never drops the bell — rows still land as medium", async () => {
+    const { service, notifications, priorities } = makeService();
+    priorities.findOne.mockRejectedValue(new Error("connection lost"));
+
+    await expect(
+      service.notifyStatusChange({
+        issue: { ...ISSUE, priorityId: 3 },
+        statusId: 7,
+        actor: { actorId: 3 },
+      }),
+    ).resolves.toBeUndefined();
+
+    const rows = written(notifications);
+    expect(rows.length).toBe(2);
+    expect(new Set(rows.map((r) => r.priority))).toEqual(new Set(["medium"]));
+  });
+
+  it("stale bells inherit the card's priority too — one lookup for the fan-out", async () => {
+    const { service, notifications, priorities } = makeService();
+    priorities.findOne.mockResolvedValue({ id: 3, name: "High" });
+
+    await service.notifyStaleCard({
+      issue: { ...ISSUE, priorityId: 3 },
+      statusName: "เสร็จสิ้น",
+      days: 3,
+    });
+
+    expect(new Set(written(notifications).map((r) => r.priority))).toEqual(new Set(["high"]));
+    expect(priorities.findOne).toHaveBeenCalledTimes(1);
+  });
+
+  it("system rows use the hardcoded map — rule_updated low, app_expiring medium, ma_depleted high", async () => {
+    const { service, notifications } = makeService();
+
+    await service.notify({ userId: 1, action: "rule_updated", title: "แก้ไขกฎ A" });
+    await service.notify({ userId: 1, action: "app_expiring", title: "POS ใกล้หมดอายุ" });
+    await service.notify({ userId: 1, action: "ma_depleted", title: "POS MA หมด" });
+    await service.notify({ userId: 1, action: "commented", title: "ไม่มีบัตร — กลาง" });
+
+    expect(written(notifications).map((r) => r.priority)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "medium",
+    ]);
+  });
+
+  it("an explicit priority beats both maps (the digest row writes its own level)", async () => {
+    const { service, notifications } = makeService();
+
+    await service.notify({
+      userId: 1,
+      action: "daily_digest",
+      title: "3 รายการยังไม่อ่าน",
+      priority: "medium",
+    });
+
+    expect(written(notifications)[0].priority).toBe("medium");
+  });
+});
+
+/**
+ * ลำดับกล่องเข้า — สูง → กลาง → ต่ำ แล้วใหม่สุดก่อน · ทำไมไม่ใช้ `find()`:
+ * `priority` เป็น varchar ซึ่ง alphabetical ให้ `high < low < medium` (ผิดทิศ!)
+ * จึงต้อง CASE rank และทำที่ server เพราะหน้าจอโหลดทีละ 20 แถว
+ */
+describe("NotificationsService.list — order and response shape", () => {
+  it("orders CASE high → medium → low, then newest first, over the caller's rows", async () => {
+    const { service, notifications } = makeService();
+    const createdAt = new Date("2026-11-16T03:00:00.000Z");
+    const qb = queryBuilder([{ id: 11, priority: "high", type: "moved", title: "POS", createdAt }], 1);
+    notifications.createQueryBuilder.mockReturnValue(qb);
+
+    const res = await service.list(7, { limit: 20 });
+
+    expect(qb.leftJoinAndSelect).toHaveBeenCalledWith("n.actor", "actor");
+    expect(qb.where).toHaveBeenCalledWith("n.user_id = :userId", { userId: 7 });
+    // the CASE is the whole point — a plain `ORDER BY priority` sorts low before medium
+    expect(qb.orderBy).toHaveBeenCalledWith(
+      expect.stringContaining("CASE n.priority WHEN 'high' THEN 0"),
+      "ASC",
+    );
+    expect(qb.addOrderBy).toHaveBeenCalledWith("n.created_at", "DESC");
+    expect(qb.addOrderBy).toHaveBeenCalledWith("n.id", "DESC");
+    // `.limit/.offset` on purpose — `.take/.skip` + join flips TypeORM into its
+    // two-query id pagination, whose ORDER BY builder reads "CASE n.priority"
+    // as an alias named "CASE n" and throws (documented in list())
+    expect(qb.limit).toHaveBeenCalledWith(20);
+    expect(qb.offset).toHaveBeenCalledWith(0);
+    // no legacy find()/count() — the ordering only exists in the query builder
+    expect(notifications.find).not.toHaveBeenCalled();
+    expect(notifications.count).not.toHaveBeenCalled();
+    // the row keeps every existing field and gains priority
+    expect(res.data[0]).toMatchObject({
+      id: 11,
+      action: "moved",
+      target: "POS",
+      priority: "high",
+      createdAt,
+    });
+    expect(res.total).toBe(1);
+    expect(res.unreadCount).toBe(1);
+    expect(res.page).toBe(1);
   });
 });

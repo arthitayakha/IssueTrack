@@ -52,6 +52,10 @@ export class IssuesController {
       priorityIds?: string;
       categoryIds?: string;
       appIds?: string;
+      /** "ไม่มีหมวดหมู่" — the dashboard's NULL slice lands here (`?noCategory=1`). */
+      noCategory?: string;
+      /** "ไม่มีแอป" — same deal, for cards with no app at all. */
+      noApp?: string;
       companyIds?: string;
       assigneeIds?: string;
       reporterIds?: string;
@@ -69,6 +73,10 @@ export class IssuesController {
       priorityIds: parseIdList(query.priorityIds),
       categoryIds: parseIdList(query.categoryIds),
       appIds: parseIdList(query.appIds),
+      // "no app"/"no category" is an OR-part of the same dimension, so it rides
+      // along with the id list instead of replacing it (see IssuesService)
+      noCategory: query.noCategory === "1" || query.noCategory === "true",
+      noApp: query.noApp === "1" || query.noApp === "true",
       companyIds: parseIdList(query.companyIds),
       assigneeIds: parseIdList(query.assigneeIds),
       reporterIds: parseIdList(query.reporterIds),

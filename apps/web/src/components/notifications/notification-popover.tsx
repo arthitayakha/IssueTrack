@@ -7,6 +7,7 @@ import {
   Avatar,
   Box,
   Button,
+  Chip,
   CircularProgress,
   Divider,
   ListItemButton,
@@ -64,6 +65,16 @@ const AVATAR_COLORS = [
   "warning.main",
 ];
 
+/**
+ * สี chip ตามระดับ — ดึงจากพาเลตต์ของธีม (ไม่ hardcode hex) · แดง = สูง
+ * (ลอยขึ้นบนสุดในกล่องเข้า), เหลือง = กลาง, เทา = ต่ำ
+ */
+const PRIORITY_COLOR: Record<string, "error" | "warning" | "default"> = {
+  high: "error",
+  medium: "warning",
+  low: "default",
+};
+
 function getInitials(name: string): string {
   return name
     .trim()
@@ -119,6 +130,16 @@ export default function NotificationPopover({
     app_expiring: t("actions.app_expiring"),
     app_expired: t("actions.app_expired"),
     ma_depleted: t("actions.ma_depleted"),
+    // แถวเตือน 09:00 ที่ DailyReminderService สร้างให้ (ไม่ใช่เหตุการณ์จริง)
+    daily_digest: t("actions.daily_digest"),
+  };
+
+  // สร้างเป็น map เหมือน actionLabels — lookup ทับค่าที่ไม่รู้จักได้ (t() กับ
+  // key แปลกจะพัง/ขึ้น key ดิบ จึงห้ามยิง t() แบบ dynamic กับค่าจาก API)
+  const priorityLabels: Record<string, string> = {
+    high: t("priority.high"),
+    medium: t("priority.medium"),
+    low: t("priority.low"),
   };
 
   function handleItemClick(item: AppNotification) {
@@ -296,7 +317,12 @@ export default function NotificationPopover({
             const isSystemRow =
               item.action === "app_expiring" ||
               item.action === "app_expired" ||
-              item.action === "ma_depleted";
+              item.action === "ma_depleted" ||
+              // digest 09:00 ก็ไม่มีคนกระทำ — ขึ้นหัวด้วยจำนวนที่ค้าง
+              item.action === "daily_digest";
+            // ระดับที่รู้จักเท่านั้น — payload แปลก/ไม่มีค่า = ไม่ต้องมี chip
+            const priorityLabel = priorityLabels[item.priority];
+            const priorityColor = PRIORITY_COLOR[item.priority];
             return (
               <Box key={item.id}>
                 {index > 0 && <Divider />}
@@ -370,10 +396,41 @@ export default function NotificationPopover({
                         </>
                       )}
                     </Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                      {timeAgo(item.createdAt, locale)}
-                      {item.context ? ` • ${item.context}` : ""}
-                    </Typography>
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 0.75,
+                        minWidth: 0,
+                      }}
+                    >
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {timeAgo(item.createdAt, locale)}
+                        {item.context ? ` • ${item.context}` : ""}
+                      </Typography>
+                      {priorityLabel && priorityColor && (
+                        <Chip
+                          label={priorityLabel}
+                          color={priorityColor}
+                          size="small"
+                          sx={{
+                            flexShrink: 0,
+                            height: 18,
+                            fontSize: "0.625rem",
+                            fontWeight: 700,
+                          }}
+                        />
+                      )}
+                    </Box>
                   </Box>
                 </ListItemButton>
               </Box>

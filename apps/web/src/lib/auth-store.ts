@@ -16,6 +16,11 @@ export interface AuthUser {
   /** บริษัทของลูกค้า (null กับแอดมิน/โปรแกรมเมอร์) — โชว์ใน popup โปรไฟล์ */
   companyId?: number | null;
   companyName?: string | null;
+  /**
+   * สวิตซ์ "แจ้งเตือนรายวัน" ใน popup โปรไฟล์ — `undefined` ของ session ที่
+   * เก่ากว่าคอลัมน์นี้ = ยังเปิดอยู่ (โชว์เป็นปุ่มเปิด fail-open เหมือน API)
+   */
+  dailyReminderEnabled?: boolean;
 }
 
 const AUTH_KEY = "kanban-auth";

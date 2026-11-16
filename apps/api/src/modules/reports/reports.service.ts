@@ -34,6 +34,15 @@ export interface ReportIssueFilters {
   statuses?: number[];
   priorityIds?: number[];
   appIds?: number[];
+  /**
+   * "ไม่มีแอป" / "ไม่มีหมวดหมู่" — the dashboard's NULL slices have no id to
+   * filter by, so the list carries a flag instead. Same contract as
+   * `IssuesService.findAll`: an **OR-part of its own dimension** (`noApp` +
+   * `appIds` → `app_id IS NULL OR app_id IN (…)`), never an AND. Absent flag →
+   * the old `IN`-only clause, unchanged.
+   */
+  noApp?: boolean;
+  noCategory?: boolean;
   companyIds?: number[];
   /**
    * ประเภทงาน (`issues.task_type`) — ใช้ตอนคำนวณ "ใช้ไป" ของชั่วโมง MA:
@@ -224,7 +233,14 @@ export class ReportsService {
       qb.andWhere("issue.customer_id IN (:...reporterIds)", { reporterIds: f.reporterIds });
     }
     if (f.categoryIds?.length) {
-      qb.andWhere("issue.category_id IN (:...categoryIds)", { categoryIds: f.categoryIds });
+      qb.andWhere(
+        f.noCategory
+          ? "(issue.category_id IS NULL OR issue.category_id IN (:...categoryIds))"
+          : "issue.category_id IN (:...categoryIds)",
+        { categoryIds: f.categoryIds },
+      );
+    } else if (f.noCategory) {
+      qb.andWhere("issue.category_id IS NULL");
     }
     if (f.statuses?.length) {
       qb.andWhere("issue.status_id IN (:...statuses)", { statuses: f.statuses });
@@ -233,7 +249,12 @@ export class ReportsService {
       qb.andWhere("issue.priority_id IN (:...priorityIds)", { priorityIds: f.priorityIds });
     }
     if (f.appIds?.length) {
-      qb.andWhere("issue.app_id IN (:...appIds)", { appIds: f.appIds });
+      qb.andWhere(
+        f.noApp ? "(issue.app_id IS NULL OR issue.app_id IN (:...appIds))" : "issue.app_id IN (:...appIds)",
+        { appIds: f.appIds },
+      );
+    } else if (f.noApp) {
+      qb.andWhere("issue.app_id IS NULL");
     }
     /**
      * Company filter — an issue reaches a company **through its reporter**

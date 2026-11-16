@@ -180,6 +180,9 @@ function paramsToFilters(raw: string): ReportFilters {
     statusIds: parseIds(p.get("status")),
     priorityIds: parseIds(p.get("priority")),
     appIds: parseIds(p.get("app")),
+    // "ไม่มีแอป" / "ไม่มีหมวดหมู่" rides as its own flag (dashboard's NULL slices)
+    noApp: p.get("noApp") === "1" || p.get("noApp") === "true",
+    noCategory: p.get("noCategory") === "1" || p.get("noCategory") === "true",
     companyIds: parseIds(p.get("company")),
   };
 }
@@ -195,6 +198,8 @@ function filtersToPatch(f: ReportFilters) {
     status: f.statusIds.length ? f.statusIds : null,
     priority: f.priorityIds.length ? f.priorityIds : null,
     app: f.appIds.length ? f.appIds : null,
+    noApp: f.noApp ? 1 : null,
+    noCategory: f.noCategory ? 1 : null,
     company: f.companyIds.length ? f.companyIds : null,
   };
 }

@@ -16,6 +16,18 @@ function parseScope(value?: string): DashboardScope {
   return value === "assigned" || value === "reported" || value === "all" ? value : "all";
 }
 
+/**
+ * Company filter — comma list of positive ids, same shape `GET /issues` and
+ * `GET /reports` already parse (garbage entries are dropped, never a 400: an
+ * empty list simply means "no company filter").
+ */
+function parseIdList(value?: string): number[] {
+  return (value ?? "")
+    .split(",")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
 /** Unknown period → "week" (the safest default: fits a 12-week window). */
 function parsePeriod(value?: string): DashboardPeriod {
   return value === "day" || value === "week" || value === "month" || value === "year"
@@ -65,6 +77,7 @@ export class DashboardController {
    * GET /dashboard/summary?scope=all|assigned|reported&period=day|week|month|year
    *                     &from=yyyy-mm-dd&to=yyyy-mm-dd   (custom trend window)
    *                     &statusId=<id>                   (status cross-filter)
+   *                     &companyIds=1,2                  (reporter's company)
    */
   @Get("summary")
   @Permissions("dashboard.own.view")
@@ -74,6 +87,7 @@ export class DashboardController {
     @Query("from") fromQuery: string | undefined,
     @Query("to") toQuery: string | undefined,
     @Query("statusId") statusIdQuery: string | undefined,
+    @Query("companyIds") companyIdsQuery: string | undefined,
     @CurrentUser() user: AuthUser,
   ) {
     return this.dashboard.summary(
@@ -82,6 +96,7 @@ export class DashboardController {
       user,
       parseRange(fromQuery, toQuery),
       parseStatusId(statusIdQuery),
+      parseIdList(companyIdsQuery),
     );
   }
 
@@ -90,8 +105,8 @@ export class DashboardController {
    *
    * The issues behind one bar — same scope + the same Bangkok `date_trunc` as
    * the count that bar shows, so the list always matches the number. While the
-   * page is cross-filtered the bar shows filtered counts, so `statusId` rides
-   * along here too.
+   * page is cross-filtered the bar shows filtered counts, so `statusId` and
+   * `companyIds` ride along here too.
    */
   @Get("trend-issues")
   @Permissions("dashboard.own.view")
@@ -100,6 +115,7 @@ export class DashboardController {
     @Query("period") periodQuery: string | undefined,
     @Query("scope") scopeQuery: string | undefined,
     @Query("statusId") statusIdQuery: string | undefined,
+    @Query("companyIds") companyIdsQuery: string | undefined,
     @CurrentUser() user: AuthUser,
   ) {
     return this.dashboard.trendIssues(
@@ -108,6 +124,7 @@ export class DashboardController {
       bucketQuery ?? "",
       user,
       parseStatusId(statusIdQuery),
+      parseIdList(companyIdsQuery),
     );
   }
 
@@ -117,7 +134,8 @@ export class DashboardController {
    * Counts inside one donut slice — the categories that still have cards once
    * the clicked app's filter is applied (level 2 of the usage card). `dim` and
    * `app` are validated in the service (400 on garbage, never a fallback).
-   * `statusId` keeps the level-2 ring agreeing with its filtered parent slice.
+   * `statusId` and `companyIds` keep the level-2 ring agreeing with its
+   * filtered parent slice.
    */
   @Get("drilldown")
   @Permissions("dashboard.own.view")
@@ -126,6 +144,7 @@ export class DashboardController {
     @Query("app") appQuery: string | undefined,
     @Query("scope") scopeQuery: string | undefined,
     @Query("statusId") statusIdQuery: string | undefined,
+    @Query("companyIds") companyIdsQuery: string | undefined,
     @CurrentUser() user: AuthUser,
   ) {
     return this.dashboard.drilldown(
@@ -134,6 +153,7 @@ export class DashboardController {
       appQuery ?? "",
       user,
       parseStatusId(statusIdQuery),
+      parseIdList(companyIdsQuery),
     );
   }
 
@@ -151,6 +171,7 @@ export class DashboardController {
     @Query("app") appQuery: string | undefined,
     @Query("scope") scopeQuery: string | undefined,
     @Query("statusId") statusIdQuery: string | undefined,
+    @Query("companyIds") companyIdsQuery: string | undefined,
     @CurrentUser() user: AuthUser,
   ) {
     return this.dashboard.dimensionIssues(
@@ -160,6 +181,7 @@ export class DashboardController {
       appQuery,
       user,
       parseStatusId(statusIdQuery),
+      parseIdList(companyIdsQuery),
     );
   }
 }

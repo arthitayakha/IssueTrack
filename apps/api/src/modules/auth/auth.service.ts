@@ -130,11 +130,22 @@ export class AuthService {
   }
 
   /**
+   * Self-service switch for the 09:00 daily reminder (`/auth/profile/reminder`).
+   * `false` only stops the digest rows + the day-1 e-mail for this account —
+   * normal notification rows and milestone e-mails are untouched. Re-reads the
+   * row so the response is the same shape as every other profile route.
+   */
+  async setDailyReminder(userId: number, enabled: boolean) {
+    await this.users.update({ id: userId }, { dailyReminderEnabled: enabled });
+    const user = await this.users.findOne({ where: { id: userId } });
+    return user ? await this.me(user) : null;
+  }
+
+  /**
    * Self-service password change (same 403-not-401 rule as `changeEmail`).
    * Other sessions keep their 7-day JWT — there is no token invalidation yet.
    */
-  async changePassword(userId: number, currentPassword: string, newPassword: string) {
-    const user = await this.users.findOne({ where: { id: userId } });
+  async changePassword(userId: number, currentPassword: string, newPassword: string) {    const user = await this.users.findOne({ where: { id: userId } });
     if (!user) throw new UnauthorizedException("User not found");
     if (!(await bcrypt.compare(currentPassword, user.passwordHash))) {
       throw new ForbiddenException("Current password is incorrect");
@@ -282,6 +293,8 @@ export class AuthService {
       roleName,
       isActive: user.isActive,
       positionPermissions,
+      // สวิตซ์เตือนรายวันใน popup โปรไฟล์ — `undefined` ของ sessionเก่า = ยังเปิดอยู่
+      dailyReminderEnabled: user.dailyReminderEnabled ?? true,
     };
   }
 }
