@@ -227,13 +227,15 @@ export async function fetchIssues(
      */
     hideStaleDone?: boolean;
     /**
-     * Card order — only the Kanban column fetch sets it: `statusChangedAt`
-     * desc = "entered this column when", so a card that was just dragged in
-     * lands on TOP of its new column instead of falling back to its creation
-     * date. The table / folder / reports leave it out and keep the API
-     * default (`createdAt` desc). Whatever is chosen, `KanbanColumn`'s
-     * comparator mirrors it exactly — each column pages 20 cards at a time
-     * and appends the next page on scroll, so server and screen must agree.
+     * Card order — only the Kanban column fetch sends it to the API:
+     * `statusChangedAt` desc = "entered this column when", so a card that was
+     * just dragged in lands on TOP of its new column instead of falling back
+     * to its creation date. The table / folder sort the SAME list client-side
+     * with the same comparator (`sortByEnteredAt` in `boards/page.tsx`) and
+     * the reports keep the API default (`createdAt` desc). Whatever is
+     * chosen, `KanbanColumn`'s comparator mirrors it exactly — each column
+     * pages 20 cards at a time and appends the next page on scroll, so server
+     * and screen must agree.
      */
     sort?: { field: string; dir: "asc" | "desc" };
   },

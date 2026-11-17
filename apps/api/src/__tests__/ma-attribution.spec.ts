@@ -49,6 +49,14 @@ interface IssueFixture {
   programmer?: { name: string } | null;
 }
 
+/** แถว GROUP BY ของ `pairTypeCounts()` — `taskType: null` = ยังไม่ระบุ (`none`) */
+interface TypeCountFixture {
+  appId: number;
+  companyId: number;
+  taskType: string | null;
+  n: number;
+}
+
 function period(overrides: Partial<PeriodFixture>): PeriodFixture {
   return {
     id: 100,
@@ -63,7 +71,12 @@ function period(overrides: Partial<PeriodFixture>): PeriodFixture {
   };
 }
 
-function makeService(periods: PeriodFixture[], deductions: DeductionFixture[]) {
+function makeService(
+  periods: PeriodFixture[],
+  deductions: DeductionFixture[],
+  /** แถวของ `pairTypeCounts()` (นับงานแยก type ระดับคู่) — ไม่ส่ง = คู่ไม่มีงาน */
+  typeCounts: TypeCountFixture[] = [],
+) {
   /** แถวที่ `loadIssues` คืน — ดึงจาก deductions ให้ตรง id เสมอ */
   const issueRows: IssueFixture[] = deductions.map((d) => ({
     id: d.id,
@@ -110,21 +123,49 @@ function makeService(periods: PeriodFixture[], deductions: DeductionFixture[]) {
     update: jest.fn(async () => undefined),
   };
 
-  /** fake QB ของ `deductionRows` — คืนทุกแถว (service กรองคู่ใน JS เอง) */
+  /**
+   * fake QB — **สอง query ใช้ payload คนละชุด**: `deductionRows` (ชั่วโม์ MA)
+   * เลือก `issue.id` ส่วน `pairTypeCounts` (นับงานแยก type) เลือก `issue.app_id`
+   * → ใช้ `select` ตัวแรกเป็นตัวบอก ไม่พึ่งลำดับเรียก เพราะเทสต์บางตัวเรียก
+   * `periodUsage` ซ้ำหลายครั้งบน service เดียวกัน
+   */
+  let queryKind: "deduction" | "type" = "deduction";
+  /** `where`/`andWhere` ของ query นับ type เท่านั้น — ใช้ assert ว่าไม่กรอง `task_type` */
+  const typeFilters: string[] = [];
+
   const qb = {
     leftJoin: jest.fn((): unknown => qb),
-    where: jest.fn((): unknown => qb),
-    andWhere: jest.fn((): unknown => qb),
-    select: jest.fn((): unknown => qb),
+    where: jest.fn((sql: string): unknown => {
+      if (queryKind === "type") typeFilters.push(sql);
+      return qb;
+    }),
+    andWhere: jest.fn((sql: string): unknown => {
+      if (queryKind === "type") typeFilters.push(sql);
+      return qb;
+    }),
+    select: jest.fn((...args: unknown[]): unknown => {
+      // `deductionRows` = `issue.id` · `pairTypeCounts` = `issue.app_id`
+      queryKind = args[0] === "issue.app_id" ? "type" : "deduction";
+      return qb;
+    }),
     addSelect: jest.fn((): unknown => qb),
+    groupBy: jest.fn((): unknown => qb),
+    addGroupBy: jest.fn((): unknown => qb),
     getRawMany: jest.fn(async () =>
-      deductions.map((d) => ({
-        id: String(d.id),
-        app_id: String(d.appId),
-        company_id: String(d.companyId),
-        seconds: String(d.seconds),
-        at: d.at,
-      })),
+      queryKind === "type"
+        ? typeCounts.map((t) => ({
+            app_id: String(t.appId),
+            company_id: String(t.companyId),
+            task_type: t.taskType,
+            n: String(t.n),
+          }))
+        : deductions.map((d) => ({
+            id: String(d.id),
+            app_id: String(d.appId),
+            company_id: String(d.companyId),
+            seconds: String(d.seconds),
+            at: d.at,
+          })),
     ),
   };
 
@@ -151,7 +192,7 @@ function makeService(periods: PeriodFixture[], deductions: DeductionFixture[]) {
     { notifyMaDepleted: jest.fn() } as unknown as never,
   );
 
-  return { service };
+  return { service, typeFilters };
 }
 
 /* --------------------------- กติกาผูก (pure) --------------------------- */
@@ -312,14 +353,16 @@ describe("MaUsageService.usageCounts — นับหลายรอบครั
     { id: 2, appId: 7, companyId: 3, seconds: 10 * HOUR, at: "2026-07-01T00:00:00Z" },
     { id: 3, appId: 7, companyId: 3, seconds: 5 * HOUR, at: null },
   ];
+  /** คู่ไม่มีงาน → 0 ทุกช่อง (รู้จริงว่าเป็น 0 ไม่ใช่ "ดึงไม่ได้") */
+  const NO_TYPES = { bug: 0, ma: 0, requirement: 0, none: 0 };
 
   it("คืนเฉพาะแถวที่มีจริง — id ที่ไม่มีใน DB ไม่ถูกเดาเป็น 0 (เว็บอ่านเป็น `—`)", async () => {
     const { service } = makeService(periods, deductions);
     const counts = await service.usageCounts([100, 200, 999]);
 
     const byId = new Map(counts.map((c) => [c.recordId, c]));
-    expect(byId.get(100)).toEqual({ recordId: 100, count: 1, periodUsedHours: 30 });
-    expect(byId.get(200)).toEqual({ recordId: 200, count: 1, periodUsedHours: 10 });
+    expect(byId.get(100)).toEqual({ recordId: 100, count: 1, periodUsedHours: 30, byType: NO_TYPES });
+    expect(byId.get(200)).toEqual({ recordId: 200, count: 1, periodUsedHours: 10, byType: NO_TYPES });
     // ไม่มี entry = "ไม่รู้" → ฝั่งเว็บโชว์ `—` (ห้ามโชว์ "0 รายการ" เพราะนั่นคือการโกง)
     expect(byId.has(999)).toBe(false);
     expect(counts).toHaveLength(2);
@@ -336,5 +379,47 @@ describe("MaUsageService.usageCounts — นับหลายรอบครั
   it("ไม่ยิง query เลยเมื่อไม่มี recordId (หน้ารายงานยังไม่มีแถว)", async () => {
     const { service } = makeService(periods, deductions);
     await expect(service.usageCounts([])).resolves.toEqual([]);
+  });
+
+  /**
+   * **`byType` — นับงานของคู่ทุก type** (บั๊ก / MA / Requirement / ไม่ระบุ)
+   * ต่างจาก `count` ที่เป็นสูตร MA ล้วน: ตรงนี้**ไม่กรอง `task_type`** และ
+   * **ไม่ต้องเคยกรอกเวลา** จึงตอบว่า "โครงการนี้มีงานประเภทอะไรบ้าง" ได้จริง
+   */
+  it("byType — นับครบ 4 ช่อง, ไม่กรอง task_type, และไม่กระทบสูตร MA เดิม", async () => {
+    const { service, typeFilters } = makeService(periods, deductions, [
+      { appId: 7, companyId: 3, taskType: "bug", n: 3 },
+      { appId: 7, companyId: 3, taskType: "ma", n: 1 },
+      { appId: 7, companyId: 3, taskType: "requirement", n: 2 },
+      { appId: 7, companyId: 3, taskType: null, n: 4 },
+      // คู่อื่น — ห้ามไหลเข้าแถวของคู่ 7×3
+      { appId: 7, companyId: 9, taskType: "bug", n: 99 },
+      // ค่า task_type ที่ไม่รู้จัก → นับเป็น `none` ไม่หาย
+      { appId: 7, companyId: 3, taskType: "feature", n: 5 },
+    ]);
+
+    const counts = await service.usageCounts([100, 200]);
+    const byId = new Map(counts.map((c) => [c.recordId, c]));
+
+    expect(byId.get(100)?.byType).toEqual({ bug: 3, ma: 1, requirement: 2, none: 9 });
+    // ระดับ**คู่** → ทุกรอบของคู่เดียวกันได้ค่าเดียวกัน
+    // (ฝั่งรายงานเลือกโชว์เฉพาะแถวล่าสุดของคู่ เพื่อไม่ให้ตัวเลขซ้ำทุกรอบ)
+    expect(byId.get(200)?.byType).toEqual(byId.get(100)?.byType);
+
+    // regression: `count` / `periodUsedHours` ยังเป็นสูตร MA เดิมทุกประการ
+    expect(byId.get(100)?.count).toBe(1);
+    expect(byId.get(100)?.periodUsedHours).toBe(30);
+
+    // query นับ type ต้องไม่มีเงื่อนไข `task_type` เลย — ถ้ามี = บั๊ก/Requirement
+    // ถูกกรองทิ้งเงียบ ๆ แล้วคอลัมน์ใหม่จะโชว์ 0 ทั้งที่มีงานจริง
+    expect(typeFilters.length).toBeGreaterThan(0);
+    expect(typeFilters.some((sql) => sql.includes("task_type"))).toBe(false);
+  });
+
+  it("คู่ที่ไม่มีงานเลย → byType 0 ทุกช่อง (ไม่ใช่ค่าว่าง/หายไป)", async () => {
+    const { service } = makeService(periods, deductions); // ไม่ส่ง typeCounts
+    const counts = await service.usageCounts([100]);
+
+    expect(counts[0].byType).toEqual(NO_TYPES);
   });
 });

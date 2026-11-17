@@ -119,6 +119,7 @@ import { usePermissions } from "@/lib/permissions";
 import { useAuthStore } from "@/lib/auth-store";
 import { isApiError } from "@/lib/api";
 import type { IssueTaskType } from "@kanban/shared";
+import { REJECT_STATUS_NAME } from "@kanban/shared";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
@@ -172,11 +173,23 @@ import { resolveStatusColor } from "@/lib/status-color";
 import { Pagination } from "@/components/pagination";
 import AttachmentPreviewDialog from "@/components/attachment-preview-dialog";
 import { FilterPanel, type FilterOption, type FilterSectionData } from "@/components/filter-panel";
+import { useNotification } from "@/components/notification";
 
 function getErrorMessage(e: unknown, fallback: string): string | null {
   if (isApiError(e, 403)) return null;
   return e instanceof Error ? e.message : fallback;
 }
+
+/*
+ * Every board failure (load/save/delete, and the automation rules' move
+ * refusals) is reported through the shared toast — `notify()` from
+ * `components/notification.tsx` (bottom-right, auto-hides) — instead of the
+ * old persistent red `Alert` banner that pushed the page down. Each component
+ * below binds its own `fail = useCallback(msg => …)` around `notify`; rule
+ * refusals (422/409/400) call `notify(msg, "warning")` directly.
+ * `getErrorMessage` returns `null` on 403 (deliberately silent) — `fail(null)`
+ * keeps that behaviour: nothing is shown.
+ */
 
 const PRIORITY_COLORS: Record<string, "error" | "warning" | "success" | "default"> = {
   critical: "error",
@@ -196,6 +209,67 @@ const BOARD_CARD_ORDER_KEY = "kanban-board-card-order";
  * A priority an admin renamed (or created) has no key and stays as stored.
  */
 const PRIORITY_I18N_KEYS = ["critical", "high", "medium", "low"] as const;
+
+/**
+ * สไตล์ pill ของดรอปดาวน์บนบอร์ด (ตัวเรียงโฟลเดอร์ + ตัวเลือกในป๊อปอัพการ์ด)
+ * — mirrors `PILL_*` ใน `components/rules/rule-list.tsx`,
+ * `rules/run-history-dialog.tsx` + `reports/components/reports-toolbar.tsx`
+ * (แก้ที่ไหนต้องแก้ทั้งชุด): **พื้นขาว** + ขอบ `divider` เห็นตลอด (พื้นขาวบน
+ * พื้นขาวต้องมีขอบกันกลืน) → hover `grey.50` + ขอบเข้มขึ้น → focus น้ำเงิน,
+ * เมนูมุมมน + ✓ หน้ารายการที่เลือก
+ *
+ * ⚠️ **2 ช่องบนแดชบอร์ด** (`[locale]/page.tsx` + `workload-card.tsx`) ขาว
+ * เหมือนกันแล้ว — ต่าง**แค่ไซส์**: เล็ก (13 / py 0.75) ตามคำสั่ง
+ *
+ * **เวอร์ชันใหญ่** (fontSize 14 / py 1) ตามคำสั่ง — ทุกหน้ายกเว้นแดชบอร์ด
+ * ใช้ไซส์นี้
+ */
+const PILL_SELECT_SX = {
+  fontSize: 14,
+  bgcolor: "common.white",
+  borderRadius: "10px",
+  transition: "background-color 150ms ease",
+  "&:hover": { bgcolor: "grey.50" },
+  // divider line at rest (white-on-white would otherwise vanish) →
+  // grey.400 on hover → primary on focus (keyboard ring stays visible)
+  "& .MuiOutlinedInput-notchedOutline": { border: "1px solid", borderColor: "divider" },
+  "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: "grey.400" },
+  "&.Mui-focused .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main" },
+  "& .MuiSelect-select": { py: 1, pr: "30px !important" },
+} as const;
+
+/** แถวในเมนู — 13px เหมือน pill ฝั่งอื่น (เมนูไม่ใช่ส่วนที่ต้องใหญ่). */
+const PILL_ITEM_SX = {
+  borderRadius: "8px",
+  fontSize: 13,
+  py: 0.75,
+  px: 1.25,
+  gap: 1,
+  "&.Mui-selected": { bgcolor: "action.selected", fontWeight: 600 },
+  "&.Mui-selected:hover": { bgcolor: "action.selected" },
+} as const;
+
+/** ข้อความในกล่องปิด — ตัวหนา + ตัดด้วย … (ไซส์ใหญ่ 14 เหมือนฝั่งอื่น). */
+const PILL_VALUE_SX = {
+  fontSize: 14,
+  fontWeight: 600,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+} as const;
+
+/** กระดาษเมนูของ pill — มุมมน 14 + ขอบ divider + เงาการ์ด (MenuProps / Popover). */
+function pillPaperSx(theme: Theme) {
+  return {
+    borderRadius: "14px",
+    mt: 1,
+    p: 0.75,
+    border: "1px solid",
+    borderColor: "divider",
+    boxShadow: theme.custom.cardShadow,
+    maxWidth: 320,
+  } as const;
+}
 
 function priorityLabel(t: (key: string) => string, name: string): string {
   const key = name.trim().toLowerCase();
@@ -448,6 +522,34 @@ function isHiddenFromFolder(
   if (!Number.isFinite(since)) return false;
   const days = Math.floor((nowMs - since) / 86_400_000);
   return hideStaleRules.some((rule) => rule.statusId === issue.statusId && days >= rule.days);
+}
+
+/**
+ * "Entered this column when" — the card order shared by **all three views**
+ * (Kanban columns, table rows, folder grid): `status_changed_at <dir>` with
+ * `NULLS LAST`, then the server's FIXED tie-breaks (`created_at DESC`,
+ * `id DESC`). Only the primary direction flips — the tie-breaks and NULLS
+ * LAST never do, exactly like the API's `addOrderBy`, so the screen can never
+ * disagree with `?sortBy=statusChangedAt&sortOrder=<dir>` and "load more"
+ * appends pages consistently either way. A missing stamp (a rare backfill
+ * gap) sorts last, matching the server's NULLS LAST.
+ */
+function sortByEnteredAt(items: BoardIssue[], order: "desc" | "asc"): BoardIssue[] {
+  const enteredAt = (issue: BoardIssue) =>
+    issue.statusChangedAt ? new Date(issue.statusChangedAt).getTime() : null;
+  return [...items].sort((a, b) => {
+    const ea = enteredAt(a);
+    const eb = enteredAt(b);
+    if (ea !== eb) {
+      // null (never entered) loses to every real timestamp → bottom of the list
+      if (ea === null) return 1;
+      if (eb === null) return -1;
+      return order === "asc" ? ea - eb : eb - ea;
+    }
+    // tie-breaks mirror the server's fixed addOrderBy: always newest-first
+    const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    return diff !== 0 ? diff : b.id - a.id;
+  });
 }
 
 function TrelloCardContent({
@@ -715,6 +817,8 @@ function TrelloCard({
   onDelete,
   onViewActivity,
   onUnlock,
+  onCancelIssue,
+  cancelStatusId = null,
 }: {
   issue: BoardIssue;
   canManage?: boolean;
@@ -731,6 +835,17 @@ function TrelloCard({
   onDelete?: (issue: BoardIssue) => void;
   onViewActivity?: (issue: BoardIssue) => void;
   onUnlock?: (issue: BoardIssue) => void;
+  /**
+   * **"ยกเลิกงาน"** — ย้ายการ์ดไปสถานะ "ยกเลิก" (คนละเรื่องกับ "ลบ" ที่ส่ง
+   * ไปถังขยะ และคนละปุ่มกับ "ตีกลับงาน" ในป๊อปอัพซึ่งเป็นนโยบาย MA) ·
+   * ตั้งค่าโดย host (KanbanView) — ไม่ส่ง = ไม่ขึ้นเมนูนี้
+   */
+  onCancelIssue?: (issue: BoardIssue) => void;
+  /**
+   * id ของสถานะ "ยกเลิก" (`null` = ไม่มีสถานะนี้ในระบบ) — การ์ดที่**อยู่ใน
+   * สถานะนี้แล้ว**จะไม่เห็นเมนูนี้ (ไม่ต้อง "ยกเลิก" ซ้ำ)
+   */
+  cancelStatusId?: number | null;
 }) {
   const {
     attributes,
@@ -754,104 +869,106 @@ function TrelloCard({
   const [hovered, setHovered] = useState(false);
 
   return (
-    <Tooltip
-      // only when the card is actually over a rule's day count — an empty
-      // title never opens, so a normal card has no popper at all
-      title={staleDays != null ? t("staleDays", { days: staleDays }) : ""}
-      placement="top"
+    <Paper
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...(!issue.isLocked ? listeners : {})}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={() => {
+        if (!issue.isLocked) onOpen?.(issue);
+      }}
+      elevation={1}
+      sx={{
+        p: 1.5,
+        mb: 1,
+        cursor: issue.isLocked ? "not-allowed" : "grab",
+        "&:hover": { boxShadow: "0 4px 12px rgba(0,0,0,0.12)" },
+        bgcolor: "background.paper",
+        borderRadius: 1.5,
+        // the card's own border turns red while it sits past a stale rule —
+        // no overlay, no extra box; back to "none" the moment it moves
+        border: staleDays != null ? "2px solid" : "none",
+        borderColor: "error.main",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+        transition: "box-shadow 0.2s ease, transform 0.2s ease",
+      }}
     >
-      <Paper
-        ref={setNodeRef}
-        style={style}
-        {...attributes}
-        {...(!issue.isLocked ? listeners : {})}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        onClick={() => {
-          if (!issue.isLocked) onOpen?.(issue);
-        }}
-        elevation={1}
-        sx={{
-          p: 1.5,
-          mb: 1,
-          cursor: issue.isLocked ? "not-allowed" : "grab",
-          "&:hover": { boxShadow: "0 4px 12px rgba(0,0,0,0.12)" },
-          bgcolor: "background.paper",
+    <TrelloCardContent
+      issue={issue}
+      runningSince={runningSince}
+      nowMs={nowMs}
+      showTime={showTime}
+      canUnlockIssue={canUnlockIssue}
+      staleDays={staleDays}
+      onUnlock={onUnlock}
+      actions={
+        (canEdit || canDelete || canUnlockIssue) ? (
+          <IconButton
+            size="small"
+            onClick={(e) => { e.stopPropagation(); setMenuAnchor(e.currentTarget); }}
+            sx={{
+              p: 0.3,
+              opacity: hovered ? 1 : 0,
+              pointerEvents: hovered ? "auto" : "none",
+              transition: "opacity 0.15s ease",
+            }}
+          >
+            <MoreHorizIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+          </IconButton>
+        ) : undefined
+      }
+    />
+    <Menu
+      anchorEl={menuAnchor}
+      open={Boolean(menuAnchor)}
+      onClose={() => setMenuAnchor(null)}
+      elevation={0}
+      PaperProps={{
+        sx: {
+          border: "1px solid",
+          borderColor: "divider",
           borderRadius: 1.5,
-          // the card's own border turns red while it sits past a stale rule —
-          // no overlay, no extra box; back to "none" the moment it moves
-          border: staleDays != null ? "2px solid" : "none",
-          borderColor: "error.main",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-          transition: "box-shadow 0.2s ease, transform 0.2s ease",
-        }}
-      >
-      <TrelloCardContent
-        issue={issue}
-        runningSince={runningSince}
-        nowMs={nowMs}
-        showTime={showTime}
-        canUnlockIssue={canUnlockIssue}
-        staleDays={staleDays}
-        onUnlock={onUnlock}
-        actions={
-          (canEdit || canDelete || canUnlockIssue) ? (
-            <IconButton
-              size="small"
-              onClick={(e) => { e.stopPropagation(); setMenuAnchor(e.currentTarget); }}
-              sx={{
-                p: 0.3,
-                opacity: hovered ? 1 : 0,
-                pointerEvents: hovered ? "auto" : "none",
-                transition: "opacity 0.15s ease",
-              }}
-            >
-              <MoreHorizIcon sx={{ fontSize: 16, color: "text.secondary" }} />
-            </IconButton>
-          ) : undefined
-        }
-      />
-      <Menu
-        anchorEl={menuAnchor}
-        open={Boolean(menuAnchor)}
-        onClose={() => setMenuAnchor(null)}
-        elevation={0}
-        PaperProps={{
-          sx: {
-            border: "1px solid",
-            borderColor: "divider",
-            borderRadius: 1.5,
-            overflow: "hidden",
-          },
-        }}
-      >
-        {canEdit && (
-          <MenuItem onClick={() => { setMenuAnchor(null); onEdit?.(issue); }}>
-            <ListItemIcon><EditIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>{t("edit")}</ListItemText>
-          </MenuItem>
-        )}
-        {canEdit && (
-          <MenuItem onClick={() => { setMenuAnchor(null); onViewActivity?.(issue); }}>
-            <ListItemIcon><HistoryIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>{t("history")}</ListItemText>
-          </MenuItem>
-        )}
-        {issue.isLocked && canUnlockIssue && (
-          <MenuItem onClick={() => { setMenuAnchor(null); onUnlock?.(issue); }}>
-            <ListItemIcon><LockOpenIcon fontSize="small" color="warning" /></ListItemIcon>
-            <ListItemText sx={{ color: "warning.main" }}>{t("unlock")}</ListItemText>
-          </MenuItem>
-        )}
-        {canDelete && (
-          <MenuItem onClick={() => { setMenuAnchor(null); onDelete?.(issue); }}>
-            <ListItemIcon><DeleteIcon fontSize="small" color="error" /></ListItemIcon>
-            <ListItemText sx={{ color: "error.main" }}>{t("delete")}</ListItemText>
-          </MenuItem>
-        )}
-      </Menu>
-      </Paper>
-    </Tooltip>
+          overflow: "hidden",
+        },
+      }}
+    >
+      {canEdit && (
+        <MenuItem onClick={() => { setMenuAnchor(null); onEdit?.(issue); }}>
+          <ListItemIcon><EditIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>{t("edit")}</ListItemText>
+        </MenuItem>
+      )}
+      {canEdit && (
+        <MenuItem onClick={() => { setMenuAnchor(null); onViewActivity?.(issue); }}>
+          <ListItemIcon><HistoryIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>{t("history")}</ListItemText>
+        </MenuItem>
+      )}
+      {issue.isLocked && canUnlockIssue && (
+        <MenuItem onClick={() => { setMenuAnchor(null); onUnlock?.(issue); }}>
+          <ListItemIcon><LockOpenIcon fontSize="small" color="warning" /></ListItemIcon>
+          <ListItemText sx={{ color: "warning.main" }}>{t("unlock")}</ListItemText>
+        </MenuItem>
+      )}
+      {/* "ยกเลิกงาน" — ย้ายการ์ดไปสถานะ "ยกเลิก" (คนละความหมายกับ "ลบ" ที่ส่ง
+          ไปถังขยะ, และคนละปุ่มกับ "ตีกลับงาน" ในป๊อปอัพซึ่งเป็นนโยบาย MA) ·
+          ซ่อนเมื่อไม่มีสิทธิ์แก้ / ไม่มีสถานะปลายทาง / การ์ดอยู่ในนั้นแล้ว */}
+      {canEdit && onCancelIssue && cancelStatusId != null && issue.statusId !== cancelStatusId && (
+        <MenuItem onClick={() => { setMenuAnchor(null); onCancelIssue(issue); }}>
+          <ListItemIcon><CancelIcon fontSize="small" color="error" /></ListItemIcon>
+          <ListItemText sx={{ color: "error.main" }}>{t("cancelIssue")}</ListItemText>
+        </MenuItem>
+      )}
+      {canDelete && (
+        <MenuItem onClick={() => { setMenuAnchor(null); onDelete?.(issue); }}>
+          <ListItemIcon><DeleteIcon fontSize="small" color="error" /></ListItemIcon>
+          <ListItemText sx={{ color: "error.main" }}>{t("delete")}</ListItemText>
+        </MenuItem>
+      )}
+    </Menu>
+    </Paper>
   );
 }
 
@@ -878,6 +995,8 @@ function KanbanColumn({
   onDeleteIssue,
   onViewActivity,
   onUnlockIssue,
+  onCancelIssue,
+  cancelStatusId,
 }: {
   status: IssueStatus;
   items: BoardIssue[];
@@ -908,6 +1027,10 @@ function KanbanColumn({
   onDeleteIssue: (issue: BoardIssue) => void;
   onViewActivity: (issue: BoardIssue) => void;
   onUnlockIssue: (issueId: number) => void;
+  /** "ยกเลิกงาน" → ย้ายไปสถานะ "ยกเลิก" (ดู TrelloCard.onCancelIssue) */
+  onCancelIssue?: (issue: BoardIssue) => void;
+  /** id ของสถานะ "ยกเลิก" (`null` = ไม่มี) — การ์ดในสถานะนั้นซ่อนเมนู */
+  cancelStatusId?: number | null;
 }) {
   const { setNodeRef: setDroppableNodeRef, isOver: isColumnOver } = useDroppable({
     id: `status-drop-${status.id}`,
@@ -917,29 +1040,11 @@ function KanbanColumn({
   const theme = useTheme();
 
   const color = resolveStatusColor(theme, status.color, status.name);
-  // Mirror the API ordering exactly (`?sortBy=statusChangedAt&sortOrder=<order>`
-  // → status_changed_at <dir> NULLS LAST, created_at DESC, id DESC): `desc`
-  // (default) puts a card that was just dragged in on TOP of its new column,
-  // `asc` puts the longest-sitting card on top (the stale rules' targets).
-  // Only the primary direction flips — the server's tie-breaks (createdAt,
-  // id) and NULLS LAST stay fixed in both directions, so "load more" appends
-  // pages consistently either way. A missing stamp (a rare backfill gap) sorts
-  // last, matching the server's NULLS LAST.
-  const enteredAt = (issue: BoardIssue) =>
-    issue.statusChangedAt ? new Date(issue.statusChangedAt).getTime() : null;
-  const visibleIssues = [...items].sort((a, b) => {
-    const ea = enteredAt(a);
-    const eb = enteredAt(b);
-    if (ea !== eb) {
-      // null (never entered) loses to every real timestamp → bottom of column
-      if (ea === null) return 1;
-      if (eb === null) return -1;
-      return order === "asc" ? ea - eb : eb - ea;
-    }
-    // tie-breaks mirror the server's fixed addOrderBy: always newest-first
-    const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    return diff !== 0 ? diff : b.id - a.id;
-  });
+  // Shared comparator — see `sortByEnteredAt`: mirror the API ordering exactly
+  // (`?sortBy=statusChangedAt&sortOrder=<order>`). `desc` (default) puts a card
+  // that was just dragged in on TOP of its new column, `asc` puts the
+  // longest-sitting card on top (the stale rules' targets).
+  const visibleIssues = sortByEnteredAt(items, order);
   // A transient duplicate (a preview racing a reload) must never render twice:
   // two components sharing one `issue-<id>` sortable id confuse the drag layer.
   const seenIds = new Set<number>();
@@ -1021,6 +1126,8 @@ function KanbanColumn({
               onDelete={onDeleteIssue}
               onViewActivity={onViewActivity}
               onUnlock={(iss) => onUnlockIssue(iss.id)}
+              onCancelIssue={onCancelIssue}
+              cancelStatusId={cancelStatusId}
             />
           ))}
           {items.length === 0 && !loading && (
@@ -1126,30 +1233,34 @@ function RecycleBinDialog({
   onViewDetail: (issue: TrashedIssue) => void;
 }) {
   const t = useTranslations("Boards");
+  const { notify } = useNotification();
+  const fail = useCallback(
+    (msg: string | null) => {
+      if (msg) notify(msg, "error");
+    },
+    [notify],
+  );
   const [items, setItems] = useState<TrashedIssue[]>([]);
   const [loading, setLoading] = useState(false);
   const [restoringId, setRestoringId] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setLoading(true);
-    setError(null);
     fetchTrashedIssues()
       .then(setItems)
-      .catch((e) => setError(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ")))
+      .catch((e) => fail(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ")))
       .finally(() => setLoading(false));
-  }, [open]);
+  }, [open, fail]);
 
   const handleRestore = async (id: number) => {
     setRestoringId(id);
-    setError(null);
     try {
       await restoreIssue(id);
       setItems((prev) => prev.filter((i) => i.id !== id));
       onRestored();
     } catch (e) {
-      setError(getErrorMessage(e, "กู้คืนไม่สำเร็จ"));
+      fail(getErrorMessage(e, "กู้คืนไม่สำเร็จ"));
     } finally {
       setRestoringId(null);
     }
@@ -1162,11 +1273,6 @@ function RecycleBinDialog({
         {t("recycleBin")}
       </DialogTitle>
       <DialogContent>
-        {error && (
-          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
-            {error}
-          </Alert>
-        )}
         {loading ? (
           <Box sx={{ display: "flex", justifyContent: "center", p: 3 }}>
             <CircularProgress />
@@ -1441,6 +1547,19 @@ function EditableTextField({
   );
 }
 
+/**
+ * **เหตุผลที่บันทึกตอนตีกลับงาน** (ข้อมูล ไม่ใช่ข้อความ UI — ค่าคงที่ภาษาไทย
+ * เหมือนชื่อสถานะ/หมวดหมู่อื่นในระบบ) · ส่วน**ชื่อสถานะปลายทาง**มาจาก
+ * `@kanban/shared` → `REJECT_STATUS_NAME` (จุดเดียวทั้ง web/API — API ยกเว้น
+ * move guards ทั้ง 3 เมื่อปลายทางคือสถานะนี้ด้วยค่าเดียวกันนี้)
+ *
+ * กฎที่มาของปุ่ม: "ถ้า MA หมด ยังแจ้งได้อยู่ แต่ถ้าเป็น MA/Requirement เราจะ
+ * ตีกลับ" — การ์ดถูกย้ายไปสถานะ "ยกเลิก" พร้อมเหตุผลในความคิดเห็น (และ
+ * `resolution` แบบ best-effort เพราะฟิลด์นี้ถูก rule ล็อกได้)
+ */
+const REJECT_REASON =
+  "ตีกลับ: สัญญา MA หมดอายุ — ไม่สามารถรับงานประเภท MA/Requirement ได้";
+
 function IssueDetailDialog({
   issue,
   open,
@@ -1463,6 +1582,13 @@ function IssueDetailDialog({
   initialTab?: "comments" | "history";
 }) {
   const { can } = usePermissions();
+  const { notify } = useNotification();
+  const fail = useCallback(
+    (msg: string | null) => {
+      if (msg) notify(msg, "error");
+    },
+    [notify],
+  );
   const [tab, setTab] = useState<"comments" | "history">(initialTab);
   const [comments, setComments] = useState<Comment[]>([]);
   const [logs, setLogs] = useState<ActivityLog[]>([]);
@@ -1470,7 +1596,6 @@ function IssueDetailDialog({
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [localIssue, setLocalIssue] = useState<BoardIssue | null>(null);
   const [draftPriorityId, setDraftPriorityId] = useState<number | null>(null);
   const [draftProgrammerId, setDraftProgrammerId] = useState<number | null>(null);
@@ -1505,6 +1630,9 @@ function IssueDetailDialog({
   const [savingComment, setSavingComment] = useState(false);
   const [deletingComment, setDeletingComment] = useState<Comment | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  /** ตีกลับงาน — dialog ยืนยัน + สถานะระหว่างย้าย (ปุ่มอยู่ที่ footer ของ popup) */
+  const [confirmReject, setConfirmReject] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
   const currentUser = useAuthStore((s) => s.user) ?? null;
   const currentUserId = currentUser?.id ?? null;
   const t = useTranslations("Boards");
@@ -1625,7 +1753,6 @@ function IssueDetailDialog({
   useEffect(() => {
     if (!issue || !open) return;
     setLoading(true);
-    setError(null);
     // allSettled: one failing request must not blank out the whole popup
     Promise.allSettled([
       canViewComments ? fetchIssueComments(issue.id).then((r) => r.data) : Promise.resolve([] as Comment[]),
@@ -1647,11 +1774,11 @@ function IssueDetailDialog({
         setUsers(u.status === "fulfilled" ? u.value : []);
         const failed = results.find((r) => r.status === "rejected");
         if (failed && failed.status === "rejected") {
-          setError(getErrorMessage(failed.reason, "โหลดข้อมูลไม่สำเร็จ"));
+          fail(getErrorMessage(failed.reason, "โหลดข้อมูลไม่สำเร็จ"));
         }
       })
       .finally(() => setLoading(false));
-  }, [issue, open, canViewComments, canViewHistory, canViewAttachments, canSetPriority, canAssign]);
+  }, [issue, open, canViewComments, canViewHistory, canViewAttachments, canSetPriority, canAssign, fail]);
 
   const handlePost = async () => {
     if (readOnly) return;
@@ -1664,7 +1791,7 @@ function IssueDetailDialog({
       setDraft("");
       onRefresh();
     } catch (e) {
-      setError(getErrorMessage(e, "ส่งความคิดเห็นไม่สำเร็จ"));
+      fail(getErrorMessage(e, "ส่งความคิดเห็นไม่สำเร็จ"));
     } finally {
       setPosting(false);
     }
@@ -1685,7 +1812,7 @@ function IssueDetailDialog({
       setComments((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
       setEditingComment(null);
     } catch (e) {
-      setError(getErrorMessage(e, "แก้ไขความคิดเห็นไม่สำเร็จ"));
+      fail(getErrorMessage(e, "แก้ไขความคิดเห็นไม่สำเร็จ"));
     } finally {
       setSavingComment(false);
     }
@@ -1700,7 +1827,7 @@ function IssueDetailDialog({
       setDeletingComment(null);
       onRefresh();
     } catch (e) {
-      setError(getErrorMessage(e, "ลบความคิดเห็นไม่สำเร็จ"));
+      fail(getErrorMessage(e, "ลบความคิดเห็นไม่สำเร็จ"));
     } finally {
       setDeleteLoading(false);
     }
@@ -1744,7 +1871,7 @@ function IssueDetailDialog({
       setCreatingLabel(false);
       setDraftLabelIds((prev) => [...prev, label.id]);
     } catch (e) {
-      setError(getErrorMessage(e, "สร้ายป้ายไม่สำเร็จ"));
+      fail(getErrorMessage(e, "สร้ายป้ายไม่สำเร็จ"));
     } finally {
       setSaving(false);
     }
@@ -1795,9 +1922,52 @@ function IssueDetailDialog({
       resetDrafts();
       onClose();
     } catch (e) {
-      setError(getErrorMessage(e, "บันทึกไม่สำเร็จ"));
+      fail(getErrorMessage(e, "บันทึกไม่สำเร็จ"));
     } finally {
       setSaving(false);
+    }
+  };
+
+  /**
+   * **ตีกลับงาน** — ย้ายไปสถานะ "ยกเลิก" พร้อมเหตุผล (ข้อสรุป: MA หมดอายุ →
+   * รับงาน MA/Requirement ไม่ได้) · เหตุผล (comment + `resolution`) เป็น
+   * **best-effort**: comment อาจติดสิทธิ์ และ `resolution` ถูก rule ล็อกในบาง
+   * สถานะ (`assertFieldEditable` ฝั่งเซิร์ฟเวอร์) — ส่วนที่**บังคับคือย้ายสถานะ**
+   * เพราะนั่นคือ "การตีกลับ" จริง (การย้ายส่ง notification ถึงผู้รับ + ผู้แจ้ง
+   * จากกลไกเดิมเอง)
+   */
+  const handleReject = async () => {
+    if (!current || rejecting) return;
+    const target = statuses.find((s) => s.name === REJECT_STATUS_NAME);
+    if (!target) {
+      // ยังไม่มีสถานะปลายทาง → ยังไม่เขียนอะไรเลย (บอกให้ไปเพิ่มใน master-data)
+      setConfirmReject(false);
+      notify(t("detail.rejectNoStatus"), "error");
+      return;
+    }
+    setRejecting(true);
+    try {
+      try {
+        await createComment(current.id, REJECT_REASON);
+      } catch {
+        /* best-effort — เหตุผลหลักอยู่ที่การย้ายสถานะ */
+      }
+      try {
+        await updateIssue(current.id, { resolution: REJECT_REASON });
+      } catch {
+        /* best-effort — resolution อาจถูก rule ล็อกในสถานะนี้ */
+      }
+      await moveIssue(current.id, target.id);
+      resetDrafts();
+      onRefresh();
+      onClose();
+      notify(t("detail.rejectSuccess"), "success");
+    } catch (e) {
+      const msg = getErrorMessage(e, t("detail.rejectFailed"));
+      if (msg) notify(msg, "error");
+    } finally {
+      setRejecting(false);
+      setConfirmReject(false);
     }
   };
 
@@ -1807,7 +1977,7 @@ function IssueDetailDialog({
       await updateLabel(id, data);
       onRefresh();
     } catch (e) {
-      setError(getErrorMessage(e, "แก้ไขป้ายไม่สำเร็จ"));
+      fail(getErrorMessage(e, "แก้ไขป้ายไม่สำเร็จ"));
     }
   };
 
@@ -1820,7 +1990,7 @@ function IssueDetailDialog({
       setAttachments((prev) => [...prev, uploaded]);
       onRefresh();
     } catch (err) {
-      setError(getErrorMessage(err, "อัปโหลดไฟล์ไม่สำเร็จ"));
+      fail(getErrorMessage(err, "อัปโหลดไฟล์ไม่สำเร็จ"));
     } finally {
       setAttachmentUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -1834,7 +2004,7 @@ function IssueDetailDialog({
       setAttachments((prev) => prev.filter((a) => a.id !== id));
       onRefresh();
     } catch (err) {
-      setError(getErrorMessage(err, "ลบไฟล์ไม่สำเร็จ"));
+      fail(getErrorMessage(err, "ลบไฟล์ไม่สำเร็จ"));
     }
   };
 
@@ -2043,20 +2213,25 @@ function IssueDetailDialog({
                   sx={{
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 0.5,
+                    gap: 0.75,
                     mt: 0.5,
-                    px: 1,
-                    py: 0.25,
+                    px: 1.25,
+                    py: 1,
+                    // white pill — same recipe as every non-dashboard dropdown
+                    // (PILL_SELECT_SX): white fill + always-on divider border,
+                    // hover grey.50 + darker edge, rounded 10
+                    bgcolor: "common.white",
                     border: "1px solid",
                     borderColor: "divider",
-                    borderRadius: 1.5,
+                    borderRadius: "10px",
+                    transition: "background-color 150ms ease",
                     cursor: saving ? "default" : "pointer",
-                    "&:hover": { bgcolor: "action.hover" },
+                    "&:hover": { bgcolor: "grey.50", borderColor: "grey.400" },
                   }}
                 >
                   <Typography
                     variant="body2"
-                    color={draftPriorityName ? "text.primary" : "text.secondary"}
+                    sx={{ fontWeight: 600, color: draftPriorityName ? "text.primary" : "text.secondary" }}
                   >
                     {draftPriorityName
                       ? priorityLabel(t, draftPriorityName)
@@ -2084,20 +2259,25 @@ function IssueDetailDialog({
                   sx={{
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 0.5,
+                    gap: 0.75,
                     mt: 0.5,
-                    px: 1,
-                    py: 0.25,
+                    px: 1.25,
+                    py: 1,
+                    // white pill — same recipe as every non-dashboard dropdown
+                    // (PILL_SELECT_SX): white fill + always-on divider border,
+                    // hover grey.50 + darker edge, rounded 10
+                    bgcolor: "common.white",
                     border: "1px solid",
                     borderColor: "divider",
-                    borderRadius: 1.5,
+                    borderRadius: "10px",
+                    transition: "background-color 150ms ease",
                     cursor: saving ? "default" : "pointer",
-                    "&:hover": { bgcolor: "action.hover" },
+                    "&:hover": { bgcolor: "grey.50", borderColor: "grey.400" },
                   }}
                 >
                   <Typography
                     variant="body2"
-                    color={draftTaskType ? "text.primary" : "text.secondary"}
+                    sx={{ fontWeight: 600, color: draftTaskType ? "text.primary" : "text.secondary" }}
                   >
                     {draftTaskType ? t(`taskType.${draftTaskType}`) : t("detail.taskTypeUnset")}
                   </Typography>
@@ -2466,7 +2646,7 @@ function IssueDetailDialog({
                     setLocalIssue(updated);
                     onRefresh();
                   } catch (e) {
-                    setError(getErrorMessage(e, "บันทึกวิเคราะห์/สาเหตุไม่สำเร็จ"));
+                    fail(getErrorMessage(e, "บันทึกวิเคราะห์/สาเหตุไม่สำเร็จ"));
                     throw e;
                   }
                 }}
@@ -2490,7 +2670,7 @@ function IssueDetailDialog({
                     setLocalIssue(updated);
                     onRefresh();
                   } catch (e) {
-                    setError(getErrorMessage(e, "บันทึกการแก้ไขไม่สำเร็จ"));
+                    fail(getErrorMessage(e, "บันทึกการแก้ไขไม่สำเร็จ"));
                     throw e;
                   }
                 }}
@@ -2575,7 +2755,7 @@ function IssueDetailDialog({
             onClose={() => setPriorityAnchor(null)}
             anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
             transformOrigin={{ vertical: "top", horizontal: "left" }}
-            PaperProps={{ sx: { p: 0.5, minWidth: 160 } }}
+            PaperProps={{ sx: { ...pillPaperSx(theme), minWidth: 160 } }}
           >
             {priorities
               .filter((p) => p.isActive)
@@ -2590,11 +2770,13 @@ function IssueDetailDialog({
                       display: "flex",
                       alignItems: "center",
                       gap: 1,
-                      px: 1.5,
-                      py: 0.5,
-                      borderRadius: 1,
+                      px: 1.25,
+                      py: 0.75,
+                      borderRadius: "8px",
+                      fontSize: 13,
                       cursor: saving ? "default" : "pointer",
-                      "&:hover": { bgcolor: "action.hover" },
+                      bgcolor: selected ? "action.selected" : "transparent",
+                      "&:hover": { bgcolor: selected ? "action.selected" : "action.hover" },
                     }}
                   >
                     <Box sx={{ width: 16, display: "flex", alignItems: "center" }}>
@@ -2602,7 +2784,7 @@ function IssueDetailDialog({
                     </Box>
                     <Typography
                       variant="body2"
-                      fontWeight={selected ? 600 : 400}
+                      sx={{ fontSize: 13, fontWeight: selected ? 600 : 400 }}
                       color={selected ? "text.primary" : "text.secondary"}
                     >
                       {priorityLabel(t, p.name)}
@@ -2622,7 +2804,7 @@ function IssueDetailDialog({
             onClose={() => setTaskTypeAnchor(null)}
             anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
             transformOrigin={{ vertical: "top", horizontal: "left" }}
-            PaperProps={{ sx: { p: 0.5, minWidth: 180 } }}
+            PaperProps={{ sx: { ...pillPaperSx(theme), minWidth: 180 } }}
           >
             {(["bug", "ma", "requirement"] as const).map((tt) => {
               const selected = draftTaskType === tt;
@@ -2634,11 +2816,13 @@ function IssueDetailDialog({
                     display: "flex",
                     alignItems: "center",
                     gap: 1,
-                    px: 1.5,
-                    py: 0.5,
-                    borderRadius: 1,
+                    px: 1.25,
+                    py: 0.75,
+                    borderRadius: "8px",
+                    fontSize: 13,
                     cursor: saving ? "default" : "pointer",
-                    "&:hover": { bgcolor: "action.hover" },
+                    bgcolor: selected ? "action.selected" : "transparent",
+                    "&:hover": { bgcolor: selected ? "action.selected" : "action.hover" },
                   }}
                 >
                   <Box sx={{ width: 16, display: "flex", alignItems: "center" }}>
@@ -2646,7 +2830,7 @@ function IssueDetailDialog({
                   </Box>
                   <Typography
                     variant="body2"
-                    fontWeight={selected ? 600 : 400}
+                    sx={{ fontSize: 13, fontWeight: selected ? 600 : 400 }}
                     color={selected ? "text.primary" : "text.secondary"}
                   >
                     {t(`taskType.${tt}`)}
@@ -2666,7 +2850,7 @@ function IssueDetailDialog({
             onClose={() => setLabelAnchor(null)}
             anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
             transformOrigin={{ vertical: "top", horizontal: "left" }}
-            PaperProps={{ sx: { width: 300, p: 1.5, display: "flex", flexDirection: "column", gap: 1 } }}
+            PaperProps={{ sx: { ...pillPaperSx(theme), width: 300, p: 1.5, display: "flex", flexDirection: "column", gap: 1 } }}
           >
             <TextField
               size="small"
@@ -2784,7 +2968,7 @@ function IssueDetailDialog({
             onClose={() => setMemberAnchor(null)}
             anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
             transformOrigin={{ vertical: "top", horizontal: "left" }}
-            PaperProps={{ sx: { width: 280, p: 1.5, display: "flex", flexDirection: "column", gap: 1 } }}
+            PaperProps={{ sx: { ...pillPaperSx(theme), width: 280, p: 1.5, display: "flex", flexDirection: "column", gap: 1 } }}
           >
             <TextField
               size="small"
@@ -3009,11 +3193,6 @@ function IssueDetailDialog({
               )
             ) : null}
           </Box>
-          {error && (
-            <Alert severity="error" sx={{ m: 2, mt: 0 }} onClose={() => setError(null)}>
-              {error}
-            </Alert>
-          )}
           <Dialog
             open={!!editingComment}
             onClose={() => !savingComment && setEditingComment(null)}
@@ -3067,6 +3246,34 @@ function IssueDetailDialog({
               </Button>
             </DialogActions>
           </Dialog>
+          {/* ยืนยันตีกลับงาน — ย้ายไปสถานะ "ยกเลิก" + บันทึกเหตุผล (handleReject) */}
+          <Dialog
+            open={confirmReject}
+            onClose={() => !rejecting && setConfirmReject(false)}
+            maxWidth="xs"
+          >
+            <DialogTitle>{t("detail.rejectConfirmTitle")}</DialogTitle>
+            <DialogContent>
+              {rejecting ? (
+                <CircularProgress size={24} />
+              ) : (
+                <Typography variant="body2">{t("detail.rejectConfirmMessage")}</Typography>
+              )}
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setConfirmReject(false)} disabled={rejecting}>
+                {t("cancel")}
+              </Button>
+              <Button
+                variant="contained"
+                color="error"
+                onClick={handleReject}
+                disabled={rejecting}
+              >
+                {t("detail.reject")}
+              </Button>
+            </DialogActions>
+          </Dialog>
         </Box>
       </Box>
       <Divider />
@@ -3088,6 +3295,17 @@ function IssueDetailDialog({
           </Button>
         )}
         <Box sx={{ flex: 1 }} />
+        {!readOnly && canEditIssue && (
+          <Button
+            size="small"
+            variant="outlined"
+            color="error"
+            disabled={saving || rejecting || !current}
+            onClick={() => setConfirmReject(true)}
+          >
+            {t("detail.reject")}
+          </Button>
+        )}
         {!readOnly && (
           <Button size="small" variant="outlined" onClick={handleCancel} disabled={saving}>
             {t("cancel")}
@@ -3439,6 +3657,71 @@ function useDebouncedValue<T>(value: T, delay = 300): T {
   return debounced;
 }
 
+/**
+ * กล่องยืนยัน **"ยกเลิกงาน"** — ย้ายการ์ดไปสถานะ "ยกเลิก" (`REJECT_STATUS_NAME`)
+ *
+ * - **ไม่เขียน comment / ไม่แตะ `resolution`** — เหตุผล hardcode "สัญญา MA หมดอายุ"
+ *   เป็นของปุ่ม "ตีกลับงาน" ในป๊อปอัพรายละเอียด (นโยบาย MA) อยู่แล้ว การ
+ *   ยกเลิกทั่วไปจึงเป็นแค่ "ย้ายสถานะ" — activity log + notification มาจาก
+ *   `moveIssue()` เดิมเอง
+ * - **เซิร์ฟเวอร์ไม่ต้องแก้อะไร**: `IssuesService.move()` ข้าม move guards ทั้ง 3
+ *   (step-only / status lock / task-type) **อัตโนมัติ** เมื่อปลายทางชื่อ
+ *   `REJECT_STATUS_NAME` — ใช้กติกาเดียวกับปุ่มตีกลับ จึงย้ายข้ามกี่คอลัมน์ก็ได้
+ *   แม้กฎ "ลากทีละคอลัมน์" จะเปิดอยู่
+ * - Host เป็นคนผูก `issue` (การ์ดที่กดเมนู "…") และ `onDone` หลังย้ายสำเร็จ
+ *   (KanbanView → `reloadColumns()`, TableView → `onRefresh()`)
+ */
+function CancelIssueDialog({
+  issue,
+  statusId,
+  onClose,
+  onDone,
+}: {
+  issue: BoardIssue | null;
+  /** id ของสถานะ "ยกเลิก" — `null` = ไม่มีสถานะนี้ในระบบ → ไม่เปิด dialog */
+  statusId: number | null;
+  onClose: () => void;
+  /** หลังย้ายสำเร็จ — host ใช้รีเฟรชคอลัมน์/รายการ */
+  onDone: () => void;
+}) {
+  const t = useTranslations("Boards");
+  const { notify } = useNotification();
+  const [saving, setSaving] = useState(false);
+
+  // ไม่มีสถานะปลายทาง = ไม่มีอะไรให้ย้าย → ปิดทิ้ง (เมนูก็ถูก host ซ่อนไว้แล้ว)
+  const open = Boolean(issue) && statusId != null;
+
+  const handleConfirm = async () => {
+    if (!issue || statusId == null || saving) return;
+    setSaving(true);
+    try {
+      await moveIssue(issue.id, statusId);
+      notify(t("cancelIssueSuccess"), "success");
+      onClose();
+      onDone();
+    } catch (e) {
+      notify(getErrorMessage(e, t("cancelIssueFailed")) ?? t("cancelIssueFailed"), "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onClose={saving ? undefined : onClose}>
+      <DialogTitle>{t("cancelIssueConfirmTitle")}</DialogTitle>
+      <DialogContent>
+        <Typography>{t("cancelIssueConfirmMessage")}</Typography>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={saving}>{t("cancel")}</Button>
+        <Button onClick={handleConfirm} color="error" disabled={saving}>
+          {t("cancelIssue")}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 function KanbanView({
   statuses,
   labels,
@@ -3508,6 +3791,13 @@ function KanbanView({
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
+  const { notify } = useNotification();
+  const fail = useCallback(
+    (msg: string | null) => {
+      if (msg) notify(msg, "error");
+    },
+    [notify],
+  );
   const [activeIssue, setActiveIssue] = useState<BoardIssue | null>(null);
   const [activeStatus, setActiveStatus] = useState<IssueStatus | null>(null);
   const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null);
@@ -3515,7 +3805,8 @@ function KanbanView({
   const [detailTab, setDetailTab] = useState<"comments" | "history">("comments");
   const [addColumnOpen, setAddColumnOpen] = useState(false);
   const [issueToDelete, setIssueToDelete] = useState<BoardIssue | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /** การ์ดที่กด "ยกเลิกงาน" ในเมนู "…" — รอ confirm ก่อนย้ายไปสถานะ "ยกเลิก" */
+  const [issueToCancel, setIssueToCancel] = useState<BoardIssue | null>(null);
   const [localStatuses, setLocalStatuses] = useState<IssueStatus[]>(statuses);
   const [columns, setColumns] = useState<Record<number, KanbanColumnState>>({});
   const [dragStartStatusId, setDragStartStatusId] = useState<number | null>(null);
@@ -3551,6 +3842,14 @@ function KanbanView({
    * so index 0 is the first column. Customers may only delete cards there.
    */
   const firstStatusId = localStatuses[0]?.id ?? null;
+
+  /**
+   * สถานะปลายทางของ **"ยกเลิกงาน"** — หาด้วยชื่อ `REJECT_STATUS_NAME`
+   * (จุดเดียวกับปุ่ม "ตีกลับงาน" ในป๊อปอัพ) · `null` = ยังไม่มีสถานะนี้ในระบบ
+   * → เมนู "ยกเลิกงาน" ไม่ขึ้นเลย (ไม่มีทางกดแล้วเจอ error)
+   */
+  const cancelStatusId =
+    localStatuses.find((s) => s.name === REJECT_STATUS_NAME)?.id ?? null;
 
   const loadColumn = useCallback(
     async (statusId: number, pageNum: number, append: boolean) => {
@@ -3600,7 +3899,7 @@ function KanbanView({
         });
       } catch (e) {
         if (requestSeqRef.current[statusId] !== seq) return;
-        setError(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ"));
+        fail(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ"));
         setColumns((prev) => {
           const existing = prev[statusId];
           if (!existing) return prev;
@@ -3618,6 +3917,7 @@ function KanbanView({
       selectedCompanyIds,
       selectedAssigneeIds,
       selectedReporterIds,
+      fail,
     ],
   );
 
@@ -3881,18 +4181,31 @@ function KanbanView({
       const activeStatus = localStatuses.find((s) => s.id === activeStatusId);
       if (!activeStatus) return;
 
+      // คอลัมน์ "ยกเลิก" ลากไม่ได้ — ถูกล็อกไว้ท้ายสุดเสมอ (server ยัง pin ให้
+      // อีกชั้นใน `PATCH /issue-statuses/reorder` → `pinRejectLast`)
+      if (activeStatus.name === REJECT_STATUS_NAME) return;
+
       const oldIndex = localStatuses.findIndex((s) => s.id === activeStatusId);
       const newIndex = localStatuses.findIndex((s) => s.id === overStatusId);
       if (oldIndex === -1 || newIndex === -1) return;
 
       const reordered = arrayMove(localStatuses, oldIndex, newIndex);
+      // กันไว้อีกชั้น: ลากคอลัมน์อื่นไป "ทับ" ตำแหน่งของ "ยกเลิก" ก็ตาม
+      // ดันกลับท้ายสุดก่อนบันทึก (payload จึงไม่มีทางเอา "ยกเลิก" ไปไว้กลาง list)
+      const rejectAt = reordered.findIndex(
+        (s, i) => i !== reordered.length - 1 && s.name === REJECT_STATUS_NAME,
+      );
+      if (rejectAt !== -1) {
+        const [rejectCol] = reordered.splice(rejectAt, 1);
+        reordered.push(rejectCol);
+      }
       setLocalStatuses(reordered);
       try {
         await reorderStatuses(
           reordered.map((s, idx) => ({ id: s.id, sortOrder: idx + 1 }))
         );
       } catch (e) {
-        setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+        fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
         onRefresh();
       }
       return;
@@ -3918,7 +4231,11 @@ function KanbanView({
       blockedReasonRef.current = null;
       if (blockedId !== null) {
         // released over a column the rules refuse — say which guard did it
-        setError(blockedReason === "taskType" ? t("taskTypeRequired") : t("invalidTransition"));
+        // (rule refusals are a policy nudge, not a system error → warning toast)
+        notify(
+          blockedReason === "taskType" ? t("taskTypeRequired") : t("invalidTransition"),
+          "warning",
+        );
       }
       reloadDragColumns(sourceStatusId, previewedStatusId);
       setDragStartStatusId(null);
@@ -3942,16 +4259,17 @@ function KanbanView({
       // stale — a locked card's handle is disabled, so this is the backstop);
       // 400 = the step-only guard rejected the jump; 422 = the card still has
       // no ประเภทงาน (both guards' policy lookups can fail open, so a refusal
-      // may slip through the preview to the API)
-      setError(
-        isApiError(e, 422)
-          ? t("taskTypeRequired")
-          : isApiError(e, 409)
-            ? t("lockedCard")
-            : isApiError(e, 400)
-              ? t("invalidTransition")
-              : getErrorMessage(e, "เกิดข้อผิดพลาด"),
-      );
+      // may slip through the preview to the API). Rule refusals → warning
+      // toast, anything else → the error toast.
+      const refusal = isApiError(e, 422)
+        ? t("taskTypeRequired")
+        : isApiError(e, 409)
+          ? t("lockedCard")
+          : isApiError(e, 400)
+            ? t("invalidTransition")
+            : null;
+      if (refusal) notify(refusal, "warning");
+      else fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
       // the write was refused: the card is still where it started, so the
       // preview copy in the target column has to go (onRefresh reloads the
       // table/folder sources, not the per-column state)
@@ -3987,7 +4305,7 @@ function KanbanView({
       setEditIssue(null);
       reloadColumns();
     } catch (e) {
-      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -3999,7 +4317,7 @@ function KanbanView({
       setDetailIssue(null);
       reloadColumns();
     } catch (e) {
-      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -4009,7 +4327,7 @@ function KanbanView({
       setAddColumnOpen(false);
       onRefresh();
     } catch (e) {
-      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -4018,17 +4336,12 @@ function KanbanView({
       await unlockIssue(issueId);
       reloadColumns();
     } catch (e) {
-      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
   return (
     <Box sx={{ width: "100%", minWidth: 0 }}>
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
       <Box
         component="nav"
         sx={{
@@ -4078,6 +4391,8 @@ function KanbanView({
                 onOpenIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
                 onEditIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
                 onDeleteIssue={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
+                onCancelIssue={(issue) => { setDetailIssue(null); setIssueToCancel(issue); }}
+                cancelStatusId={cancelStatusId}
                 onViewActivity={(issue) => { setDetailIssue(issue); setDetailTab("history"); }}
                 onUnlockIssue={handleUnlockIssue}
               />
@@ -4179,6 +4494,14 @@ function KanbanView({
           </Button>
         </DialogActions>
       </Dialog>
+      {/* "ยกเลิกงาน" — ย้ายไปสถานะ "ยกเลิก"; `reloadColumns()` ดึงทุกคอลัมน์ใหม่
+          ทั้งคอลัมน์ต้นทาง (การ์ดหายไป) และคอลัมน์ปลายทาง (การ์ดโผล่) */}
+      <CancelIssueDialog
+        issue={issueToCancel}
+        statusId={cancelStatusId}
+        onClose={() => setIssueToCancel(null)}
+        onDone={reloadColumns}
+      />
     </Box>
   );
 }
@@ -4198,6 +4521,7 @@ function TableView({
   selectedReporterIds,
   searchQuery,
   canManage,
+  canEdit,
   canSeeReporter,
   canViewOwnHistory,
   timers,
@@ -4205,6 +4529,7 @@ function TableView({
   canSeeActualTime,
   currentUserId,
   onRefresh,
+  cardOrder,
   toolbar,
 }: {
   statuses: IssueStatus[];
@@ -4226,6 +4551,8 @@ function TableView({
   selectedReporterIds: string[];
   searchQuery: string;
   canManage: boolean;
+  /** `issue.all.update` — gates the "ยกเลิกงาน" row (same as the board card's). */
+  canEdit: boolean;
   canSeeReporter: boolean;
   canViewOwnHistory: boolean;
   timers: BoardTimers;
@@ -4233,19 +4560,38 @@ function TableView({
   canSeeActualTime: boolean;
   currentUserId: string | null;
   onRefresh: () => void;
+  /**
+   * Shared ↑↓ toggle (the toolbar button) — `desc` = newest status change on
+   * top, `asc` = longest-sitting on top, same comparator as the Kanban
+   * columns (`sortByEnteredAt`).
+   */
+  cardOrder: "desc" | "asc";
   toolbar?: React.ReactNode;
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
+  const { notify } = useNotification();
+  const fail = useCallback(
+    (msg: string | null) => {
+      if (msg) notify(msg, "error");
+    },
+    [notify],
+  );
   const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null);
   const [editIssue, setEditIssue] = useState<BoardIssue | null>(null);
   const [detailTab, setDetailTab] = useState<"comments" | "history">("comments");
   const [issueToDelete, setIssueToDelete] = useState<BoardIssue | null>(null);
+  /** การ์ดที่กด "ยกเลิกงาน" ในเมนูแถว — รอ confirm ก่อนย้ายไปสถานะ "ยกเลิก" */
+  const [issueToCancel, setIssueToCancel] = useState<BoardIssue | null>(null);
   const [actionAnchor, setActionAnchor] = useState<{
     el: HTMLElement;
     issue: BoardIssue;
   } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * สถานะปลายทางของ **"ยกเลิกงาน"** — หาด้วยชื่อ `REJECT_STATUS_NAME` (จุดเดียว
+   * กับปุ่ม "ตีกลับงาน") · `null` = ไม่มีสถานะนี้ในระบบ → เมนูไม่ขึ้น
+   */
+  const cancelStatusId = statuses.find((s) => s.name === REJECT_STATUS_NAME)?.id ?? null;
   const [page, setPage] = useState(1);
   const hasActiveFilters =
     selectedStatusIds.length > 0 ||
@@ -4288,7 +4634,22 @@ function TableView({
       return true;
     });
   }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, companyReporterIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
-  const pageIssues = filteredIssues.slice((page - 1) * 10, page * 10);
+  /**
+   * Row order — the SAME comparator as the Kanban columns (`sortByEnteredAt`),
+   * so the table reads in the same order the board's columns do. Purely
+   * client-side: the list is already loaded (the API's default `createdAt`
+   * order just gets re-sorted), so flipping it costs no request.
+   */
+  const orderedIssues = useMemo(
+    () => sortByEnteredAt(filteredIssues, cardOrder),
+    [filteredIssues, cardOrder],
+  );
+  const pageIssues = orderedIssues.slice((page - 1) * 10, page * 10);
+  // Flipping the order must not strand the reader on page 5 of a
+  // differently-ordered list.
+  useEffect(() => {
+    setPage(1);
+  }, [cardOrder]);
 
   const handleSaveIssue = async (data: { title: string; description: string; statusId: number; labelId?: number | null }) => {
     try {
@@ -4300,7 +4661,7 @@ function TableView({
       setEditIssue(null);
       onRefresh();
     } catch (e) {
-      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -4312,7 +4673,7 @@ function TableView({
       setDetailIssue(null);
       onRefresh();
     } catch (e) {
-      setError(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
     }
   };
 
@@ -4336,11 +4697,6 @@ function TableView({
 
   return (
     <Box>
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
       {toolbar && (
         <Box
           component="nav"
@@ -4497,6 +4853,27 @@ function TableView({
                             <ListItemText>{t("history")}</ListItemText>
                           </MenuItem>
                         )}
+                        {/* "ยกเลิกงาน" — ย้ายไปสถานะ "ยกเลิก" (คนละความหมายกับ
+                            "ลบ" ที่ส่งไปถังขยะ) · ซ่อนเมื่อไม่มีสิทธิ์แก้ /
+                            ไม่มีสถานะปลายทาง / การ์ดอยู่ในนั้นแล้ว */}
+                        {canEdit &&
+                          cancelStatusId != null &&
+                          actionAnchor &&
+                          actionAnchor.issue.statusId !== cancelStatusId && (
+                            <MenuItem
+                              onClick={() => {
+                                const selected = actionAnchor?.issue;
+                                setActionAnchor(null);
+                                if (selected) {
+                                  setDetailIssue(null);
+                                  setIssueToCancel(selected);
+                                }
+                              }}
+                            >
+                              <ListItemIcon><CancelIcon fontSize="small" color="error" /></ListItemIcon>
+                              <ListItemText sx={{ color: "error.main" }}>{t("cancelIssue")}</ListItemText>
+                            </MenuItem>
+                          )}
                         {canManage && (
                           <MenuItem
                             onClick={() => {
@@ -4582,6 +4959,13 @@ function TableView({
           </Button>
         </DialogActions>
       </Dialog>
+      {/* "ยกเลิกงาน" — ย้ายไปสถานะ "ยกเลิก" แล้วดึงรายการใหม่ (`onRefresh`) */}
+      <CancelIssueDialog
+        issue={issueToCancel}
+        statusId={cancelStatusId}
+        onClose={() => setIssueToCancel(null)}
+        onDone={onRefresh}
+      />
     </Box>
   );
 }
@@ -4755,6 +5139,7 @@ function FolderView({
   staleRules,
   hideStaleRules,
   onRefresh,
+  cardOrder,
   toolbar,
 }: {
   statuses: IssueStatus[];
@@ -4790,15 +5175,41 @@ function FolderView({
    */
   hideStaleRules: StaleRule[];
   onRefresh: () => void;
+  /**
+   * Shared ↑↓ toggle (the toolbar button) — the direction of whichever sort
+   * criterion the folder's own dropdown is on (`sortByEnteredAt` for the
+   * entered/created criteria, reversed priority order for ความสำคัญ).
+   */
+  cardOrder: "desc" | "asc";
   toolbar?: ReactNode;
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
   const { can } = usePermissions();
+  const { notify } = useNotification();
+  const fail = useCallback(
+    (msg: string | null) => {
+      if (msg) notify(msg, "error");
+    },
+    [notify],
+  );
   const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null);
   const [visibleCount, setVisibleCount] = useState(FOLDER_PAGE_SIZE);
-  const [sort, setSort] = useState<"date" | "prio">("date");
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * Sort **criterion** for the level-5 card grid — the direction is NOT in
+   * here: the toolbar's ↑↓ (`cardOrder`) flips it, so no label ever bakes in
+   * a direction. `entered` (default) = วันที่เข้าสถานะ, the very criterion the
+   * board's columns use; `created` = the old creation-date order; `prio` =
+   * ความสำคัญ (criterion borrowed from the old dropdown, unchanged).
+   */
+  const [sort, setSort] = useState<"entered" | "created" | "prio">("entered");
+  /** Text for one criterion — the DIRECTION lives on the toolbar's ↑↓, not here. */
+  const sortLabel = (key: "entered" | "created" | "prio") =>
+    key === "prio"
+      ? t("filter.sectionPriority")
+      : key === "created"
+        ? t("folderSortDate")
+        : t("folderSortEntered");
   const [movingId, setMovingId] = useState<number | null>(null);
   /* Status picker on a card: which chip opened it (Drive-like — no bulky
      inline <Select> on the card face). */
@@ -4977,15 +5388,32 @@ function FolderView({
   }
   const visibleFolders = hasActiveFilters ? folders.filter((f) => f.count > 0) : folders;
 
-  /* Level 5: flat card grid — newest first (or by priority), paged client-side. */
-  const sortedCards = [...branch].sort((a, b) => {
-    if (sort === "prio") {
+  /* Level 5: flat card grid — paged client-side. The CRITERION comes from the
+     dropdown below, the DIRECTION from the toolbar's ↑↓ (`cardOrder`), so the
+     same arrow means "flip the order" in every view. (Plain code, not a memo:
+     `branch` is rebuilt every render anyway, exactly as before.) */
+  const sortedCards = (() => {
+    // Creation time, newest-first by default and flipped by the same arrow —
+    // tie-breaks (createdAt, id) mirror the API's fixed addOrderBy exactly
+    // like `sortByEnteredAt` does for the status-change stamp.
+    const byCreatedAt = (a: BoardIssue, b: BoardIssue) => {
+      const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      const base = diff !== 0 ? diff : b.id - a.id;
+      return cardOrder === "asc" ? -base : base;
+    };
+    if (sort === "entered") return sortByEnteredAt(branch, cardOrder);
+    if (sort === "created") return [...branch].sort(byCreatedAt);
+    // `prio`: sortOrder ASCENDING = ความสำคัญมากก่อน, which is what the
+    // DEFAULT direction (desc) has always shown here — flipping to `asc`
+    // simply reverses it (น้อย → มาก). A card with no priority sorts last
+    // either way, then falls through to the same time tie-break.
+    return [...branch].sort((a, b) => {
       const ra = priorities.find((p) => p.id === a.priorityId)?.sortOrder ?? Number.MAX_SAFE_INTEGER;
       const rb = priorities.find((p) => p.id === b.priorityId)?.sortOrder ?? Number.MAX_SAFE_INTEGER;
-      if (ra !== rb) return ra - rb;
-    }
-    return b.createdAt.localeCompare(a.createdAt);
-  });
+      if (ra !== rb) return cardOrder === "desc" ? ra - rb : rb - ra;
+      return byCreatedAt(a, b);
+    });
+  })();
   const shownCards = sortedCards.slice(0, visibleCount);
 
   /* New folder / new filters → back to the first page of cards. */
@@ -5023,16 +5451,17 @@ function FolderView({
       onRefresh();
     } catch (e) {
       // Same mapping as the drag handler: 422 = task type missing, 409 =
-      // status lock, 400 = step-only guard
-      setError(
-        isApiError(e, 422)
-          ? t("taskTypeRequired")
-          : isApiError(e, 409)
-            ? t("lockedCard")
-            : isApiError(e, 400)
-              ? t("invalidTransition")
-              : getErrorMessage(e, "เกิดข้อผิดพลาด"),
-      );
+      // status lock, 400 = step-only guard — rule refusals are a policy nudge
+      // (warning toast), anything else the error toast
+      const refusal = isApiError(e, 422)
+        ? t("taskTypeRequired")
+        : isApiError(e, 409)
+          ? t("lockedCard")
+          : isApiError(e, 400)
+            ? t("invalidTransition")
+            : null;
+      if (refusal) notify(refusal, "warning");
+      else fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
       onRefresh();
     } finally {
       setMovingId(null);
@@ -5048,11 +5477,6 @@ function FolderView({
   return (
     <Box>
       {toolbar}
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
 
       {/* The breadcrumb (บอร์ด › แอป › หมวด › ความสำคัญ › สถานะ) no longer
           renders here — it lives in the Navbar header one level up, in place of
@@ -5125,19 +5549,35 @@ function FolderView({
         <>
           <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 2, mb: 1.5 }}>
             <FormControl size="small" sx={{ minWidth: 180 }}>
-              {/* compact: shorter than MUI's small (32px) so the sort control
-                  doesn't out-shout the cards it sits above */}
+              {/* white pill, same recipe as every non-dashboard dropdown
+                  (PILL_SELECT_SX above) — the old compact 28px look was
+                  dropped so it matches the rest */}
               <Select
                 value={sort}
-                onChange={(e) => setSort(e.target.value as "date" | "prio")}
-                sx={{
-                  height: 28,
-                  fontSize: "0.75rem",
-                  "& .MuiSvgIcon-root": { fontSize: 16 },
+                onChange={(e) => setSort(e.target.value as "entered" | "created" | "prio")}
+                renderValue={(raw) => {
+                  const value = typeof raw === "string" ? raw : "entered";
+                  return <Typography sx={PILL_VALUE_SX}>{sortLabel(value)}</Typography>;
                 }}
+                MenuProps={{ slotProps: { paper: { sx: pillPaperSx(theme) } } }}
+                sx={PILL_SELECT_SX}
               >
-                <MenuItem value="date">{t("folderSortDate")}</MenuItem>
-                <MenuItem value="prio">{t("filter.sectionPriority")}</MenuItem>
+                {([
+                  { key: "entered", label: t("folderSortEntered") },
+                  { key: "created", label: t("folderSortDate") },
+                  { key: "prio", label: t("filter.sectionPriority") },
+                ] as const).map((o) => (
+                  <MenuItem key={o.key} value={o.key} sx={PILL_ITEM_SX}>
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+                      <Typography sx={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {o.label}
+                      </Typography>
+                      {sort === o.key && (
+                        <CheckIcon sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }} />
+                      )}
+                    </Box>
+                  </MenuItem>
+                ))}
               </Select>
             </FormControl>
           </Box>
@@ -5160,222 +5600,230 @@ function FolderView({
                 const statusEditable = canEdit && !issue.isLocked && movingId !== issue.id;
                 const staleDays = staleDaysFor(issue, staleRules);
                 return (
-                  <Tooltip
-                    key={issue.id}
-                    title={staleDays != null ? t("staleDays", { days: staleDays }) : ""}
-                    placement="top"
-                  >
-                  <Paper
-                    variant="outlined"
-                    onClick={() => setDetailIssue(issue)}
-                    sx={{
-                      // compact cell: 1.25/0.75 padding+gap (was 2/1.25) — a
-                      // folder row should read as a list of tickets, not posters
-                      p: 1.25,
-                      cursor: "pointer",
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 0.75,
-                      borderRadius: 3,
-                      // the card's own outline turns red while it sits past a
-                      // stale rule — same rule, same look as the Kanban board
-                      ...(staleDays != null
-                        ? { border: "2px solid", borderColor: "error.main" }
-                        : {}),
-                      transition: "box-shadow .15s ease, transform .15s ease",
-                      "&:hover": { boxShadow: 4, transform: "translateY(-2px)" },
-                    }}
-                  >
-                    {labelBars.length > 0 && (
-                      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                        {labelBars.map((lbl) => (
-                          <Box
-                            key={lbl.id}
-                            title={lbl.name}
-                            sx={{
-                              width: 28,
-                              height: 8,
-                              borderRadius: "4px",
-                              bgcolor: labelColorValue(lbl.color, theme),
-                            }}
-                          />
-                        ))}
-                        {hiddenLabels.length > 0 && (
-                          <Box
-                            title={hiddenLabels.map((l) => l.name).join(", ")}
-                            sx={{
-                              minWidth: 28,
-                              height: 14,
-                              px: 0.4,
-                              borderRadius: "4px",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              bgcolor: "action.selected",
-                              color: "text.secondary",
-                              fontSize: "0.575rem",
-                              fontWeight: 700,
-                              lineHeight: 1,
-                            }}
-                          >
-                            +{hiddenLabels.length}
-                          </Box>
-                        )}
-                      </Box>
-                    )}
-                    {/* No `#issueNumber` line here — the number lives in the
-                        detail dialog; the title is the card's first line now */}
-                    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 1 }}>
-                      <Typography variant="subtitle2" fontWeight={700} sx={{ lineHeight: 1.4, flex: 1, minWidth: 0 }}>
-                        {issue.title}
-                      </Typography>
-                      {issue.appName && (
-                        <Chip
-                          label={issue.appName}
-                          size="small"
+                <Paper
+                  key={issue.id}
+                  variant="outlined"
+                  onClick={() => setDetailIssue(issue)}
+                  sx={{
+                    // compact cell: 1.25/0.75 padding+gap (was 2/1.25) — a
+                    // folder row should read as a list of tickets, not posters
+                    p: 1.25,
+                    cursor: "pointer",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 0.75,
+                    borderRadius: 3,
+                    // the card's own outline turns red while it sits past a
+                    // stale rule — same rule, same look as the Kanban board
+                    ...(staleDays != null
+                      ? { border: "2px solid", borderColor: "error.main" }
+                      : {}),
+                    transition: "box-shadow .15s ease, transform .15s ease",
+                    "&:hover": { boxShadow: 4, transform: "translateY(-2px)" },
+                  }}
+                >
+                  {/* Label colour stubs + the stale notice — SAME shape as the
+                      Kanban card (TrelloCardContent): the row exists whenever
+                      EITHER half does, so a stale card with no labels still
+                      says "ค้าง N วัน" (alone, on the right). */}
+                  {(staleDays != null || labelBars.length > 0) && (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                      {labelBars.map((lbl) => (
+                        <Box
+                          key={lbl.id}
+                          title={lbl.name}
                           sx={{
-                            // folder-card chip metrics (16px/0.6rem) — one notch
-                            // under the Kanban card's 18px now that the cell is
-                            // compact, so the pill doesn't out-shout the title
-                            height: 16,
-                            fontSize: "0.6rem",
-                            fontWeight: 600,
-                            flexShrink: 0,
-                            ml: 0.5,
-                            bgcolor: "action.selected",
-                            color: "text.secondary",
+                            width: 28,
+                            height: 8,
+                            borderRadius: "4px",
+                            bgcolor: labelColorValue(lbl.color, theme),
                           }}
                         />
+                      ))}
+                      {hiddenLabels.length > 0 && (
+                        <Box
+                          title={hiddenLabels.map((l) => l.name).join(", ")}
+                          sx={{
+                            minWidth: 28,
+                            height: 14,
+                            px: 0.4,
+                            borderRadius: "4px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            bgcolor: "action.selected",
+                            color: "text.secondary",
+                            fontSize: "0.575rem",
+                            fontWeight: 700,
+                            lineHeight: 1,
+                          }}
+                        >
+                          +{hiddenLabels.length}
+                        </Box>
+                      )}
+                      {/* Plain red text pushed to the RIGHT of the stubs —
+                          the Kanban card's treatment byte-for-byte (no chip,
+                          no clock icon, no background, same 0.7rem metrics);
+                          `ml: "auto"` keeps the labels on the left edge. */}
+                      {staleDays != null && (
+                        <Typography
+                          sx={{
+                            ml: "auto",
+                            color: "error.main",
+                            fontSize: "0.7rem",
+                            fontWeight: 700,
+                            lineHeight: 1,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {t("staleBadge", { days: staleDays })}
+                        </Typography>
                       )}
                     </Box>
-
-                    {/* Drive-style preview: the first image attachment only —
-                        cards without one render no plate at all */}
-                    <FolderThumb
-                      issue={issue}
-                      color={statusColor}
-                      enabled={canViewAttachments}
-                    />
-
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                  )}
+                  {/* No `#issueNumber` line here — the number lives in the
+                      detail dialog; the title is the card's first line now */}
+                  <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 1 }}>
+                    <Typography variant="subtitle2" fontWeight={700} sx={{ lineHeight: 1.4, flex: 1, minWidth: 0 }}>
+                      {issue.title}
+                    </Typography>
+                    {issue.appName && (
                       <Chip
+                        label={issue.appName}
                         size="small"
-                        label={issue.statusName ?? "—"}
-                        onClick={(e) => {
-                          if (!statusEditable) return;
-                          e.stopPropagation();
-                          setStatusMenu({ el: e.currentTarget, issue });
-                        }}
-                        clickable={statusEditable}
-                        icon={
-                          issue.isLocked ? (
-                            // `color="inherit"` keeps the lock readable on the
-                            // solid plate — without it MUI paints the icon its
-                            // default grey regardless of the chip's text colour
-                            <LockIcon color="inherit" sx={{ fontSize: 12 }} />
-                          ) : undefined
-                        }
                         sx={{
-                          ...statusChipSx(statusColor, theme),
-                          // Folder-card metrics: 16px/0.6rem — one notch under
-                          // the Kanban card's 18px/0.65rem (TrelloCardContent),
-                          // since this cell is compact (220px, p 1.25) and a
-                          // full-size pill out-shouts the title in it.
+                          // folder-card chip metrics (16px/0.6rem) — one notch
+                          // under the Kanban card's 18px now that the cell is
+                          // compact, so the pill doesn't out-shout the title
                           height: 16,
                           fontSize: "0.6rem",
                           fontWeight: 600,
-                          cursor: statusEditable ? "pointer" : "default",
-                          // re-assert the plate: MUI's clickable:hover would
-                          // otherwise swap it for the grey action overlay
-                          "&:hover": statusEditable
-                            ? { bgcolor: darken(statusColor, 0.12) }
-                            : undefined,
+                          flexShrink: 0,
+                          ml: 0.5,
+                          bgcolor: "action.selected",
+                          color: "text.secondary",
                         }}
                       />
-                      {issue.priorityName && (
-                        <Chip
-                          size="small"
-                          variant="outlined"
-                          label={priorityLabel(t, issue.priorityName)}
-                          color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
-                          sx={{ height: 16, fontSize: "0.6rem", fontWeight: 600 }}
-                        />
-                      )}
-                      {/* Stale past a rule's day count — the same always-on
-                          badge as the Kanban card, folder metrics */}
-                      {staleDays != null && (
-                        <Chip
-                          icon={<AccessTimeIcon sx={{ fontSize: 12, color: "error.main" }} />}
-                          label={t("staleBadge", { days: staleDays })}
-                          size="small"
-                          color="error"
-                          variant="outlined"
-                          sx={{ height: 16, fontSize: "0.6rem", fontWeight: 600 }}
-                        />
-                      )}
-                      <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 0.75 }}>
-                        {issue.commentCount > 0 && (
-                          <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
-                            <ChatBubbleOutlineIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-                            <Typography variant="caption" color="text.secondary">
-                              {issue.commentCount}
-                            </Typography>
-                          </Box>
-                        )}
-                        {issue.attachmentCount > 0 && (
-                          <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
-                            <AttachFileIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-                            <Typography variant="caption" color="text.secondary">
-                              {issue.attachmentCount}
-                            </Typography>
-                          </Box>
-                        )}
-                      </Box>
-                    </Box>
+                    )}
+                  </Box>
 
-                    {/* No description preview either — the full text (editable)
-                        lives in the detail dialog, which a card click opens.
-                        Pinned to the cell floor so footers line up across a
-                        mixed row — a card with a thumb is taller than one without */}
-                    <Divider sx={{ mt: "auto" }} />
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                      {assignee ? (
-                        <Avatar
-                          sx={{
-                            width: 22,
-                            height: 22,
-                            fontSize: "0.7rem",
-                            fontWeight: 700,
-                            bgcolor: "primary.main",
-                            color: "primary.contrastText",
-                          }}
-                        >
-                          {assignee.charAt(0).toUpperCase()}
-                        </Avatar>
-                      ) : (
-                        <Avatar
-                          sx={{
-                            width: 22,
-                            height: 22,
-                            bgcolor: theme.palette.grey[300],
-                            color: theme.palette.grey[600],
-                          }}
-                        >
-                          <PersonIcon sx={{ fontSize: 14 }} />
-                        </Avatar>
+                  {/* Drive-style preview: the first image attachment only —
+                      cards without one render no plate at all */}
+                  <FolderThumb
+                    issue={issue}
+                    color={statusColor}
+                    enabled={canViewAttachments}
+                  />
+
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                    <Chip
+                      size="small"
+                      label={issue.statusName ?? "—"}
+                      onClick={(e) => {
+                        if (!statusEditable) return;
+                        e.stopPropagation();
+                        setStatusMenu({ el: e.currentTarget, issue });
+                      }}
+                      clickable={statusEditable}
+                      icon={
+                        issue.isLocked ? (
+                          // `color="inherit"` keeps the lock readable on the
+                          // solid plate — without it MUI paints the icon its
+                          // default grey regardless of the chip's text colour
+                          <LockIcon color="inherit" sx={{ fontSize: 12 }} />
+                        ) : undefined
+                      }
+                      sx={{
+                        ...statusChipSx(statusColor, theme),
+                        // Folder-card metrics: 16px/0.6rem — one notch under
+                        // the Kanban card's 18px/0.65rem (TrelloCardContent),
+                        // since this cell is compact (220px, p 1.25) and a
+                        // full-size pill out-shouts the title in it.
+                        height: 16,
+                        fontSize: "0.6rem",
+                        fontWeight: 600,
+                        cursor: statusEditable ? "pointer" : "default",
+                        // re-assert the plate: MUI's clickable:hover would
+                        // otherwise swap it for the grey action overlay
+                        "&:hover": statusEditable
+                          ? { bgcolor: darken(statusColor, 0.12) }
+                          : undefined,
+                      }}
+                    />
+                    {issue.priorityName && (
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={priorityLabel(t, issue.priorityName)}
+                        color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
+                        sx={{ height: 16, fontSize: "0.6rem", fontWeight: 600 }}
+                      />
+                    )}
+                    {/* Stale past a rule's day count — the notice lives in the
+                        LABEL row above as plain red text (the Kanban card's
+                        treatment), not as a chip here any more */}
+                    <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 0.75 }}>
+                      {issue.commentCount > 0 && (
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
+                          <ChatBubbleOutlineIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+                          <Typography variant="caption" color="text.secondary">
+                            {issue.commentCount}
+                          </Typography>
+                        </Box>
                       )}
-                      <Typography variant="caption" color="text.secondary" noWrap sx={{ flex: 1 }}>
-                        {assignee ?? "—"}
-                      </Typography>
-                      <Box sx={{ display: "flex", alignItems: "center", gap: 0.35, flexShrink: 0 }}>
-                        <CalendarTodayIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-                        <Typography variant="caption" color="text.secondary">
-                          {formatDate(issue.createdAt)}
-                        </Typography>
-                      </Box>
+                      {issue.attachmentCount > 0 && (
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
+                          <AttachFileIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+                          <Typography variant="caption" color="text.secondary">
+                            {issue.attachmentCount}
+                          </Typography>
+                        </Box>
+                      )}
                     </Box>
-                  </Paper>
-                  </Tooltip>
+                  </Box>
+
+                  {/* No description preview either — the full text (editable)
+                      lives in the detail dialog, which a card click opens.
+                      Pinned to the cell floor so footers line up across a
+                      mixed row — a card with a thumb is taller than one without */}
+                  <Divider sx={{ mt: "auto" }} />
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                    {assignee ? (
+                      <Avatar
+                        sx={{
+                          width: 22,
+                          height: 22,
+                          fontSize: "0.7rem",
+                          fontWeight: 700,
+                          bgcolor: "primary.main",
+                          color: "primary.contrastText",
+                        }}
+                      >
+                        {assignee.charAt(0).toUpperCase()}
+                      </Avatar>
+                    ) : (
+                      <Avatar
+                        sx={{
+                          width: 22,
+                          height: 22,
+                          bgcolor: theme.palette.grey[300],
+                          color: theme.palette.grey[600],
+                        }}
+                      >
+                        <PersonIcon sx={{ fontSize: 14 }} />
+                      </Avatar>
+                    )}
+                    <Typography variant="caption" color="text.secondary" noWrap sx={{ flex: 1 }}>
+                      {assignee ?? "—"}
+                    </Typography>
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.35, flexShrink: 0 }}>
+                      <CalendarTodayIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+                      <Typography variant="caption" color="text.secondary">
+                        {formatDate(issue.createdAt)}
+                      </Typography>
+                    </Box>
+                  </Box>
+                </Paper>
                 );
               })}
             </Box>
@@ -5461,12 +5909,16 @@ function BoardsPageInner() {
   const isTableView = view === "table";
   const isFolderView = view === "folder";
   /**
-   * Kanban column card order — "entered this column when": `desc` (default,
-   * newest entry on top) or `asc` (longest-sitting on top, which floats the
-   * cards the stale rules are about to catch). Only the board reads it; the
-   * table / folder / reports keep their own order. The choice survives a
-   * reload (localStorage) — read in an effect because SSR has no `localStorage`,
-   * and a stored `desc` equals the default so it never costs a re-render.
+   * Card order for EVERY view — "entered this column when": `desc` (default,
+   * newest status change on top) or `asc` (longest-sitting on top, which
+   * floats the cards the stale rules are about to catch). The Kanban columns
+   * ask the API for it (`?sortBy=statusChangedAt`), the table and the folder
+   * grid sort the same list with the same comparator (`sortByEnteredAt`), and
+   * the folder's dropdown picks the CRITERION while this flips its direction.
+   * `/reports` keeps its own `createdAt` order — out of scope. The choice
+   * survives a reload (localStorage) — read in an effect because SSR has no
+   * `localStorage`, and a stored `desc` equals the default so it never costs
+   * a re-render.
    */
   const [cardOrder, setCardOrder] = useState<"desc" | "asc">("desc");
   useEffect(() => {
@@ -5533,8 +5985,14 @@ function BoardsPageInner() {
   const [trashedIssues, setTrashedIssues] = useState<TrashedIssue[]>([]);
   const [trashDetailIssue, setTrashDetailIssue] = useState<TrashedIssue | null>(null);
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
+  const { notify } = useNotification();
+  const fail = useCallback(
+    (msg: string | null) => {
+      if (msg) notify(msg, "error");
+    },
+    [notify],
+  );
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // `?issue=<id>` comes from a notification deep link and opens one card's
   // detail dialog directly, whichever view (table/kanban) is active
   const issueParamRaw = searchParams.get("issue");
@@ -5693,16 +6151,14 @@ function BoardsPageInner() {
       }
       const firstError = results.find((r) => r.status === "rejected");
       if (firstError && firstError.status === "rejected") {
-        setError(getErrorMessage(firstError.reason, "โหลดข้อมูลไม่สำเร็จ"));
-      } else {
-        setError(null);
+        fail(getErrorMessage(firstError.reason, "โหลดข้อมูลไม่สำเร็จ"));
       }
     } catch (e) {
-      setError(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ"));
+      fail(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ"));
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [roleName, refreshTimers]);
+  }, [roleName, refreshTimers, fail]);
 
   useEffect(() => {
     loadData();
@@ -5977,7 +6433,22 @@ function BoardsPageInner() {
           // filters to nothing and only a refresh clears it.
           inputProps={{ autoComplete: "off", name: "board-search" }}
         />
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
+        <Box
+          className="board-toolbar-icons"
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            ml: "auto",
+            // The ↑↓ toggle lives in here invisible until this group is
+            // hovered or any button in it takes keyboard focus (a touch
+            // device never gets here — see the `hover: none` escape hatch).
+            "&:hover .board-sort-btn, &:focus-within .board-sort-btn": {
+              opacity: 1,
+              pointerEvents: "auto",
+            },
+          }}
+        >
           {!isCustomer && (
             <>
               <Tooltip title={t("board")}>
@@ -6026,32 +6497,47 @@ function BoardsPageInner() {
                   <FolderIcon fontSize="small" />
                 </IconButton>
               </Tooltip>
-              {isBoardView && (
-                // Flips the columns between "newest entry on top" (desc) and
-                // "longest-sitting on top" (asc) — the stale rules' targets
-                // float up in asc. Board-only: the table/folder/reports order
-                // is untouched, and customers never reach this view.
-                <Tooltip title={cardOrder === "desc" ? t("cardOrderNewest") : t("cardOrderOldest")}>
-                  <IconButton
-                    size="small"
-                    aria-label={cardOrder === "desc" ? t("cardOrderNewest") : t("cardOrderOldest")}
-                    onClick={toggleCardOrder}
-                    sx={{ width: 36, height: 36, color: "text.secondary" }}
-                  >
-                    <SwapVertIcon
-                      fontSize="small"
-                      sx={{
-                        // the glyph points the way the list reads: ↓ newest
-                        // first (default), ↑ oldest first after the flip
-                        transform: cardOrder === "asc" ? "rotate(180deg)" : "none",
-                        transition: "transform 150ms ease-in-out",
-                      }}
-                    />
-                  </IconButton>
-                </Tooltip>
-              )}
             </>
           )}
+          {/* Flips the ORDER of whatever view is on: the Kanban columns'
+              "newest entry on top" (desc) ↔ "longest-sitting on top" (asc) —
+              the stale rules' targets float up in asc — and the very same
+              arrow flips the table's rows and the folder grid's chosen
+              criterion (`sortByEnteredAt`, so board/table/folder always
+              agree). Shown for EVERY role (customers live in the table) and
+              EVERY view; hidden until this icon group is hovered so the
+              toolbar stays quiet, revealed on keyboard focus too, and never
+              hidden on touch screens where there is no hover to reveal it.
+              The label is deliberately just "เรียง" — the glyph's rotation is
+              the state indicator. */}
+          <Tooltip title={t("cardOrder")}>
+            <IconButton
+              size="small"
+              className="board-sort-btn"
+              aria-label={t("cardOrder")}
+              onClick={toggleCardOrder}
+              sx={{
+                width: 36,
+                height: 36,
+                color: "text.secondary",
+                opacity: 0,
+                pointerEvents: "none",
+                transition: "opacity 150ms ease-in-out",
+                // no hover on touch → never hide what a finger cannot reveal
+                "@media (hover: none)": { opacity: 1, pointerEvents: "auto" },
+              }}
+            >
+              <SwapVertIcon
+                fontSize="small"
+                sx={{
+                  // the glyph points the way the list reads: ↓ newest
+                  // first (default), ↑ oldest first after the flip
+                  transform: cardOrder === "asc" ? "rotate(180deg)" : "none",
+                  transition: "transform 150ms ease-in-out",
+                }}
+              />
+            </IconButton>
+          </Tooltip>
           {can("issue.trash.view") && (
             <Tooltip title={t("recycleBin")}>
               <IconButton
@@ -6146,11 +6632,6 @@ function BoardsPageInner() {
     <RequirePermission permission="board.view">
       <DashboardLayout header={header}>
         <Box sx={{ pb: 2 }}>
-          {error && (
-            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
-              {error}
-            </Alert>
-          )}
           {loading ? (
             <Box sx={{ display: "flex", justifyContent: "center", p: 4 }}>
               <CircularProgress />
@@ -6179,6 +6660,7 @@ function BoardsPageInner() {
                 staleRules={staleRules}
                 hideStaleRules={hideStaleRules}
                 onRefresh={() => loadData(false)}
+                cardOrder={cardOrder}
                 toolbar={toolbar}
               />
             ) : isBoardView ? (
@@ -6226,6 +6708,7 @@ function BoardsPageInner() {
                 selectedReporterIds={selectedReporterIds}
                 searchQuery={searchQuery}
                 canManage={canManage}
+                canEdit={canEdit}
                 canSeeReporter={canSeeReporter}
                 canViewOwnHistory={canViewOwnHistory}
                 timers={timers}
@@ -6233,6 +6716,7 @@ function BoardsPageInner() {
                 canSeeActualTime={canSeeActualTime}
                 currentUserId={currentUserId}
                 onRefresh={() => loadData(false)}
+                cardOrder={cardOrder}
                 toolbar={toolbar}
               />
             ))}

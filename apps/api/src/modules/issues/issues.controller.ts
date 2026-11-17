@@ -19,6 +19,7 @@ import { CurrentUser } from "../auth/current-user.decorator";
 import { AuthUser, actorInfo } from "../auth/auth-user";
 import { ActorInfo, ActivityLogsService } from "../activity-logs/activity-logs.service";
 import type { IssueTaskType } from "@kanban/shared";
+import { parseNoTaskType, parseTaskTypes } from "../../common/task-types";
 
 function parseIdList(value?: string): number[] {
   return (value ?? "")
@@ -59,6 +60,14 @@ export class IssuesController {
       companyIds?: string;
       assigneeIds?: string;
       reporterIds?: string;
+      /**
+       * ประเภทงาน (`bug,ma,requirement`) — whitelist ใน `common/task-types.ts`,
+       * ชุดเดียวกับ `GET /reports/summary` ให้ทุกมุมมองของหน้ารายงานนับงาน
+       * ชุดเดียวกัน
+       */
+      taskTypes?: string;
+      /** "ไม่ระบุประเภทงาน" (`task_type IS NULL`) — OR-part ของ dimension เดียวกัน. */
+      noTaskType?: string;
       createdFrom?: string;
       createdTo?: string;
       sortBy?: string;
@@ -80,6 +89,9 @@ export class IssuesController {
       companyIds: parseIdList(query.companyIds),
       assigneeIds: parseIdList(query.assigneeIds),
       reporterIds: parseIdList(query.reporterIds),
+      // ประเภทงาน — whitelist กลาง + bucket NULL (ดู common/task-types.ts)
+      taskTypes: parseTaskTypes(query.taskTypes),
+      noTaskType: parseNoTaskType(query.noTaskType),
       createdFrom: query.createdFrom,
       createdTo: query.createdTo,
       sortBy: query.sortBy,

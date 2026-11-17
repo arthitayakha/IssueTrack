@@ -6,6 +6,7 @@ import { Permissions } from "../auth/permissions.decorator";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { AuthUser } from "../auth/auth-user";
 import { normalizePagination } from "../../common/pagination";
+import { parseNoTaskType, parseTaskTypes } from "../../common/task-types";
 
 function parseIdList(value?: string): number[] {
   return (value ?? "")
@@ -36,18 +37,10 @@ function parseFilters(query: Record<string, string | undefined>): ReportIssueFil
     noCategory: query.noCategory === "1" || query.noCategory === "true",
     noApp: query.noApp === "1" || query.noApp === "true",
     companyIds: parseIdList(query.companyIds),
+    // ประเภทงาน — whitelist กลาง (`common/task-types.ts`) ชุดเดียวกับ GET /issues
     taskTypes: parseTaskTypes(query.taskTypes),
+    noTaskType: parseNoTaskType(query.noTaskType),
   };
-}
-
-/** `?taskTypes=ma,requirement` → whitelist the 3 known values, drop the rest. */
-const TASK_TYPES = new Set(["bug", "ma", "requirement"]);
-function parseTaskTypes(value?: string): string[] | undefined {
-  const list = (value ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => TASK_TYPES.has(s));
-  return list.length ? list : undefined;
 }
 
 /**

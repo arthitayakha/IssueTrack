@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Avatar, Box, Card, MenuItem, Select, Typography } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
+import CheckIcon from "@mui/icons-material/Check";
 import { useTranslations } from "next-intl";
 import type { DashboardWorkloadRow } from "@kanban/shared";
 
@@ -13,7 +14,9 @@ import type { DashboardWorkloadRow } from "@kanban/shared";
  *
  * Two client-side extras, both fed by the rows alone (no second request):
  *   - a position dropdown, rendered only when some row actually carries a
- *     position — the options are the positions present in the list;
+ *     position — the options are the positions present in the list; it is
+ *     the SAME white pill as the dashboard's company picker (rounded,
+ *     always-on divider border, tinted menu rows, a check on the picked one);
  *   - a score bar per row (share of the busiest person's open load), shown
  *     only once the list is long enough to make comparison worthwhile.
  *
@@ -25,6 +28,21 @@ const SCORE_BAR_MIN_ROWS = 5;
 
 /** The dropdown's "no position" sentinel — ids are positive ints. */
 const NO_POSITION = "none";
+
+/**
+ * One row of the position menu — mirrors `COMPANY_ITEM_SX` in
+ * `[locale]/page.tsx`: the company picker and this filter must look alike
+ * (rounded row, tinted when picked), so edit both copies together.
+ */
+const POSITION_ITEM_SX = {
+  borderRadius: "8px",
+  fontSize: 13,
+  py: 0.75,
+  px: 1.25,
+  gap: 1,
+  "&.Mui-selected": { bgcolor: "action.selected", fontWeight: 600 },
+  "&.Mui-selected:hover": { bgcolor: "action.selected" },
+} as const;
 
 export default function WorkloadCard({ rows }: { rows: DashboardWorkloadRow[] }) {
   const theme = useTheme();
@@ -104,17 +122,75 @@ export default function WorkloadCard({ rows }: { rows: DashboardWorkloadRow[] })
             displayEmpty
             size="small"
             aria-label={t("workload.allPositions")}
+            renderValue={(raw) => {
+              const value = typeof raw === "string" ? raw : "";
+              const picked = positionOptions.find((o) => o.value === value);
+              return (
+                <Typography
+                  sx={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {picked ? picked.label : t("workload.allPositions")}
+                </Typography>
+              );
+            }}
+            MenuProps={{
+              slotProps: {
+                paper: {
+                  sx: {
+                    borderRadius: "14px",
+                    mt: 1,
+                    p: 0.75,
+                    border: "1px solid",
+                    borderColor: "divider",
+                    boxShadow: theme.custom.cardShadow,
+                    maxWidth: 320,
+                  },
+                },
+              },
+            }}
             sx={{
               flexShrink: 0,
-              minWidth: 140,
+              minWidth: 150,
+              maxWidth: { xs: "100%", sm: 300 },
               fontSize: 13,
+              bgcolor: "common.white",
+              borderRadius: "10px",
+              transition: "background-color 150ms ease",
+              "&:hover": { bgcolor: "grey.50" },
+              // divider line at rest (white-on-white would otherwise vanish) →
+              // grey.400 on hover → primary on focus
+              // (same pill as the dashboard's company picker)
+              "& .MuiOutlinedInput-notchedOutline": { border: "1px solid", borderColor: "divider" },
+              "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: "grey.400" },
+              "&.Mui-focused .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main" },
               "& .MuiSelect-select": { py: 0.75, pr: "28px !important" },
             }}
           >
-            <MenuItem value="">{t("workload.allPositions")}</MenuItem>
-            {positionOptions.map((o) => (
-              <MenuItem key={o.value} value={o.value}>
-                {o.label}
+            {[{ value: "", label: t("workload.allPositions") }, ...positionOptions].map((o) => (
+              <MenuItem key={o.value} value={o.value} sx={POSITION_ITEM_SX}>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+                  <Typography
+                    sx={{
+                      fontSize: 13,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {o.label}
+                  </Typography>
+                  {positionFilter === o.value && (
+                    <CheckIcon
+                      sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }}
+                    />
+                  )}
+                </Box>
               </MenuItem>
             ))}
           </Select>

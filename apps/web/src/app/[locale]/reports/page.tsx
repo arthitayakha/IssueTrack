@@ -14,10 +14,13 @@ import { usePermissions } from "@/lib/permissions";
 import {
   fetchPeriodUsage,
   fetchUsageCounts,
+  taskBreakdownParts,
+  taskTypeLabels,
   type DeductionState,
   type PeriodIssue,
   type UsageCount,
 } from "@/lib/apps-api";
+import type { IssueTaskType } from "@kanban/shared";
 import {
   buildCompanyRows,
   buildCsv,
@@ -32,9 +35,11 @@ import {
   periodUsedOf,
   REPORT_PAGE_SIZE,
   SORTABLE_FIELDS,
+  TASK_TYPE_VALUES,
 } from "@/lib/reports-api";
 import type {
   CompanyRow,
+  ContractKind,
   FilterOptions,
   IssueRow,
   ReportFilters,
@@ -146,6 +151,26 @@ function parseIds(raw: string | null): number[] {
     .filter((n) => Number.isFinite(n));
 }
 
+/** `?taskTypes=bug,ma` → whitelist ชุดเดียวกับ backend (ของปลอมหลุดทั้งหมด). */
+function parseTaskTypes(raw: string | null): IssueTaskType[] {
+  if (!raw) return [];
+  const allowed = new Set<string>(TASK_TYPE_VALUES);
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s): s is IssueTaskType => allowed.has(s));
+}
+
+/** `?kind=renew,buy` — 2 ค่าของ `app_companies.kind` (ตัวกรองฝั่ง client). */
+function parseKinds(raw: string | null): ContractKind[] {
+  if (!raw) return [];
+  const allowed = new Set<string>(["renew", "buy"]);
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s): s is ContractKind => allowed.has(s));
+}
+
 function parseView(raw: string): ReportView {
   const v = new URLSearchParams(raw).get("view") ?? "issues";
   return (REPORT_VIEW_ORDER as string[]).includes(v) ? (v as ReportView) : "issues";
@@ -184,6 +209,10 @@ function paramsToFilters(raw: string): ReportFilters {
     noApp: p.get("noApp") === "1" || p.get("noApp") === "true",
     noCategory: p.get("noCategory") === "1" || p.get("noCategory") === "true",
     companyIds: parseIds(p.get("company")),
+    // ประเภทงาน (3 ค่า + "ไม่ระบุ") และประเภทสัญญา (renew/buy) — ทั้งคู่ whitelist
+    taskTypes: parseTaskTypes(p.get("taskTypes")),
+    noTaskType: p.get("noTaskType") === "1" || p.get("noTaskType") === "true",
+    kinds: parseKinds(p.get("kind")),
   };
 }
 
@@ -201,6 +230,11 @@ function filtersToPatch(f: ReportFilters) {
     noApp: f.noApp ? 1 : null,
     noCategory: f.noCategory ? 1 : null,
     company: f.companyIds.length ? f.companyIds : null,
+    // ประเภทงาน → `?taskTypes=` (ส่งให้ /issues และ /reports/summary)
+    taskTypes: f.taskTypes.length ? f.taskTypes : null,
+    noTaskType: f.noTaskType ? 1 : null,
+    // ประเภทสัญญา → `?kind=` (client-side ของมุมมองตามบริษัทเท่านั้น)
+    kind: f.kinds.length ? f.kinds : null,
   };
 }
 
@@ -223,6 +257,8 @@ function ReportsScreen() {
    * ของแถวรายละเอียด "รายการที่ตัด" ตอน export ให้คำเดียวกับที่ตารางกางบนจอ
    */
   const bt = useTranslations("Boards");
+  /** ป้ายคอลัมน์ "ประเภทงาน" — ฟังก์ชันเดียวกับที่ตารางจอใช้ (จอ/ไฟล์ห้ามต่างกัน) */
+  const typeLabels = useMemo(() => taskTypeLabels(bt), [bt]);
   const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
@@ -240,7 +276,8 @@ function ReportsScreen() {
   const filterKey = useMemo(() => JSON.stringify(filters), [filters]);
 
   const updateParams = useCallback(
-    (patch: Record<string, string | number | number[] | null>) => {
+    // `string[]` ด้วย — ตัวกรองตัวหนังสือ (`taskTypes`, `kind`) ต่อเป็น comma-list
+    (patch: Record<string, string | number | Array<string | number> | null>) => {
       const next = new URLSearchParams(searchParams.toString());
       for (const [key, value] of Object.entries(patch)) {
         if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) {
@@ -809,6 +846,24 @@ function ReportsScreen() {
             { key: "remaining", header: t("columns.remaining"), value: (r) => remainingOf(r) },
             // ระดับแถว (แถว = 1 รอบ) — ค่าจาก `usage-counts` เหมือนที่จอโชว์
             { key: "deductedCount", header: t("columns.deductedCount"), value: (r) => deductedCountOf(r) },
+            /**
+             * **ประเภทงาน** — ระดับคู่ โชว์**เฉพาะแถวล่าสุดของคู่** เหมือนจอ
+             * ทุกประการ (แถวดเก่า = `""` เพื่อไม่ให้บวกซ้ำตอนเอาไป sum ใน
+             * Excel) · ป้ายจาก `taskBreakdownParts()` ตัวเดียวกับตาราง
+             */
+            {
+              key: "taskType",
+              header: t("columns.taskType"),
+              value: (r) => {
+                if (r.recordId == null) return "—";
+                if (!r.isLatestOfPair) return "";
+                const parts = taskBreakdownParts(
+                  (exportCounts ?? deductionCounts.byRecord).get(r.recordId)?.byType,
+                  typeLabels,
+                );
+                return parts.length > 0 ? parts.join(" · ") : "—";
+              },
+            },
           ];
           return matrix(cols, rs, hidden, orderKeys);
         }
@@ -816,7 +871,7 @@ function ReportsScreen() {
           return { keys: [], headers: [], data: [] };
       }
     },
-    [view, locale, t, st, hidden, orderKeys, deductionCounts],
+    [view, locale, t, st, hidden, orderKeys, deductionCounts, typeLabels],
   );
 
   /**

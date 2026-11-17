@@ -35,6 +35,16 @@ export type ReportView = "issues" | "assignee" | "app" | "company";
 /** Mirrors theme.custom.columnColors — drives the soft status dots. */
 export type StatusKey = "backlog" | "todo" | "doing" | "review" | "done";
 
+/**
+ * **ประเภทสัญญา** ของแถวในมุมมอง "ตามบริษัท" — ค่าของ `app_companies.kind`
+ * (`renew` = ต่ออายุ/เพิ่มรายการ, `buy` = ซื้อชั่วโมง) · ใช้ทั้งตัวกรอง `kinds`
+ * และคอลัมน์ "ประเภท" ของตาราง ให้สองที่อ่าน type เดียวกัน
+ */
+export type ContractKind = "renew" | "buy";
+
+/** ค่าที่ตัวกรองประเภทงานรับได้ — whitelist ชุดเดียวกับฝั่ง backend. */
+export const TASK_TYPE_VALUES: IssueTaskType[] = ["bug", "ma", "requirement"];
+
 export interface ReportFilters {
   /** yyyy-mm-dd, empty = no bound */
   from: string;
@@ -55,12 +65,28 @@ export interface ReportFilters {
   noCategory: boolean;
   companyIds: number[];
   /**
-   * ประเภทงาน (`IssueTaskType[]`) — ใช้ตอนคำนวณ "ใช้ไป" ของ MA
-   * (`fetchAppUsageAllTime` ส่ง `["ma"]` เพื่อไม่นับเวลา
-   * ของ bug/requirement/NULL เข้าการหัก). ตัวกรองของหน้ารายงานไม่ได้ตั้งค่านี้ →
-   * จอรายงานเห็นเวลาครบทุก type เสมอ
+   * **ประเภทงาน** (`IssueTaskType[]`) — ตัวกรองจริงของหน้ารายงาน (section
+   * "ประเภทงาน" ใน popover) ส่งเป็น `?taskTypes=bug,ma,requirement` ให้ทุก
+   * มุมมองที่มีงาน (รายการปัญหา / ตามผู้รับผิดชอบ / ตามแอป) · whitelist ฝั่ง
+   * backend กรอกมาเฉพาะ 3 ค่านี้แล้ว
+   *
+   * ⚠️ แยกจาก `fetchAppUsageAllTime()` ที่ยิง `taskTypes=ma` **เอง** เพื่อคำนวณ
+   * "ใช้ไป" — ตัวนั้นไม่ได้ผ่าน `ReportFilters` จึงไม่กระทบตัวเลข MA ไม่ว่า
+   * user จะกรอง type อะไรบนจอ
    */
-  taskTypes?: IssueTaskType[];
+  taskTypes: IssueTaskType[];
+  /**
+   * "ไม่ระบุประเภทงาน" (`task_type IS NULL`) — bucket โดนัทของ dimension
+   * เดียวกันกับ `noApp` / `noCategory`: ติ๊กรวมกับ type จริง = OR บนฝั่ง
+   * server (`IN (...) OR IS NULL`) ไม่ใช่ AND ที่จะว่างเสมอ
+   */
+  noTaskType: boolean;
+  /**
+   * **ประเภทสัญญา** (`app_companies.kind`) — `renew` = ต่ออายุ/เพิ่มรายการ,
+   * `buy` = ซื้อชั่วโมง · **ใช้เฉพาะมุมมอง "ตามบริษัท"** ซึ่งแถวถูกสร้างใน
+   * เบราว์เซอร์ (`buildCompanyRows`) จึงกรองฝั่ง client ล้วน ไม่มี API call
+   */
+  kinds: ContractKind[];
 }
 
 export const EMPTY_FILTERS: ReportFilters = {
@@ -76,6 +102,9 @@ export const EMPTY_FILTERS: ReportFilters = {
   noApp: false,
   noCategory: false,
   companyIds: [],
+  taskTypes: [],
+  noTaskType: false,
+  kinds: [],
 };
 
 export interface SortState {
@@ -238,12 +267,20 @@ export interface CompanyRow {
   companyId: number | null;
   companyName: string | null;
   /** แถวสัญญานี้มาจากอะไร — `renew` (ต่ออายุ/เพิ่มรายการ) หรือ `buy` (ซื้อชั่วโมง) */
-  kind: "renew" | "buy" | null;
+  kind: ContractKind | null;
   startedAt: string | null;
   expiresAt: string | null;
   maHours: number | null;
   /** `app_companies.id` ของรอบนี้ — คีย์ของคอลัมน์ "รายการที่ตัด" */
   recordId: number | null;
+  /**
+   * แถวนี้เป็น**ช่วงล่าสุดของคู่** แอป×บริษัท (`recordId` มากสุดของคู่) หรือไม่ ·
+   * คอลัมน์ **"ประเภทงาน"** ซึ่งเป็นตัวเลข**ระดับคู่** โชว์**เฉพาะแถวนี้** เพื่อ
+   * ไม่ให้ตัวเลขซ้ำทุกรอบของคู่เดียวกัน และให้ CSV/PDF ไม่บวกซ้ำตอนเอาไป sum
+   * · `false` (แถวดเก่า / แอปยังไม่ผูกบริษัท) → เซลล์เว้นว่าง — ต่างจาก `—`
+   * ซึ่งแปลว่า "ดึงไม่รู้ค่า"
+   */
+  isLatestOfPair: boolean;
 }
 
 /** One row of `GET /reports/usage` — hours already narrowed to one แอป×บริษัท pair. */
@@ -280,10 +317,13 @@ export const EMPTY_FILTER_OPTIONS: FilterOptions = {
 /**
  * How many filter chips are lit — drives the badge on the toolbar's funnel.
  *
- * The `company` view is contract data: it offers only the company / app
- * sections and the search box (date range is hidden — it filters *issues*, not
- * contracts). Counting the other fields there would tint the badge for filters
- * the user cannot even see.
+ * The `company` view is contract data: it offers only the company / app /
+ * ประเภท sections and the search box (date range is hidden — it filters
+ * *issues*, not contracts). Counting the other fields there would tint the
+ * badge for filters the user cannot even see.
+ *
+ * A section counts as **one chip however many boxes are ticked inside it** —
+ * same rule as every other section (`noTaskType` rides with `taskTypes`).
  */
 export function activeFilterCount(f: ReportFilters, view?: ReportView): number {
   if (view === "company") {
@@ -291,6 +331,7 @@ export function activeFilterCount(f: ReportFilters, view?: ReportView): number {
     if (f.search.trim()) n += 1;
     if (f.appIds.length) n += 1;
     if (f.companyIds.length) n += 1;
+    if (f.kinds.length) n += 1;
     return n;
   }
   let n = 0;
@@ -301,6 +342,7 @@ export function activeFilterCount(f: ReportFilters, view?: ReportView): number {
   if (f.categoryIds.length || f.noCategory) n += 1;
   if (f.statusIds.length) n += 1;
   if (f.priorityIds.length) n += 1;
+  if (f.taskTypes.length || f.noTaskType) n += 1;
   if (f.appIds.length || f.noApp) n += 1;
   if (f.companyIds.length) n += 1;
   return n;
@@ -518,7 +560,11 @@ function filterParams(f: ReportFilters): URLSearchParams {
   if (f.appIds.length) p.set("appIds", f.appIds.join(","));
   if (f.noApp) p.set("noApp", "1");
   if (f.companyIds.length) p.set("companyIds", f.companyIds.join(","));
-  if (f.taskTypes?.length) p.set("taskTypes", f.taskTypes.join(","));
+  // ประเภทงาน — OR-part เดียวกับ noApp/noCategory (ดู ReportFilters.taskTypes)
+  if (f.taskTypes.length) p.set("taskTypes", f.taskTypes.join(","));
+  if (f.noTaskType) p.set("noTaskType", "1");
+  // `kinds` จงใจ**ไม่ถูกส่ง** — มันเป็นตัวกรอง client-side ของมุมมอง
+  // ตามบริษัท (แถวสร้างจาก GET /apps ในเบราว์เซอร์ ไม่ผ่าน endpoint ไหน)
   return p;
 }
 
@@ -806,9 +852,9 @@ export function periodUsedOf(
  *
  * - แอปที่ยังไม่ผูกบริษัทก็ได้แถว (`companyId: null` → โชว์ `—`) ไม่ให้ข้อมูล
  *   หายเงียบ — แล้วก็หายไปเองทันทีที่เปิดตัวกรองบริษัท
- * - กรองได้แค่ **บริษัท / แอป / ค้นหา** — ช่วงวันที่ถูกซ่อนในมุมมองนี้เพราะมัน
- *   กรอง "วันที่ของงาน" ไม่ใช่วันที่สัญญา ส่วนตัวกรองสถานะ/หมวด/ผู้รับ/ผู้แจ้ง
- *   ไม่มีความหมายกับแถวสัญญา
+ * - กรองได้ **บริษัท / แอป / ประเภท (renew|buy) / ค้นหา** — ช่วงวันที่ถูกซ่อนใน
+ *   มุมมองนี้เพราะมัน กรอง "วันที่ของงาน" ไม่ใช่วันที่สัญญา ส่วนตัวกรอง
+ *   สถานะ/หมวด/ผู้รับ/ผู้แจ้ง/ความสำคัญ/ประเภทงาน ไม่มีความหมายกับแถวสัญญา
  * - `search` จับทั้งชื่อแอปและชื่อบริษัท (case-insensitive)
  *
  * ไม่รวม "ชั่วโมงที่ใช้ทั้งหมด" / "คงเหลือ" — สองค่านั้นอ่านจาก map ระดับ
@@ -835,8 +881,9 @@ export function buildCompanyRows(
   const q = filters.search.trim().toLocaleLowerCase();
   const wantedCompanies = new Set(filters.companyIds);
   const wantedApps = new Set(filters.appIds);
+  const wantedKinds = new Set(filters.kinds);
 
-  const rows: CompanyRow[] = [];
+  const rows: Array<Omit<CompanyRow, "isLatestOfPair">> = [];
   for (const app of contracts) {
     // app ยังไม่ผูกบริษัท → 1 แถวว่าง (ไม่ใช่ 0 แถว) เพื่อไม่ให้หายเงียบ
     const links: Array<AppCompanyLink | null> =
@@ -847,6 +894,15 @@ export function buildCompanyRows(
         continue;
       }
       if (wantedApps.size > 0 && !wantedApps.has(app.id)) continue;
+      /**
+       * **ประเภทสัญญา** — เลือก renew/buy แล้วแถวที่ `kind` ว่าง (แอปยังไม่ผูก
+       * บริษัท → ไม่มีรอบสัญญาเลย) ถูกตัดออก เหมือน filter บริษัทที่ตัดแถว
+       * `[null]` อยู่แล้ว — สองฝั่งต้องตรงกัน ไม่งั้นจะเหลือแถว `—` ลอย ๆ
+       * ตอนเปิด filter ค้างอยู่
+       */
+      if (wantedKinds.size > 0 && (link == null || !wantedKinds.has(link.kind))) {
+        continue;
+      }
       if (
         q &&
         !app.name.toLocaleLowerCase().includes(q) &&
@@ -870,7 +926,28 @@ export function buildCompanyRows(
     }
   }
 
-  return sortRows("company", rows, sort) as CompanyRow[];
+  /**
+   * **แถวล่าสุดของแต่ละคู่** = `recordId` มากสุดในกลุ่มแถวที่ *เหลืออยู่หลัง
+   * กรองแล้ว* · คำนวณจากค่า max เอง **ไม่พึ่งลำดับ** ที่ API ส่งมา (กันเปลี่ยน
+   * ทีหลัง) · **ทำไมต้องหลังกรอง**: filter "ประเภท" ตัดได้เฉพาะแถวของบางรอบ
+   * (คู่เดียวกันมีได้ทั้ง renew และ buy) — ถ้าเทียบกับแถวทั้งคู่ก่อนกรอง แล้ว
+   * แถวล่าสุดถูกตัดทิ้ง คู่นั้นจะไม่มีแถวไหนโชว์ตัวเลขเลย
+   */
+  const latestByPair = new Map<string, number>();
+  for (const row of rows) {
+    if (row.recordId == null) continue;
+    const key = pairKey(row.appId, row.companyId);
+    const current = latestByPair.get(key);
+    if (current == null || row.recordId > current) latestByPair.set(key, row.recordId);
+  }
+
+  const withLatest: CompanyRow[] = rows.map((row) => ({
+    ...row,
+    isLatestOfPair:
+      row.recordId != null && latestByPair.get(pairKey(row.appId, row.companyId)) === row.recordId,
+  }));
+
+  return sortRows("company", withLatest, sort) as CompanyRow[];
 }
 
 /* ------------------------------------------------------------------ */

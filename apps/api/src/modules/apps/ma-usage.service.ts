@@ -79,6 +79,30 @@ export interface UsageCountResult {
   recordId: number;
   count: number;
   periodUsedHours: number;
+  /**
+   * **จำนวนงานของ "คู่ แอป×บริษัท" แยกตามประเภท** — ระดับ**คู่** (ไม่ผูกกับ
+   * รอบ) จึงได้ค่าเดียวกันทุกแถวของคู่เดียวกัน · ฝั่งรายงานเลือกโชว์เฉพาะ
+   * **แถวล่าสุดของคู่** เพื่อไม่ให้ตัวเลขซ้ำทุกรอบ (ดู `isLatestOfPair`)
+   * · `none` = ยังไม่ระบุ type (`task_type IS NULL` หรือค่าที่ไม่รู้จัก)
+   */
+  byType: TaskTypeCounts;
+}
+
+/**
+ * จำนวนงานแยกตาม type — 4 ช่องคงที่ · **ไม่กรอง `task_type`** ตอนนับ
+ * (ต่างจาก `DEDUCTED_TASK_TYPES` ที่ใช้กับชั่วโม์) จึงรวมบั๊ก / Requirement /
+ * ยังไม่ระบุ ด้วย และ**ไม่ต้องเคยกรอกเวลา**
+ */
+export interface TaskTypeCounts {
+  bug: number;
+  ma: number;
+  requirement: number;
+  none: number;
+}
+
+/** คู่ที่ไม่มีงานเลย — คืน 0 ทุกช่อง (รู้จริงว่าเป็น 0 ไม่ใช่ "ดึงไม่ได้") */
+function zeroTypeCounts(): TaskTypeCounts {
+  return { bug: 0, ma: 0, requirement: 0, none: 0 };
 }
 
 /** กันส่ง recordId เป็นพัน ๆ ตัวเข้ามา (หน้ารายงานไม่เกิน 100 แถว/หน้าอยู่แล้ว) */
@@ -341,6 +365,53 @@ export class MaUsageService {
   }
 
   /**
+   * **จำนวนงานของ "คู่ แอป×บริษัท" แยกตามประเภท** — ระดับ**คู่** ไม่ผูกกับรอบ
+   * และ**ไม่กรอง `task_type`** (ต่างจาก `deductionRows()` ที่กรองเฉพาะ `ma`
+   * เพื่อคำนวณชั่วโม์): บั๊ก / Requirement / ยังไม่ระบุ เข้าหมด และ**ไม่ต้อง
+   * เคยกรอกเวลา** จึงตอบคำถาม "โครงการนี้มีงานประเภทอะไรบ้าง" ได้จริง
+   *
+   * - เส้นผูกงาน→คู่ = **ผู้แจ้งมีบริษัท** (`issues.customer_id` →
+   *   `users.company_id`) เหมือนสูตรหัก MA → งานที่ไม่มีผู้แจ้ง/ผู้แจ้งไม่มี
+   *   บริษัท ไม่ตกเข้าคู่ไหน (จงใจ: คู่สัญญาบอกไม่ได้ว่างานนั้นของใคร)
+   * - งานถังขยะ (`deleted_at`) ถูกทิ้ง
+   * - คู่ที่ไม่มีงานเลย → ไม่มีแถวในผลลัพธ์ ให้ caller คืน `0` ทุกช่อง
+   *   (รู้จริงว่าเป็น 0 ต่างจาก id ที่ไม่มีแถวจริงซึ่งถูกตัดออกไปก่อนแล้ว)
+   * - นับ **ครั้งเดียวต่อหน้า** (ไม่ใช่ต่อแถว) — เรียกจาก `usageCounts()` เท่านั้น
+   */
+  private async pairTypeCounts(appIds: number[]): Promise<Map<string, TaskTypeCounts>> {
+    const out = new Map<string, TaskTypeCounts>();
+    if (appIds.length === 0) return out;
+
+    const raw = await this.issues
+      .createQueryBuilder("issue")
+      .leftJoin("issue.customer", "reporter")
+      .select("issue.app_id", "app_id")
+      .addSelect("reporter.company_id", "company_id")
+      .addSelect("issue.task_type", "task_type")
+      .addSelect("COUNT(*)::int", "n")
+      .where("issue.app_id IN (:...appIds)", { appIds })
+      .andWhere("issue.deleted_at IS NULL")
+      .andWhere("reporter.company_id IS NOT NULL")
+      .groupBy("issue.app_id")
+      .addGroupBy("reporter.company_id")
+      .addGroupBy("issue.task_type")
+      .getRawMany<{ app_id: string; company_id: string; task_type: string | null; n: string }>();
+
+    for (const row of raw) {
+      const key = pairKey(Number(row.app_id), Number(row.company_id));
+      // ค่าที่รู้จัก = 3 ค่าของ `IssueTaskType` · `NULL` / ค่าแปลก ๆ → `none`
+      const type: keyof TaskTypeCounts =
+        row.task_type === "bug" || row.task_type === "ma" || row.task_type === "requirement"
+          ? row.task_type
+          : "none";
+      const bucket = out.get(key) ?? zeroTypeCounts();
+      bucket[type] += Number(row.n);
+      out.set(key, bucket);
+    }
+    return out;
+  }
+
+  /**
    * **นับหลายรอบพร้อมกัน** — ใช้เติมคอลัมน์ "รายการที่ตัด" ในตาราง (นับอย่างเดียว
    * ไม่โหลดรายการ จึงยิงครั้งเดียวต่อหน้ารายงาน ไม่ใช่ต่อแถว) · `recordIds`
    * เกิน `MAX_USAGE_COUNT_IDS` ถูกตัดทิ้งส่วนที่เกิน และ id ที่ไม่มีแถวจริง
@@ -349,6 +420,9 @@ export class MaUsageService {
    * `contract` (`viewer-scope.ts`) — ลูกค้าถามได้เฉพาะ recordId ของบริษัทตัวเอง:
    * แถวต่างบริษัทถูก**ตัดทิ้งก่อน** (ผลลัพธ์ = ไม่คืนแถว ไม่ใช่คืน 0 จึงยังตรง
    * กับกติกา "ไม่รู้ = โชว์ `—`" เดิมทุกประการ)
+   *
+   * ทุกแถวได้ `byType` (ระดับคู่ — ค่าเดียวกันทุกรอบของคู่เดียวกัน) ด้วย ·
+   * ไม่กระทบ `count` / `periodUsedHours` ซึ่งยังเป็นสูตร MA เดิมทุกประการ
    */
   async usageCounts(recordIds: number[], contract?: ViewerScope): Promise<UsageCountResult[]> {
     const ids = [...new Set(recordIds)]
@@ -383,7 +457,10 @@ export class MaUsageService {
     }
 
     const appIds = [...new Set(links.map((link) => link.appId))];
+    // เรียงแบบนี้ใน `usageCounts` — `deductionRows` (round 1 ของ QB) แล้วค่อย
+    // `pairTypeCounts` (round 2) เพื่อไม่ให้กระทบเทสต์เดิมที่ assert ผล callแรก
     const deductionRows = await this.deductionRows(appIds);
+    const typeCounts = await this.pairTypeCounts(appIds);
 
     return links.map((link) => {
       const key = pairKey(link.appId, link.companyId);
@@ -396,6 +473,9 @@ export class MaUsageService {
         recordId: link.id,
         count: bucket?.ids.length ?? 0,
         periodUsedHours: round1((bucket?.seconds ?? 0) / 3600),
+        // คู่ไม่มีงาน → zeros (รู้จริงว่า 0) · คู่มีงานแต่ไม่มี MA เลยก็ได้ zeros
+        // ที่มีช่องอื่นเป็น 0 จริง — ต่างจาก id ที่ไม่มีแถวจริงซึ่งถูกตัดออกไปแล้ว
+        byType: typeCounts.get(key) ?? zeroTypeCounts(),
       };
     });
   }

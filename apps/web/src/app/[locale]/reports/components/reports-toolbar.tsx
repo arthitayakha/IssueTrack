@@ -15,7 +15,9 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useTheme,
 } from "@mui/material";
+import CheckIcon from "@mui/icons-material/Check";
 import SearchIcon from "@mui/icons-material/Search";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import ViewColumnIcon from "@mui/icons-material/ViewColumn";
@@ -30,6 +32,53 @@ import { REPORT_VIEW_ORDER } from "./report-views";
 import { PINNED_COLUMNS } from "./report-columns";
 import type { ReportColumnDef } from "./report-columns";
 import { ReportsFilterPanel } from "./reports-filter-panel";
+
+/**
+ * view select ใน toolbar = pill (mirror `PILL_*` ใน `rules/rule-list.tsx` +
+ * `rules/run-history-dialog.tsx` — แก้ที่ไหนต้องแก้ทั้งชุด) — **พื้นขาว** +
+ * ขอบ `divider` เห็นตลอด → hover `grey.50` + ขอบเข้มขึ้น → focus น้ำเงิน
+ *
+ * ⚠️ **2 ช่องบนแดชบอร์ด** (`[locale]/page.tsx` + `workload-card.tsx`) ขาว
+ * เหมือนกันแล้ว — ต่าง**แค่ไซส์**: เล็ก (13 / py 0.75) ตามคำสั่ง
+ *
+ * เวอร์ชัน**ใหญ่** (fontSize 14 / py 1) ตามคำสั่ง: ทุกหน้ายกเว้นแดชบอร์ด
+ * ใช้ไซส์นี้
+ */
+const PILL_SELECT_SX = {
+  minWidth: 215,
+  fontSize: 14,
+  bgcolor: "common.white",
+  borderRadius: "10px",
+  transition: "background-color 150ms ease",
+  "&:hover": { bgcolor: "grey.50" },
+  // divider line at rest (white-on-white would otherwise vanish) →
+  // grey.400 on hover → primary on focus (keyboard ring stays visible)
+  "& .MuiOutlinedInput-notchedOutline": { border: "1px solid", borderColor: "divider" },
+  "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: "grey.400" },
+  "&.Mui-focused .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main" },
+  "& .MuiSelect-select": { py: 1, pr: "30px !important" },
+} as const;
+
+/** แถวเมนู — 13px เท่ากับ pill บนแดชบอร์ด (เม뉴ไม่ใช่ส่วนที่ต้องใหญ่). */
+const PILL_ITEM_SX = {
+  borderRadius: "8px",
+  fontSize: 13,
+  py: 0.75,
+  px: 1.25,
+  gap: 1,
+  "&.Mui-selected": { bgcolor: "action.selected", fontWeight: 600 },
+  "&.Mui-selected:hover": { bgcolor: "action.selected" },
+} as const;
+
+const PILL_ROW_TEXT_SX = {
+  fontSize: 13,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+} as const;
+
+/** ข้อความในกล่องปิด — ตัวหนา 14px + ตัดด้วย … */
+const PILL_VALUE_SX = { ...PILL_ROW_TEXT_SX, fontSize: 14, fontWeight: 600 } as const;
 
 /* ---------------- column list (one menu section) ---------------- */
 
@@ -208,6 +257,25 @@ export function ReportsToolbar({
   onReorderDetail,
 }: ReportsToolbarProps) {
   const t = useTranslations("Reports");
+  const theme = useTheme();
+
+  /** เมนูของ view select pill — มุมมน + เงา เหมือนฝั่งแดชบอร์ด. */
+  const pillMenuProps = {
+    slotProps: {
+      paper: {
+        sx: {
+          borderRadius: "14px",
+          mt: 1,
+          p: 0.75,
+          border: "1px solid",
+          borderColor: "divider",
+          boxShadow: theme.custom.cardShadow,
+          maxWidth: 320,
+        },
+      },
+    },
+  };
+
   const [searchInput, setSearchInput] = useState(filters.search);
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
   const [columnAnchor, setColumnAnchor] = useState<HTMLElement | null>(null);
@@ -269,17 +337,21 @@ export function ReportsToolbar({
           size="small"
           value={view}
           onChange={(e) => onViewChange(e.target.value as ReportView)}
-          renderValue={(v) => (
-            <Typography variant="body2" fontWeight={700}>
-              {t(`views.${v}`)}
-            </Typography>
-          )}
-          sx={{ minWidth: 215 }}
+          renderValue={(v) => <Typography sx={PILL_VALUE_SX}>{t(`views.${v}`)}</Typography>}
+          MenuProps={pillMenuProps}
+          sx={PILL_SELECT_SX}
           inputProps={{ "aria-label": t("toolbar.view") }}
         >
           {REPORT_VIEW_ORDER.map((v) => (
-            <MenuItem key={v} value={v}>
-              <Typography variant="body2">{t(`views.${v}`)}</Typography>
+            <MenuItem key={v} value={v} sx={PILL_ITEM_SX}>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+                <Typography sx={PILL_ROW_TEXT_SX}>{t(`views.${v}`)}</Typography>
+                {view === v && (
+                  <CheckIcon
+                    sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }}
+                  />
+                )}
+              </Box>
             </MenuItem>
           ))}
         </Select>

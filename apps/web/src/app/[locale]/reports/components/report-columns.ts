@@ -88,6 +88,13 @@ export const REPORT_COLUMNS: Record<ReportView, ReportColumnDef[]> = {
     { key: "usedHours", labelKey: "columns.usedHours" },
     { key: "remaining", labelKey: "columns.remaining" },
     { key: "deductedCount", labelKey: "columns.deductedCount" },
+    /**
+     * **ประเภทงาน** (นับแยก บั๊ก/MA/Requirement/ไม่ระบุ) — ตัวเลข**ระดับคู่**
+     * จึงโชว์เฉพาะแถวล่าสุดของคู่ (`CompanyRow.isLatestOfPair`) · ไม่ใส่ใน
+     * `SORTABLE_FIELDS` เพราะเรียงแล้วจะกระจายแถวของคู่เดียวกันออกจากกัน ·
+     * key ใหม่ `columns.taskType` (ต่างจาก `columns.type` ที่เป็นประเภทสัญญา)
+     */
+    { key: "taskType", labelKey: "columns.taskType" },
   ],
 };
 

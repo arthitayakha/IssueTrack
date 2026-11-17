@@ -18,6 +18,7 @@ import {
   Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import CheckIcon from "@mui/icons-material/Check";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import HistoryIcon from "@mui/icons-material/History";
 import { useLocale, useTranslations } from "next-intl";
@@ -34,6 +35,53 @@ import type { RuleActivityDto, RuleDto } from "@kanban/shared";
 import { timeAgo } from "@/lib/time-ago";
 
 const PAGE_SIZE = 10;
+
+/**
+ * ฟิลเตอร์กฎใน toolbar = pill (mirror `PILL_*` ใน `rule-list.tsx` +
+ * `reports-toolbar.tsx` — แก้ที่ไหนต้องแก้ทั้งชุด) — **พื้นขาว** + ขอบ
+ * `divider` เห็นตลอด → hover `grey.50` + ขอบเข้มขึ้น → focus น้ำเงิน
+ *
+ * ⚠️ **2 ช่องบนแดชบอร์ด** (`[locale]/page.tsx` + `workload-card.tsx`) ขาว
+ * เหมือนกันแล้ว — ต่าง**แค่ไซส์**: เล็ก (13 / py 0.75) ตามคำสั่ง
+ *
+ * เวอร์ชัน**ใหญ่** (fontSize 14 / py 1) ตามคำสั่ง: ทุกหน้ายกเว้นแดชบอร์ด
+ * ใช้ไซส์นี้
+ */
+const PILL_SELECT_SX = {
+  minWidth: 240,
+  fontSize: 14,
+  bgcolor: "common.white",
+  borderRadius: "10px",
+  transition: "background-color 150ms ease",
+  "&:hover": { bgcolor: "grey.50" },
+  // divider line at rest (white-on-white would otherwise vanish) →
+  // grey.400 on hover → primary on focus (keyboard ring stays visible)
+  "& .MuiOutlinedInput-notchedOutline": { border: "1px solid", borderColor: "divider" },
+  "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: "grey.400" },
+  "&.Mui-focused .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main" },
+  "& .MuiSelect-select": { py: 1, pr: "30px !important" },
+} as const;
+
+/** แถวเมนู — 13px เท่ากับ pill บนแดชบอร์ด (เม뉴ไม่ใช่ส่วนที่ต้องใหญ่). */
+const PILL_ITEM_SX = {
+  borderRadius: "8px",
+  fontSize: 13,
+  py: 0.75,
+  px: 1.25,
+  gap: 1,
+  "&.Mui-selected": { bgcolor: "action.selected", fontWeight: 600 },
+  "&.Mui-selected:hover": { bgcolor: "action.selected" },
+} as const;
+
+const PILL_ROW_TEXT_SX = {
+  fontSize: 13,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+} as const;
+
+/** ข้อความในกล่องปิด — ตัวหนา 14px + ตัดด้วย … */
+const PILL_VALUE_SX = { ...PILL_ROW_TEXT_SX, fontSize: 14, fontWeight: 600 } as const;
 
 /** Audit actions written by RulesService → label key + chip colour. */
 const ACTION_STYLE: Record<
@@ -64,6 +112,23 @@ export default function RunHistoryDialog({ onClose }: RunHistoryDialogProps) {
   const tRuns = useTranslations("Automation.runs");
   const theme = useTheme();
   const locale = useLocale();
+
+  /** เมนูของฟิลเตอร์ pill — มุมมน + เงา เหมือนฝั่งแดชบอร์ด. */
+  const pillMenuProps = {
+    slotProps: {
+      paper: {
+        sx: {
+          borderRadius: "14px",
+          mt: 1,
+          p: 0.75,
+          border: "1px solid",
+          borderColor: "divider",
+          boxShadow: theme.custom.cardShadow,
+          maxWidth: 320,
+        },
+      },
+    },
+  };
 
   const [activity, setActivity] = useState<PaginatedActivity | null>(null);
   const [rules, setRules] = useState<RuleDto[]>([]);
@@ -178,13 +243,31 @@ export default function RunHistoryDialog({ onClose }: RunHistoryDialogProps) {
               setRuleFilter(e.target.value);
               setPage(1);
             }}
-            sx={{ minWidth: 240 }}
             aria-label={tRuns("filterAll")}
+            renderValue={(raw) => {
+              const value = typeof raw === "string" ? raw : "";
+              const label =
+                value === "all"
+                  ? tRuns("filterAll")
+                  : (rules.find((r) => String(r.id) === value)?.name ?? tRuns("filterAll"));
+              return <Typography sx={PILL_VALUE_SX}>{label}</Typography>;
+            }}
+            MenuProps={pillMenuProps}
+            sx={PILL_SELECT_SX}
           >
-            <MenuItem value="all">{tRuns("filterAll")}</MenuItem>
-            {rules.map((rule) => (
-              <MenuItem key={rule.id} value={String(rule.id)}>
-                {rule.name}
+            {[
+              { key: "all", label: tRuns("filterAll") },
+              ...rules.map((r) => ({ key: String(r.id), label: r.name })),
+            ].map((o) => (
+              <MenuItem key={o.key} value={o.key} sx={PILL_ITEM_SX}>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+                  <Typography sx={PILL_ROW_TEXT_SX}>{o.label}</Typography>
+                  {ruleFilter === o.key && (
+                    <CheckIcon
+                      sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }}
+                    />
+                  )}
+                </Box>
               </MenuItem>
             ))}
           </Select>

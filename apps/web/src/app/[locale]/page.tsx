@@ -10,6 +10,8 @@ import {
   Select,
   Typography,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
+import CheckIcon from "@mui/icons-material/Check";
 import { useTranslations } from "next-intl";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequireAuth from "@/components/require-auth";
@@ -30,6 +32,17 @@ import type {
   DashboardScope,
   DashboardSummary,
 } from "@kanban/shared";
+
+/** One row of the company menu — rounded, and the picked one keeps a tint. */
+const COMPANY_ITEM_SX = {
+  borderRadius: "8px",
+  fontSize: 13,
+  py: 0.75,
+  px: 1.25,
+  gap: 1,
+  "&.Mui-selected": { bgcolor: "action.selected", fontWeight: 600 },
+  "&.Mui-selected:hover": { bgcolor: "action.selected" },
+} as const;
 
 /**
  * The dashboard (`/`) — one round trip to GET /dashboard/summary.
@@ -59,6 +72,7 @@ import type {
  */
 export default function HomePage() {
   const t = useTranslations("Dashboard");
+  const theme = useTheme();
   const { can, roleName } = usePermissions();
   const user = useAuthStore((s) => s.user);
 
@@ -107,6 +121,12 @@ export default function HomePage() {
     }
     return visible;
   }, [companies, can, roleName, user?.companyId]);
+
+  /** "ทุกบริษัท" first, then the options — one list drives the whole menu. */
+  const companyItems: { key: string; id: number | null; name: string }[] = [
+    { key: "", id: null, name: t("company.all") },
+    ...companyOptions.map((c) => ({ key: String(c.id), id: c.id, name: c.name })),
+  ];
 
   /**
    * The company list is fetched once; if it fails (or a company disappears)
@@ -221,31 +241,99 @@ export default function HomePage() {
           )}
 
           {/* company picker — a data scope for the WHOLE page (ring + total
-              included); hidden when the seat has nothing to pick */}
+              included); hidden when the seat has nothing to pick. A white
+              rounded pill with an always-on divider border (matching the other
+              filter pills — only the SIZE stays small here, 13/py 0.75): the
+              floating label/notch is gone, the name comes from `renderValue`
+              (no icon, no visible label — the label lives on as the control's
+              `aria-label` only) and the menu floats with 14px corners + a check
+              on the picked row. */}
           {companyOptions.length > 0 && (
             <Box
-              sx={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 1 }}
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+                gap: 1,
+                flexWrap: "wrap",
+                rowGap: 0.5,
+              }}
             >
-              <Typography sx={{ fontSize: 13, color: "text.secondary" }}>
-                {t("company.label")}
-              </Typography>
               <Select
                 value={companyId == null ? "" : String(companyId)}
                 onChange={(e) => setCompanyId(e.target.value === "" ? null : Number(e.target.value))}
                 displayEmpty
                 size="small"
                 aria-label={t("company.label")}
+                renderValue={(raw) => {
+                  const value = typeof raw === "string" ? raw : "";
+                  const picked = companyOptions.find((c) => String(c.id) === value);
+                  return (
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography
+                        sx={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {picked ? picked.name : t("company.all")}
+                      </Typography>
+                    </Box>
+                  );
+                }}
+                MenuProps={{
+                  slotProps: {
+                    paper: {
+                      sx: {
+                        borderRadius: "14px",
+                        mt: 1,
+                        p: 0.75,
+                        border: "1px solid",
+                        borderColor: "divider",
+                        boxShadow: theme.custom.cardShadow,
+                        maxWidth: 320,
+                      },
+                    },
+                  },
+                }}
                 sx={{
-                  minWidth: 220,
-                  fontSize: 13,
-                  bgcolor: "background.paper",
+                  minWidth: 150,
+                  maxWidth: { xs: "100%", sm: 300 },
+                  bgcolor: "common.white",
+                  borderRadius: "10px",
+                  transition: "background-color 150ms ease",
+                  "&:hover": { bgcolor: "grey.50" },
+                  // divider line at rest (white-on-white would otherwise vanish)
+                  // → grey.400 on hover → primary on focus, so keyboard users
+                  // still see where they are (no hidden notch)
+                  "& .MuiOutlinedInput-notchedOutline": { border: "1px solid", borderColor: "divider" },
+                  "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: "grey.400" },
+                  "&.Mui-focused .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main" },
                   "& .MuiSelect-select": { py: 0.75, pr: "28px !important" },
                 }}
               >
-                <MenuItem value="">{t("company.all")}</MenuItem>
-                {companyOptions.map((c) => (
-                  <MenuItem key={c.id} value={String(c.id)}>
-                    {c.name}
+                {companyItems.map((item) => (
+                  <MenuItem key={item.key} value={item.key} sx={COMPANY_ITEM_SX}>
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+                      <Typography
+                        sx={{
+                          fontSize: 13,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {item.name}
+                      </Typography>
+                      {companyId === item.id && (
+                        <CheckIcon
+                          sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }}
+                        />
+                      )}
+                    </Box>
                   </MenuItem>
                 ))}
               </Select>

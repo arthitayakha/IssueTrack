@@ -21,6 +21,8 @@ import { PermissionsService } from "../permissions/permissions.service";
 import { RulesEngineService, type StatusGates } from "../rules/rules-engine.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { MaUsageService } from "../apps/ma-usage.service";
+import { AppsService } from "../apps/apps.service";
+import { REJECT_STATUS_NAME } from "@kanban/shared";
 import { PaginationParams } from "../../common/pagination";
 import { AuthUser } from "../auth/auth-user";
 
@@ -127,6 +129,10 @@ export class IssuesService {
     private readonly notifications: NotificationsService,
     // กรอกเวลาจริง = จังหวะเดียวที่ "ใช้ไป" ขยับ → ตรวจว่า MA ของคู่หมดแล้วหรือยัง
     private readonly maUsage: MaUsageService,
+    // ตาข่าย "MA หมดอายุ → รับงาน MA/Requirement ไม่ได้" — ถามอายุสัญญาคู่
+    // (แอป × บริษัทผู้แจ้ง) ผ่าน `AppsService.isPairExpired()` (AppsModule ส่งออก
+    // อยู่แล้ว ไม่มีวงกลม: AppsModule ไม่ได้ import IssuesModule)
+    private readonly apps: AppsService,
   ) {}
 
   async findAll(
@@ -150,6 +156,19 @@ export class IssuesService {
       companyIds?: number[];
       assigneeIds?: number[];
       reporterIds?: number[];
+      /**
+       * **ประเภทงาน** (`bug` / `ma` / `requirement`) — whitelist ฝั่ง controller
+       * กรอกมาเฉพาะ 3 ค่านี้แล้ว (`common/task-types.ts` ชุดเดียวกับ
+       * `GET /reports/summary` ให้ทุกมุมมองของหน้ารายงานนับงานชุดเดียวกัน)
+       */
+      taskTypes?: string[];
+      /**
+       * "ไม่ระบุประเภทงาน" (`task_type IS NULL`) — OR-part ของ dimension
+       * เดียวกันกับ `noApp` / `noCategory`: ติ๊กรวมกับ type จริง = `IN (…) OR
+       * IS NULL` ไม่ใช่ AND ที่จะว่างเสมอ · NULL ต้องมาพร้อม flag เพราะ
+       * `IN (...)` จับค่า NULL ไม่ได้
+       */
+      noTaskType?: boolean;
       createdFrom?: string;
       createdTo?: string;
       sortBy?: string;
@@ -240,6 +259,24 @@ export class IssuesService {
     }
     if (filters.reporterIds && filters.reporterIds.length > 0) {
       qb.andWhere("issue.customer_id IN (:...reporterIds)", { reporterIds: filters.reporterIds });
+    }
+    /**
+     * **ประเภทงาน** — OR-part ของ dimension เดียวกัน เหมือน `noApp` /
+     * `noCategory` ด้านบน: ติ๊ก `bug` + "ไม่ระบุ" ได้ `task_type IN (bug) OR
+     * task_type IS NULL` ไม่ใช่ AND ที่จะว่างเสมอ · ไม่ส่งอะไร = ไม่มี clause
+     * เลย (งานทุก type โชว์ครบ เหมือนเดิม) · ใช้ทั้งมุมมอง "รายการปัญหา" บน
+     * หน้ารายงาน และ `GET /issues` ที่หน้าอื่นเรียก — ไม่ส่ง param ก็ไม่เปลี่ยน
+     * พฤติกรรมเดิมแม้แต่นิดเดียว
+     */
+    if (filters.taskTypes && filters.taskTypes.length > 0) {
+      qb.andWhere(
+        filters.noTaskType
+          ? "(issue.task_type IN (:...taskTypes) OR issue.task_type IS NULL)"
+          : "issue.task_type IN (:...taskTypes)",
+        { taskTypes: filters.taskTypes },
+      );
+    } else if (filters.noTaskType) {
+      qb.andWhere("issue.task_type IS NULL");
     }
 
     // report date range — both bounds are yyyy-mm-dd (validated above)
@@ -630,6 +667,12 @@ export class IssuesService {
         // only while the card sits in a status the active rule names —
         // same answer as canEditTaskType (an empty value is NOT an exception)
         await this.assertTaskTypeEditable(issue);
+        // "MA หมดอายุ → ทีมรับเป็น MA/Requirement ไม่ได้" — เช็ค**หลัง**field gate
+        // (400 ทั้งคู่แต่คนละข้อความ แยกกันออก) และเช็คเฉพาะตอนค่าจะเปลี่ยน
+        // เป็น ma/requirement จริง — บั๊ก / ล้างค่า / ค่าเดิมซ้ำ ผ่านเสมอ
+        if (next === "ma" || next === "requirement") {
+          await this.assertMaContractAlive(issue);
+        }
         updates.taskType = next;
         changes.push("taskType");
       }
@@ -747,6 +790,48 @@ export class IssuesService {
     throw new BadRequestException("The task type field is not editable in this status");
   }
 
+  /**
+   * **ตาข่าย "MA หมดอายุ → รับงาน MA/Requirement ไม่ได้"** (ข้อสรุปจากพี่:
+   * "ถ้า MA หมด ยังแจ้งได้อยู่ แต่ถ้าเป็น MA/Requirement เราจะตีกลับ") — โยน
+   * **400 ก่อนเขียน**เมื่อทีมตั้ง `taskType` เป็น `ma` / `requirement` บนงานที่
+   * สัญญาของ "แอป × บริษัทผู้แจ้ง" หมดอายุแล้ว · เรียก**เฉพาะตอนค่าจะเปลี่ยน**
+   * เป็นสองประเภทนี้ (บั๊ก / ล้างเป็น null / ค่าเดิมซ้ำ → ไม่เช็ค)
+   *
+   * **Fail-open ทุกชั้น** — สงสัย = ปล่อยผ่าน:
+   *
+   * - ไม่มีผู้แจ้ง / ผู้แจ้งไม่มีบริษัท → ผ่าน (สตาฟฟ์สร้างงานเองก็เข้าข่ายนี้)
+   * - ไม่มีแอป / คู่นี้ไม่มีแถวสัญญา → ผ่าน (ไม่ผูก ≠ หมดอายุ)
+   * - ไม่กรอกวันหมดอายุ → ผ่าน · ดูเฉพาะ**ช่วงล่าสุด**ของคู่ (ช่วงเก่าหมดอายุ
+   *   แต่เพิ่งต่ออายุ = ยังไม่หมด) — ทุกอย่างถามผ่าน `AppsService.isPairExpired()`
+   *   ซึ่งเป็นที่เดียวกับที่คำนวณธง `maExpired` ฝั่งฟอร์ม (สองฝั่งตรงกันเป๊ะ)
+   *
+   * ⚠️ ไม่ใช่ cross-company guard เดิมที่เคยถอด (คนละเรื่อง — อันนั้นคือ "ห้าม
+   * สร้างงานข้ามบริษัท" อันนี้คือ "ประเภทงาน vs อายุสัญญา") · การ์ดจะถูก
+   * "ตีกลับ" อย่างเป็นทางการผ่านปุ่มในป๊อปอัพรายละเอียด (resolution + ย้ายไป
+   * สถานะ "ยกเลิก" + เม้นต์) — 400 นี้คือไม่ยอมให้**จัดประเภท**ก่อนเท่านั้น
+   *
+   * หมายเหตุ relation: `update()` อ่านด้วย `ISSUE_DETAIL_RELATIONS` ซึ่งมี
+   * `customer` (+ `customer.company`) อยู่แล้ว จึงอ่าน `companyId` จากตรงนั้นได้
+   * ไม่ต้อง query ซ้ำ
+   */
+  private async assertMaContractAlive(issue: Issue): Promise<void> {
+    const companyId = issue.customer?.companyId ?? null;
+    if (issue.appId == null || companyId == null) return; // fail-open
+    let expired = false;
+    try {
+      expired = await this.apps.isPairExpired(issue.appId, companyId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`MA contract lookup failed for issue ${issue.id}: ${message}`);
+      return; // fail open — a broken lookup must not block classification
+    }
+    if (expired) {
+      throw new BadRequestException(
+        "สัญญา MA หมดอายุแล้ว — ไม่สามารถกำหนดประเภทงาน MA/Requirement ได้ (คงไว้เป็นบั๊ก หรือตีกลับงาน)",
+      );
+    }
+  }
+
   async move(id: number, statusId: number, actor?: ActorInfo | null) {
     const issue = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
     if (!issue) {
@@ -758,13 +843,22 @@ export class IssuesService {
     }
     if (issue.statusId === statusId) return this.toResponse(issue);
 
+    // **ตีกลับงาน (ปลายทาง = สถานะ "ยกเลิก") → ข้าม move guards ทั้ง 3** —
+    // "การตีกลับ" ไม่ใช่การลาก แต่เป็นการ**ปิด**งาน จึงต้องเข้าคอลัมน์นี้ได้จาก
+    // ทุกคอลัมน์ (step-only ห้ามข้ามคอลัมน์) และจากการ์ดทุกสถานะ (status lock
+    // กับตาข่าย "เลือกประเภทงานก่อนลาก" ที่ seed เปิดกับ รอรับเรื่อง — case หลัก
+    // ของการตีกลับคือการ์ดยังไม่ระบุประเภทนั่นเอง) ไม่งั้นปุ่มตีกลับฝั่งเว็บจะ
+    // พังบนเครื่อง fresh ที่กฎ seed เปิด ON · ชื่อมาจาก `@kanban/shared`
+    // (`REJECT_STATUS_NAME`) — ตัวเดียวกับที่ปุ่ม web ใช้หาสถานะปลายทาง
+    const isRejectMove = targetStatus.name === REJECT_STATUS_NAME;
+
     // status locks: an active `issue.lock` rule naming the card's status
     // freezes it — checked before anything is written, like the step-only
     // guard, so a rejected drag leaves no notification or activity behind.
     // The board's unlock button (or an `issue.unlock` rule) releases the
     // card exactly once via `lock_exempted`, consumed by the move below.
     // 409 (not 400) so the board can tell this apart from the step-only guard.
-    if (!(await this.isMoveAllowedByLock(issue))) {
+    if (!isRejectMove && !(await this.isMoveAllowedByLock(issue))) {
       throw new ConflictException(
         "This card is locked in its status — unlock it before moving",
       );
@@ -773,7 +867,7 @@ export class IssuesService {
     // the "one column at a time" rule (an active issue.move_step_only rule;
     // pause it in the ระบบอัตโนมัติ tab of /master-data for free dragging) — checked before anything is
     // written, so a rejected drag leaves no notification or activity behind
-    if (await this.rulesEngine.isStepOnlyMoveActive()) {
+    if (!isRejectMove && (await this.rulesEngine.isStepOnlyMoveActive())) {
       await this.assertAdjacentMove(issue.statusId, statusId);
     }
 
@@ -785,11 +879,13 @@ export class IssuesService {
     // 400 (step-only) nor 409 (status lock) — so the board can tell this
     // refusal apart and print its own message. Fail open: no rule / paused /
     // unreadable rules → the set is empty → dragging stays free.
-    const taskTypeGates = await this.rulesEngine.taskTypeGateStatuses();
-    if (issue.statusId != null && taskTypeGates.has(issue.statusId) && !issue.taskType) {
-      throw new UnprocessableEntityException(
-        "Choose a task type for this card before moving it out of this status",
-      );
+    if (!isRejectMove) {
+      const taskTypeGates = await this.rulesEngine.taskTypeGateStatuses();
+      if (issue.statusId != null && taskTypeGates.has(issue.statusId) && !issue.taskType) {
+        throw new UnprocessableEntityException(
+          "Choose a task type for this card before moving it out of this status",
+        );
+      }
     }
 
     const sourceStatus = issue.statusId

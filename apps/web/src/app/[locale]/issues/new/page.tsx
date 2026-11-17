@@ -49,20 +49,6 @@ function getErrorMessage(e: unknown, fallback: string): string | null {
 
 const OTHER_CATEGORY = "อื่น ๆ";
 
-/**
- * **สวิตช์บล็อกชั่วคราว** — สัญญา MA หมดอายุ → ห้ามแจ้งปัญหา (ตามคำสั่ง
- * "บล็อกไว้ก่อน แล้วค่อยไปถามพี่") ยัง**ไม่แยกบั๊ก** เพราะฟอร์มนี้ไม่มีช่อง
- * ประเภทงานและลูกค้าตั้ง `taskType` เองไม่ได้ (คนที่เลือกคือทีมทีหลัง)
- *
- * ตั้ง `false` = กลับเป็นปล่อยผ่านทันที (พี่คนถัดไปสั่ง "แค่เตือนอย่างเดียว");
- * ถ้าตอบว่า "บั๊กแจ้งได้" ค่อยเพิ่มช่องประเภทในฟอร์ม + ให้ `POST /issues` รับ
- * `taskType` แล้วค่อยแยกที่นี่
- *
- * ⚠️ การบล็อกนี้ทำได้เฉพาะ**หน้าฟอร์ม** — `POST /issues` ฝั่งเซิร์ฟเวอร์ยังไม่
- * เช็กอายุสัญญา (ค้างอยู่ในรายการรอพี่) จึงเป็นการบล็อกหน้าตาเท่านั้น
- */
-const MA_EXPIRED_BLOCKS_REPORT = true;
-
 export default function ReportIssuePage() {
   const t = useTranslations("Boards");
   const theme = useTheme();
@@ -97,7 +83,7 @@ export default function ReportIssuePage() {
     // ผูกแต่ถูกปิดหมด) เซิร์ฟเวอร์คืนรายการเต็ม = เหมือนไม่ได้กรอง จึงเป็นไป
     // ไม่ได้ที่ช่องจะว่างเพราะการกรอง · แถวละยังติด **`maExpired`** (ธง "คู่ของ
     // ผู้เรียกหมดอายุ" ที่เซิร์ฟเวอร์คำนวณให้ เพราะ `companies` ถูกตัดจากลูกค้า
-    // ไปแล้ว) มาให้ฟอร์มใช้บล็อกด้วย
+    // ไปแล้ว) มาให้ฟอร์มใช้**เตือน** (ไม่บล็อก)
     Promise.allSettled([fetchStatuses(), fetchCategories(), fetchVisibleApps()])
       .then(([sts, cats, appsRes]) => {
         if (cancelled) return;
@@ -132,18 +118,20 @@ export default function ReportIssuePage() {
   const visibleApps = useMemo(() => apps.filter((a) => a.isVisible), [apps]);
   // แอปที่เลือกอยู่ — `maExpired` มาเป็นธงจาก `GET /apps?visible=1&mine=1` (เซิร์ฟเวอร์
   // รู้บริษัทของผู้เรียกเอง และ `companies` ถูกตัดจากลูกค้าไปแล้ว ฝั่ง web จึง
-  // ไม่เหลือวันที่ให้อ่าน — fail-open: ไม่มีธง = ไม่บล็อก)
+  // ไม่เหลือวันที่ให้อ่าน — fail-open: ไม่มีธง = ไม่เตือน)
   const selectedApp = useMemo(
     () => apps.find((a) => a.id === appId) ?? null,
     [apps, appId],
   );
-  const maExpired = MA_EXPIRED_BLOCKS_REPORT && isMaExpired(selectedApp);
+  // **หมดอายุ → เตือนอย่างเดียว ไม่บล็อก** (ข้อสรุปจากพี่: "ถ้า MA หมด ยังแจ้ง
+  // ได้อยู่ แต่ถ้าเป็น MA/Requirement จะตีกลับ") — การตีกลับเกิดที่ฝั่งเซิร์ฟเวอร์
+  // เมื่อทีมตั้งประเภทงาน (`IssuesService.update()` → 400) ไม่ใช่ตอนกดส่ง
+  const maExpired = isMaExpired(selectedApp);
   const canSubmit =
     statuses.length > 0 &&
     title.trim().length > 0 &&
     appId !== null &&
-    (selectedCategory !== null || customCategory.trim().length > 0) &&
-    !maExpired;
+    (selectedCategory !== null || customCategory.trim().length > 0);
 
   const addFiles = (fileList: FileList | File[]) => {
     const incoming = Array.from(fileList);
@@ -182,9 +170,9 @@ export default function ReportIssuePage() {
   };
 
   const handleSubmit = async () => {
-    // `maExpired` ซ้ำกับ `canSubmit` โดยเจตตานะ — กัน state ที่ค้างระหว่าง
-    // รอ response (เช่น เลือกแอปหมดอายุแล้วสลับไปแอปอื่นกลางคัน)
-    if (!canSubmit || maExpired || submitting) return;
+    // `maExpired` ไม่ได้อยู่ใน guard อีกแล้ว (หมดอายุ = แจ้งได้ต่อ) — เหตุผลที่ยัง
+    // เช็คธงไว้คือแค่แสดงคำเตือนใต้ dropdown เท่านั้น
+    if (!canSubmit || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -326,8 +314,9 @@ export default function ReportIssuePage() {
                       {t("noCompanyApps")}
                     </Alert>
                   )}
-                  {/* สัญญา MA ของแอปที่เลือกหมดอายุ → บล็อกชั่วคราว (ฟอร์มกรอกได้
-                      ตามเดิม แค่กดส่งไม่ได้) — เลือกแอปอื่นที่ยังไม่หมดอายุได้ตามปกติ */}
+                  {/* สัญญา MA ของแอปที่เลือกหมดอายุ → **คำเตือนเท่านั้น ไม่บล็อก**
+                  (แจ้งได้ต่อตามข้อสรุปพี่; งาน MA/Requirement จะถูกตีกลับตอนทีม
+                  ตั้งประเภทที่ฝั่งเซิร์ฟเวอร์) */}
                   {maExpired && (
                     <Alert severity="warning" sx={{ mt: 1 }}>
                       {t("maExpiredBlock")}

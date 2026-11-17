@@ -148,10 +148,29 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
         if (typeof companyId === "number") list = list.filter((r) => r.companyId === companyId);
         return Promise.resolve(list.map((r) => ({ ...r })));
       }),
-    findOne: jest.fn().mockImplementation((opts: { where: { id: number } }) => {
-      const found = state.rows.find((r) => r.id === opts.where.id);
-      return Promise.resolve(found ? { ...found } : null);
-    }),
+    findOne: jest
+      .fn()
+      .mockImplementation(
+        (opts: {
+          where: { id?: number; appId?: number; companyId?: number };
+          order?: { id?: string };
+        }) => {
+          const { id, appId, companyId } = opts.where;
+          // `{ where: { id } }` — รายแถว (paths เดิม: updateRecord/removePeriod)
+          if (typeof id === "number") {
+            const found = state.rows.find((r) => r.id === id);
+            return Promise.resolve(found ? { ...found } : null);
+          }
+          // `{ where: { appId, companyId }, order: { id: "DESC" } }` —
+          // `isPairExpired()` ถาม "ช่วงล่าสุดของคู่" → คืนแถว id มากสุด
+          let list = state.rows;
+          if (typeof appId === "number") list = list.filter((r) => r.appId === appId);
+          if (typeof companyId === "number") list = list.filter((r) => r.companyId === companyId);
+          if (list.length === 0) return Promise.resolve(null);
+          const latest = list.reduce((best, r) => (r.id > best.id ? r : best));
+          return Promise.resolve({ ...latest });
+        },
+      ),
     create: jest.fn().mockImplementation((value: Partial<Row>) => value),
     save: jest.fn().mockImplementation((value: Partial<Row>) => {
       if (value.id === undefined) {
@@ -1211,6 +1230,59 @@ describe("AppsService.findAll — maExpired (บล็อกฟอร์มแ�
     const res = await service.findAll(params, { contract: { mode: "own", companyId: 1 } });
 
     expect(res.data[0].maExpired).toBe(true);
+  });
+});
+
+/**
+ * `isPairExpired()` — จุดถามของ `IssuesService.update()` (ตาข่าย "MA หมดอายุ →
+ * รับงาน MA/Requirement ไม่ได้") ต้องตอบ**ตรงกับธง `maExpired`** เป๊ะ เพราะ
+ * ทั้งคู่ใช้ `isPeriodExpired()` ตัวเดียวกัน (วันหมดอายุวันนี้ = หมดอายุ)
+ */
+describe("AppsService.isPairExpired — ตาข่ายตอนทีมตั้งประเภทงาน", () => {
+  const PAST = "2020-01-01";
+  const FUTURE = "2999-12-31";
+
+  it("true when the pair's LATEST period is past expiry", async () => {
+    const { service } = makeService({
+      rows: [row({ id: 11, appId: 7, companyId: 1, expiresAt: PAST })],
+    });
+
+    expect(await service.isPairExpired(7, 1)).toBe(true);
+  });
+
+  it("false when a renewal sits on top of an old expired period (ช่วงล่าสุดชนะ)", async () => {
+    const { service } = makeService({
+      rows: [
+        row({ id: 11, appId: 7, companyId: 1, expiresAt: PAST }),
+        row({ id: 12, appId: 7, companyId: 1, expiresAt: FUTURE }),
+      ],
+    });
+
+    expect(await service.isPairExpired(7, 1)).toBe(false);
+  });
+
+  it("false for a pair with no row, a missing date, or another company's row", async () => {
+    const { service, expiry } = makeService({
+      rows: [
+        row({ id: 11, appId: 7, companyId: 2, expiresAt: PAST }), // ของบริษัทอื่น
+        row({ id: 12, appId: 11, companyId: 1, expiresAt: null }), // ไม่กรอกวัน
+      ],
+    });
+
+    expect(await service.isPairExpired(7, 1)).toBe(false); // คู่นี้ไม่มีแถว
+    expect(await service.isPairExpired(11, 1)).toBe(false); // มีแถวแต่ไม่กรอกวัน
+    // อ่านอย่างเดียว — ไม่ reconcile ไม่ยิงกระดิ่ง (หน้าที่ cron 09:00)
+    expect(expiry.reconcile).not.toHaveBeenCalled();
+  });
+
+  it("false without an app or a company — and never queries (fail-open)", async () => {
+    const { service, appCompanies } = makeService({
+      rows: [row({ id: 11, appId: 7, companyId: 1, expiresAt: PAST })],
+    });
+
+    expect(await service.isPairExpired(null, 1)).toBe(false);
+    expect(await service.isPairExpired(7, null)).toBe(false);
+    expect(appCompanies.findOne).not.toHaveBeenCalled();
   });
 });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { PaginatedResponse } from "@kanban/shared";
+import { PaginatedResponse, type IssueTaskType } from "@kanban/shared";
 import { apiFetch } from "./api";
 import { useAuthStore } from "./auth-store";
 import type { ExpiryStatus } from "./app-expiry";
@@ -319,11 +319,66 @@ export interface PeriodUsage {
   issues: PeriodIssue[];
 }
 
+/**
+ * จำนวนงานแยกตาม type ของ **คู่ แอป×บริษัท** — 4 ช่องคงที่
+ * (`none` = ยังไม่ระบุ / `task_type IS NULL`) · **ไม่กรอง type ตอนนับ** และ
+ * **ไม่ต้องเคยกรอกเวลา** จึงต่างจาก `count` ซึ่งเป็นสูตร MA ล้วน
+ */
+export interface TaskTypeCounts {
+  bug: number;
+  ma: number;
+  requirement: number;
+  none: number;
+}
+
+/** คีย์ของ `TaskTypeCounts` — `none` = "ไม่ระบุประเภทงาน" */
+export type TaskTypeKey = IssueTaskType | "none";
+
 /** `GET /apps/usage-counts?recordIds=` — นับอย่างเดียว ไม่โหลดรายการ (ยิงครั้งเดียวต่อหน้า) */
 export interface UsageCount {
   recordId: number;
   count: number;
   periodUsedHours: number;
+  /**
+   * **ระดับคู่** (ไม่ผูกกับรอบ) → ค่าเดียวกันทุกรอบของคู่เดียวกัน ·
+   * รายงานโชว์เฉพาะ**แถวล่าสุดของคู่** (`isLatestOfPair`) เพื่อไม่ให้ตัวเลข
+   * ซ้ำทุกรอบ · `optional` — deploy ที่ web เร็วกว่า api จะยังไม่มี field นี้
+   * → ฝั่งจอต้องโชว์ `—` ห้ามเดาเป็น 0
+   */
+  byType?: TaskTypeCounts;
+}
+
+/**
+ * **ฟังก์ชันเดียวที่จอ กับ CSV/PDF ใช้** ทำป้ายคอลัมน์ "ประเภทงาน"
+ * (กติกา จอ/ไฟล์ห้ามต่างกัน) · โชว์เฉพาะช่องที่ > 0 เรียง
+ * บั๊ก → MA → Requirement → ไม่ระบุ · รู้ค่าแต่ทุกช่องเป็น 0 → `["0"]`
+ * (รู้จริงว่าเป็น 0 ต่างจาก "ดึงไม่ได้") · `counts` หาย/ยังไม่มา → `[]`
+ * ให้ caller โชว์ `—` / `…` เอง
+ */
+export function taskBreakdownParts(
+  counts: TaskTypeCounts | undefined,
+  labels: Record<TaskTypeKey, string>,
+): string[] {
+  if (!counts) return [];
+  const order: TaskTypeKey[] = ["bug", "ma", "requirement", "none"];
+  const parts = order
+    .filter((key) => (counts[key] ?? 0) > 0)
+    .map((key) => `${labels[key]} ${counts[key]}`);
+  return parts.length > 0 ? parts : ["0"];
+}
+
+/**
+ * ป้าย 4 ช่องของ `TaskTypeCounts` — **ที่เดียวที่สร้างป้ายชุดนี้** ให้ตาราง
+ * จอ กับ CSV/PDF เรียกผ่านตัวนี้เหมือนกัน (ป้ายมาจาก `Boards.taskType.*`
+ * และ `Boards.detail.taskTypeUnset` ที่มีครบทั้ง th/en อยู่แล้ว)
+ */
+export function taskTypeLabels(t: (key: string) => string): Record<TaskTypeKey, string> {
+  return {
+    bug: t("taskType.bug"),
+    ma: t("taskType.ma"),
+    requirement: t("taskType.requirement"),
+    none: t("detail.taskTypeUnset"),
+  };
 }
 
 /** รายการจริงของรอบ — เรียกตอนผู้ใช้กดเปิดดู (ไม่โหลดตอนเปิดหน้า) */

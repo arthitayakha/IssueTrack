@@ -10,9 +10,23 @@ import FlagIcon from "@mui/icons-material/Flag";
 import CategoryIcon from "@mui/icons-material/Category";
 import PersonIcon from "@mui/icons-material/Person";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
+// ประเภทสัญญา (renew/buy) + ประเภทงาน (บั๊ก/MA/Requirement)
+import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
+import AutorenewIcon from "@mui/icons-material/Autorenew";
+import ScheduleIcon from "@mui/icons-material/Schedule";
+import TaskIcon from "@mui/icons-material/Task";
+import BugReportIcon from "@mui/icons-material/BugReport";
+import DescriptionIcon from "@mui/icons-material/Description";
+import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import { useTranslations } from "next-intl";
-import { activeFilterCount, EMPTY_FILTERS } from "@/lib/reports-api";
-import type { FilterOptions, ReportFilters, ReportView } from "@/lib/reports-api";
+import type { IssueTaskType } from "@kanban/shared";
+import { activeFilterCount, EMPTY_FILTERS, TASK_TYPE_VALUES } from "@/lib/reports-api";
+import type {
+  ContractKind,
+  FilterOptions,
+  ReportFilters,
+  ReportView,
+} from "@/lib/reports-api";
 import {
   FilterPanel,
   type FilterOption,
@@ -48,8 +62,10 @@ type SectionKey =
   | "assignee"
   | "status"
   | "priority"
+  | "taskType"
   | "category"
   | "app"
+  | "kind"
   | "company"
   | "reporter";
 
@@ -61,16 +77,21 @@ type SectionKey =
  * views end on it and skip the reporter section entirely.
  * `company` sits under `app`: an issue reaches a company through its reporter.
  *
- * `company` view = contract data (rows are แอป×บริษัท pairs): only the two
- * sections that mean anything on a contract. สถานะ/หมวด/ผู้รับ/ผู้แจ้ง/ความสำคัญ
- * are issue fields — they filter nothing here, and date range is hidden in the
- * toolbar for the same reason.
+ * `taskType` (ประเภทงาน) sits **right after `priority`** in the three views
+ * that carry issues — it is an issue field like status/priority, so it groups
+ * with them rather than with the dimensions (หมวด/แอป/บริษัท).
+ *
+ * `company` view = contract data (rows are แอป×บริษัท pairs): only the
+ * sections that mean anything on a contract. สถานะ/หมวด/ผู้รับ/ผู้แจ้ง/
+ * ความสำคัญ/ประเภทงาน are issue fields — they filter nothing here, and date
+ * range is hidden in the toolbar for the same reason. It gains `kind`
+ * (ประเภท: ต่ออายุ / ซื้อชั่วโมง), which is contract data.
  */
 const VIEW_SECTIONS: Record<ReportView, SectionKey[]> = {
-  issues: ["assignee", "status", "priority", "category", "app", "company", "reporter"],
-  assignee: ["status", "priority", "category", "app", "company", "assignee"],
-  app: ["status", "priority", "category", "app", "company", "assignee"],
-  company: ["company", "app"],
+  issues: ["assignee", "status", "priority", "taskType", "category", "app", "company", "reporter"],
+  assignee: ["status", "priority", "taskType", "category", "app", "company", "assignee"],
+  app: ["status", "priority", "taskType", "category", "app", "company", "assignee"],
+  company: ["company", "app", "kind"],
 };
 
 /* ---------------- panel ---------------- */
@@ -103,6 +124,15 @@ export function ReportsFilterPanel({
   options,
 }: ReportsFilterPanelProps) {
   const t = useTranslations("Reports");
+  /**
+   * ป้ายของตัวกรอง 2 ตัวใหม่ — อ่านจาก namespace ที่มีคำอยู่แล้ว (กติกาห้ามลบ
+   * key ที่ไม่ใช้ จึงใช้ของเดิมให้ครบก่อนเพิ่ม key ใหม่):
+   * - `Settings.renew` / `Settings.kindBuy` = ป้าย chip "ประเภท" บนตาราง
+   * - `Boards.detail.taskType` = หัวข้อ section "ประเภทงาน"
+   * - `Boards.taskType.*` = ชื่อ type 3 ค่า + `Boards.detail.taskTypeUnset`
+   */
+  const st = useTranslations("Settings");
+  const bt = useTranslations("Boards");
   const theme = useTheme();
   const totalSelected = activeFilterCount(filters, view);
 
@@ -127,13 +157,34 @@ export function ReportsFilterPanel({
     });
   };
 
+  /** toggle ประเภทงาน (`IssueTaskType[]`) — list ตัวหนังสือ จึงแยกจาก `toggleIn`. */
+  const toggleTaskType = (value: IssueTaskType) => {
+    const current = filters.taskTypes;
+    onFiltersChange({
+      ...filters,
+      taskTypes: current.includes(value)
+        ? current.filter((x) => x !== value)
+        : [...current, value],
+    });
+  };
+
+  /** toggle ประเภทสัญญา (`ContractKind[]`) — เฉพาะมุมมองตามบริษัท. */
+  const toggleKind = (value: ContractKind) => {
+    const current = filters.kinds;
+    onFiltersChange({
+      ...filters,
+      kinds: current.includes(value) ? current.filter((x) => x !== value) : [...current, value],
+    });
+  };
+
   /**
-   * "ไม่มีแอป" / "ไม่มีหมวดหมู่" — the NULL bucket of each dimension, which has
-   * no id to sit in `appIds`/`categoryIds` (the dashboard's `id: null` slices
-   * land here via `?noApp=1`). A plain boolean beside the id list, so ticking
-   * it together with a real app means OR on the server, never an empty AND.
+   * "ไม่มีแอป" / "ไม่มีหมวดหมู่" / "ไม่ระบุประเภทงาน" — the NULL bucket of
+   * each dimension, which has no id to sit in `appIds`/`categoryIds`/
+   * `taskTypes` (the dashboard's `id: null` slices land here via `?noApp=1`).
+   * A plain boolean beside the id list, so ticking it together with a real
+   * value means OR on the server, never an empty AND.
    */
-  const toggleFlag = (key: "noApp" | "noCategory") => {
+  const toggleFlag = (key: "noApp" | "noCategory" | "noTaskType") => {
     onFiltersChange({ ...filters, [key]: !filters[key] });
   };
 
@@ -186,6 +237,29 @@ export function ReportsFilterPanel({
     start: <BusinessIcon sx={{ fontSize: 16, flexShrink: 0, color: "warning.main" }} />,
   }));
 
+  /**
+   * **ประเภทสัญญา** (เฉพาะมุมมองตามบริษัท) — 2 ค่าคงที่ของ `app_companies.kind`
+   * ไม่มี bucket ว่าง: แถวที่ไม่มี kind คือแอปยังไม่ผูกบริษัท ซึ่ง
+   * `buildCompanyRows` ตัดออกอยู่แล้วเมื่อเปิด filter นี้ (กฎเดียวกับ
+   * filter บริษัท — สองฝั่งต้องตรงกัน)
+   */
+  const kindOptions: FilterOption[] = [
+    {
+      id: "renew",
+      label: st("renew"),
+      checked: filters.kinds.includes("renew"),
+      onToggle: () => toggleKind("renew"),
+      start: <AutorenewIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main" }} />,
+    },
+    {
+      id: "buy",
+      label: st("kindBuy"),
+      checked: filters.kinds.includes("buy"),
+      onToggle: () => toggleKind("buy"),
+      start: <ScheduleIcon sx={{ fontSize: 16, flexShrink: 0, color: "primary.main" }} />,
+    },
+  ];
+
   const priorityOptions: FilterOption[] = options.priorities.map((priority) => ({
     id: priority.id,
     label: priority.name,
@@ -195,6 +269,35 @@ export function ReportsFilterPanel({
       <FlagIcon sx={{ fontSize: 16, flexShrink: 0, color: getPriorityColor(theme, priority.name) }} />
     ),
   }));
+
+  /**
+   * **ประเภทงาน** — 3 ค่าคงที่ (ไม่มี endpoint list type จึงไม่ยิง API) +
+   * bucket "ไม่ระบุ" ของ `task_type IS NULL` ต่อท้าย · ป้ายอ่านจาก
+   * `Boards.taskType.*` / `Boards.detail.taskTypeUnset` — คำเดียวกับที่ popup
+   * บอร์ดและคอลัมน์ "รายการที่ตัด" ใช้อยู่แล้ว
+   */
+  const taskTypeIcons: Record<IssueTaskType, ReactNode> = {
+    bug: <BugReportIcon sx={{ fontSize: 16, flexShrink: 0, color: "error.main" }} />,
+    ma: <ScheduleIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main" }} />,
+    requirement: (
+      <DescriptionIcon sx={{ fontSize: 16, flexShrink: 0, color: "secondary.main" }} />
+    ),
+  };
+
+  const taskTypeOptions: FilterOption[] = TASK_TYPE_VALUES.map((value) => ({
+    id: value,
+    label: bt(`taskType.${value}`),
+    checked: filters.taskTypes.includes(value),
+    onToggle: () => toggleTaskType(value),
+    start: taskTypeIcons[value],
+  }));
+  taskTypeOptions.push({
+    id: "no-task-type",
+    label: bt("detail.taskTypeUnset"),
+    checked: filters.noTaskType,
+    onToggle: () => toggleFlag("noTaskType"),
+    start: <HelpOutlineIcon sx={{ fontSize: 16, flexShrink: 0, color: "text.disabled" }} />,
+  });
 
   const categoryOptions: FilterOption[] = options.categories.map((category) => ({
     id: category.id,
@@ -252,6 +355,13 @@ export function ReportsFilterPanel({
       count: filters.priorityIds.length,
       options: priorityOptions,
     },
+    taskType: {
+      // หัวข้ออ่านจาก `Boards.detail.taskType` ("ประเภทงาน") — มีครบทั้ง th/en
+      title: bt("detail.taskType"),
+      icon: <TaskIcon sx={{ fontSize: 18 }} />,
+      count: filters.taskTypes.length + (filters.noTaskType ? 1 : 0),
+      options: taskTypeOptions,
+    },
     category: {
       title: t("filters.category"),
       icon: <CategoryIcon sx={{ fontSize: 18 }} />,
@@ -263,6 +373,13 @@ export function ReportsFilterPanel({
       icon: <AppsIcon sx={{ fontSize: 18 }} />,
       count: filters.appIds.length + (filters.noApp ? 1 : 0),
       options: appOptions,
+    },
+    kind: {
+      // หัวข้อ "ประเภท" — ใช้ key `columns.type` เดียวกับคอลัมน์บนตาราง
+      title: t("columns.type"),
+      icon: <SwapHorizIcon sx={{ fontSize: 18 }} />,
+      count: filters.kinds.length,
+      options: kindOptions,
     },
     company: {
       title: t("filters.company"),

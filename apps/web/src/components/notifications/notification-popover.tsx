@@ -7,7 +7,6 @@ import {
   Avatar,
   Box,
   Button,
-  Chip,
   CircularProgress,
   Divider,
   ListItemButton,
@@ -64,16 +63,6 @@ const AVATAR_COLORS = [
   "success.main",
   "warning.main",
 ];
-
-/**
- * สี chip ตามระดับ — ดึงจากพาเลตต์ของธีม (ไม่ hardcode hex) · แดง = สูง
- * (ลอยขึ้นบนสุดในกล่องเข้า), เหลือง = กลาง, เทา = ต่ำ
- */
-const PRIORITY_COLOR: Record<string, "error" | "warning" | "default"> = {
-  high: "error",
-  medium: "warning",
-  low: "default",
-};
 
 function getInitials(name: string): string {
   return name
@@ -132,14 +121,6 @@ export default function NotificationPopover({
     ma_depleted: t("actions.ma_depleted"),
     // แถวเตือน 09:00 ที่ DailyReminderService สร้างให้ (ไม่ใช่เหตุการณ์จริง)
     daily_digest: t("actions.daily_digest"),
-  };
-
-  // สร้างเป็น map เหมือน actionLabels — lookup ทับค่าที่ไม่รู้จักได้ (t() กับ
-  // key แปลกจะพัง/ขึ้น key ดิบ จึงห้ามยิง t() แบบ dynamic กับค่าจาก API)
-  const priorityLabels: Record<string, string> = {
-    high: t("priority.high"),
-    medium: t("priority.medium"),
-    low: t("priority.low"),
   };
 
   function handleItemClick(item: AppNotification) {
@@ -319,10 +300,13 @@ export default function NotificationPopover({
               item.action === "app_expired" ||
               item.action === "ma_depleted" ||
               // digest 09:00 ก็ไม่มีคนกระทำ — ขึ้นหัวด้วยจำนวนที่ค้าง
-              item.action === "daily_digest";
-            // ระดับที่รู้จักเท่านั้น — payload แปลก/ไม่มีค่า = ไม่ต้องมี chip
-            const priorityLabel = priorityLabels[item.priority];
-            const priorityColor = PRIORITY_COLOR[item.priority];
+              item.action === "daily_digest" ||
+              // การ์ดค้าง (sweep 09:00) ก็ไม่มีคนกระทำ — เดิมหลุดไปโหมด "มีคนกระทำ"
+              // แล้วเจอ fallback ตายตัว "System" หัวบรรทัดจึงอ่านว่า "System ค้างนาน …"
+              item.action === "stale";
+            // stale มีประโยคของตัวเองบรรทัดเดียวครบ:
+            // **งาน ทดสอบ** ค้างที่สถานะ รอดำเนินการ · 7 วัน (context ไม่ซ้ำที่บรรทัดล่าง)
+            const isStaleRow = item.action === "stale";
             return (
               <Box key={item.id}>
                 {index > 0 && <Divider />}
@@ -361,7 +345,17 @@ export default function NotificationPopover({
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {isSystemRow ? (
+                      {isStaleRow ? (
+                        <>
+                          <Box
+                            component="span"
+                            sx={{ fontWeight: 700 }}
+                          >
+                            {item.target}
+                          </Box>{" "}
+                          {t("actions.stale")} {item.context}
+                        </>
+                      ) : isSystemRow ? (
                         <>
                           <Box component="span" sx={{ fontWeight: 700 }}>
                             {item.target}
@@ -415,21 +409,11 @@ export default function NotificationPopover({
                         }}
                       >
                         {timeAgo(item.createdAt, locale)}
-                        {item.context ? ` • ${item.context}` : ""}
+                        {/* stale ใช้ context บนบรรทัดหัวแล้ว — ห้ามพิมพ์ซ้ำ */}
+                        {item.context && !isStaleRow ? ` • ${item.context}` : ""}
                       </Typography>
-                      {priorityLabel && priorityColor && (
-                        <Chip
-                          label={priorityLabel}
-                          color={priorityColor}
-                          size="small"
-                          sx={{
-                            flexShrink: 0,
-                            height: 18,
-                            fontSize: "0.625rem",
-                            fontWeight: 700,
-                          }}
-                        />
-                      )}
+                      {/* chip ความสำคัญ (สูง/กลาง/ต่ำ) ถูกถอดออกตามคำสั่ง — ความสำคัญ
+                          ยังคงบอกผ่านลำดับเรียง (สูงขึ้นก่อน) ฝั่ง server เท่านั้น */}
                     </Box>
                   </Box>
                 </ListItemButton>

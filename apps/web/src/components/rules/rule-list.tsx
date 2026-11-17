@@ -25,6 +25,7 @@ import {
   Typography,
 } from "@mui/material";
 import BoltIcon from "@mui/icons-material/Bolt";
+import CheckIcon from "@mui/icons-material/Check";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import LockIcon from "@mui/icons-material/Lock";
@@ -63,12 +64,77 @@ interface RuleListProps {
 
 type StatusFilter = "all" | "active" | "inactive";
 
+/**
+ * สไตล์ pill ของตัวกรอง 2 ช่อง — mirrors the `run-history-dialog.tsx` +
+ * `reports-toolbar.tsx` copies (แก้ที่ไหนต้องแก้ทั้งชุด): **พื้นขาว** +
+ * ขอบ `divider` เห็นตลอด (พื้นขาวบนการ์ดขาวต้องมีขอบกันกลืน) → hover
+ * `grey.50` + ขอบเข้มขึ้น → focus น้ำเงิน, เมนูมุมมน + ✓ หน้ารายการที่เลือก
+ *
+ * ⚠️ **2 ช่องบนแดชบอร์ด** (`[locale]/page.tsx` + `workload-card.tsx`) ขาว
+ * เหมือนกันแล้ว — ต่าง**แค่ไซส์**: เล็ก (13 / py 0.75) ตามคำสั่ง
+ *
+ * **เวอร์ชันใหญ่** (fontSize 14 / py 1) ตามคำสั่ง — ทุกหน้ายกเว้นแดชบอร์ด
+ * ใช้ไซส์นี้; สองช่องบนแดชบอร์ดยังเป็นไซส์เล็ก (13 / py 0.75) เหมือนเดิม
+ */
+const PILL_SELECT_SX = {
+  minWidth: 160,
+  fontSize: 14,
+  bgcolor: "common.white",
+  borderRadius: "10px",
+  transition: "background-color 150ms ease",
+  "&:hover": { bgcolor: "grey.50" },
+  // divider line at rest (white-on-white would otherwise vanish) →
+  // grey.400 on hover → primary on focus (keyboard ring stays visible)
+  "& .MuiOutlinedInput-notchedOutline": { border: "1px solid", borderColor: "divider" },
+  "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: "grey.400" },
+  "&.Mui-focused .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main" },
+  "& .MuiSelect-select": { py: 1, pr: "30px !important" },
+} as const;
+
+/** แถวในเมนู — mirror of `COMPANY_ITEM_SX` / `POSITION_ITEM_SX`. */
+const PILL_ITEM_SX = {
+  borderRadius: "8px",
+  fontSize: 13,
+  py: 0.75,
+  px: 1.25,
+  gap: 1,
+  "&.Mui-selected": { bgcolor: "action.selected", fontWeight: 600 },
+  "&.Mui-selected:hover": { bgcolor: "action.selected" },
+} as const;
+
+const PILL_ROW_TEXT_SX = {
+  fontSize: 13,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+} as const;
+
+/** ข้อความในกล่องปิด — ตัวหนา + ตัดด้วย … เหมือนฝั่งแดชบอร์ด (ไซส์ใหญ่ 14). */
+const PILL_VALUE_SX = { ...PILL_ROW_TEXT_SX, fontSize: 14, fontWeight: 600 } as const;
+
 export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate = true }: RuleListProps) {
   const t = useTranslations("Automation");
   // param labels (ย้ายไปสถานะ / มอบหมายตำแหน่ง / ป้ายกำกับ …) live under the
   // wizard namespace — same source the action picker & step ③ review use
   const tWizard = useTranslations("Automation.wizard");
   const theme = useTheme();
+
+  /** เมนูของ pill ทั้งสองช่อง — มุมมน + เงา เหมือนฝั่งแดชบอร์ดเป๊ะ. */
+  const pillMenuProps = {
+    slotProps: {
+      paper: {
+        sx: {
+          borderRadius: "14px",
+          mt: 1,
+          p: 0.75,
+          border: "1px solid",
+          borderColor: "divider",
+          boxShadow: theme.custom.cardShadow,
+          maxWidth: 320,
+        },
+      },
+    },
+  };
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -294,12 +360,31 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
           value={categoryFilter}
           onChange={(e) => setCategoryFilter(e.target.value)}
           displayEmpty
-          sx={{ minWidth: 160 }}
+          renderValue={(raw) => {
+            const value = typeof raw === "string" ? raw : "";
+            const label =
+              value === "all"
+                ? t("allCategories")
+                : (RULE_TRIGGER_CATEGORIES.find((c) => c.key === value)?.label.th ??
+                  t("allCategories"));
+            return <Typography sx={PILL_VALUE_SX}>{label}</Typography>;
+          }}
+          MenuProps={pillMenuProps}
+          sx={PILL_SELECT_SX}
         >
-          <MenuItem value="all">{t("allCategories")}</MenuItem>
-          {RULE_TRIGGER_CATEGORIES.map((cat) => (
-            <MenuItem key={cat.key} value={cat.key}>
-              {cat.label.th}
+          {[
+            { key: "all", label: t("allCategories") },
+            ...RULE_TRIGGER_CATEGORIES.map((c) => ({ key: c.key, label: c.label.th })),
+          ].map((o) => (
+            <MenuItem key={o.key} value={o.key} sx={PILL_ITEM_SX}>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+                <Typography sx={PILL_ROW_TEXT_SX}>{o.label}</Typography>
+                {categoryFilter === o.key && (
+                  <CheckIcon
+                    sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }}
+                  />
+                )}
+              </Box>
             </MenuItem>
           ))}
         </Select>
@@ -308,12 +393,30 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
           value={actionFilter}
           onChange={(e) => setActionFilter(e.target.value)}
           displayEmpty
-          sx={{ minWidth: 160 }}
+          renderValue={(raw) => {
+            const value = typeof raw === "string" ? raw : "";
+            const label =
+              value === "all"
+                ? t("allActions")
+                : (RULE_ACTIONS.find((a) => a.key === value)?.label.th ?? t("allActions"));
+            return <Typography sx={PILL_VALUE_SX}>{label}</Typography>;
+          }}
+          MenuProps={pillMenuProps}
+          sx={PILL_SELECT_SX}
         >
-          <MenuItem value="all">{t("allActions")}</MenuItem>
-          {RULE_ACTIONS.map((action) => (
-            <MenuItem key={action.key} value={action.key}>
-              {action.label.th}
+          {[
+            { key: "all", label: t("allActions") },
+            ...RULE_ACTIONS.map((a) => ({ key: a.key, label: a.label.th })),
+          ].map((o) => (
+            <MenuItem key={o.key} value={o.key} sx={PILL_ITEM_SX}>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+                <Typography sx={PILL_ROW_TEXT_SX}>{o.label}</Typography>
+                {actionFilter === o.key && (
+                  <CheckIcon
+                    sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }}
+                  />
+                )}
+              </Box>
             </MenuItem>
           ))}
         </Select>

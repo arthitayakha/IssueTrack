@@ -5,6 +5,7 @@ import {
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { IssuesService } from "../modules/issues/issues.service";
+import { REJECT_STATUS_NAME } from "@kanban/shared";
 
 /**
  * `IssuesService.create()` must also emit `issue.category_changed` when the
@@ -108,6 +109,8 @@ function makeService() {
   };
   // MA quota check after a time entry — off unless a test opts in
   const maUsage = { checkAndNotify: jest.fn().mockResolvedValue(undefined) };
+  // "MA หมดอายุ → รับงาน MA/Requirement ไม่ได้" — off (ยังไม่หมดอายุ) by default
+  const apps = { isPairExpired: jest.fn().mockResolvedValue(false) };
   const service = new IssuesService(
     ...( [
       issues,
@@ -121,6 +124,7 @@ function makeService() {
       rulesEngine,
       notifications,
       maUsage,
+      apps,
     ] as unknown as ServiceArgs ),
   );
   return {
@@ -133,6 +137,7 @@ function makeService() {
     workSessions,
     notifications,
     maUsage,
+    apps,
   };
 }
 
@@ -584,6 +589,64 @@ describe("IssuesService.findOne — the lock the board renders", () => {
   });
 });
 
+describe("IssuesService.move — ตีกลับงาน: ปลายทาง 'ยกเลิก' ข้าม move guards ทั้ง 3", () => {
+  /**
+   * ปลายทาง = สถานะตีกลับ — ชื่อมาจาก `@kanban/shared` → `REJECT_STATUS_NAME`
+   * (จุดเดียวกับปุ่ม "ตีกลับงาน" ฝั่ง web) · เหตุผล: การตีกลับคือการ**ปิด**งาน
+   * ไม่ใช่การลาก → ต้องเข้าคอลัมน์นี้ได้จากทุกคอลัมน์และการ์ดทุกสถานะ
+   */
+  function rejectCtx() {
+    const ctx = makeService();
+    ctx.issueStatuses.findOne.mockResolvedValue({ id: 62, name: REJECT_STATUS_NAME });
+    return ctx;
+  }
+
+  it("jumps over columns while the step-only rule is active (400 otherwise)", async () => {
+    const { service, issues, rulesEngine } = rejectCtx();
+    rulesEngine.isStepOnlyMoveActive.mockResolvedValue(true);
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 1 }));
+
+    await service.move(5, 62, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, expect.objectContaining({ statusId: 62 }));
+  });
+
+  it("takes a LOCKED card out anyway (409 for every other destination)", async () => {
+    const { service, issues, rulesEngine } = rejectCtx();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, isLocked: true }));
+    rulesEngine.statusGates.mockResolvedValue({
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+      locked: new Set<number>([1]),
+      taskType: new Set<number>(),
+    });
+
+    await service.move(5, 62, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, expect.objectContaining({ statusId: 62 }));
+  });
+
+  it("leaves รอรับเรื่อง while UNtyped (422 otherwise — the reject flow's main case)", async () => {
+    const { service, issues, rulesEngine } = rejectCtx();
+    rulesEngine.taskTypeGateStatuses.mockResolvedValue(new Set([1]));
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, taskType: null }));
+
+    await service.move(5, 62, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, expect.objectContaining({ statusId: 62 }));
+  });
+
+  it("any other destination keeps every guard — the target's NAME decides", async () => {
+    const { service, issues, rulesEngine } = makeService(); // target = ค่า default "Todo"
+    rulesEngine.taskTypeGateStatuses.mockResolvedValue(new Set([1]));
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, taskType: null }));
+
+    await expect(service.move(5, 2, ACTOR)).rejects.toThrow(UnprocessableEntityException);
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+});
+
 describe("IssuesService.movePolicy — what the card menu keys off", () => {
   it("reports the step-only guard, the unlock availability and the stale rules", async () => {
     const { service, rulesEngine } = makeService();
@@ -961,6 +1024,134 @@ describe("IssuesService.update — the task-type field lock (issue.require_task_
   });
 });
 
+describe("IssuesService.update — MA หมดอายุ → รับงาน MA/Requirement ไม่ได้ (ตีกลับ)", () => {
+  /** งานที่มีผู้แจ้ง + บริษัท (คู่กับแอป 4) — รูปแบบเดียวกับ `update()` อ่านจริง */
+  const typedRow = (overrides: Record<string, unknown> = {}) =>
+    issueRow({
+      appId: 4,
+      customerId: 2,
+      customer: { companyId: 5 },
+      taskType: null,
+      ...overrides,
+    });
+
+  it("400s when the pair's contract is expired and the team picks 'ma'", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(typedRow());
+    apps.isPairExpired.mockResolvedValue(true);
+
+    await expect(service.update(5, { taskType: "ma" }, ACTOR)).rejects.toThrow("สัญญา MA");
+    expect(apps.isPairExpired).toHaveBeenCalledWith(4, 5);
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("400s for 'requirement' as well — both types are rejected", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(typedRow());
+    apps.isPairExpired.mockResolvedValue(true);
+
+    await expect(service.update(5, { taskType: "requirement" }, ACTOR)).rejects.toThrow(
+      "สัญญา MA",
+    );
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("lets 'bug' through while expired — never even asks the contract (บั๊กทำต่อได้)", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(typedRow());
+    apps.isPairExpired.mockResolvedValue(true);
+
+    await service.update(5, { taskType: "bug" }, ACTOR);
+
+    expect(apps.isPairExpired).not.toHaveBeenCalled();
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: "bug" });
+  });
+
+  it("clearing the type (null) passes even while the contract is expired", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(typedRow({ taskType: "ma" }));
+    apps.isPairExpired.mockResolvedValue(true);
+
+    await service.update(5, { taskType: null }, ACTOR);
+
+    expect(apps.isPairExpired).not.toHaveBeenCalled();
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: null });
+  });
+
+  it("re-saving the same type skips the check entirely (no write, no query)", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(typedRow({ taskType: "requirement" }));
+    apps.isPairExpired.mockResolvedValue(true);
+
+    await service.update(5, { taskType: "requirement" }, ACTOR);
+
+    expect(apps.isPairExpired).not.toHaveBeenCalled();
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+
+  it("writes 'ma' when the contract is still valid", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(typedRow());
+    // default stub: isPairExpired → false (ยังไม่หมดอายุ)
+
+    await service.update(5, { taskType: "ma" }, ACTOR);
+
+    expect(apps.isPairExpired).toHaveBeenCalledWith(4, 5);
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: "ma" });
+  });
+
+  it("fails open with NO reporter (staff-created card) — the contract is never asked", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ taskType: null }));
+    apps.isPairExpired.mockResolvedValue(true); // ถึงจะคืน true ก็ไม่มีทางถูกเรียก
+
+    await service.update(5, { taskType: "ma" }, ACTOR);
+
+    expect(apps.isPairExpired).not.toHaveBeenCalled();
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: "ma" });
+  });
+
+  it("fails open when the reporter has no company", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(typedRow({ customer: { companyId: null } }));
+    apps.isPairExpired.mockResolvedValue(true);
+
+    await service.update(5, { taskType: "ma" }, ACTOR);
+
+    expect(apps.isPairExpired).not.toHaveBeenCalled();
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: "ma" });
+  });
+
+  it("fails open when the contract lookup breaks (log, never wedge classification)", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(typedRow());
+    apps.isPairExpired.mockRejectedValue(new Error("connection lost"));
+
+    await service.update(5, { taskType: "ma" }, ACTOR);
+
+    expect(issues.update).toHaveBeenCalledWith(5, { taskType: "ma" });
+  });
+
+  it("the status field gate answers FIRST — its 400 wins and the contract is never asked", async () => {
+    const { service, issues, rulesEngine, apps } = makeService();
+    issues.findOne.mockResolvedValue(typedRow({ statusId: 2, taskType: "bug" }));
+    rulesEngine.statusGates.mockResolvedValue({
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+      locked: new Set<number>(),
+      taskType: new Set<number>([1]),
+    });
+    apps.isPairExpired.mockResolvedValue(true);
+
+    await expect(service.update(5, { taskType: "ma" }, ACTOR)).rejects.toThrow(
+      "The task type field is not editable",
+    );
+    expect(apps.isPairExpired).not.toHaveBeenCalled();
+    expect(issues.update).not.toHaveBeenCalled();
+  });
+});
+
 describe("IssuesService.movePolicy — the stale rules the board paints from", () => {
   it("passes the engine's active rules straight through", async () => {
     const { service, rulesEngine } = makeService();
@@ -1238,5 +1429,73 @@ describe("IssuesService.findAll — noApp / noCategory (the dashboard's NULL sli
       "issue.category_id IN (:...categoryIds)",
       "issue.app_id IN (:...appIds)",
     ]);
+  });
+});
+
+describe("IssuesService.findAll — taskTypes / noTaskType (ประเภทงาน)", () => {
+  const PARAMS = { page: 1, limit: 20 };
+
+  /** The `andWhere` calls the single query builder received during findAll. */
+  function whereCalls(issues: { createQueryBuilder: jest.Mock }): unknown[][] {
+    const builder = issues.createQueryBuilder.mock.results.at(-1)?.value;
+    return builder?.andWhere?.mock.calls ?? [];
+  }
+
+  /** Every clause touching `task_type` — the filter section's own dimension. */
+  function typeClauses(issues: { createQueryBuilder: jest.Mock }): unknown[][] {
+    return whereCalls(issues).filter(([sql]) => String(sql).includes("task_type"));
+  }
+
+  /** The whitelist lives in the controller (`common/task-types.ts`), so the
+   *  service only ever sees known values — mirror that here. */
+  it("taskTypes alone → the plain IN clause", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { taskTypes: ["bug", "ma"] });
+
+    const clauses = typeClauses(issues);
+    expect(clauses).toHaveLength(1);
+    const [sql, params] = clauses[0] as [string, Record<string, unknown>];
+    expect(sql).toBe("issue.task_type IN (:...taskTypes)");
+    expect(params.taskTypes).toEqual(["bug", "ma"]);
+  });
+
+  it("noTaskType alone → task_type IS NULL (the \"ไม่ระบุ\" bucket)", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { noTaskType: true });
+
+    const clauses = typeClauses(issues);
+    expect(clauses).toHaveLength(1);
+    expect(String((clauses[0] as [string])[0])).toBe("issue.task_type IS NULL");
+  });
+
+  /**
+   * Ticking "ไม่ระบุประเภทงาน" *and* a real type must OR inside ONE clause —
+   * two ANDed clauses (`IS NULL` AND `IN (…)`) could never match a row, and the
+   * panel offers those checkboxes side by side (same rule as noApp/noCategory).
+   */
+  it("noTaskType + taskTypes → ONE OR clause, never two ANDed clauses", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {
+      taskTypes: ["bug"],
+      noTaskType: true,
+    });
+
+    const clauses = typeClauses(issues);
+    expect(clauses).toHaveLength(1);
+    const [sql, params] = clauses[0] as [string, Record<string, unknown>];
+    expect(sql).toBe("(issue.task_type IN (:...taskTypes) OR issue.task_type IS NULL)");
+    expect(params.taskTypes).toEqual(["bug"]);
+  });
+
+  /** Fail-open: no param → no clause, so every other caller sees every type. */
+  it("neither set → no task_type clause at all", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { appIds: [3] });
+
+    expect(typeClauses(issues)).toHaveLength(0);
   });
 });

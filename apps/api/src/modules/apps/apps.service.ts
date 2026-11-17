@@ -239,6 +239,30 @@ export class AppsService {
   }
 
   /**
+   * **คู่ "แอป × บริษัท" หมดอายุแล้วหรือยัง** — จุดถามของ
+   * `IssuesService.update()` (ตาข่าย "MA หมดอายุ → รับงาน MA/Requirement ไม่ได้")
+   *
+   * - ดูเฉพาะ**ช่วงล่าสุดของคู่** (max `id`) — ช่วงเก่าหมดอายุแต่เพิ่งต่ออายุ = ยังไม่หมด
+   * - **fail-open**: ไม่มีแอป / ไม่มีบริษัท / ไม่มีแถวคู่ / ไม่กรอกวันหมดอายุ → `false`
+   *   (เฉพาะ `mode` ของผู้เรียกไม่เกี่ยว — นี่คือคำถามเรื่องข้อมูลคู่ ไม่ใช่สิทธิ์อ่าน)
+   * - **อ่านอย่างเดียว** — ใช้ตัวช่วยตัวเดียวกับธง `maExpired` ใน `findAll()`
+   *   และ**ไม่เรียก `reconcile()`** (การ expire ยังเป็นหน้าที่ cron 09:00 ของ
+   *   `AppExpiryService`)
+   */
+  async isPairExpired(
+    appId: number | null | undefined,
+    companyId: number | null | undefined,
+  ): Promise<boolean> {
+    if (appId == null || companyId == null) return false;
+    const latest = await this.appCompanies.findOne({
+      where: { appId, companyId },
+      order: { id: "DESC" },
+    });
+    if (!latest) return false;
+    return this.isPeriodExpired(latest);
+  }
+
+  /**
    * สร้าง "ชื่อแอป" อย่างเดียว — หน้าที่ของแท็บแอปใน `/master-data`
    * (ข้อมูลระบบเพิ่มทีหลังผ่าน `addRecord()` ที่ `/systems`)
    */

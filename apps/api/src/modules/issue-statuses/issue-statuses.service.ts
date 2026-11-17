@@ -4,7 +4,8 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { EntityManager, Repository } from "typeorm";
+import { REJECT_STATUS_NAME } from "@kanban/shared";
 import { IssueStatus } from "./entities/issue-status.entity";
 import { Issue } from "../issues/entities/issue.entity";
 import { paginate, PaginationParams } from "../../common/pagination";
@@ -59,6 +60,9 @@ export class IssueStatusesService {
         position: nextPosition,
       }),
     );
+    // สถานะใหม่ได้ `MAX(position)+1` = มักจะ "แซง" สถานะยกเลิกไปอยู่หลังสุด
+    // เอง → ดัน "ยกเลิก" กลับไปเป็น position มากสุดทันที (ดู pinRejectLast)
+    await this.pinRejectLast(this.issueStatuses.manager);
     return {
       id: status.id,
       name: status.name,
@@ -123,8 +127,48 @@ export class IssueStatusesService {
       for (const item of items) {
         await em.update(IssueStatus, item.id, { position: item.sortOrder });
       }
+      // ลากเสร็จ = ตรวจซ้ำว่า "ยกเลิก" ยังอยู่ท้ายสุด (payload ที่เอามันไปไว้
+      // กลาง list โดนแก้ตรงนี้ — เรียกด้วย em ตัวเดียวกับ transaction)
+      await this.pinRejectLast(em);
     });
     return { reordered: items.length };
+  }
+
+  /**
+   * **สถานะ "ยกเลิก" ต้องอยู่ท้ายสุดเสมอ** (`REJECT_STATUS_NAME` จาก
+   * `@kanban/shared` — จุดเดียวกับปุ่ม "ตีกลับงาน" ฝั่งเว็บ และกับ
+   * `IssuesService.move()` ที่ยกเว้น move guards เมื่อปลายทางเป็นสถานะนี้)
+   *
+   * - **ทำไมต้องฝั่งเซิร์ฟเวอร์**: สองที่ที่เขียน `position` คือ `create()`
+   *   (`MAX(position)+1` — สถานะใหม่จะแซงไปอยู่หลัง "ยกเลิก" เอง) กับ
+   *   `reorder()` (ลูกค้าส่งลำดับอะไรมา ก็เขียนตามนั้น — มีทั้งแท็บสถานะใน
+   *   `/master-data` และสาขาลากคอลัมน์ของบอร์ด) ดังนั้นปล่อยให้หน้าเว็บ
+   *   ฝั่งเดียวบังคับไม่ได้
+   * - **ลากไม่ใช่การนับ index คงที่**: บังคับ "position มากสุดเสมอ" —
+   *   เพิ่มสถานะกี่อันก็ได้ (ยี่สิบ/ร้อย) "ยกเลิก" ก็ยังอยู่ท้ายสุด และ
+   *   `reorder` ที่ส่งมาจะ renumber 1..n ชิดเอง
+   * - **Fail-open**: ไม่มีแถวชื่อนี้ (เครื่อง fresh ที่ยังไม่ได้สร้าง) →
+   *   คืนเงียบ ไม่ throw — ไม่มีอะไรให้ล็อก
+   * - ตัวช่วยของงานนี้: แถวมีแค่หลักสิบ → `find()` ทั้งตารางแล้วหา max
+   *   ใน JS ถูกกว่า query builder + subquery และใช้ได้ทั้งนอก/ใน transaction
+   *
+   * ⚠️ ยังคง **rename / ลบ / ปิดใช้งาน** ได้ตามเดิม (ข้อสรุป: ล็อกเฉพาะ
+   * "ตำแหน่ง") — ถ้าจะเพิ่มการป้องกันส่วนนั้น ค่อยว่ากันทีหลัง
+   */
+  private async pinRejectLast(em: EntityManager): Promise<void> {
+    const all = await em.find(IssueStatus);
+    const reject = all.find((s) => s.name === REJECT_STATUS_NAME);
+    if (!reject) return; // fail-open — ยังไม่มีสถานะนี้ในระบบ
+    const max = all.reduce(
+      (m, s) => (s.id === reject.id ? m : Math.max(m, s.position)),
+      0,
+    );
+    // `>=` (ไม่ใช่ `>`): ตำแหน่งเท่ากันแต่ id ใหญ่กว่าก็ถูกจัด"ก่อน"ได้ใน
+    // `findAll` (`position ASC, id ASC`) — เท่ากันจึงต้อง bump ทิ้งเพื่อให้
+    // "ยกเลิก" เป็นแถวเดียวที่มี position มากสุดจริง ๆ
+    if (max >= reject.position) {
+      await em.update(IssueStatus, reject.id, { position: max + 1 });
+    }
   }
 
   async remove(id: number) {

@@ -45,11 +45,23 @@ export interface ReportIssueFilters {
   noCategory?: boolean;
   companyIds?: number[];
   /**
-   * ประเภทงาน (`issues.task_type`) — ใช้ตอนคำนวณ "ใช้ไป" ของชั่วโมง MA:
-   * ส่ง `["ma"]` เพื่อไม่นับเวลาของงาน bug / requirement (และ NULL)
-   * เข้าการหัก MA. รายงานจออื่น ๆ ไม่ส่ง filter นี้ → เห็นเวลาครบทุก type
+   * **ประเภทงาน** (`issues.task_type`) — whitelist ฝั่ง controller กรอกมาเฉพาะ
+   * 3 ค่าแล้ว (`common/task-types.ts` ชุดเดียวกับ `GET /issues`):
+   *
+   * - มุมมอง "ตามผู้รับผิดชอบ" / "ตามแอป" ส่งมาจาก section "ประเภทงาน" ของ
+   *   popover ตัวกรองหน้ารายงาน → ตัวเลขสรุป (งานทั้งหมด/ยังเปิดอยู่/ชั่วโมง)
+   *   ถูกกรองด้วย type เดียวกับที่จอ ทั้งตารางและ CSV/PDF
+   * - `GET /reports/usage` ยังส่ง `["ma"]` เองเพื่อคำนวณ "ใช้ไป" ของชั่วโมง MA
+   *   (ไม่นับเวลาของงาน bug / requirement / NULL เข้าการหัก) — คนละ path
+   *   ไม่เกี่ยวกับตัวกรองบนจอ
    */
   taskTypes?: string[];
+  /**
+   * "ไม่ระบุประเภทงาน" (`task_type IS NULL`) — OR-part ของ dimension เดียวกัน
+   * กับ `noApp` / `noCategory` (ดูด้านบน) · NULL ต้องมากับ flag เพราะ
+   * `IN (...)` จับค่า NULL ไม่ได้
+   */
+  noTaskType?: boolean;
 }
 
 /** Median minutes per issue (1 decimal); null = no task in the group has a recorded time. */
@@ -280,12 +292,25 @@ export class ReportsService {
       );
     }
     /**
-     * ประเภทงาน — whitelist ฝั่ง controller กรอกมาเฉพาะ 3 ค่าแล้ว; NULL
-     * (ยังไม่ระบุ) ไม่เข้า IN เลยจึงไม่ถูกนับ — ตรงกับกฎหัก MA ที่ว่า
-     * "ยังไม่ระบุ = ยังไม่หัก"
+     * **ประเภทงาน** — whitelist ฝั่ง controller กรอกมาเฉพาะ 3 ค่าแล้ว
+     * (`common/task-types.ts`) · **OR-part ของ dimension เดียวกัน** เหมือน
+     * `noApp` / `noCategory`: ติ๊ก `bug` + "ไม่ระบุ" → `IN (bug) OR IS NULL` ไม่ใช่
+     * AND ที่จะว่างเสมอ · ไม่ส่งอะไร = ไม่มี clause (ค่า default ของหน้ารายงาน
+     * ที่ไม่ได้กรอง = เห็นครบทุก type เหมือนเดิม)
+     *
+     * ⚠️ `GET /reports/usage` (สูตร "ใช้ไป" ของ MA) ใช้ builder นี้ร่วมกันแต่
+     * **ไม่เคยส่ง `noTaskType`** — มันยิง `taskTypes=ma` อย่างเดียว จึงยังได้
+     * `IN (ma)` เป๊ะเหมือนเดิม = "ยังไม่ระบุ = ยังไม่หัก" คงไว้ครบ
      */
     if (f.taskTypes?.length) {
-      qb.andWhere("issue.task_type IN (:...taskTypes)", { taskTypes: f.taskTypes });
+      qb.andWhere(
+        f.noTaskType
+          ? "(issue.task_type IN (:...taskTypes) OR issue.task_type IS NULL)"
+          : "issue.task_type IN (:...taskTypes)",
+        { taskTypes: f.taskTypes },
+      );
+    } else if (f.noTaskType) {
+      qb.andWhere("issue.task_type IS NULL");
     }
   }
 
