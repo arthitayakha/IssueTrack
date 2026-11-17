@@ -11,7 +11,6 @@ import {
   TableHead,
   TableRow,
   TableSortLabel,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
@@ -25,8 +24,6 @@ import DataTable, {
 } from "@/components/data-table";
 import { SORTABLE_FIELDS, periodUsedOf } from "@/lib/reports-api";
 import {
-  taskBreakdownParts,
-  taskTypeLabels,
   type DeductionState,
   type PeriodUsage,
   type UsageCount,
@@ -92,8 +89,6 @@ const COL_MIN: Record<string, number> = {
   usedHours: 150,
   // จำนวนงานที่ถูกตัดจากรอบนั้น (ระดับแถว — แถวละ 1 รอบ) + ลูกศรกางรายการ
   deductedCount: 150,
-  // ประเภทงาน (บั๊ก/MA/Requirement/ไม่ระบุ) — ระดับคู่ โชว์เฉพาะแถวล่าสุด
-  taskType: 190,
   priority: 130,
   // summaries
   person: 150,
@@ -180,11 +175,6 @@ export function ReportsTable({
   /** คีย์ร่วมกับป๊อปอัพ `/systems` — คำของฟีเจอร์ "รายการที่ตัด" ชุดเดียวกัน */
   const st = useTranslations("Settings");
   const deductionTaskTypes = useTranslations("Boards");
-  /**
-   * ป้าย 4 ช่องของคอลัมน์ "ประเภทงาน" — สร้างผ่าน `taskTypeLabels()` ตัวเดียว
-   * กับที่ CSV/PDF ใช้ (กติกา จอ/ไฟล์ห้ามต่างกัน)
-   */
-  const typeLabels = taskTypeLabels(deductionTaskTypes);
   const theme = useTheme();
   const locale = useLocale();
 
@@ -448,28 +438,6 @@ export function ReportsTable({
            */
           case "deductedCount":
             return <DataTableCell align="right">{t("columns.deductedCount")}</DataTableCell>;
-          /**
-           * **ประเภทงาน** — ตัวเลขระดับ**คู่** ไม่ใช่ระดับแถว → ไม่ sortable
-           * (เรียงแล้วแถวของคู่เดียวกันจะกระจายออกจากกัน) · มี tooltip
-           * อธิบายขอบเขตที่หัวคอลัมน์ กันเข้าใจผิดว่าเป็นของรอบนั้น
-           */
-          case "taskType":
-            return (
-              <DataTableCell>
-                <Tooltip title={t("columns.taskTypeHint")}>
-                  <Typography
-                    component="span"
-                    sx={{
-                      borderBottom: "1px dashed",
-                      borderColor: "text.disabled",
-                      cursor: "help",
-                    }}
-                  >
-                    {t("columns.taskType")}
-                  </Typography>
-                </Tooltip>
-              </DataTableCell>
-            );
           default:
             return null;
         }
@@ -912,30 +880,6 @@ export function ReportsTable({
               />
               <Typography variant="body2">{label}</Typography>
             </Box>
-          </DataTableCell>
-        );
-      }
-      /**
-       * **ประเภทงาน** (บั๊ก / MA / Requirement / ไม่ระบุ) — ตัวเลข**ระดับคู่**
-       * จึงโชว์**เฉพาะแถวล่าสุดของคู่** (แถวดเก่า = เซลล์ว่าง ไม่ใช่ `—` เพื่อ
-       * ไม่ให้ตัวเลขซ้ำทุกรอบ และ CSV/PDF ก็ไม่บวกซ้ำ) · ป้ายจาก
-       * `taskBreakdownParts()` ซึ่งเป็นฟังก์ชันเดียวกับที่ export ใช้
-       *
-       * สถานะ: ไม่มีคู่ (`recordId` null) → `—` · ยังโหลด → `…` · ไม่มี entry /
-       * `byType` ยังไม่มา (deploy ที่ web เร็วกว่า api) → `—` (ห้ามเดาเป็น 0)
-       */
-      case "taskType": {
-        if (r.recordId == null) return <DataTableCell>—</DataTableCell>;
-        // แถวดเก่าของคู่ → เว้นว่าง (ไม่ใช่ `—` ซึ่งแปลว่า "ดึงไม่รู้ค่า")
-        if (!r.isLatestOfPair) return <DataTableCell>{""}</DataTableCell>;
-        if (deductions.counts.status === "loading") return <DataTableCell>…</DataTableCell>;
-        const entry = deductions.counts.byRecord.get(r.recordId);
-        if (!entry) return <DataTableCell>—</DataTableCell>;
-        const parts = taskBreakdownParts(entry.byType, typeLabels);
-        if (parts.length === 0) return <DataTableCell>—</DataTableCell>;
-        return (
-          <DataTableCell sx={{ whiteSpace: "nowrap" }}>
-            <Typography variant="body2">{parts.join(" · ")}</Typography>
           </DataTableCell>
         );
       }

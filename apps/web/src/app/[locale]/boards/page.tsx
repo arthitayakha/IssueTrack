@@ -50,7 +50,7 @@ import {
   ListItem,
   keyframes,
 } from "@mui/material";
-import { alpha, darken } from "@mui/material/styles";
+import { alpha } from "@mui/material/styles";
 import {
   DndContext,
   DragOverlay,
@@ -113,11 +113,12 @@ import LabelIcon from "@mui/icons-material/Label";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import TimerOutlinedIcon from "@mui/icons-material/TimerOutlined";
 import SwapVertIcon from "@mui/icons-material/SwapVert";
+import UndoIcon from "@mui/icons-material/Undo";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { usePermissions } from "@/lib/permissions";
 import { useAuthStore } from "@/lib/auth-store";
-import { isApiError } from "@/lib/api";
+import { isApiError, errorMessage } from "@/lib/api";
 import type { IssueTaskType } from "@kanban/shared";
 import { REJECT_STATUS_NAME } from "@kanban/shared";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
@@ -177,7 +178,9 @@ import { useNotification } from "@/components/notification";
 
 function getErrorMessage(e: unknown, fallback: string): string | null {
   if (isApiError(e, 403)) return null;
-  return e instanceof Error ? e.message : fallback;
+  // `errorMessage` never leaks the browser's raw `Failed to fetch` — after
+  // apiFetch's silent retries are exhausted the caller's own fallback is used
+  return errorMessage(e, fallback);
 }
 
 /*
@@ -444,19 +447,40 @@ function labelChipSx(color: string | null | undefined, theme: Theme) {
 }
 
 /**
- * Filled status pill — the solid look from the design reference: the status's
- * own colour as the plate, text picked for contrast (a pale status gets dark
- * text automatically), fully rounded. Every status chip on the board renders
- * through here, so a restyle stays a single edit.
+ * SOFT status pill — a pale tint of the status colour under text of that SAME
+ * colour at full strength, no border, fully rounded. This is the "smooth"
+ * chip look from the design reference: the hue still names the status, but
+ * nothing shouts, so the pill no longer out-weighs the priority chip (which
+ * is `variant="outlined"`).
+ *
+ * Every status chip on the board renders through here, so a restyle stays a
+ * single edit. The recipe is two values only:
+ *
+ *   bgcolor = alpha(color, 0.15)  — 15% of the colour over the page white
+ *   color   = color               — the raw status colour, NOT darkened
+ *
+ * **Deliberate trade-off (user's call): the text is the vivid colour, which
+ * gives up WCAG AA.** Measured on a white plate: `#9c27b0` 4.97:1 and
+ * `#2e7d32` 4.21:1 clear or nearly clear AA, but `#2196f3` lands at 2.66:1
+ * and `#ed6c02` at 2.64:1 — both under the 4.5:1 the 0.6–0.7rem chip text
+ * would need. This was chosen over the earlier `darken(color, 0.30)` recipe,
+ * which passed AA for all six but muddied the hue (the orange came out
+ * brown). A `darken()` factor is still the one-line fix if a colour
+ * ever reads as unreadable in the browser: `0.15` → ~3.57:1 (still vivid),
+ * `0.20` → ~3.96:1, `0.30` → AA for all six. Do not silently re-add it —
+ * the vividness is the point.
+ *
+ * No shadow: a tinted pill sits flat on the row and the coloured halo we
+ * tried earlier read as noise.
  *
  * Hover deliberately lives at the call site: only the clickable chip (folder
  * card) wants it, and MUI's `.MuiChip-clickable:hover` would otherwise swap
- * this plate for its grey overlay — re-asserting `bgcolor` beats that rule.
+ * this tint for its grey overlay — re-asserting `bgcolor` beats that rule.
  */
-function statusChipSx(color: string, theme: Theme) {
+function statusChipSx(color: string) {
   return {
-    bgcolor: color,
-    color: theme.palette.getContrastText(color),
+    bgcolor: alpha(color, 0.15),
+    color,
     border: "none",
     borderRadius: "999px",
   };
@@ -819,6 +843,8 @@ function TrelloCard({
   onUnlock,
   onCancelIssue,
   cancelStatusId = null,
+  onRecoverIssue,
+  flash = false,
 }: {
   issue: BoardIssue;
   canManage?: boolean;
@@ -830,6 +856,12 @@ function TrelloCard({
   showTime?: boolean;
   /** Days past a stale rule's limit — paints the card's own border red. */
   staleDays?: number | null;
+  /**
+   * **Cancel-reveal highlight** — `true` for ~1.8s after "ยกเลิกงาน" succeeds
+   * so the eye follows the card into the "ยกเลิก" column (outline, not a
+   * border: the stale rule owns the border and must not be clobbered).
+   */
+  flash?: boolean;
   onOpen?: (issue: BoardIssue) => void;
   onEdit?: (issue: BoardIssue) => void;
   onDelete?: (issue: BoardIssue) => void;
@@ -846,6 +878,14 @@ function TrelloCard({
    * สถานะนี้แล้ว**จะไม่เห็นเมนูนี้ (ไม่ต้อง "ยกเลิก" ซ้ำ)
    */
   cancelStatusId?: number | null;
+  /**
+   * **"ย้ายกลับ"** — ปุ่มบนหน้าการ์ด**ก็ต่อเมื่อการ์ดอยู่ในสถานะ "ยกเลิก"**
+   * (กลับด้านกับเมนู "ยกเลิกงาน" ด้านล่าง) · กดครั้งเดียว = host ย้ายไป
+   * **สถานะแรก** (`statuses[0]`) ทันที ไม่มีเมนูเลือก — ตั้งค่าโดย `KanbanView`
+   * · ไม่ส่ง `onRecoverIssue` = ไม่ขึ้นปุ่ม (host ใช้กัน config ที่สถานะแรก
+   * เป็น "ยกเลิก" เอง)
+   */
+  onRecoverIssue?: (issue: BoardIssue) => void;
 }) {
   const {
     attributes,
@@ -867,6 +907,13 @@ function TrelloCard({
 
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [hovered, setHovered] = useState(false);
+
+  /**
+   * การ์ดอยู่ในสถานะ "ยกเลิก" → ปุ่ม **"กู้คืน" เห็นตรง ๆ บนหน้าการ์ด**
+   * (กลับด้านกับเมนู "ยกเลิกงาน" ที่ซ่อนเมื่ออยู่ในนั้นแล้ว) · เงื่อนไขเดียว
+   * กับที่ host เปิดเมนูสถานะให้ — ไม่มีสิทธิ์แก้ / ไม่มีสถานะนี้ = ไม่ขึ้น
+   */
+  const showRecover = canEdit && cancelStatusId != null && issue.statusId === cancelStatusId;
 
   return (
     <Paper
@@ -891,6 +938,11 @@ function TrelloCard({
         // no overlay, no extra box; back to "none" the moment it moves
         border: staleDays != null ? "2px solid" : "none",
         borderColor: "error.main",
+        // cancel-reveal highlight (see `flash`) — an OUTLINE so the stale
+        // rule's red border above keeps owning the border slot
+        ...(flash
+          ? { outline: "2px solid", outlineOffset: 2, outlineColor: "primary.main" }
+          : {}),
         boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
         transition: "box-shadow 0.2s ease, transform 0.2s ease",
       }}
@@ -920,10 +972,53 @@ function TrelloCard({
         ) : undefined
       }
     />
+    {/* **"ย้ายกลับ"** — pill ใต้การ์ดเฉพาะใบที่อยู่ในสถานะ "ยกเลิก" · label =
+        `Boards.recover` ("ย้ายกลับ"/"Move back" — เดิมยืม `Boards.restore`
+        "กู้คืน" ซึ่งยังเป็นของถังขยะ) · **สีแบรนด์ sky/navy** (พื้น sky.light +
+        ตัว navy.main): เขียว success เหมาะกับ "กู้คืน" แต่ไม่เหมาะกับ "ย้ายกลับ"
+        ที่เป็นแค่การย้ายสถานะ · ไม่มีไอคอน ชิดขวา · กดครั้งเดียว = ย้ายไป
+        **สถานะแรก** ทันที (ไม่มีเมนูเลือก) — หยุด propagation ก่อนไม่งั้นฟองขึ้น
+        `onClick` ของ `<Paper>` แล้วเปิดป๊อปอัพทับ */}
+    {showRecover && onRecoverIssue && (
+      <Box
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        sx={{ mt: 0.75, display: "flex", justifyContent: "flex-end" }}
+      >
+        <Button
+          size="small"
+          variant="contained"
+          disableElevation
+          onClick={() => onRecoverIssue(issue)}
+          sx={{
+            borderRadius: 999,
+            px: 1.75,
+            py: 0.2,
+            minHeight: 0,
+            bgcolor: theme.palette.sky.light,
+            color: theme.palette.navy.main,
+            fontWeight: 700,
+            fontSize: "0.75rem",
+            textTransform: "none",
+            boxShadow: "none",
+            "&:hover": { bgcolor: theme.palette.sky.main, boxShadow: "none" },
+          }}
+        >
+          {t("recover")}
+        </Button>
+      </Box>
+    )}
     <Menu
       anchorEl={menuAnchor}
       open={Boolean(menuAnchor)}
       onClose={() => setMenuAnchor(null)}
+      // `<Menu>` ถูก portal ออกนอกการ์ด แต่ React ยัง propagate event ตาม
+      // **React tree** → คลิกเมนูจะฟองขึ้นไปเรียก `onClick` ของ `<Paper>` ข้างล่าง
+      // และมัน `setDetailIssue(issue)` ทับค่า `null` ที่ handler ของ "ยกเลิกงาน" /
+      // "ลบ" เพิ่งสั่ง → ป๊อปอัพรายละเอียดถูกเปิดกลับมาค้างหลังกล่องยืนยัน
+      // (แถมแท็บ "ดูประวัติ" ยังโดนทับเป็น "ความคิดเห็น") — หยุดที่ root ของเมนู
+      // เหมือนเมนูสถานะในมุมมองโฟลเดอร์ด้านล่าง
+      onClick={(e) => e.stopPropagation()}
       elevation={0}
       PaperProps={{
         sx: {
@@ -997,6 +1092,8 @@ function KanbanColumn({
   onUnlockIssue,
   onCancelIssue,
   cancelStatusId,
+  onRecoverIssue,
+  flashIssueId = null,
 }: {
   status: IssueStatus;
   items: BoardIssue[];
@@ -1031,6 +1128,10 @@ function KanbanColumn({
   onCancelIssue?: (issue: BoardIssue) => void;
   /** id ของสถานะ "ยกเลิก" (`null` = ไม่มี) — การ์ดในสถานะนั้นซ่อนเมนู */
   cancelStatusId?: number | null;
+  /** ปุ่ม "ย้ายกลับ" บนหน้าการ์ด (ดู TrelloCard.onRecoverIssue) */
+  onRecoverIssue?: (issue: BoardIssue) => void;
+  /** Card id to outline for the cancel-reveal flash (see TrelloCard.flash). */
+  flashIssueId?: number | null;
 }) {
   const { setNodeRef: setDroppableNodeRef, isOver: isColumnOver } = useDroppable({
     id: `status-drop-${status.id}`,
@@ -1063,6 +1164,9 @@ function KanbanColumn({
 
   return (
     <Box
+      // anchor for `revealTarget` — the board scrolls THIS column into
+      // view after a successful "ยกเลิกงาน" so the card visibly lands here
+      id={`status-col-${status.id}`}
       sx={{
         flex: "0 0 272px",
         width: 272,
@@ -1128,6 +1232,8 @@ function KanbanColumn({
               onUnlock={(iss) => onUnlockIssue(iss.id)}
               onCancelIssue={onCancelIssue}
               cancelStatusId={cancelStatusId}
+              onRecoverIssue={onRecoverIssue}
+              flash={flashIssueId === issue.id}
             />
           ))}
           {items.length === 0 && !loading && (
@@ -1633,6 +1739,12 @@ function IssueDetailDialog({
   /** ตีกลับงาน — dialog ยืนยัน + สถานะระหว่างย้าย (ปุ่มอยู่ที่ footer ของ popup) */
   const [confirmReject, setConfirmReject] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  /**
+   * **"ย้ายกลับ"** — ปุ่มแทน "ตีกลับงาน" ใน footer เมื่อการ์ดอยู่ในสถานะ "ยกเลิก"
+   * · กดครั้งเดียว = ย้ายไป**สถานะแรก** (`statuses[0]`) ทันที ไม่มีเมนูเลือก ·
+   * `recovering` กันกดซ้ำระหว่างย้าย
+   */
+  const [recovering, setRecovering] = useState(false);
   const currentUser = useAuthStore((s) => s.user) ?? null;
   const currentUserId = currentUser?.id ?? null;
   const t = useTranslations("Boards");
@@ -1649,6 +1761,14 @@ function IssueDetailDialog({
   // the card as the dialog currently shows it (fresher than the `issue` prop
   // after any in-dialog save) — declared early so every helper can read it
   const current = localIssue;
+  /**
+   * สถานะปลายทาง "ยกเลิก" + การ์ดอยู่ในนั้นหรือไม่ — ปุ่ม footer สลับระหว่าง
+   * "ตีกลับงาน" (การ์ดปกติ) กับ **"กู้คืน"** (การ์ดใน "ยกเลิก" แล้ว) · ปุ่ม
+   * ตีกลับที่กดซ้ำบนการ์ดที่ยกเลิกไปแล้วเคยเขียน comment/resolution ทับ
+   * เปล่า ๆ → ตอนนี้ถูกแทนด้วยปุ่มกู้คืนตั้งแต่แรก
+   */
+  const rejectStatusId = statuses.find((s) => s.name === REJECT_STATUS_NAME)?.id ?? null;
+  const isCancelled = rejectStatusId != null && current?.statusId === rejectStatusId;
 
   const canViewComments = can("comment.view");
   const canPostComment = can("comment.create");
@@ -1968,6 +2088,37 @@ function IssueDetailDialog({
     } finally {
       setRejecting(false);
       setConfirmReject(false);
+    }
+  };
+
+  /**
+   * **ย้ายกลับ** — กดครั้งเดียว = ย้ายออกจาก "ยกเลิก" ไป**สถานะแรก**
+   * (`statuses[0]` ตามลำดับ position = รอรับเรื่อง) ทันที · comment /
+   * `resolution` ที่ "ตีกลับงาน" ฝังไว้ **เก็บเป็นประวัติ** (ไม่ลบ) ·
+   * activity + notification มาจาก `move()` เดิม · ไม่มี dialog ยืนยัน —
+   * ย้ายกลับย้อนได้เสมอ · 400 = ตาข่าย "ลากทีละคอลัมน์" ถูกเปิดทีหลัง →
+   * ข้อความไทยเดียวกับตอนลากถูกกัน, ไม่ใช่ข้อความอังกฤษดิบ
+   */
+  const handleRecover = async () => {
+    const target = statuses[0];
+    if (!current || recovering || !target || target.id === rejectStatusId) return;
+    setRecovering(true);
+    try {
+      await moveIssue(current.id, target.id);
+      resetDrafts();
+      onRefresh();
+      onClose();
+      notify(t("detail.recoverSuccess", { status: target.name }), "success");
+    } catch (e) {
+      const refusal = isApiError(e, 400) ? t("invalidTransition") : null;
+      if (refusal) notify(refusal, "warning");
+      else {
+        // `getErrorMessage` คืน `null` เมื่อไม่มีข้อความ — เงียบแทนที่จะ notify null
+        const msg = getErrorMessage(e, t("detail.recoverFailed"));
+        if (msg) notify(msg, "error");
+      }
+    } finally {
+      setRecovering(false);
     }
   };
 
@@ -3295,7 +3446,31 @@ function IssueDetailDialog({
           </Button>
         )}
         <Box sx={{ flex: 1 }} />
-        {!readOnly && canEditIssue && (
+        {/* การ์ดอยู่ใน "ยกเลิก" → ปุ่ม **ย้ายกลับ** แทน "ตีกลับงาน" (ไม่มี
+            ประโยชน์บนการ์ดที่ยกเลิกไปแล้ว) · กดครั้งเดียว = ย้ายไป**สถานะแรก**
+            ทันที ไม่มีเมนูเลือก · ซ่อนเมื่อไม่มีสถานะแรก หรือสถานะแรกเป็น
+            "ยกเลิก" เอง (ไม่มีที่ให้ย้าย = กดแล้วไม่เกิดอะไร) */}
+        {!readOnly && canEditIssue && isCancelled && statuses[0] != null && statuses[0].id !== rejectStatusId && (
+          <Button
+            size="small"
+            variant="contained"
+            disableElevation
+            disabled={saving || recovering || !current}
+            onClick={handleRecover}
+            // สีเดียวกับ pill บนการ์ด (sky/navy) — ไอคอนถังขยะถูกถอดเพราะ
+            // ไม่เหมาะกับคำว่า "ย้ายกลับ" (ผู้ใช้เคยทักไอคอนนี้แล้ว)
+            sx={{
+              bgcolor: theme.palette.sky.light,
+              color: theme.palette.navy.main,
+              fontWeight: 700,
+              boxShadow: "none",
+              "&:hover": { bgcolor: theme.palette.sky.main, boxShadow: "none" },
+            }}
+          >
+            {t("recover")}
+          </Button>
+        )}
+        {!readOnly && canEditIssue && !isCancelled && (
           <Button
             size="small"
             variant="outlined"
@@ -3307,7 +3482,14 @@ function IssueDetailDialog({
           </Button>
         )}
         {!readOnly && (
-          <Button size="small" variant="outlined" onClick={handleCancel} disabled={saving}>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={handleCancel}
+            // ตรงเกณฑ์กับปุ่ม "บันทึก" — ไม่มี draft ค้าง (ยังไม่แก้อะไร) → grey;
+            // มีอะไรแก้ → ปุ่มขึ้นมากดได้ = ทิ้ง draft (`resetDrafts`) แล้วปิด
+            disabled={saving || !hasDraftChanges}
+          >
             {t("cancel")}
           </Button>
         )}
@@ -3807,6 +3989,11 @@ function KanbanView({
   const [issueToDelete, setIssueToDelete] = useState<BoardIssue | null>(null);
   /** การ์ดที่กด "ยกเลิกงาน" ในเมนู "…" — รอ confirm ก่อนย้ายไปสถานะ "ยกเลิก" */
   const [issueToCancel, setIssueToCancel] = useState<BoardIssue | null>(null);
+  /**
+   * **ปุ่ม "ย้ายกลับ" บนหน้าการ์ด** — กดครั้งเดียว = ย้ายไป**สถานะแรก**
+   * ทันที (ไม่มีเมนูเลือก) · `recoveringId` กันกดซ้ำระหว่างย้าย
+   */
+  const [recoveringId, setRecoveringId] = useState<number | null>(null);
   const [localStatuses, setLocalStatuses] = useState<IssueStatus[]>(statuses);
   const [columns, setColumns] = useState<Record<number, KanbanColumnState>>({});
   const [dragStartStatusId, setDragStartStatusId] = useState<number | null>(null);
@@ -3829,6 +4016,13 @@ function KanbanView({
 
   const debouncedSearch = useDebouncedValue(searchQuery);
 
+  /**
+   * Columns the board renders — **"ยกเลิก" shows like any other column**
+   * (always last — see the pin rule); a cancelled card lands there and the
+   * board scrolls itself to it (`revealTarget`) so it never looks like
+   * the card vanished. The status FILTER still narrows to the selected
+   * statuses only — that is its meaning for every status alike.
+   */
   const visibleStatuses = useMemo(
     () =>
       selectedStatusIds.length === 0
@@ -3850,6 +4044,39 @@ function KanbanView({
    */
   const cancelStatusId =
     localStatuses.find((s) => s.name === REJECT_STATUS_NAME)?.id ?? null;
+
+  /**
+   * **Reveal** — หลังย้ายสำเร็จ การ์ดกระโดดไปคอลัมน์ใหม่ (อาจอยู่นอกสายตา —
+   * บอร์ดเลื่อนมาทางขวาตอนกด "ยกเลิก", หรือกลับไปคอลัมน์แรกตอนกด "ย้ายกลับ")
+   * → เลื่อนคอลัมน์ปลายทางเข้าจอ + วาด outline การ์ด ~1.8 วิ — การ์ดต้องไม่
+   * "หายจากบอร์ด" ทั้งสองทาง · ใช้ร่วมกัน: กดยกเลิก (`revealTarget(id,
+   * cancelStatusId)`) และกดย้ายกลับ (`revealTarget(id, firstStatusId)`) ·
+   * `onDone` ของ dialog รันหลัง `onClose()` แต่ก่อน re-render → issue ที่
+   * capture ไว้ยังเป็นการ์ดที่เพิ่งย้ายอยู่
+   */
+  const [flashIssueId, setFlashIssueId] = useState<number | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const revealTarget = useCallback(
+    (issueId: number | null, statusId: number | null) => {
+      requestAnimationFrame(() => {
+        if (statusId == null) return;
+        document
+          .getElementById(`status-col-${statusId}`)
+          ?.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
+      });
+      if (issueId == null) return;
+      setFlashIssueId(issueId);
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = setTimeout(() => setFlashIssueId(null), 1800);
+    },
+    [],
+  );
+  useEffect(
+    () => () => {
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    },
+    [],
+  );
 
   const loadColumn = useCallback(
     async (statusId: number, pageNum: number, append: boolean) => {
@@ -4084,9 +4311,20 @@ function KanbanView({
       return;
     }
 
+    /**
+     * ปลายทาง = สถานะ "ยกเลิก" → **ข้ามทั้งสองเช็คด้านล่าง** — parity กับ
+     * `IssuesService.move()` (`isRejectMove` ข้าม move guards ทั้ง 3): "การ
+     * ตีกลับ" ต้องเข้าคอลัมน์นี้ได้จากทุกคอลัมน์ (คอลัมน์นี้อยู่ท้ายสุดเสมอ
+     * จึงไม่เคยติดกับใครเมื่อมีหลายคอลัมน์) และเคสหลักคือการ์ดยังไม่ระบุ
+     * ประเภทใน "รอรับเรื่อง" — ไม่งั้น preview จะปฏิเสธทั้งที่ API จะรับ
+     * · คอลัมน์ "ยกเลิก" ถูกซ่อนจากบอร์ดตามปกติ (ดู `visibleStatuses`) จึง
+     * เจอเช็คนี้ก็ต่อเมื่อฟิลเตอร์สถานะ reveal มันออกมา
+     */
+    const isCancelTarget = targetStatusId === cancelStatusId;
+
     // "one column at a time": a jump-over column gets no preview — the card
     // stays put and handleDragEnd explains it on release
-    if (stepOnlyMoves && !isAdjacentStatus(sourceStatusId, targetStatusId)) {
+    if (!isCancelTarget && stepOnlyMoves && !isAdjacentStatus(sourceStatusId, targetStatusId)) {
       blockedTargetStatusId.current = targetStatusId;
       blockedReasonRef.current = "step";
       dragTargetStatusId.current = null;
@@ -4096,6 +4334,7 @@ function KanbanView({
     // "ประเภทงานก่อนลาก": the card sits in a gated status with no task type —
     // same snap-back as the step-only refusal, its own message on release
     if (
+      !isCancelTarget &&
       sourceStatusId != null &&
       taskTypeGateIds.includes(sourceStatusId) &&
       !activeIssue.taskType
@@ -4340,6 +4579,33 @@ function KanbanView({
     }
   };
 
+  /**
+   * **ย้ายกลับ** — กดปุ่มบนการ์ดครั้งเดียว = ย้ายออกจาก "ยกเลิก" ไป**สถานะ
+   * แรก** (`firstStatusId` = `localStatuses[0]` ตามลำดับ position = รอรับเรื่อง)
+   * ทันที ไม่มีเมนูเลือก · comment / `resolution` ที่ฝังตอนตีกลับเก็บเป็น
+   * ประวัติ, activity + notification มาจาก `move()` เดิม · `reloadColumns()` +
+   * `revealTarget` — คอลัมน์แรกอาจอยู่นอกสายตา (บอร์ดเลื่อนมาทางขวาตอนอยู่
+   * ใน "ยกเลิก") → เลื่อนไปหา + ไฮไลท์การ์ด ~1.8 วิ เหมือนตอนกดยกเลิก ·
+   * 400 = ตาข่าย "ลากทีละคอลัมน์" ถูกเปิดทีหลัง (62→1 ไม่ติดกัน) → ข้อความ
+   * ไทยเดียวกับตอนลากถูกกัน, ไม่ใช่ข้อความอังกฤษดิบ
+   */
+  const handleRecover = async (issue: BoardIssue) => {
+    if (recoveringId != null || firstStatusId == null) return;
+    setRecoveringId(issue.id);
+    try {
+      await moveIssue(issue.id, firstStatusId);
+      notify(t("detail.recoverSuccess", { status: localStatuses[0]?.name ?? "" }), "success");
+      reloadColumns();
+      revealTarget(issue.id, firstStatusId);
+    } catch (e) {
+      const refusal = isApiError(e, 400) ? t("invalidTransition") : null;
+      if (refusal) notify(refusal, "warning");
+      else fail(getErrorMessage(e, t("detail.recoverFailed")));
+    } finally {
+      setRecoveringId(null);
+    }
+  };
+
   return (
     <Box sx={{ width: "100%", minWidth: 0 }}>
       <Box
@@ -4393,6 +4659,14 @@ function KanbanView({
                 onDeleteIssue={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
                 onCancelIssue={(issue) => { setDetailIssue(null); setIssueToCancel(issue); }}
                 cancelStatusId={cancelStatusId}
+                // ปุ่ม "ย้ายกลับ" ซ่อนเมื่อไม่มีสถานะแรก หรือสถานะแรกดันเป็น
+                // "ยกเลิก" เอง (ไม่มีที่ให้ย้าย = กดแล้วไม่เกิดอะไร)
+                onRecoverIssue={
+                  firstStatusId != null && firstStatusId !== cancelStatusId
+                    ? handleRecover
+                    : undefined
+                }
+                flashIssueId={flashIssueId}
                 onViewActivity={(issue) => { setDetailIssue(issue); setDetailTab("history"); }}
                 onUnlockIssue={handleUnlockIssue}
               />
@@ -4495,12 +4769,18 @@ function KanbanView({
         </DialogActions>
       </Dialog>
       {/* "ยกเลิกงาน" — ย้ายไปสถานะ "ยกเลิก"; `reloadColumns()` ดึงทุกคอลัมน์ใหม่
-          ทั้งคอลัมน์ต้นทาง (การ์ดหายไป) และคอลัมน์ปลายทาง (การ์ดโผล่) */}
+          ทั้งคอลัมน์ต้นทาง (การ์ดหายไป) และคอลัมน์ปลายทาง (การ์ดโผล่) แล้ว
+          `revealTarget` เลื่อนบอร์ดไปคอลัมน์ปลายทาง + ไฮไลท์การ์ด ~1.8 วิ
+          — อ่าน `issueToCancel` จาก closure ของ render ที่ dialog เปิดอยู่
+          (onDone ถูกเรียกหลัง `onClose()` แต่ก่อน re-render จึงยังเป็นการ์ดเดิม) */}
       <CancelIssueDialog
         issue={issueToCancel}
         statusId={cancelStatusId}
         onClose={() => setIssueToCancel(null)}
-        onDone={reloadColumns}
+        onDone={() => {
+          reloadColumns();
+          revealTarget(issueToCancel?.id ?? null, cancelStatusId);
+        }}
       />
     </Box>
   );
@@ -4588,6 +4868,12 @@ function TableView({
     issue: BoardIssue;
   } | null>(null);
   /**
+   * **"ย้ายกลับ" ในเมนูแถว** — กดครั้งเดียว = ย้ายไป**สถานะแรก** ทันที (ไม่มี
+   * เมนูเลือก) · `recoveringId` กันกดซ้ำระหว่างย้าย · mirror ของ `handleRecover`
+   * ใน `KanbanView`
+   */
+  const [recoveringId, setRecoveringId] = useState<number | null>(null);
+  /**
    * สถานะปลายทางของ **"ยกเลิกงาน"** — หาด้วยชื่อ `REJECT_STATUS_NAME` (จุดเดียว
    * กับปุ่ม "ตีกลับงาน") · `null` = ไม่มีสถานะนี้ในระบบ → เมนูไม่ขึ้น
    */
@@ -4674,6 +4960,30 @@ function TableView({
       onRefresh();
     } catch (e) {
       fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+    }
+  };
+
+  /**
+   * **ย้ายกลับจากเมนูแถว** — กดครั้งเดียว = ย้ายออกจาก "ยกเลิก" ไป**สถานะ
+   * แรก** (`statuses[0]` ตามลำดับ position = รอรับเรื่อง) ทันที · mirror ของ
+   * `handleRecover` ใน `KanbanView` (comment/`resolution` ที่ฝังตอนตีกลับเก็บ
+   * เป็นประวัติ, activity + notification มาจาก `move()` เดิม) · 400 = ตาข่าย
+   * "ลากทีละคอลัมน์" ถูกเปิดทีหลัง → ข้อความไทยเดียวกับตอนลากถูกกัน
+   */
+  const handleRecover = async (issue: BoardIssue) => {
+    const target = statuses[0];
+    if (recoveringId != null || !target || target.id === cancelStatusId) return;
+    setRecoveringId(issue.id);
+    try {
+      await moveIssue(issue.id, target.id);
+      notify(t("detail.recoverSuccess", { status: target.name }), "success");
+      onRefresh();
+    } catch (e) {
+      const refusal = isApiError(e, 400) ? t("invalidTransition") : null;
+      if (refusal) notify(refusal, "warning");
+      else fail(getErrorMessage(e, t("detail.recoverFailed")));
+    } finally {
+      setRecoveringId(null);
     }
   };
 
@@ -4774,7 +5084,7 @@ function TableView({
                       label={getStatusName(issue.statusId)}
                       size="small"
                       sx={{
-                        ...statusChipSx(getStatusColorById(issue.statusId), theme),
+                        ...statusChipSx(getStatusColorById(issue.statusId)),
                         fontWeight: 600,
                         fontSize: "0.7rem",
                       }}
@@ -4813,6 +5123,11 @@ function TableView({
                         anchorEl={actionAnchor?.el}
                         open={Boolean(actionAnchor)}
                         onClose={() => setActionAnchor(null)}
+                        // portal event bubble — เหมือนเมนู "…" ของการ์ดบอร์ด:
+                        // คลิกเมนูต้องไม่ฟองขึ้นไปเรียก `onClick` ของ `<DataTableRow>`
+                        // ที่ครอบไว้ (มันเปิด `detailIssue` กลับมาทับค่า `null`
+                        // ที่ "ยกเลิกงาน" / "ลบ" เพิ่งสั่ง → รายละเอียดค้างหลังกล่องยืนยัน)
+                        onClick={(e) => e.stopPropagation()}
                         elevation={0}
                         PaperProps={{
                           sx: {
@@ -4872,6 +5187,32 @@ function TableView({
                             >
                               <ListItemIcon><CancelIcon fontSize="small" color="error" /></ListItemIcon>
                               <ListItemText sx={{ color: "error.main" }}>{t("cancelIssue")}</ListItemText>
+                            </MenuItem>
+                          )}
+                        {/* "ย้ายกลับ" — กลับด้านกับ "ยกเลิกงาน": ขึ้นเฉพาะแถวที่อยู่
+                            ในสถานะ "ยกเลิก" แล้ว · กดครั้งเดียว = ย้ายไปสถานะแรก
+                            ทันที (mirror ปุ่มบนหน้าการ์ด) · ซ่อนเมื่อสถานะแรกเป็น
+                            "ยกเลิก" เอง (ไม่มีที่ให้ย้าย) */}
+                        {canEdit &&
+                          cancelStatusId != null &&
+                          actionAnchor &&
+                          actionAnchor.issue.statusId === cancelStatusId &&
+                          statuses[0] != null &&
+                          statuses[0].id !== cancelStatusId && (
+                            <MenuItem
+                              disabled={recoveringId != null}
+                              onClick={() => {
+                                const selected = actionAnchor?.issue;
+                                setActionAnchor(null);
+                                if (selected) void handleRecover(selected);
+                              }}
+                            >
+                              <ListItemIcon>
+                                <UndoIcon fontSize="small" sx={{ color: "navy.main" }} />
+                              </ListItemIcon>
+                              <ListItemText sx={{ color: "navy.main", fontWeight: 600 }}>
+                                {t("recover")}
+                              </ListItemText>
                             </MenuItem>
                           )}
                         {canManage && (
@@ -5140,6 +5481,7 @@ function FolderView({
   hideStaleRules,
   onRefresh,
   cardOrder,
+  onToggleCardOrder,
   toolbar,
 }: {
   statuses: IssueStatus[];
@@ -5176,11 +5518,15 @@ function FolderView({
   hideStaleRules: StaleRule[];
   onRefresh: () => void;
   /**
-   * Shared ↑↓ toggle (the toolbar button) — the direction of whichever sort
-   * criterion the folder's own dropdown is on (`sortByEnteredAt` for the
-   * entered/created criteria, reversed priority order for ความสำคัญ).
+   * Shared ↑↓ direction — of whichever sort criterion this view's dropdown is
+   * on (`sortByEnteredAt` for the entered/created criteria, reversed priority
+   * order for ความสำคัญ). Flipped by the toolbar button in the board/table
+   * views; **this view hides that button**, so the dropdown's two direction
+   * items below call `onToggleCardOrder` instead.
    */
   cardOrder: "desc" | "asc";
+  /** Flip `cardOrder` — the folder view's own direction control (see above). */
+  onToggleCardOrder: () => void;
   toolbar?: ReactNode;
 }) {
   const t = useTranslations("Boards");
@@ -5197,13 +5543,15 @@ function FolderView({
   const [visibleCount, setVisibleCount] = useState(FOLDER_PAGE_SIZE);
   /**
    * Sort **criterion** for the level-5 card grid — the direction is NOT in
-   * here: the toolbar's ↑↓ (`cardOrder`) flips it, so no label ever bakes in
-   * a direction. `entered` (default) = วันที่เข้าสถานะ, the very criterion the
-   * board's columns use; `created` = the old creation-date order; `prio` =
-   * ความสำคัญ (criterion borrowed from the old dropdown, unchanged).
+   * here: the shared `cardOrder` flips it (toolbar ↑↓ in the board/table
+   * views, this dropdown's direction items in THIS view), so no label ever
+   * bakes in a direction. `entered` (default) = วันที่เข้าสถานะ, the very
+   * criterion the board's columns use; `created` = the old creation-date
+   * order; `prio` = ความสำคัญ (criterion borrowed from the old dropdown,
+   * unchanged).
    */
   const [sort, setSort] = useState<"entered" | "created" | "prio">("entered");
-  /** Text for one criterion — the DIRECTION lives on the toolbar's ↑↓, not here. */
+  /** Text for one criterion — the DIRECTION lives on `cardOrder`, not here. */
   const sortLabel = (key: "entered" | "created" | "prio") =>
     key === "prio"
       ? t("filter.sectionPriority")
@@ -5389,9 +5737,11 @@ function FolderView({
   const visibleFolders = hasActiveFilters ? folders.filter((f) => f.count > 0) : folders;
 
   /* Level 5: flat card grid — paged client-side. The CRITERION comes from the
-     dropdown below, the DIRECTION from the toolbar's ↑↓ (`cardOrder`), so the
-     same arrow means "flip the order" in every view. (Plain code, not a memo:
-     `branch` is rebuilt every render anyway, exactly as before.) */
+     dropdown below, the DIRECTION from the shared `cardOrder` — flipped by the
+     toolbar's ↑↓ in the board/table views and by that dropdown's direction
+     items here (folder hides the button), so one arrow means "flip the
+     order" in every view. (Plain code, not a memo: `branch` is rebuilt every
+     render anyway, exactly as before.) */
   const sortedCards = (() => {
     // Creation time, newest-first by default and flipped by the same arrow —
     // tie-breaks (createdAt, id) mirror the API's fixed addOrderBy exactly
@@ -5554,10 +5904,38 @@ function FolderView({
                   dropped so it matches the rest */}
               <Select
                 value={sort}
-                onChange={(e) => setSort(e.target.value as "entered" | "created" | "prio")}
+                onChange={(e) => {
+                  const v = e.target.value as string;
+                  // The two DIRECTION items live in this menu too (this view
+                  // hides the toolbar's ↑↓): flip the shared order and leave
+                  // the criterion alone. Only the OTHER direction flips, so
+                  // clicking the state you are already on is a no-op.
+                  if (v === "order-desc" || v === "order-asc") {
+                    const want = v === "order-asc" ? "asc" : "desc";
+                    if (want !== cardOrder) onToggleCardOrder();
+                    return;
+                  }
+                  setSort(v as "entered" | "created" | "prio");
+                }}
                 renderValue={(raw) => {
                   const value = typeof raw === "string" ? raw : "entered";
-                  return <Typography sx={PILL_VALUE_SX}>{sortLabel(value)}</Typography>;
+                  return (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
+                      <Typography sx={PILL_VALUE_SX}>{sortLabel(value)}</Typography>
+                      {/* Current direction at a glance — the SAME glyph +
+                          rotation as the toolbar's ↑↓, which this view does
+                          not render. */}
+                      <SwapVertIcon
+                        sx={{
+                          fontSize: 16,
+                          color: "text.secondary",
+                          flexShrink: 0,
+                          transform: cardOrder === "asc" ? "rotate(180deg)" : "none",
+                          transition: "transform 150ms ease-in-out",
+                        }}
+                      />
+                    </Box>
+                  );
                 }}
                 MenuProps={{ slotProps: { paper: { sx: pillPaperSx(theme) } } }}
                 sx={PILL_SELECT_SX}
@@ -5573,6 +5951,28 @@ function FolderView({
                         {o.label}
                       </Typography>
                       {sort === o.key && (
+                        <CheckIcon sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }} />
+                      )}
+                    </Box>
+                  </MenuItem>
+                ))}
+                {/* DIRECTION — the toolbar's ↑↓ is hidden in this view, so the
+                    flip lives here: the two states (✓ = the one you are on),
+                    wording shared with the toolbar button's tooltip
+                    (`cardOrderNewest`/`cardOrderOldest`). These values are NOT
+                    Select values — the `onChange` above intercepts them and
+                    never touches `sort`. */}
+                <Divider sx={{ my: 0.75 }} />
+                {([
+                  { key: "order-desc", label: t("cardOrderNewest"), on: cardOrder === "desc" },
+                  { key: "order-asc", label: t("cardOrderOldest"), on: cardOrder === "asc" },
+                ] as const).map((o) => (
+                  <MenuItem key={o.key} value={o.key} sx={PILL_ITEM_SX}>
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+                      <Typography sx={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {o.label}
+                      </Typography>
+                      {o.on && (
                         <CheckIcon sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }} />
                       )}
                     </Box>
@@ -5727,14 +6127,14 @@ function FolderView({
                       clickable={statusEditable}
                       icon={
                         issue.isLocked ? (
-                          // `color="inherit"` keeps the lock readable on the
-                          // solid plate — without it MUI paints the icon its
+                          // `color="inherit"` keeps the lock on the tint's own
+                          // text colour — without it MUI paints the icon its
                           // default grey regardless of the chip's text colour
                           <LockIcon color="inherit" sx={{ fontSize: 12 }} />
                         ) : undefined
                       }
                       sx={{
-                        ...statusChipSx(statusColor, theme),
+                        ...statusChipSx(statusColor),
                         // Folder-card metrics: 16px/0.6rem — one notch under
                         // the Kanban card's 18px/0.65rem (TrelloCardContent),
                         // since this cell is compact (220px, p 1.25) and a
@@ -5743,10 +6143,15 @@ function FolderView({
                         fontSize: "0.6rem",
                         fontWeight: 600,
                         cursor: statusEditable ? "pointer" : "default",
-                        // re-assert the plate: MUI's clickable:hover would
-                        // otherwise swap it for the grey action overlay
+                        // re-assert the tint: MUI's clickable:hover would
+                        // otherwise swap it for the grey action overlay —
+                        // 15% → 20% deepens the pill without leaving its hue.
+                        // 0.25 was the value picked while this chip still
+                        // chased WCAG AA (it cost 4.41:1); with AA dropped in
+                        // favour of vivid text that reason is gone, so 0.2
+                        // simply stayed rather than being re-tuned for looks.
                         "&:hover": statusEditable
-                          ? { bgcolor: darken(statusColor, 0.12) }
+                          ? { bgcolor: alpha(statusColor, 0.2) }
                           : undefined,
                       }}
                     />
@@ -6440,13 +6845,6 @@ function BoardsPageInner() {
             alignItems: "center",
             gap: 1,
             ml: "auto",
-            // The ↑↓ toggle lives in here invisible until this group is
-            // hovered or any button in it takes keyboard focus (a touch
-            // device never gets here — see the `hover: none` escape hatch).
-            "&:hover .board-sort-btn, &:focus-within .board-sort-btn": {
-              opacity: 1,
-              pointerEvents: "auto",
-            },
           }}
         >
           {!isCustomer && (
@@ -6505,39 +6903,37 @@ function BoardsPageInner() {
               arrow flips the table's rows and the folder grid's chosen
               criterion (`sortByEnteredAt`, so board/table/folder always
               agree). Shown for EVERY role (customers live in the table) and
-              EVERY view; hidden until this icon group is hovered so the
-              toolbar stays quiet, revealed on keyboard focus too, and never
-              hidden on touch screens where there is no hover to reveal it.
-              The label is deliberately just "เรียง" — the glyph's rotation is
-              the state indicator. */}
-          <Tooltip title={t("cardOrder")}>
-            <IconButton
-              size="small"
-              className="board-sort-btn"
-              aria-label={t("cardOrder")}
-              onClick={toggleCardOrder}
-              sx={{
-                width: 36,
-                height: 36,
-                color: "text.secondary",
-                opacity: 0,
-                pointerEvents: "none",
-                transition: "opacity 150ms ease-in-out",
-                // no hover on touch → never hide what a finger cannot reveal
-                "@media (hover: none)": { opacity: 1, pointerEvents: "auto" },
-              }}
+              ALWAYS visible — the earlier hover-to-reveal hid it from anyone
+              who did not already know it existed (and `pointerEvents: none`
+              suppressed its tooltip too, so nothing could reveal it). The
+              tooltip/aria-label spell out the CURRENT direction
+              (`cardOrderNewest`/`cardOrderOldest`, th+en) and the glyph's
+              rotation mirrors it. Folder view is the exception: its sort
+              dropdown owns the direction there (arrow in the closed box +
+              the two direction items in the menu), so this button is simply
+              not rendered in that view. */}
+          {!isFolderView && (
+            <Tooltip
+              title={cardOrder === "desc" ? t("cardOrderNewest") : t("cardOrderOldest")}
             >
-              <SwapVertIcon
-                fontSize="small"
-                sx={{
-                  // the glyph points the way the list reads: ↓ newest
-                  // first (default), ↑ oldest first after the flip
-                  transform: cardOrder === "asc" ? "rotate(180deg)" : "none",
-                  transition: "transform 150ms ease-in-out",
-                }}
-              />
-            </IconButton>
-          </Tooltip>
+              <IconButton
+                size="small"
+                aria-label={cardOrder === "desc" ? t("cardOrderNewest") : t("cardOrderOldest")}
+                onClick={toggleCardOrder}
+                sx={{ width: 36, height: 36, color: "text.secondary" }}
+              >
+                <SwapVertIcon
+                  fontSize="small"
+                  sx={{
+                    // the glyph points the way the list reads: ↓ newest
+                    // first (default), ↑ oldest first after the flip
+                    transform: cardOrder === "asc" ? "rotate(180deg)" : "none",
+                    transition: "transform 150ms ease-in-out",
+                  }}
+                />
+              </IconButton>
+            </Tooltip>
+          )}
           {can("issue.trash.view") && (
             <Tooltip title={t("recycleBin")}>
               <IconButton
@@ -6661,6 +7057,7 @@ function BoardsPageInner() {
                 hideStaleRules={hideStaleRules}
                 onRefresh={() => loadData(false)}
                 cardOrder={cardOrder}
+                onToggleCardOrder={toggleCardOrder}
                 toolbar={toolbar}
               />
             ) : isBoardView ? (

@@ -26,6 +26,18 @@ export function isNetworkError(e: unknown): boolean {
   return e instanceof TypeError && !isApiError(e);
 }
 
+/**
+ * The message worth showing a user: the **API's own answer** when it sent one,
+ * otherwise the caller's already-translated `fallback` — never the browser's
+ * raw `Failed to fetch` wording. Pair it with `apiFetch`'s silent retries: a
+ * restart blip never reaches this line at all, and anything that does is
+ * reported in the app's own language.
+ */
+export function errorMessage(e: unknown, fallback: string): string {
+  if (isNetworkError(e)) return fallback;
+  return e instanceof Error ? e.message : fallback;
+}
+
 type UnauthorizedHandler = () => void;
 let unauthorizedHandler: UnauthorizedHandler | null = null;
 
@@ -33,9 +45,25 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null) {
   unauthorizedHandler = handler;
 }
 
-export async function apiFetch<T>(
+/**
+ * Delays before each **silent** retry of a request that never reached the API.
+ *
+ * The dev API runs under `node --watch`, so every server-side edit closes port
+ * 3002 for ~1–2s — long enough for a click to fail with the browser's raw
+ * `TypeError: Failed to fetch` (the red toast nobody wants to see). Two
+ * attempts spread over ~2s ride that window out instead of surfacing an error
+ * for a server that was merely restarting.
+ */
+const NETWORK_RETRY_DELAYS_MS = [600, 1400];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** One round-trip — no retry. Split out so `apiFetch` can loop over it. */
+async function fetchOnce<T>(
   path: string,
-  options: RequestInit = {},
+  options: RequestInit,
   token?: string | null,
 ): Promise<T> {
   // FormData must let the browser set `multipart/form-data; boundary=…` itself
@@ -64,4 +92,35 @@ export async function apiFetch<T>(
 
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
+}
+
+export async function apiFetch<T>(
+  path: string,
+  options: RequestInit = {},
+  token?: string | null,
+): Promise<T> {
+  const method = (options.method ?? "GET").toUpperCase();
+  // GET/HEAD/PUT/DELETE are idempotent — a second attempt cannot double-apply
+  // anything (`moveIssue` / `assignIssue` / `unlockIssue` / `updateIssue` /
+  // `deleteIssue` are all PUT/DELETE here). POST (create issue / comment /
+  // upload) may already have been processed before the connection dropped, so
+  // it gets exactly ONE extra attempt — enough for a restart blip, not enough
+  // to spam duplicates.
+  const idempotent =
+    method === "GET" || method === "HEAD" || method === "PUT" || method === "DELETE";
+  const delays = idempotent ? NETWORK_RETRY_DELAYS_MS : NETWORK_RETRY_DELAYS_MS.slice(0, 1);
+
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await fetchOnce<T>(path, options, token);
+    } catch (e) {
+      lastError = e;
+      // only "never reached the server" is retried — an `ApiError` means the
+      // API answered, and its verdict is final (a 400/403/404 must not rerun)
+      if (!isNetworkError(e) || attempt === delays.length) throw e;
+      await sleep(delays[attempt]);
+    }
+  }
+  throw lastError; // unreachable — every attempt above returns or throws
 }

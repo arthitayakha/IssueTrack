@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTheme } from "@mui/material";
 import {
   Alert,
@@ -22,6 +22,7 @@ import DoneAllOutlinedIcon from "@mui/icons-material/DoneAllOutlined";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import { useLocale, useTranslations } from "next-intl";
+import { errorMessage } from "@/lib/api";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import { Link } from "@/i18n/navigation";
 import {
@@ -53,39 +54,82 @@ export default function NotificationsPage() {
   const locale = useLocale();
 
   const [items, setItems] = useState<AppNotification[]>([]);
+  /**
+   * The heading's number comes from the SERVER's `total`, never `items.length`:
+   * the list is one page capped at 200 rows (a busy admin holds hundreds) and
+   * `items.length` only says how many rows THIS load brought back — so a page
+   * opened once and left alone went stale while the navbar badge kept polling,
+   * and the two numbers on screen disagreed ("heading 63, badge 70").
+   */
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  /** Out-of-order guard — a late response can never clobber a newer one. */
+  const seqRef = useRef(0);
+  /** True once a load has succeeded — a background poll failure stays quiet. */
+  const loadedRef = useRef(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      setError(null);
+  /**
+   * Loads the inbox. The first load (mount / manual reload) shows the spinner;
+   * every later refresh is silent so rows never blink under the reader.
+   */
+  const load = useCallback(
+    async (showSpinner: boolean) => {
+      const seq = (seqRef.current += 1);
+      if (showSpinner) {
+        setLoading(true);
+        setError(null);
+      }
       try {
         const res = await fetchNotifications(1, 200);
-        if (!cancelled) setItems(res.data);
+        if (seq !== seqRef.current) return;
+        setItems(res.data);
+        setTotal(res.total);
+        loadedRef.current = true;
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : t("loadError"));
+        if (seq !== seqRef.current) return;
+        // a failed background poll keeps the last known list — the next tick
+        // retries; only a first load (nothing on screen yet) shows the error
+        if (!loadedRef.current) setError(errorMessage(err, t("loadError")));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (seq === seqRef.current) setLoading(false);
       }
-    }
-    load();
-    return () => {
-      cancelled = true;
+    },
+    [t],
+  );
+
+  // explicit loads only (mount + the Refresh button + a failed mark-read resync)
+  useEffect(() => {
+    void load(true);
+  }, [reloadKey, load]);
+
+  /**
+   * Keeps the heading in step with the navbar badge: the same 30s cadence the
+   * badge polls on, plus a refresh whenever the tab comes back into view.
+   */
+  useEffect(() => {
+    const timer = setInterval(() => void load(false), 30_000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void load(false);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reloadKey]);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [load]);
 
   /** Optimistic — the row is gone for good; a failed call resyncs from the server. */
   function handleMarkRead(id: number) {
     setItems((prev) => prev.filter((n) => n.id !== id));
+    setTotal((prev) => Math.max(0, prev - 1));
     deleteNotification(id).catch(() => setReloadKey((k) => k + 1));
   }
 
   function handleMarkAllRead() {
     setItems([]);
+    setTotal(0);
     clearNotifications().catch(() => setReloadKey((k) => k + 1));
   }
 
@@ -138,7 +182,7 @@ export default function NotificationsPage() {
 
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2, flexWrap: "wrap" }}>
         <Typography variant="subtitle1" fontWeight={700}>
-          {items.length > 0 ? `${t("tabs.inbox")} (${items.length})` : t("tabs.inbox")}
+          {total > 0 ? `${t("tabs.inbox")} (${total})` : t("tabs.inbox")}
         </Typography>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <Button

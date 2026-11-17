@@ -26,7 +26,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import ImageOutlinedIcon from "@mui/icons-material/ImageOutlined";
 import PhotoCameraOutlinedIcon from "@mui/icons-material/PhotoCameraOutlined";
 import { useAuthStore, type AuthUser } from "@/lib/auth-store";
-import { apiFetch, ApiError } from "@/lib/api";
+import { apiFetch, ApiError, errorMessage } from "@/lib/api";
 import { invalidateAvatar, resizeAvatar, useOwnAvatar } from "@/lib/avatar";
 import { useNotification } from "@/components/notification";
 
@@ -611,7 +611,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
       updateUser({ dailyReminderEnabled: enabled });
     } catch (err) {
       // ล้มเหลว = ค่าเดิมยังอยู่ — ไม่ต้อง rollback เพราะยังไม่ได้แตะ store
-      notify(err instanceof Error ? err.message : t("genericError"), "error");
+      notify(errorMessage(err, t("genericError")), "error");
     } finally {
       setReminderSaving(false);
     }

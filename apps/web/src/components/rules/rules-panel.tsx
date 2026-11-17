@@ -8,7 +8,7 @@ import { useTranslations } from "next-intl";
 import { useAuthStore } from "@/lib/auth-store";
 import { useNotification } from "@/components/notification";
 import { fetchRules, deleteRule, toggleRule } from "@/lib/rules-api";
-import { isApiError } from "@/lib/api";
+import { isApiError, errorMessage } from "@/lib/api";
 import type { RuleDto } from "@kanban/shared";
 import RuleList from "@/components/rules/rule-list";
 import RuleWizardDialog from "@/components/rules/rule-wizard-dialog";
@@ -68,7 +68,7 @@ export default function RulesPanel({ canUpdate }: RulesPanelProps) {
         }
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : t("loadError"));
+        setError(errorMessage(err, t("loadError")));
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -100,7 +100,7 @@ export default function RulesPanel({ canUpdate }: RulesPanelProps) {
       setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
     } catch (err) {
       if (handleRuleGone(err)) return;
-      notify(err instanceof Error ? err.message : t("genericError"), "error");
+      notify(errorMessage(err, t("genericError")), "error");
     }
   }
 
@@ -111,7 +111,7 @@ export default function RulesPanel({ canUpdate }: RulesPanelProps) {
       notify(t("deleted"), "success");
     } catch (err) {
       if (handleRuleGone(err)) return;
-      notify(err instanceof Error ? err.message : t("genericError"), "error");
+      notify(errorMessage(err, t("genericError")), "error");
     }
   }
 

@@ -26,6 +26,7 @@ import RequirePermission from "@/components/require-permission";
 import { Pagination } from "@/components/pagination";
 import { useNotification } from "@/components/notification";
 import { usePermissions } from "@/lib/permissions";
+import { errorMessage } from "@/lib/api";
 import { fetchActivityLogs, fetchAllLogRows, fetchLogActors } from "@/lib/logs-api";
 import type { LogFilters, PaginatedLogs } from "@/lib/logs-api";
 import { buildCsv, downloadCsv } from "@/lib/reports-api";
@@ -268,7 +269,7 @@ export default function LogsPage() {
         const data = await fetchActivityLogs(filters, page, PAGE_SIZE);
         if (!cancelled) setLogs(data);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : t("loadError"));
+        if (!cancelled) setError(errorMessage(err, t("loadError")));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -398,7 +399,7 @@ export default function LogsPage() {
       );
       notify(t("exportDone", { count: all.length }));
     } catch (err) {
-      notify(err instanceof Error ? err.message : t("exportFailed"), "error");
+      notify(errorMessage(err, t("exportFailed")), "error");
     } finally {
       setExporting(false);
     }

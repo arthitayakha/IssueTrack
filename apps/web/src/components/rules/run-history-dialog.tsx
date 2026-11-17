@@ -24,6 +24,7 @@ import HistoryIcon from "@mui/icons-material/History";
 import { useLocale, useTranslations } from "next-intl";
 import { fetchRuleActivity, fetchRules } from "@/lib/rules-api";
 import type { PaginatedActivity } from "@/lib/rules-api";
+import { errorMessage } from "@/lib/api";
 import { Pagination } from "@/components/pagination";
 import DataTable, {
   DataTableHead,
@@ -164,7 +165,7 @@ export default function RunHistoryDialog({ onClose }: RunHistoryDialogProps) {
         });
         if (!cancelled) setActivity(data);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : tRuns("loadError"));
+        if (!cancelled) setError(errorMessage(err, tRuns("loadError")));
       } finally {
         if (!cancelled) setLoading(false);
       }

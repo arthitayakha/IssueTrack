@@ -89,12 +89,16 @@ export const REPORT_COLUMNS: Record<ReportView, ReportColumnDef[]> = {
     { key: "remaining", labelKey: "columns.remaining" },
     { key: "deductedCount", labelKey: "columns.deductedCount" },
     /**
-     * **ประเภทงาน** (นับแยก บั๊ก/MA/Requirement/ไม่ระบุ) — ตัวเลข**ระดับคู่**
-     * จึงโชว์เฉพาะแถวล่าสุดของคู่ (`CompanyRow.isLatestOfPair`) · ไม่ใส่ใน
-     * `SORTABLE_FIELDS` เพราะเรียงแล้วจะกระจายแถวของคู่เดียวกันออกจากกัน ·
-     * key ใหม่ `columns.taskType` (ต่างจาก `columns.type` ที่เป็นประเภทสัญญา)
+     * **ไม่มีคอลัมน์ "ประเภทงาน" ใน registry อีกแล้ว** — ผู้ใช้สั่งว่าไม่ต้อง
+     * แสดงตรงนี้ แล้วก็สั่งเอา**บรรทัดสรุป**ที่เคยย้ายไปไว้ในแถวที่กาง
+     * "รายการที่ตัด" ออกด้วย → ตัวนับระดับคู่ (บั๊ก/MA/Requirement/ไม่ระบุ)
+     * **ไม่ถูกแสดงที่ไหนเลยใน `/reports`** แล้ว (ข้อมูลยังมาครบจาก
+     * `GET /apps/usage-counts` → `byType` เผื่อนำกลับมาในอนาคต — ถึงตอนนั้น
+     * แค่เพิ่ม cell/บรรทัดบรรทัดเดียว) · key `columns.taskType` /
+     * `columns.taskTypeHint` / `Settings.deductionTypeBreakdown` อยู่ใน messages
+     * แบบไม่ใช้แล้ว (keep-unused-keys) · prefs เก่าที่มี key นี้ใน `hidden`/`order`
+     * ถูก `orderRegistry` ทิ้งเอง ไม่ต้อง migrate
      */
-    { key: "taskType", labelKey: "columns.taskType" },
   ],
 };
 

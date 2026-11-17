@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
-import { MoreThan, Repository } from "typeorm";
+import { Repository } from "typeorm";
 import {
   Notification,
   type NotificationPriority,
@@ -13,11 +13,14 @@ const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 
 /**
- * หน้าต่างเตือนซ้ำของแต่ละระดับ — **นับจากอายุแถวดั้งเดิม** (ไม่มีตาราง state):
+ * หน้าต่างเตือนซ้ำของแต่ละระดับ — **นับจากอายุแถวเดิม** (ไม่มีตาราง state):
  * แถวอายุ < window จะถูกเตือนทุกครั้งที่ cron รัน ดังนั้นหนึ่งแถวจะได้
  * digest row พอดี N วัน (cron ห่างกัน 24h → แถวแรกที่เจอ age < window เสมอ):
  * สูง 7 วัน · กลาง 3 วัน · ต่ำ 1 วัน (เด้งเช้าวันรุ่งขึ้นครั้งเดียว) ·
  * อ่าน/ล้างกล่อง = แถวหาย = เงียบเอง (อ่าน = ลบ อยู่แล้ว)
+ *
+ * ⚠️ หน้าต่างเป็นแค่ **gate** (จะส่งไหม + อีเมลวันแรก) — **ตัวเลข**ใน title/context
+ * นับ**ทุก**แถวยังไม่อ่าน ให้เท่ากับเลขบนกระดิ่ง (`GET /notifications/count`)
  */
 const REMINDER_WINDOWS: Record<NotificationPriority, number> = {
   high: 7 * DAY_MS,
@@ -40,9 +43,14 @@ function normalizePriority(value: string): NotificationPriority {
  * ที่ยังมีแถวยังไม่อ่านภายในหน้าต่างของระดับนั้น
  *
  * กติกาที่ควรรู้:
- * - **แถวเดียวต่อผู้ใช้ต่อวัน**: `type: "daily_digest"`, `priority` = ระดับสูงสุดที่
- *   ยัง active, `context` แยกจำนวนตามระดับ (`สูง 3 · กลาง 2`), link `/notifications`
- * - **ไม่นับตัวเอง**: แถว digest ถูกกันออกจากการคำนวณ → ไม่มีทางทบเพิ่มเอง
+ * - **แถวเดียวต่อผู้ใช้ต่อวัน**: `type: "daily_digest"`, `priority` = ระดับสูงสุดของ
+ *   **ทุก**แถว, `title` = `"N รายการยังไม่อ่าน"` (N = ทุกแถวยังไม่อ่าน = เลขบนกระดิ่ง),
+ *   `context` แยกจำนวนตามระดับ (`สูง 3 · กลาง 2` — บวกกันได้เท่า N), link `/notifications`
+ * - **หน้าต่าง 7/3/1 วัน = gate เท่านั้น**: ไม่มีแถวใหม่ในหน้าต่าง = ไม่ส่ง (กัน spam)
+ *   และยังใช้ตัดสินอีเมลวันแรก — แต่ไม่ได้ใช้ต่อตัวเลขอีกแล้ว
+ * - **ไม่นับตัวเอง**: แถว digest ถูกกันออกจาก `active` (gate/อีเมล) → ไม่ทบตัวเอง;
+ *   ส่วนตัวเลขรวมแถว digest เก่าที่ยังไม่อ่านด้วย เพราะ badge ก็นับมัน — แถวที่กำลัง
+ *   จะสร้างยังไม่มีใน DB จึงไม่มีทางนับตัวเอง
  * - **อีเมลเฉพาะสูงวันแรกเท่านั้น** (แถวสูงอายุ < 24 ชม.) — หนึ่ง episode ได้เมล
  *   สูงสุด 1 ครั้ง · ถ้า API ดับตอนวันแรก =  episode นั้นเงียบ (fail-open) แต่แถว
  *   in-app ยังทำงานวันถัดไป — เหมือนข้อตกลง "เมลครั้งเดียวต่อ episode"
@@ -80,12 +88,13 @@ export class DailyReminderService {
   /** One user's digest — own try/catch so a bad row never stops the others. */
   private async remindUser(user: User, now: number): Promise<void> {
     try {
-      // อะไรที่แก่กว่าหน้าต่างใหญ่สุด (7 วัน) ไม่มีทาง active แล้ว — ตัดออกตั้งแต่ query
+      /**
+       * **ทุก** แถวยังไม่อ่านของคนนั้น — ชุดเดียวกับที่ `GET /notifications/count`
+       * (เลขบนกระดิ่ง) นับ จึงไม่มีทางเพี้ยนจาก badge (เดิมกรองด้วยหน้าต่างใหญ่สุด
+       * 7 วัน ตั้งแต่ query → เลขใน digest จึงน้อยกว่า badge เสมอ เช่น บอก 391 แต่ badge 739)
+       */
       const rows = await this.notifications.find({
-        where: {
-          userId: user.id,
-          createdAt: MoreThan(new Date(now - REMINDER_WINDOWS.high)),
-        },
+        where: { userId: user.id },
         order: { createdAt: "DESC" },
       });
       if (rows.length === 0) return;
@@ -95,6 +104,10 @@ export class DailyReminderService {
       );
       if (postedToday) return;
 
+      /**
+       * หน้าต่าง 7/3/1 วันยังเป็น **gate** — ไม่มีแถวใหม่ในหน้าต่าง = ไม่ส่ง (กัน spam)
+       * และยังใช้ตัดสินอีเมลวันแรกด้วย — แต่**ไม่ได้ใช้ต่อตัวเลข**อีกแล้ว
+       */
       const active = rows.filter(
         (row) =>
           row.type !== "daily_digest" &&
@@ -102,12 +115,13 @@ export class DailyReminderService {
       );
       if (active.length === 0) return;
 
-      // นับตามระดับ — priority ใน DB ถูก CHECK คุมแล้ว แต่ normalize กันข้อมูลเก่า
+      // นับ**ทุก**แถวตามระดับ — priority ใน DB ถูก CHECK คุมแล้ว แต่ normalize กันข้อมูลเก่า
       const counts: Record<NotificationPriority, number> = { high: 0, medium: 0, low: 0 };
-      for (const row of active) counts[normalizePriority(row.priority)] += 1;
+      for (const row of rows) counts[normalizePriority(row.priority)] += 1;
+      // ระดับของ digest row ก็มาจากทุกแถว — ไม่งั้น chip (สี/ลำดับ) จะขัดกับ context ที่พิมพ์
       const top: NotificationPriority =
         counts.high > 0 ? "high" : counts.medium > 0 ? "medium" : "low";
-      const total = active.length;
+      const total = rows.length;
       // แถวเตือนตัวเองก็สูง (ถ้ามีของสูงค้าง) — ให้ลอยขึ้นบนสุดเหมือนของจริง
       const context = (
         [
@@ -132,21 +146,20 @@ export class DailyReminderService {
       );
 
       // อีเมล = เฉพาะตอนมีแถว "สูง" ที่ยังอยู่ในวันแรก (< 24 ชม.) — ครั้งเดียวต่อ episode
+      // นับจาก `active` (ไม่ใช่ `counts.high` ของทุกแถว) — ให้ count กับ titles ตรงกัน
       const freshHigh = active.some(
         (row) =>
           normalizePriority(row.priority) === "high" &&
           now - row.createdAt.getTime() < DAY_MS,
       );
       if (!freshHigh || !user.email) return;
-      const titles = active
-        .filter((row) => normalizePriority(row.priority) === "high")
-        .slice(0, 10)
-        .map((row) => row.title);
+      const highActive = active.filter((row) => normalizePriority(row.priority) === "high");
+      const titles = highActive.slice(0, 10).map((row) => row.title);
       void this.mail
         .sendDailyReminder({
           to: user.email,
           name: user.name,
-          count: counts.high,
+          count: highActive.length,
           titles,
           url: `${this.webBase()}/notifications`,
         })

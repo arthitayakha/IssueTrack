@@ -28,7 +28,7 @@ import SendIcon from "@mui/icons-material/Send";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
-import { isApiError } from "@/lib/api";
+import { isApiError, errorMessage } from "@/lib/api";
 import { isMaExpired } from "@/lib/app-expiry";
 import { useNotification } from "@/components/notification";
 import {
@@ -44,7 +44,9 @@ import { useRouter } from "@/i18n/navigation";
 
 function getErrorMessage(e: unknown, fallback: string): string | null {
   if (isApiError(e, 403)) return null;
-  return e instanceof Error ? e.message : fallback;
+  // never leak the browser's raw `Failed to fetch` — `errorMessage` falls back
+  // to the caller's own (translated) wording for a request that never landed
+  return errorMessage(e, fallback);
 }
 
 const OTHER_CATEGORY = "อื่น ๆ";

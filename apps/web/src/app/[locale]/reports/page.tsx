@@ -11,11 +11,10 @@ import { Pagination } from "@/components/pagination";
 import { usePathname, useRouter } from "@/i18n/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermissions } from "@/lib/permissions";
+import { errorMessage } from "@/lib/api";
 import {
   fetchPeriodUsage,
   fetchUsageCounts,
-  taskBreakdownParts,
-  taskTypeLabels,
   type DeductionState,
   type PeriodIssue,
   type UsageCount,
@@ -257,8 +256,6 @@ function ReportsScreen() {
    * ของแถวรายละเอียด "รายการที่ตัด" ตอน export ให้คำเดียวกับที่ตารางกางบนจอ
    */
   const bt = useTranslations("Boards");
-  /** ป้ายคอลัมน์ "ประเภทงาน" — ฟังก์ชันเดียวกับที่ตารางจอใช้ (จอ/ไฟล์ห้ามต่างกัน) */
-  const typeLabels = useMemo(() => taskTypeLabels(bt), [bt]);
   const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
@@ -388,7 +385,7 @@ function ReportsScreen() {
         if (res.page !== page) updateParams({ page: res.page });
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : t("states.error"));
+        if (!cancelled) setError(errorMessage(err, t("states.error")));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -847,23 +844,12 @@ function ReportsScreen() {
             // ระดับแถว (แถว = 1 รอบ) — ค่าจาก `usage-counts` เหมือนที่จอโชว์
             { key: "deductedCount", header: t("columns.deductedCount"), value: (r) => deductedCountOf(r) },
             /**
-             * **ประเภทงาน** — ระดับคู่ โชว์**เฉพาะแถวล่าสุดของคู่** เหมือนจอ
-             * ทุกประการ (แถวดเก่า = `""` เพื่อไม่ให้บวกซ้ำตอนเอาไป sum ใน
-             * Excel) · ป้ายจาก `taskBreakdownParts()` ตัวเดียวกับตาราง
+             * **ไม่มีคอลัมน์ "ประเภทงาน" ใน export อีกแล้ว** — ผู้ใช้สั่งไม่ให้
+             * แสดงบนจอ (ทั้งคอลัมน์และบรรทัดสรุปในแถวที่กาง) และเลือกให้ไฟล์
+             * ตรงกับจอ (จอ/ไฟล์ห้ามต่างกัน) → ตัวนับระดับคู่ (`byType` จาก
+             * `usage-counts`) ไม่ถูกแสดงที่ไหนเลยทั้งจอและไฟล์ — โน้ตจอ-only
+             * อย่าง `deductionsUnattributed` ก็ไม่เคยเข้าไฟล์เหมือนกัน
              */
-            {
-              key: "taskType",
-              header: t("columns.taskType"),
-              value: (r) => {
-                if (r.recordId == null) return "—";
-                if (!r.isLatestOfPair) return "";
-                const parts = taskBreakdownParts(
-                  (exportCounts ?? deductionCounts.byRecord).get(r.recordId)?.byType,
-                  typeLabels,
-                );
-                return parts.length > 0 ? parts.join(" · ") : "—";
-              },
-            },
           ];
           return matrix(cols, rs, hidden, orderKeys);
         }
@@ -871,7 +857,7 @@ function ReportsScreen() {
           return { keys: [], headers: [], data: [] };
       }
     },
-    [view, locale, t, st, hidden, orderKeys, deductionCounts, typeLabels],
+    [view, locale, t, st, hidden, orderKeys, deductionCounts],
   );
 
   /**
@@ -1056,7 +1042,7 @@ function ReportsScreen() {
       const stamp = new Date().toISOString().slice(0, 10);
       downloadCsv(`report-${view}-${stamp}.csv`, buildCsv(headers, data));
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : t("states.exportFailed"));
+      setExportError(errorMessage(err, t("states.exportFailed")));
     } finally {
       setExporting(false);
     }
@@ -1109,7 +1095,7 @@ function ReportsScreen() {
         filename: `report-${view}-${stamp}.pdf`,
       });
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : t("states.exportFailed"));
+      setExportError(errorMessage(err, t("states.exportFailed")));
     } finally {
       setExporting(false);
     }

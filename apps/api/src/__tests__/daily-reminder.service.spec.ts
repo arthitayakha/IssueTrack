@@ -5,6 +5,7 @@ import { DailyReminderService } from "../modules/notifications/daily-reminder.se
  *
  * - สูง → digest ทุกวันจนครบ 7 วัน + **อีเมลครั้งเดียวตอนวันแรก** (แถว < 24 ชม.)
  * - กลาง → 3 วัน (ไม่มีอีเมล) · ต่ำ → เด้งเช้าวันรุ่งขึ้นครั้งเดียว (ไม่มีอีเมล)
+ * - **ตัวเลขใน title/context นับทุกแถวยังไม่อ่าน = เลขบนกระดิ่ง** (หน้าต่างเป็นแค่ gate)
  * - แถว digest ไม่นับตัวเอง · มี digest ใน 20 ชม. = รันซ้ำ → ข้าม
  * - คนที่ปิดสวิตซ์ (`daily_reminder_enabled = false`) ถูกกันออกตั้งแต่ query
  * - fail-open ทุกชั้น — sweep ห้ามทำให้ API พัง
@@ -238,6 +239,33 @@ describe("DailyReminderService.remind — the 09:00 digest", () => {
     expect(rows[0].priority).toBe("high");
     expect(rows[0].title).toBe("3 รายการยังไม่อ่าน");
     expect(rows[0].context).toBe("สูง 1 · กลาง 1 · ต่ำ 1");
+  });
+
+  /**
+   * เลขใน digest ต้องเท่ากับ `GET /notifications/count` (เลขบนกระดิ่ง) — นับ**ทุก**แถวยัง
+   * ไม่อ่าน รวมแถวที่เลยหน้าต่าง 7/3/1 วันและแถว digest เก่าที่ยังไม่อ่านด้วย
+   * (เดิมกรองออกตั้งแต่ query → digest เคยบอก 391 แต่ badge = 739)
+   */
+  it("the digest counts EVERY unread row, not just the in-window ones (badge parity)", async () => {
+    const { service, notifications, mail } = makeService();
+    notifications.find.mockResolvedValue([
+      unreadRow({ id: 1, priority: "medium", createdAt: hoursAgo(2) }), // active → gate opens
+      unreadRow({ id: 2, priority: "high", createdAt: hoursAgo(8 * 24) }), // past the 7-day window
+      // yesterday's digest, still unread — the badge counts it, so the number must too
+      unreadRow({ id: 3, type: "daily_digest", priority: "low", createdAt: hoursAgo(30) }),
+    ]);
+
+    await service.remind();
+
+    const rows = written(notifications);
+    expect(rows).toHaveLength(1);
+    // the old code counted only `active` → "1 รายการยังไม่อ่าน"
+    expect(rows[0].title).toBe("3 รายการยังไม่อ่าน");
+    expect(rows[0].context).toBe("สูง 1 · กลาง 1 · ต่ำ 1");
+    // the chip matches the context it prints (highest of ALL rows)
+    expect(rows[0].priority).toBe("high");
+    // no high row inside day 1 → still no e-mail (the windows keep gating that)
+    expect(mail.sendDailyReminder).not.toHaveBeenCalled();
   });
 
   it("a user without an e-mail still gets the row, just not the mail", async () => {
