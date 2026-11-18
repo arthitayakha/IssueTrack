@@ -130,20 +130,26 @@ async function seed() {
     }
   }
 
+  /**
+   * `position` is the board's real order column (`findAll` → `position ASC`,
+   * `reorder()` writes it, the move guard reads it). The legacy `sort_order` /
+   * `is_timer_running` / `is_end_status` flags used to be seeded alongside it —
+   * nothing read them, and migration 1835000000000 drops them.
+   */
   const defaultStatuses = [
-    { name: "Backlog", sortOrder: 1, isTimerRunning: false, isEndStatus: false },
-    { name: "Todo", sortOrder: 2, isTimerRunning: false, isEndStatus: false },
-    { name: "Doing", sortOrder: 3, isTimerRunning: true, isEndStatus: false },
-    { name: "Review", sortOrder: 4, isTimerRunning: false, isEndStatus: false },
-    { name: "ชิแดิ", sortOrder: 5, isTimerRunning: false, isEndStatus: true },
+    { name: "Backlog", position: 1 },
+    { name: "Todo", position: 2 },
+    { name: "Doing", position: 3 },
+    { name: "Review", position: 4 },
+    { name: "ชิแดิ", position: 5 },
   ];
 
   for (const s of defaultStatuses) {
     await manager.query(
-      `INSERT INTO issue_statuses (name, description, is_active, sort_order, is_timer_running, is_end_status)
-       VALUES ($1, NULL, true, $2, $3, $4)
-       ON CONFLICT (name) DO UPDATE SET sort_order = $2, is_timer_running = $3, is_end_status = $4`,
-      [s.name, s.sortOrder, s.isTimerRunning, s.isEndStatus],
+      `INSERT INTO issue_statuses (name, description, is_active, position)
+       VALUES ($1, NULL, true, $2)
+       ON CONFLICT (name) DO UPDATE SET position = $2`,
+      [s.name, s.position],
     );
   }
 

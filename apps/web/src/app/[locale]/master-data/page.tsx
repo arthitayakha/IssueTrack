@@ -113,7 +113,11 @@ interface IssueStatus {
   /** Column color from `issue_statuses.color` ("#rrggbb" or a palette name). */
   color?: string | null;
   isActive: boolean;
-  sortOrder: number;
+  /**
+   * No `sortOrder` here on purpose: `GET /issue-statuses` returns no order
+   * field โ€” the order is `position`, and the reorder request still names its
+   * field `sortOrder` (see `handleStatusDragEnd`).
+   */
   issueCount: number;
 }
 

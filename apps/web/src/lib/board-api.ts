@@ -12,7 +12,11 @@ export interface IssueStatus {
   /** Column color from `issue_statuses.color` ("#rrggbb" or a palette name). */
   color?: string | null;
   isActive: boolean;
-  sortOrder: number;
+  /**
+   * Legacy โ€” the API no longer returns a status order field. The board's real
+   * order is `position` (written by `POST /issue-statuses/reorder`, whose
+   * request payload still names the field `sortOrder` โ€” see `reorderStatuses`).
+   */
   customName?: string | null;
   issueCount: number;
   createdAt: string;
