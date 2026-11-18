@@ -11,6 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
+import { IsActiveDto } from "../../common/dto/is-active.dto";
 import { CategoriesService } from "./categories.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -28,15 +29,15 @@ export class CategoriesController {
 
   @Post()
   @Permissions("category.create")
-  create(@Body() body: { name: string; position?: string }) {
-    return this.categories.create(body.name, body.position);
+  create(@Body() body: { name: string }) {
+    return this.categories.create(body.name);
   }
 
   @Patch(":id")
   @Permissions("category.update")
   update(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { name?: string; position?: string },
+    @Body() body: { name?: string },
   ) {
     return this.categories.update(id, body);
   }
@@ -45,7 +46,7 @@ export class CategoriesController {
   @Permissions("category.update")
   updateActive(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { isActive: boolean },
+    @Body() body: IsActiveDto,
   ) {
     return this.categories.updateActive(id, body.isActive);
   }

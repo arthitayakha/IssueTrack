@@ -25,30 +25,28 @@ export class CategoriesService {
         id: c.id,
         name: c.name,
         isVisible: c.isVisible,
-        position: c.position,
         issueCount: await this.issues.count({ where: { categoryId: c.id } }),
       })),
     );
     return paginate(result, params);
   }
 
-  async create(name: string, position?: string) {
+  async create(name: string) {
     const existing = await this.categories.findOne({ where: { name } });
     if (existing) {
       throw new ConflictException(`Category "${name}" already exists`);
     }
     const category = await this.categories.save(
-      this.categories.create({ name, position: position ?? null, isVisible: true }),
+      this.categories.create({ name, isVisible: true }),
     );
     return {
       id: category.id,
       name: category.name,
       isVisible: category.isVisible,
-      position: category.position,
     };
   }
 
-  async update(id: number, data: { name?: string; position?: string }) {
+  async update(id: number, data: { name?: string }) {
     const category = await this.categories.findOne({ where: { id } });
     if (!category) {
       throw new NotFoundException(`Category with id ${id} not found`);
@@ -60,15 +58,11 @@ export class CategoriesService {
       }
       category.name = data.name;
     }
-    if (data.position !== undefined) {
-      category.position = data.position;
-    }
     await this.categories.save(category);
     return {
       id: category.id,
       name: category.name,
       isVisible: category.isVisible,
-      position: category.position,
     };
   }
 

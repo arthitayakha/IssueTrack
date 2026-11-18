@@ -19,9 +19,6 @@ export class Category {
   @Column({ name: "is_visible", default: true })
   isVisible!: boolean;
 
-  @Column({ type: "varchar", length: 50, nullable: true })
-  position!: string | null;
-
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
 
