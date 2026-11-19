@@ -13,6 +13,8 @@ import { PermissionsService } from "../permissions/permissions.service";
 import { RulesEngineService } from "../rules/rules-engine.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { paginate, PaginationParams } from "../../common/pagination";
+import type { AuthUser } from "../auth/auth-user";
+import { loadVisibleIssue } from "../issues/issue-access";
 
 @Injectable()
 export class CommentsService {
@@ -28,7 +30,13 @@ export class CommentsService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  async findByIssue(issueId: number, params: PaginationParams) {
+  /**
+   * คอมเมนต์ของงาน — **เช็คขอบเขตของงานก่อน** (`issue-access.ts`): ผู้ไม่เกี่ยว
+   * (ไม่ใช่ผู้รับผิดชอบ/ผู้แจ้ง และไม่มี `issue.all.view`) ได้ 404 ทั้งอ่านและเขียน
+   * · งานไม่มีจริงก็ 404 (เดิม list คืนว่าง / insert แล้วชน FK = 500)
+   */
+  async findByIssue(issueId: number, params: PaginationParams, user: AuthUser) {
+    await loadVisibleIssue(this.issues, this.permissions, issueId, user);
     const comments = await this.comments.find({
       where: { issueId },
       order: { createdAt: "ASC" },
@@ -38,7 +46,21 @@ export class CommentsService {
     return paginate(mapped, params);
   }
 
-  async create(issueId: number, content: string, userId: number, actor?: ActorInfo | null) {
+  /**
+   * **โหลดงาน + เช็คขอบรก่อน insert** — เดิมบันทึกคอมเมนต์ก่อนค่อยหางาน
+   * (id ปลอม = FK error 500, งานคนอื่น = เขียนได้ = write-IDOR) — ตอนนี้ทั้งสอง
+   * เป็น 404 ก่อนเขียนอะไรทั้งสิ้น และงานที่โหลดไว้ใช้ต่อทั้ง notify + rules
+   * (ไม่ต้อง findOne รอบที่ 2)
+   */
+  async create(issueId: number, content: string, user: AuthUser, actor?: ActorInfo | null) {
+    const userId = Number(user.id);
+    const issue = await loadVisibleIssue(
+      this.issues,
+      this.permissions,
+      issueId,
+      user,
+      ["category"],
+    );
     const comment = this.comments.create({
       issueId,
       comment: content,
@@ -51,25 +73,21 @@ export class CommentsService {
       detail: JSON.stringify({ commentId: comment.id }),
       actor,
     });
-    // automation rules — status comes from the issue, text from the comment
-    const issue = await this.issues.findOne({ where: { id: issueId }, relations: ["category"] });
     // notify assignee + reporter about the new comment (never the commenter);
     // on a card nobody has picked up yet the admins hear it too, or a customer
     // question would land in front of no one
-    if (issue) {
-      await this.notifications.notifyIssueEvent({
-        issue,
-        action: "commented",
-        recipients: [issue.programmerId, issue.customerId],
-        actor,
-        alsoAdmins: !issue.programmerId,
-      });
-    }
+    await this.notifications.notifyIssueEvent({
+      issue,
+      action: "commented",
+      recipients: [issue.programmerId, issue.customerId],
+      actor,
+      alsoAdmins: !issue.programmerId,
+    });
     await this.rulesEngine.evaluate("comment.created", {
       issueId,
       actorId: userId,
       actorRole: actor?.actorRole ?? null,
-      toStatusId: issue?.statusId ?? null,
+      toStatusId: issue.statusId ?? null,
       newValue: content,
     });
     const fresh = await this.loadWithUser(saved.id);

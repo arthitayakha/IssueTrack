@@ -11,6 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
+import { IsActiveDto } from "../../common/dto/is-active.dto";
 import { CompaniesService } from "./companies.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -51,7 +52,7 @@ export class CompaniesController {
   @Permissions("company.update")
   updateActive(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { isActive: boolean },
+    @Body() body: IsActiveDto,
   ) {
     return this.companies.updateActive(id, body.isActive);
   }

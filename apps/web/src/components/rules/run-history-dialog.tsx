@@ -221,10 +221,15 @@ export default function RunHistoryDialog({ onClose }: RunHistoryDialogProps) {
         </Box>
       </DialogTitle>
 
-      {/* ⚠️ อย่าใส่ `pt` เพื่อเว้นจาก DialogTitle — MUI บังคับ padding-top: 0 ให้
-          DialogContent ที่อยู่ติด DialogTitle ด้วย selector .MuiDialogTitle-root +
-          .MuiDialogContent-root ซึ่งชนะ sx ทุกครั้ง → ช่องว่างใต้หัวป๊อปอัพจึง
-          ไม่ต้องมี (toolbar ชิดหัวได้เลย) */}
+      {/*
+        ⚠️ อย่าใส่ `pt` เพื่อเว้นจาก DialogTitle — MUI บังคับ padding-top: 0 ให้
+        DialogContent ที่อยู่ติด DialogTitle (เฉพาะตอนไม่ได้ใช้ dividers) ด้วย
+        selector สองชั้น .MuiDialogTitle-root + .MuiDialogContent-root (specificity
+        2 class) ซึ่งชนะ sx (1 class) เสมอ → ช่องว่างใต้หัวป๊อปอัพจึงใส่เป็น
+        **margin-top ของ toolbar** (คนละ property ไม่ชน specificity — เหมือน
+        <Stepper mt: 4> ใน rule-wizard.tsx) เท่ากับ padding ด้านข้าง (16/20px)
+        — padding ที่เหลือ: ซ้าย/ขวา/ล่าง 20/16px ตามเดิม
+      */}
       <DialogContent
         sx={{
           flex: 1,
@@ -235,8 +240,11 @@ export default function RunHistoryDialog({ onClose }: RunHistoryDialogProps) {
           p: { xs: 2, sm: 2.5 },
         }}
       >
-        {/* toolbar ตรึงบน — เปลี่ยนกฎกรอง/รีเฟรชได้โดยไม่ต้องเลื่อนตาราง */}
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2, flexWrap: "wrap" }}>
+        {/* toolbar ตรึงบน — เปลี่ยนกฎกรอง/รีเฟรชได้โดยไม่ต้องเลื่อนตาราง
+            `mt` = ช่องว่างใต้หัวป๊อปอัพ (เดิมชิดเส้นขอบ DialogTitle พอดีเพราะ
+            MUI สั่ง padding-top: 0 — ดู comment ข้างบน; margin ใน flex container
+            ไม่ collapse จึงได้ระยะเต็ม ๆ) */}
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mt: { xs: 2, sm: 2.5 }, mb: 2, flexWrap: "wrap" }}>
           <Select
             size="small"
             value={ruleFilter}

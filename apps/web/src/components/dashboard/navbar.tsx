@@ -35,8 +35,12 @@ export const DRAWER_WIDTH = 240;
 
 /** Rows pulled per request — the popover loads the next batch when the list end shows. */
 const PAGE_SIZE = 20;
-/** Cap per refresh, so a reopened, long scroll-loaded list never fetches huge. */
-const POLL_MAX_ROWS = 50;
+/**
+ * Server-side cap on `limit` (`NotificationsService.list` clamps to 200). A
+ * list longer than this cannot be refreshed without shrinking it, so the poll
+ * skips the rows and only the badge keeps updating.
+ */
+const MAX_ROWS = 200;
 const EMPTY_PAGE: NotificationPage = { items: [], page: 0, total: 0 };
 
 /** The list's lifecycle: `idle` until the bell is opened for the first time. */
@@ -112,6 +116,13 @@ export default function Navbar({
   const inboxRef = useRef(inbox);
   inboxRef.current = inbox;
   const loadingMoreRef = useRef(false);
+  /**
+   * `items.length` of the last load-more that returned **nothing new** (rows
+   * shifted under a new arrival). Retrying the same page would loop forever —
+   * while the length matches this, the scroll-load waits for the list itself
+   * to change (a read, or the next refresh, which resets it).
+   */
+  const stalledAtRef = useRef(-1);
   const listSeqRef = useRef(0); // out-of-order guard for list responses
   const statusRef = useRef(listStatus);
   statusRef.current = listStatus;
@@ -137,13 +148,20 @@ export default function Navbar({
     const firstLoad = statusRef.current !== "ready";
     if (firstLoad) setListStatus("loading");
     try {
-      // keep the rows already on screen (capped) so a refresh never shrinks
-      // the list while the user is reading it — and never grows huge
-      const res = await fetchNotifications(
-        1,
-        Math.min(Math.max(PAGE_SIZE, inboxRef.current.items.length), POLL_MAX_ROWS),
-      );
+      // A list past the server's max cannot be refreshed without SHRINKING it
+      // (which yanks the scroll position mid-read) — leave the rows alone; the
+      // badge has its own COUNT on the same tick, and nothing else is stale.
+      if (inboxRef.current.items.length > MAX_ROWS) return;
+      // Page-aligned refresh: limit = a whole multiple of PAGE_SIZE covering
+      // every row already on screen, so (1) the list never shrinks while the
+      // user is reading it, and (2) every loaded batch stays a whole number of
+      // pages — the next load-more can then ask for the page right after the
+      // rows on screen instead of re-fetching pages it already has (the bug
+      // behind "scroll ถึงท้ายแล้วไม่มีอะไรขึ้น ต้องรอรอบถัดไป").
+      const pages = Math.max(1, Math.ceil(inboxRef.current.items.length / PAGE_SIZE));
+      const res = await fetchNotifications(1, pages * PAGE_SIZE);
       if (seq !== listSeqRef.current) return;
+      stalledAtRef.current = -1; // a fresh prefix un-stalls any stalled load-more
       setInbox({ items: res.data, page: res.page, total: res.total });
       // the badge must reflect the server count, not just the loaded rows
       setUnreadCount(res.unreadCount);
@@ -179,17 +197,28 @@ export default function Navbar({
     if (loadingMoreRef.current) return;
     const current = inboxRef.current;
     if (current.items.length >= current.total) return;
+    // The next batch = the first page boundary AT/AFTER the rows on screen,
+    // derived from `items.length` — never from a stored `page`. A refresh uses
+    // a bigger (page-aligned) limit, so `page + 1` from its response would ask
+    // for rows already on screen: the dedupe dropped them all, nothing
+    // appeared, and the user had to wait for yet another round trip.
+    const nextPage = Math.floor(current.items.length / PAGE_SIZE) + 1;
+    // an empty page at this exact length already failed once — wait for a change
+    if (stalledAtRef.current === current.items.length) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     const seq = listSeqRef.current;
     try {
-      const res = await fetchNotifications(current.page + 1, PAGE_SIZE);
+      const res = await fetchNotifications(nextPage, PAGE_SIZE);
       if (seq !== listSeqRef.current) return; // a refresh replaced the list meanwhile
+      const seen = new Set(inboxRef.current.items.map((n) => n.id));
+      const fresh = res.data.filter((n) => !seen.has(n.id));
+      stalledAtRef.current = fresh.length > 0 ? -1 : inboxRef.current.items.length;
       setInbox((prev) => {
         // never show a row twice
-        const seen = new Set(prev.items.map((n) => n.id));
-        const fresh = res.data.filter((n) => !seen.has(n.id));
-        return { items: [...prev.items, ...fresh], page: res.page, total: res.total };
+        const seenNow = new Set(prev.items.map((n) => n.id));
+        const add = fresh.filter((n) => !seenNow.has(n.id));
+        return { items: [...prev.items, ...add], page: nextPage, total: res.total };
       });
       setUnreadCount(res.unreadCount);
     } catch {

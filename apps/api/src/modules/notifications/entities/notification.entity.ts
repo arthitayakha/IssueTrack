@@ -10,11 +10,10 @@ import { Issue } from "../../issues/entities/issue.entity";
 import { User } from "../../auth/entities/user.entity";
 
 /**
- * How loud a bell row is — drives the inbox order (high first), the chip
- * colour, and the daily reminder window (7 / 3 / 1 days at 09:00, see
- * `DailyReminderService`). Written by `NotificationsService.notify()`: the
- * card's own priority when the row has an issue, the `FIXED_PRIORITY` map for
- * system rows, `medium` otherwise. The DB enforces the three values.
+ * How loud a bell row is — drives the inbox order (high first) and the chip
+ * colour. Written by `NotificationsService.notify()`: the card's own priority
+ * when the row has an issue, the `FIXED_PRIORITY` map for system rows,
+ * `medium` otherwise. The DB enforces the three values.
  */
 export type NotificationPriority = "high" | "medium" | "low";
 

@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuthStore } from "./auth-store";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002";
+import { apiFetchResponse } from "./api";
 
 /**
  * The signed-in user's picture per user id: an objectURL, or **null when the
@@ -60,22 +59,20 @@ export function fetchOwnAvatar(token: string, userId: string): Promise<string | 
   const pending = inflight.get(userId);
   if (pending) return pending;
 
-  const request = fetch(`${API_URL}/auth/profile/avatar`, {
-    headers: { Authorization: `Bearer ${token}` },
-    // never reuse the browser's HTTP cache: a cached miss (204) would keep
-    // the initials avatar up long after a picture exists (and a cached
-    // picture would outlive a replace)
-    cache: "no-store",
-  })
-    .then((res) => {
-      // 204 = "there is no picture", a fact worth remembering. This branch
-      // must run before res.blob(): a 204 has no body, and caching that empty
-      // blob as an objectURL would render a broken image instead of the
-      // initials avatar.
-      if (res.status === 204) return null;
-      if (!res.ok) throw new Error(`avatar lookup failed: ${res.status}`);
-      return res.blob();
-    })
+  // ผ่าน `apiFetchResponse` → 401 เรียก logout handler (เดิม raw fetch แล้ว
+  // .catch(() => null) เกลี้ยง = session ค้าง) — 204 (ยังไม่มีรูป) ยังผ่าน
+  // ออกมาเป็น null เหมือนเดิมเพราะ `res.ok` ของ 204 = true
+  const request = apiFetchResponse(
+    "/auth/profile/avatar",
+    {
+      // never reuse the browser's HTTP cache: a cached miss (204) would keep
+      // the initials avatar up long after a picture exists (and a cached
+      // picture would outlive a replace)
+      cache: "no-store",
+    },
+    token,
+  )
+    .then((res) => (res.status === 204 ? null : res.blob()))
     .then((blob) => {
       // invalidated while in flight → a newer lookup owns the cache now
       if (inflight.get(userId) !== request) return null;

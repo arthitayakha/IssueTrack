@@ -46,6 +46,7 @@ import {
   type UserSummary,
 } from "@/lib/board-api";
 import { fetchLabels, type Label } from "@/lib/labels-api";
+import { Pagination } from "@/components/pagination";
 import { getParamLabel } from "./param-labels";
 
 interface RuleListProps {
@@ -112,6 +113,16 @@ const PILL_ROW_TEXT_SX = {
 /** ข้อความในกล่องปิด — ตัวหนา + ตัดด้วย … เหมือนฝั่งแดชบอร์ด (ไซส์ใหญ่ 14). */
 const PILL_VALUE_SX = { ...PILL_ROW_TEXT_SX, fontSize: 14, fontWeight: 600 } as const;
 
+/**
+ * จำนวนแถวต่อหน้า — **client-side เท่านั้น** (`GET /rules` ดึงชุดเต็ม ไม่มี page/limit;
+ * filter/ค้นหา/นับแท็บยังทำงานบน `rules` ชุดเต็มเหมือนเดิม แล้วค่อย slice หลัง filter)
+ *
+ * 15 = ~1 จอเต็มของ list แบบ 2 บรรทัด (แถวละ ~50px) — `<Pagination>` ซ่อนตัวเอง
+ * เมื่อไม่เกิน 1 หน้า กฎ 15 ตัวจึงยังโชว์ครบเหมือนไม่มีอะไรเปลี่ยน แถบหน้าโผล่ตอนเกิน 15
+ * (หน้าอื่นใช้ 10 เพราะเป็นตาราง row สูง — แถว list นี้สั้นกว่า)
+ */
+const PAGE_SIZE = 15;
+
 export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate = true }: RuleListProps) {
   const t = useTranslations("Automation");
   // param labels (ย้ายไปสถานะ / มอบหมายตำแหน่ง / ป้ายกำกับ …) live under the
@@ -140,6 +151,8 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [actionFilter, setActionFilter] = useState<string>("all");
+  /** หน้าที่เปิดอยู่ (1-based) — แบ่งหน้าหลัง filter เท่านั้น ดู `PAGE_SIZE` */
+  const [page, setPage] = useState(1);
 
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
   const [users, setUsers] = useState<UserSummary[]>([]);
@@ -322,6 +335,30 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
   const activeCount = rules.filter((r) => r.isActive).length;
   const inactiveCount = rules.filter((r) => !r.isActive).length;
 
+  /** หน้าทั้งหมดของ "ผลลัพธ์หลัง filter" — นับจาก `filteredRules` ไม่ใช่ `rules` ชุดเต็ม */
+  const totalPages = Math.max(1, Math.ceil(filteredRules.length / PAGE_SIZE));
+  /**
+   * หน้าที่ใช้ render จริง — บีบไม่ให้เกิน `totalPages` ณ เวลานั้น ๆ ด้วย เพราะ
+   * effect ที่ดัน `page` กลับเข้าช่วงทำงาน *หลัง* render หนึ่งรอบ → ถ้าใช้ `page`
+   * ดิบจะมี frame ที่ slice ได้แถวว่าง (List โล่ง) ระหว่างรอ effect
+   */
+  const currentPage = Math.min(page, totalPages);
+  const pageRows = filteredRules.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  /**
+   * เปลี่ยน search / ตัวกรอง / สลับแท็บ = ต้อง `setPage(1)` **ใน handler เดียวกัน**ด้วย
+   * (ไม่ใช่ `useEffect` — effect รันหลัง paint → หนึ่ง frame จะโชว์ "หน้าเดิมของ
+   * ผลลัพธ์ใหม่" ก่อนกระเด้งกลับหน้า 1) — ทั้ง 4 จุดด้านล่างยึด contract นี้
+   */
+
+  /**
+   * ผลลัพธ์หด (ลบแถวสุดท้ายของหน้าท้าย / refetch หลังลบกฎ) → ดัน `page` กลับเข้าช่วง
+   * ให้ถาวร กัน state ค้างหน้าเกินจน "สร้างกฎใหม่ทีหลัง" แล้วเด้งกลับหน้าเก่าแบบงง ๆ
+   */
+  useEffect(() => {
+    setPage((p) => Math.min(p, totalPages));
+  }, [totalPages]);
+
   function renderActionIcon(actionKey: string) {
     const color = theme.palette.primary.main;
     switch (actionKey) {
@@ -336,10 +373,28 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
 
   return (
     <Box>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 2, flexWrap: "wrap" }}>
+      {/* แถบค้นหา/กรอง = sticky ในกล่อง scroll ของแท็บ (inner scroll ของ /master-data)
+          — ค้างอยู่ใต้แถบแท็บขณะที่รายการเลื่อนใต้ · `pb` แทน `mb` เพราะพื้นหลังต้อง
+          คลุมถึงขอบล่าง (margin โปร่ง → แถวที่เลื่อนจะลอดเห็นใต้ sticky 8px) */}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 2,
+          pb: 2,
+          flexWrap: "wrap",
+          position: "sticky",
+          top: 0,
+          zIndex: 2,
+          bgcolor: "background.default",
+        }}
+      >
         <Tabs
           value={statusFilter}
-          onChange={(_e, value) => setStatusFilter(value as StatusFilter)}
+          onChange={(_e, value) => {
+            setStatusFilter(value as StatusFilter);
+            setPage(1);
+          }}
           sx={{ minWidth: 300 }}
         >
           <Tab value="all" label={`${t("tabAll")} (${allCount})`} />
@@ -350,7 +405,10 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
           size="small"
           placeholder={t("searchPlaceholder")}
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(1);
+          }}
           sx={{ flex: 1, minWidth: 180 }}
           // กัน password manager เทอีเมลลงช่องค้นหา (เหมือนหน้าบอร์ด)
           inputProps={{ autoComplete: "off", name: "rules-search" }}
@@ -358,7 +416,10 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
         <Select
           size="small"
           value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
+          onChange={(e) => {
+            setCategoryFilter(e.target.value);
+            setPage(1);
+          }}
           displayEmpty
           renderValue={(raw) => {
             const value = typeof raw === "string" ? raw : "";
@@ -391,7 +452,10 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
         <Select
           size="small"
           value={actionFilter}
-          onChange={(e) => setActionFilter(e.target.value)}
+          onChange={(e) => {
+            setActionFilter(e.target.value);
+            setPage(1);
+          }}
           displayEmpty
           renderValue={(raw) => {
             const value = typeof raw === "string" ? raw : "";
@@ -433,7 +497,7 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
         </Box>
       ) : (
         <List disablePadding>
-          {filteredRules.map((rule) => {
+          {pageRows.map((rule) => {
             const sentence = buildRuleSentence(rule.triggerKey, rule.templateKey, rule.conditions, resolveValue);
             const sentenceText = sentence.th || sentence.en;
             // action label + resolved params (target status, position, label …)
@@ -498,6 +562,21 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
             );
           })}
         </List>
+      )}
+
+      {/*
+        แถบหน้าใต้รายการ — `Pagination` คืน null เองเมื่อไม่เกิน 1 หน้า (กฎ ≤ 15 ตัว
+        จึงไม่มีแถบใหม่โผล่) และ `total` ใช้ "จำนวนแถวหลัง filter" เพื่อให้ข้อความ
+        "แสดง x–y จากทั้งหมด n" ตรงกับแท็บ/คำค้นที่เลือกอยู่
+      */}
+      {filteredRules.length > 0 && (
+        <Pagination
+          page={currentPage}
+          totalPages={totalPages}
+          total={filteredRules.length}
+          limit={PAGE_SIZE}
+          onPageChange={setPage}
+        />
       )}
 
       <Dialog open={deleteTarget != null} onClose={() => setDeleteTarget(null)} maxWidth="xs" fullWidth>

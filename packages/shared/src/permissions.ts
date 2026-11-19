@@ -307,7 +307,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "issue.reassign": "มอบหมายปัญหาใหม่",
   "issue.status.update": "อัปเดตสถานะปัญหา",
   "issue.delete": "ลบปัญหา",
-  "issue.trash.view": "ดูถังขยะ",
+  "issue.trash.view": "ดูรายการยกเลิก",
   "issue.restore": "กู้คืนปัญหา",
   "issue.category.change": "เปลี่ยนหมวดหมู่ปัญหา",
   "issue.lock": "ล็อกปัญหา",

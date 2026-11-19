@@ -4,7 +4,7 @@ import { Repository } from "typeorm";
 import { Company } from "./entities/company.entity";
 import { AppCompany } from "../apps/entities/app-company.entity";
 import { User } from "../auth/entities/user.entity";
-import { paginate, PaginationParams } from "../../common/pagination";
+import { paginateTotal, PaginationParams } from "../../common/pagination";
 
 /**
  * บริษัท CRUD — same contract as `AppsService` (unique name → 409, toggle
@@ -30,18 +30,27 @@ export class CompaniesService {
   ) {}
 
   async findAll(params: PaginationParams) {
-    const companies = await this.companies.find({ order: { id: "ASC" } });
+    /**
+     * **SQL page ทั้งคู่** — เดิมโหลดทุกแถวแล้วค่อย `paginate` ในหน่วย
+     * ความจำ + นับ `appCount` รายแถวทั้งตาราง · ตอนนี้เลือกเฉพาะแถวของ
+     * หน้านั้น (`skip/take`) แล้วค่อยนับรายแถวของหน้า — ผลลัพธ์เหมือนเดิมเป๊ะ
+     */
+    const [rows, total] = await this.companies.findAndCount({
+      order: { id: "ASC" },
+      skip: (params.page - 1) * params.limit,
+      take: params.limit,
+    });
     // counted one by one — the same shape AppsService uses for `issueCount`,
-    // and master data never holds more than a handful of rows
+    // and a page holds at most `limit` rows
     const result = await Promise.all(
-      companies.map(async (c) => ({
+      rows.map(async (c) => ({
         id: c.id,
         name: c.name,
         isVisible: c.isVisible,
         appCount: await this.appCount(c.id),
       })),
     );
-    return paginate(result, params);
+    return paginateTotal(result, total, params);
   }
 
   async create(name: string) {

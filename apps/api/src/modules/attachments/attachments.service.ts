@@ -8,6 +8,9 @@ import { Attachment } from "./entities/attachment.entity";
 import { Issue } from "../issues/entities/issue.entity";
 import { User } from "../auth/entities/user.entity";
 import { RulesEngineService } from "../rules/rules-engine.service";
+import { PermissionsService } from "../permissions/permissions.service";
+import type { AuthUser } from "../auth/auth-user";
+import { loadVisibleIssue } from "../issues/issue-access";
 import { UPLOADS_DIR } from "../../lib/uploads-path";
 
 /**
@@ -32,17 +35,21 @@ export class AttachmentsService {
     @InjectRepository(User)
     private readonly users: Repository<User>,
     private readonly rulesEngine: RulesEngineService,
+    private readonly permissions: PermissionsService,
   ) {}
 
+  /**
+   * อัปโหลดขึ้นงาน — **เช็คขอบเขตของงานก่อน** (`issue-access.ts`): ผู้ไม่เกี่ยว
+   * (ไม่ใช่ผู้รับผิดชอบ/ผู้แจ้ง และไม่มี `issue.all.view`) ได้ 404 ทั้งอ่านและเขียน
+   * (เดิมใครก็ attach ลงงานใครก็ได้ด้วย `issue.create` = write-IDOR)
+   */
   async upload(
     issueId: number,
     file: { originalname: string; path: string; filename: string; mimetype: string; size: number },
     uploadedBy: number,
+    user: AuthUser,
   ) {
-    const issue = await this.issues.findOne({ where: { id: issueId } });
-    if (!issue) {
-      throw new NotFoundException(`Issue ${issueId} not found`);
-    }
+    const issue = await loadVisibleIssue(this.issues, this.permissions, issueId, user);
     const attachment = await this.attachments.save(
       this.attachments.create({
         issueId,
@@ -70,23 +77,33 @@ export class AttachmentsService {
     };
   }
 
-  async findByIssue(issueId: number) {
+  /** รายการไฟล์แนบของงาน — เช็คขอบเขตงานก่อน (ดู `upload`) */
+  async findByIssue(issueId: number, user: AuthUser) {
+    await loadVisibleIssue(this.issues, this.permissions, issueId, user);
     return this.attachments.find({
       where: { issueId },
       order: { id: "ASC" },
     });
   }
 
-  async findOne(id: number) {
+  /**
+   * ไฟล์แนบรายตัว — แนบกับงานไหนก็เช็คขอบเขต**ของงานนั้น** (`user` ที่ส่งมา
+   * คือ caller ของเส้นอ่าน; การลบ `remove` ยังไม่ส่ง user = ไม่เช็ค —
+   * กันด้วย `issue.all.update` ซึ่งเป็นสิทธิ์สตาฟฟ์คนละชุด)
+   */
+  async findOne(id: number, user?: AuthUser) {
     const attachment = await this.attachments.findOne({ where: { id } });
     if (!attachment) {
       throw new NotFoundException(`Attachment ${id} not found`);
     }
+    if (user) {
+      await loadVisibleIssue(this.issues, this.permissions, attachment.issueId, user);
+    }
     return attachment;
   }
 
-  async download(id: number, res: Response) {
-    const attachment = await this.findOne(id);
+  async download(id: number, res: Response, user: AuthUser) {
+    const attachment = await this.findOne(id, user);
     const fullPath = resolveFilePath(attachment.filePath);
     if (!existsSync(fullPath)) {
       throw new NotFoundException(`File not found on disk`);
@@ -100,6 +117,20 @@ export class AttachmentsService {
       `attachment; filename="${encodeURIComponent(attachment.fileName)}"`,
     );
     const stream = createReadStream(fullPath);
+    /**
+     * **จับ error ของ stream** — ไฟล์ถูกลบ/ย้ายไประหว่าง `existsSync` กับ
+     * `open` (race กับการลบ attachment) จะยิง `error` บน stream และไม่มี
+     * listener = **unhandled error ที่ทำให้ process ค้าง/พัง** · ตอบ 404
+     * แล้วปิด response (ถ้าหัวส่งไปแล้ว = ตัด response กึ่งกลาง — ลูกค้า
+     * เห็น download ล้มเหลว ซึ่งเป็นจริงตามสภาพไฟล์ที่หายไป)
+     */
+    stream.on("error", (err) => {
+      if (!res.headersSent) {
+        res.status(404).json({ message: "File not found on disk" });
+      } else {
+        res.destroy(err);
+      }
+    });
     stream.pipe(res);
   }
 

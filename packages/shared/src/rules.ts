@@ -569,14 +569,14 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     category: "content",
     status: "supported",
     label: { th: "ลบการ์ด", en: "Delete card" },
-    description: { th: "ย้ายการ์ดไปถังขยะ (กู้คืนได้)", en: "Move the card to the trash (recoverable)" },
+    description: { th: "ย้ายการ์ดไป \"ยกเลิก\" (กู้คืนได้)", en: "Move the card to Cancelled (recoverable)" },
   },
   {
     key: "issue.restore",
     category: "content",
     status: "supported",
     label: { th: "กู้คืนการ์ด", en: "Restore card" },
-    description: { th: "กู้คืนการ์ดจากถังขยะ", en: "Restore the card from the trash" },
+    description: { th: "กู้คืนการ์ดจาก \"ยกเลิก\"", en: "Restore the card from Cancelled" },
   },
   // ── display policy ──────────────────────────────────────────────
   {

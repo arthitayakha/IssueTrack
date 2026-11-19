@@ -39,10 +39,7 @@ export type NotificationAction =
   | "app_expired" // หมดอายุแล้ว
   // MA quota ran out (used ≥ ma_hours of the pair) — rings once per episode
   // from the time-entry hook, to the company's customers + every admin
-  | "ma_depleted"
-  // the 09:00 digest of unread rows (DailyReminderService) — one row per user
-  // per day, excluded from its own count so the episode never compounds
-  | "daily_digest";
+  | "ma_depleted";
 
 /**
  * ระดับความสำคัญของ**ชนิดที่ไม่ผูกการ์ด** — hardcode ที่นี่ที่เดียว (ข้อตกลง:
@@ -56,8 +53,6 @@ const FIXED_PRIORITY: Partial<Record<NotificationAction, NotificationPriority>> 
   // สองอันนี้คือ "ต้องจัดการเดี๋ยวนี้" — เตือนซ้ำ 7 วัน + อีเมลวันแรก
   ma_depleted: "high",
   app_expired: "high",
-  // แถวเตือนตัวเอง (สร้างโดย DailyReminderService) ก็สูง — ต้องถูกเห็นก่อน
-  daily_digest: "high",
   app_expiring: "medium",
   // เสียงของการแก้กฎทุกวัน — 483/921 แถวเป็น rule_updated, เตือนวันเดียวจบ
   rule_created: "low",

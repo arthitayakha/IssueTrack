@@ -12,6 +12,11 @@ import {
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
 import { UsersService } from "./users.service";
+import {
+  CreateUserDto,
+  UpdateUserActiveDto,
+  UpdateUserDto,
+} from "./dto/user.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -49,34 +54,14 @@ export class UsersController {
 
   @Post()
   @Permissions("user.create")
-  create(
-    @Body()
-    body: {
-      email: string;
-      password: string;
-      name: string;
-      roleId?: number | null;
-      positionId?: number | null;
-      companyId?: number | null;
-    },
-  ) {
+  create(@Body() body: CreateUserDto) {
+    // DTO = whitelist (ไม่ประกาศ = ถูก strip) — กัน mass assignment เช่น `id`
     return this.users.create(body);
   }
 
   @Patch(":id")
   @Permissions("user.update")
-  update(
-    @Param("id", ParseIntPipe) id: number,
-    @Body()
-    body: {
-      email?: string;
-      name?: string;
-      roleId?: number | null;
-      password?: string;
-      positionId?: number | null;
-      companyId?: number | null;
-    },
-  ) {
+  update(@Param("id", ParseIntPipe) id: number, @Body() body: UpdateUserDto) {
     return this.users.update(id, body);
   }
 
@@ -84,7 +69,7 @@ export class UsersController {
   @Permissions("user.update")
   updateActive(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { isActive: boolean },
+    @Body() body: UpdateUserActiveDto,
   ) {
     return this.users.updateActive(id, body.isActive);
   }

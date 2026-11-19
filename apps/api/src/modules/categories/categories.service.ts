@@ -7,7 +7,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Category } from "./entities/category.entity";
 import { Issue } from "../issues/entities/issue.entity";
-import { paginate, PaginationParams } from "../../common/pagination";
+import { paginateTotal, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class CategoriesService {
@@ -19,16 +19,21 @@ export class CategoriesService {
   ) {}
 
   async findAll(params: PaginationParams) {
-    const categories = await this.categories.find({ order: { id: "ASC" } });
+    /** SQL page — เดิมโหลดทุกแถว + `issueCount` รายแถว แล้วค่อย slice (ดู companies) */
+    const [rows, total] = await this.categories.findAndCount({
+      order: { id: "ASC" },
+      skip: (params.page - 1) * params.limit,
+      take: params.limit,
+    });
     const result = await Promise.all(
-      categories.map(async (c) => ({
+      rows.map(async (c) => ({
         id: c.id,
         name: c.name,
         isVisible: c.isVisible,
         issueCount: await this.issues.count({ where: { categoryId: c.id } }),
       })),
     );
-    return paginate(result, params);
+    return paginateTotal(result, total, params);
   }
 
   async create(name: string) {

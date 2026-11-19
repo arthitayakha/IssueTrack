@@ -33,7 +33,13 @@ export class PermissionsController {
     return this.permissions.resetToDefaults();
   }
 
+  /**
+   * 重建 cache สิทธิ์ — **ต้องมี `permission.update`** เหมือน `PUT /permissions`
+   * และ `POST /permissions/reset` (เดิมไม่มี `@Permissions` เลย = คน login
+   * ทุกคนรวม `customer` เรียก endpoint ที่ mutate ได้)
+   */
   @Post("refresh")
+  @Permissions("permission.update")
   refreshCache() {
     return this.permissions.refreshCache();
   }

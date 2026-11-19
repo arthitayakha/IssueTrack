@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
 import { CommentsService } from "./comments.service";
+import { CreateCommentDto, UpdateCommentDto } from "./dto/comment.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -28,25 +29,27 @@ export class CommentsController {
   findByIssue(
     @Param("id", ParseIntPipe) id: number,
     @Query() query: { page?: string; limit?: string },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.comments.findByIssue(id, normalizePagination(query));
+    return this.comments.findByIssue(id, normalizePagination(query), user);
   }
 
   @Post("issues/:id/comments")
   @Permissions("comment.create")
   create(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { content: string },
+    @Body() body: CreateCommentDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.comments.create(id, body.content, Number(user.id), actorInfo(user));
+    // service เช็คขอบเขตงานก่อน insert (404 = งานไม่มี/ไม่ใช่ของเรา)
+    return this.comments.create(id, body.content, user, actorInfo(user));
   }
 
   @Put("comments/:id")
   @Permissions("comment.own.update")
   update(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { content: string },
+    @Body() body: UpdateCommentDto,
     @CurrentUser() user: AuthUser,
   ) {
     return this.comments.update(id, body.content, Number(user.id), actorInfo(user));

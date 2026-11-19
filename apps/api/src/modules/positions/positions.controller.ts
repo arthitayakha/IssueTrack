@@ -12,6 +12,8 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
+import { IsActiveDto } from "../../common/dto/is-active.dto";
+import { SetPermissionsDto } from "../../common/dto/set-permissions.dto";
 import { PositionsService } from "./positions.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -47,7 +49,7 @@ export class PositionsController {
   @Permissions("position.update")
   updateActive(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { isActive: boolean },
+    @Body() body: IsActiveDto,
   ) {
     return this.positions.updateActive(id, body.isActive);
   }
@@ -68,7 +70,7 @@ export class PositionsController {
   @Permissions("position.update")
   updatePermissions(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { permissions: string[] },
+    @Body() body: SetPermissionsDto,
   ) {
     return this.positions.updatePermissions(id, body.permissions);
   }

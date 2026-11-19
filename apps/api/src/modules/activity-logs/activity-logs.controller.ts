@@ -1,8 +1,6 @@
 import {
   Controller,
   Get,
-  Param,
-  ParseIntPipe,
   Query,
   UseGuards,
 } from "@nestjs/common";
@@ -11,22 +9,15 @@ import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
 
-@Controller("issues/:id/activity")
-@UseGuards(JwtAuthGuard, RolesGuard)
-export class ActivityLogsController {
-  constructor(private readonly activityLogs: ActivityLogsService) {}
-
-  @Get()
-  @Permissions("issue.detail.view")
-  findByIssue(@Param("id", ParseIntPipe) id: number) {
-    return this.activityLogs.findByIssue(id);
-  }
-}
-
 /**
- * The system-wide feed behind the /logs page. Separate controller because the
- * issue-scoped one above is mounted under `issues/:id/activity`.
+ * ⚠️ เส้น `GET /issues/:id/activity` **ไม่ได้อยู่ที่นี่อีกแล้ว** — เดิม controller
+ * ตัวนี้ (`@Controller("issues/:id/activity")`) ลงทะเบียนซ้ำกับ `IssuesController`
+ * และตัวที่ "ชนะ" ขึ้นกับลำดับสำรวจ module (ซึ่งไม่ deterministic) ทำให้การ
+ * เช็คขอบเขตที่เพิ่มใน `IssuesController.findActivity` อาจไม่เคยถูกเรียก —
+ * จึงเหลือเส้นเดียวอยู่ใน `IssuesController` (เช็ค `issue-access.ts` แล้ว)
+ * และลบตัวซ้ำทิ้ง กันบั๊กเงียบจากการ reorder import
  */
+
 @Controller("activity-logs")
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class ActivityLogListController {

@@ -76,15 +76,6 @@ export class User {
   @Column({ name: "is_active", default: true })
   isActive!: boolean;
 
-  /**
-   * สวิตซ์ "แจ้งเตือนรายวัน" ใน popup โปรไฟล์ (`PATCH /auth/profile/reminder`) —
-   * `false` = `DailyReminderService` ข้ามคนนี้ทั้งแถวเตือน 09:00 และอีเมลเตือน
-   * **ไม่กระทบ**การแจ้งเตือนปกติ (แถวแรกตอนเกิดเหตุ + เมล milestone) ·
-   * ค่าเริ่มต้น `true` ใน DB — บัญชีที่มีมาก่อนคอลัมน์นี้ยังเตือนเหมือนเดิม
-   */
-  @Column({ name: "daily_reminder_enabled", default: true })
-  dailyReminderEnabled!: boolean;
-
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
 

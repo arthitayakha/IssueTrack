@@ -21,15 +21,13 @@ import {
   Switch,
   Card,
   CardContent,
-  Tooltip,
   useTheme,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
-import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import { Pagination } from "@/components/pagination";
-import { PaginatedResponse, REJECT_STATUS_NAME } from "@kanban/shared";
+import { PaginatedResponse } from "@kanban/shared";
 import DragHandleIcon from "@mui/icons-material/DragHandle";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
@@ -115,7 +113,7 @@ interface IssueStatus {
   isActive: boolean;
   /**
    * No `sortOrder` here on purpose: `GET /issue-statuses` returns no order
-   * field โ€” the order is `position`, and the reorder request still names its
+   * field — the order is `position`, and the reorder request still names its
    * field `sortOrder` (see `handleStatusDragEnd`).
    */
   issueCount: number;
@@ -133,21 +131,9 @@ function getStatusColor(status: IssueStatus, theme: any): string {
   return resolveStatusColor(theme, status.color, status.name);
 }
 
-/**
- * สถานะ **"ยกเลิก"** (`REJECT_STATUS_NAME` จาก `@kanban/shared` — จุดเดียวกับ
- * ปุ่ม "ตีกลับงาน" ในป๊อปอัพรายละเอียดการ์ด) ถูก**ล็อกไว้ท้ายสุดเสมอ**:
- * แถวนี้ลากไม่ได้ (handle เปลี่ยนเป็นรูปกุญแจ) และฝั่งเซิร์ฟเวอร์ยังบังคับ
- * `position` มากสุดด้วย (`IssueStatusesService.pinRejectLast()` เรียกหลัง
- * `create()` และใน `reorder()`) — สองฝั่งกันไว้คนละชั้น
- */
-function isRejectStatus(status: { name: string }): boolean {
-  return status.name === REJECT_STATUS_NAME;
-}
-
 function SortableStatusRow({
   status,
   index,
-  locked,
   canUpdate,
   canDelete,
   onToggle,
@@ -157,8 +143,6 @@ function SortableStatusRow({
 }: {
   status: IssueStatus;
   index: number;
-  /** "ยกเลิก" = แถวสุดท้ายที่ลากไม่ได้ (ดู `isRejectStatus`) */
-  locked: boolean;
   canUpdate: boolean;
   canDelete: boolean;
   onToggle: (s: IssueStatus) => void;
@@ -175,8 +159,7 @@ function SortableStatusRow({
     transform,
     transition,
     isDragging,
-    // แถวที่ล็อก = ไม่มี activator ให้เริ่มลาก (handle จึงไม่มี listeners)
-  } = useSortable({ id: status.id, disabled: locked });
+  } = useSortable({ id: status.id });
 
   const statusColor = getStatusColor(status, theme);
 
@@ -192,9 +175,7 @@ function SortableStatusRow({
     <Box
       ref={setNodeRef}
       style={style}
-      // แถวล็อก = ไม่ spread `attributes` (role=button + tabIndex) เพราะมัน
-      // เป็น element ที่ focus ได้แต่กด/ลากแล้วไม่มีอะไรเกิดขึ้น
-      {...(locked ? {} : attributes)}
+      {...attributes}
       sx={{
         display: "flex",
         alignItems: "center",
@@ -206,53 +187,38 @@ function SortableStatusRow({
         borderColor: isDragging ? statusColor : theme.custom.tableBorder,
         borderRadius: 2,
         boxShadow: isDragging ? theme.custom.cardShadow : "none",
-        cursor: locked ? "default" : "grab",
+        cursor: "grab",
         transition: "all 0.2s ease",
-        ...(locked
-          ? {}
-          : {
-              "&:hover": {
-                borderColor: statusColor,
-                boxShadow: `0 2px 8px ${statusColor}30`,
-              },
-            }),
+        "&:hover": {
+          borderColor: statusColor,
+          boxShadow: `0 2px 8px ${statusColor}30`,
+        },
       }}
     >
-      <Tooltip title={locked ? t("statusLocked") : ""}>
-        <Box
-          {...(locked ? {} : listeners)}
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 36,
-            height: 36,
-            borderRadius: 1.5,
-            cursor: locked ? "default" : "grab",
-            color: locked ? theme.palette.text.disabled : theme.palette.text.secondary,
-            flexShrink: 0,
-            transition: "all 0.2s ease",
-            ...(locked
-              ? {}
-              : {
-                  "&:hover": {
-                    bgcolor: statusColor,
-                    color: theme.palette.common.white,
-                  },
-                  "&:active": {
-                    cursor: "grabbing",
-                  },
-                }),
-          }}
-        >
-          {/* ล็อกไว้ = โชว์กุญแจแทนที่จะเป็นที่จับลาก (มี tooltip อธิบาย) */}
-          {locked ? (
-            <LockOutlinedIcon fontSize="small" />
-          ) : (
-            <DragHandleIcon fontSize="small" />
-          )}
-        </Box>
-      </Tooltip>
+      <Box
+        {...listeners}
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 36,
+          height: 36,
+          borderRadius: 1.5,
+          cursor: "grab",
+          color: theme.palette.text.secondary,
+          flexShrink: 0,
+          transition: "all 0.2s ease",
+          "&:hover": {
+            bgcolor: statusColor,
+            color: theme.palette.common.white,
+          },
+          "&:active": {
+            cursor: "grabbing",
+          },
+        }}
+      >
+        <DragHandleIcon fontSize="small" />
+      </Box>
 
       <Box
         sx={{
@@ -504,19 +470,7 @@ export default function SettingsPage() {
     const newIndex = statuses.findIndex((s) => s.id === overId);
     if (oldIndex === -1 || newIndex === -1) return;
 
-    // แถว "ยกเลิก" ลากไม่ได้ (handle เป็นรูปกุญแจ + `useSortable` disabled) —
-    // กันไว้เผื่อมีทางอื่น (เช่น keyboard sensor) เข้ามาจริง
-    if (isRejectStatus(statuses[oldIndex])) return;
-
     const reordered = arrayMove(statuses, oldIndex, newIndex);
-    // แม้ลากแถวก่อนหน้าไป "ทับ" ตำแหน่งของมัน (dnd-kit ยอมให้ drop บนแถวที่
-    // disabled ได้) ก็ดัน "ยกเลิก" กลับไปท้ายสุดก่อนบันทึก — ฝั่งเซิร์ฟเวอร์ยัง
-    // pin ให้อีกชั้นใน `reorder()` (`pinRejectLast`)
-    const rejectAt = reordered.findIndex((s, i) => i !== reordered.length - 1 && isRejectStatus(s));
-    if (rejectAt !== -1) {
-      const [rejectRow] = reordered.splice(rejectAt, 1);
-      reordered.push(rejectRow);
-    }
     setStatuses(reordered);
 
     try {
@@ -1310,17 +1264,47 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
       ]}
     >
       <DashboardLayout>
-        <Box>
+        {/* กล่องความสูงตรึง — เนื้อแท็บ scroll ในกล่องของมันแทนที่จะเลื่อนทั้ง
+            หน้าต่าง ทำให้แถบแท็บ (อยู่นอกกล่อง) กับแถบค้นหา/กรอง (sticky ในกล่อง)
+            อยู่นิ่ง มีแค่รายการเลื่อน · ตัวเลข = ความสูงจอ − Toolbar − padding ของ
+            `main`: xs 80 = 56 + 12×2 · sm 88 = 64 + 12×2 · md 112 = 64 + 24×2
+            ( Toolbar regular = theme.mixins.toolbar: 56px ต่ำกว่า 600px / 64px ขึ้นไป;
+            จอมือถือแนวนอน <600px ได้ Toolbar 48 → เหลือช่องว่าง 8px ล่าง กินพื้นที่
+            ไม่มีวันล้น — trade-off เดียวกับบอร์ด ) */}
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            height: {
+              xs: "calc(100vh - 80px)",
+              sm: "calc(100vh - 88px)",
+              md: "calc(100vh - 112px)",
+            },
+          }}
+        >
           <Tabs
             value={tab}
             onChange={(_, v) => setTab(v)}
-            sx={{ borderBottom: 1, borderColor: "divider", mb: 3 }}
+            sx={{ borderBottom: 1, borderColor: "divider", mb: 3, flexShrink: 0 }}
           >
             {tabs.map((t2) => (
               <Tab key={t2.label} label={t2.label} />
             ))}
           </Tabs>
 
+          {/* เนื้อแท็บ = ที่เดียวที่เลื่อน · `overflowX: hidden` คงพฤติกรรมตัดแนวนอน
+              เดิมของ `main` ไว้ (ตารางมี scroll ในกล่องตัวเองตาม data-table.tsx) ·
+              ซ่อน scrollbar แบบคอลัมน์บอร์ด — ล้อเมาส์/สัมผัสเลื่อนได้ตามเดิม */}
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              overflowX: "hidden",
+              scrollbarWidth: "none",
+              "&::-webkit-scrollbar": { display: "none" },
+            }}
+          >
           {tabs[tab]?.content === "apps" && (
             <Box>
               <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
@@ -1571,7 +1555,6 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
                         key={status.id}
                         status={status}
                         index={index}
-                        locked={isRejectStatus(status)}
                         canUpdate={can("status.update")}
                         canDelete={can("status.delete")}
                         onToggle={handleToggleStatusActive}
@@ -1762,6 +1745,7 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
           {tabs[tab]?.content === "automation" && (
             <RulesPanel canUpdate={can("automation.update")} />
           )}
+          </Box>
 
           {/* ฟอร์มเพิ่ม/แก้ไขแอป = ชื่อล้วน (เหมือนแท็บบริษัท) — รายละเอียดคู่
               แอป×บริษัท อยู่ที่หน้า `/systems` ใน `AppFormDialog` */}

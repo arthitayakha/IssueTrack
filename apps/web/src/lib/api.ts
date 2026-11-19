@@ -124,3 +124,40 @@ export async function apiFetch<T>(
   }
   throw lastError; // unreachable — every attempt above returns or throws
 }
+
+/**
+ * **The same verdict as `apiFetch`, but returns the raw `Response`** — สำหรับ
+ * เส้นที่ต้องการ `blob()` (ดาวน์โหลดไฟล์/รูป) ซึ่ง `apiFetch` parse JSON ให้
+ * ไม่ได้ · **401 ยังเรียก logout handler เหมือนกัน** (เดิม raw `fetch` 5 จุด
+ * ในแอปเงียบ ๆ ตอน token หมดอายุ = session ค้างครึ่งหนึ่ง) และ `!ok` โยน
+ * `ApiError` พร้อมข้อความจาก API · **ไม่มี retry loop** — คลิกดาวน์โหลด
+ * ซ้ำได้ง่าย และ response ที่อ่านครึ่งทางแล้ว retry ไม่ปลอดภัย
+ */
+export async function apiFetchResponse(
+  path: string,
+  options: RequestInit = {},
+  token?: string | null,
+): Promise<Response> {
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  const res = await fetch(`${API_URL}${path}`, {
+    ...options,
+    headers: {
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      unauthorizedHandler?.();
+    }
+    const body = (await res.json().catch(() => ({}))) as {
+      message?: string | string[];
+    };
+    const message = Array.isArray(body.message)
+      ? body.message[0]
+      : (body.message ?? res.statusText);
+    throw new ApiError(res.status, message);
+  }
+  return res;
+}

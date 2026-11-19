@@ -18,8 +18,13 @@ import { Permissions } from "../auth/permissions.decorator";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { AuthUser, actorInfo } from "../auth/auth-user";
 import { ActorInfo, ActivityLogsService } from "../activity-logs/activity-logs.service";
-import type { IssueTaskType } from "@kanban/shared";
 import { parseNoTaskType, parseTaskTypes } from "../../common/task-types";
+import {
+  AssignIssueDto,
+  CreateIssueDto,
+  MoveIssueDto,
+  UpdateIssueDto,
+} from "./dto/issue.dto";
 
 function parseIdList(value?: string): number[] {
   return (value ?? "")
@@ -105,8 +110,9 @@ export class IssuesController {
 
   @Get("issues/trash")
   @Permissions("issue.trash.view")
-  findTrashed() {
-    return this.issues.findAllDeleted();
+  findTrashed(@CurrentUser() user: AuthUser) {
+    // scope = เดียวกับ list — ไม่งั้นรายการโชว์ทุกใบแต่เปิดดูไม่ได้ (ดู findAllDeleted)
+    return this.issues.findAllDeleted(user);
   }
 
   // before `issues/:id` — otherwise `move-policy` would be parsed as an id
@@ -125,47 +131,24 @@ export class IssuesController {
 
   @Get("issues/:id")
   @Permissions("issue.detail.view")
-  findOne(@Param("id", ParseIntPipe) id: number) {
-    return this.issues.findOne(id);
+  findOne(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
+    // scope = เดียวกับ list (issue-access.ts) — กัน customer เดา id อ่านงานคนอื่น
+    return this.issues.findOne(id, user);
   }
 
   @Post("issues")
   @Permissions("issue.create")
-  create(
-    @Body()
-    body: {
-      title: string;
-      description: string;
-      statusId: number;
-      priorityId?: number;
-      categoryId?: number;
-      customCategory?: string;
-      appId?: number;
-      programmerId?: number;
-      customerId?: number;
-    },
-    @CurrentUser() user: AuthUser,
-  ) {
-    return this.issues.create(body, this.actor(user));
+  create(@Body() body: CreateIssueDto, @CurrentUser() user: AuthUser) {
+    // `user` ส่งต่อให้ service เช็ค `issue.assign` เมื่อส่ง `programmerId`
+    // (เส้นนี้ guard แค่ `issue.create`)
+    return this.issues.create(body, this.actor(user), user);
   }
 
   @Put("issues/:id")
   @Permissions("issue.all.update")
   update(
     @Param("id", ParseIntPipe) id: number,
-    @Body()
-    body: {
-      title?: string;
-      description?: string;
-      priorityId?: number | null;
-      categoryId?: number | null;
-      labelId?: number | null;
-      labelIds?: number[];
-      analysisCause?: string | null;
-      resolution?: string | null;
-      /** ประเภทงาน — service whitelists the 3 values (400 otherwise), null = clear */
-      taskType?: IssueTaskType | null;
-    },
+    @Body() body: UpdateIssueDto,
     @CurrentUser() user: AuthUser,
   ) {
     return this.issues.update(id, body, this.actor(user));
@@ -175,7 +158,7 @@ export class IssuesController {
   @Permissions("issue.status.update")
   move(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { statusId: number },
+    @Body() body: MoveIssueDto,
     @CurrentUser() user: AuthUser,
   ) {
     return this.issues.move(id, body.statusId, this.actor(user));
@@ -185,7 +168,7 @@ export class IssuesController {
   @Permissions("issue.assign")
   assign(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { programmerId: number | null },
+    @Body() body: AssignIssueDto,
     @CurrentUser() user: AuthUser,
   ) {
     return this.issues.assign(id, body.programmerId, this.actor(user));
@@ -220,7 +203,9 @@ export class IssuesController {
 
   @Get("issues/:id/activity")
   @Permissions("issue.detail.view")
-  findActivity(@Param("id", ParseIntPipe) id: number) {
+  async findActivity(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
+    // เช็คขอบเขตของงานก่อนคืน timeline (เดิมโหลดด้วย id ล้วน = IDOR)
+    await this.issues.assertVisible(id, user);
     return this.activityLogs.findByIssue(id);
   }
 }

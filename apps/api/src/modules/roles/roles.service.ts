@@ -10,8 +10,8 @@ import { Role } from "./entities/role.entity";
 import { RolePermission } from "../permissions/entities/role-permission.entity";
 import { User } from "../auth/entities/user.entity";
 import { PermissionsService } from "../permissions/permissions.service";
-import { permissionsForRole } from "@kanban/shared";
-import { paginate, PaginationParams } from "../../common/pagination";
+import { ALL_PERMISSIONS, permissionsForRole, type Permission } from "@kanban/shared";
+import { paginateTotal, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class RolesService {
@@ -26,14 +26,19 @@ export class RolesService {
   ) {}
 
   async findAll(params: PaginationParams) {
-    const roles = await this.roles.find({ order: { id: "ASC" } });
+    /** SQL page — เดิมโหลดทุก role + `userCount` รายแถว แล้วค่อย slice (ดู companies) */
+    const [rows, total] = await this.roles.findAndCount({
+      order: { id: "ASC" },
+      skip: (params.page - 1) * params.limit,
+      take: params.limit,
+    });
     const mapped = await Promise.all(
-      roles.map(async (role) => ({
+      rows.map(async (role) => ({
         ...role,
         userCount: await this.users.count({ where: { roleId: role.id } }),
       })),
     );
-    return paginate(mapped, params);
+    return paginateTotal(mapped, total, params);
   }
 
   async findAllActive() {
@@ -134,13 +139,29 @@ export class RolesService {
       throw new NotFoundException(`Role with id ${id} not found`);
     }
 
-    await this.rolePermissions.delete({ roleId: id });
-    const rows = permissions.map((permission) =>
-      this.rolePermissions.create({ roleId: id, permission }),
-    );
-    await this.rolePermissions.save(rows);
+    /**
+     * **whitelist `ALL_PERMISSIONS`** — ตรงกับ `permissions.updateMatrix`:
+     * เดิมเส้นนี้ insert string อะไรก็ได้ลง `role_permissions` (code ปลอม /
+     * ยาวเกินจะหลุดเข้า DB) · **ทุกขั้นอยู่ใน transaction เดียว** — เดิม
+     * delete แล้วค่อย insert นอก transaction: fail กลางทาง = สิทธิ์ของ role
+     * นั้นหายบางส่วน (เทียบ `positions.updatePermissions` ที่ห่ออยู่แล้ว)
+     */
+    const granted = [
+      ...new Set(
+        permissions.filter((permission) =>
+          ALL_PERMISSIONS.includes(permission as Permission),
+        ),
+      ),
+    ];
+    await this.rolePermissions.manager.transaction(async (em) => {
+      await em.delete(RolePermission, { roleId: id });
+      const rows = granted.map((permission) =>
+        em.create(RolePermission, { roleId: id, permission }),
+      );
+      await em.save(RolePermission, rows);
+    });
     await this.permissionsService.refreshCache();
 
-    return { id: role.id, name: role.name, permissions };
+    return { id: role.id, name: role.name, permissions: granted };
   }
 }

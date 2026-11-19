@@ -12,6 +12,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { RulesService, RuleInput } from "./rules.service";
+import { ToggleRuleDto } from "./dto/toggle-rule.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -65,10 +66,11 @@ export class RulesController {
   @Permissions("automation.update")
   toggle(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { isActive: boolean },
+    @Body() body: ToggleRuleDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.rules.toggle(id, Boolean(body?.isActive), actorInfo(user));
+    // DTO บังคับ boolean จริง — เดิม `Boolean("false")` = true (ค่าสลับผิด)
+    return this.rules.toggle(id, body.isActive, actorInfo(user));
   }
 
   @Delete(":id")

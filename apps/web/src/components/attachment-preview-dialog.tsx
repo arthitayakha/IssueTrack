@@ -13,6 +13,7 @@ import {
 import CloseIcon from "@mui/icons-material/Close";
 import DownloadIcon from "@mui/icons-material/Download";
 import { openAttachment, getToken, type Attachment } from "@/lib/board-api";
+import { apiFetchResponse } from "@/lib/api";
 
 export default function AttachmentPreviewDialog({
   attachment,
@@ -38,17 +39,9 @@ export default function AttachmentPreviewDialog({
     setLoading(true);
     setError(null);
 
-    const token = getToken();
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-
-    fetch(
-      `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002"}/attachments/${attachment.id}/download`,
-      { headers },
-    )
-      .then((res) => {
-        if (!res.ok) throw new Error(`Failed to load file: ${res.statusText}`);
-        return res.blob();
-      })
+    // ผ่าน `apiFetchResponse` → 401 เรียก logout handler (เดิม raw fetch เงียบ ๆ)
+    apiFetchResponse(`/attachments/${attachment.id}/download`, {}, getToken())
+      .then((res) => res.blob())
       .then((blob) => {
         const url = URL.createObjectURL(blob);
         revoked = url;

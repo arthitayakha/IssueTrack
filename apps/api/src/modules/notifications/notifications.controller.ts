@@ -39,7 +39,15 @@ export class NotificationsController {
   ) {
     const parsedLimit = limit ? parseInt(limit, 10) : NaN;
     const parsedPage = page ? parseInt(page, 10) : NaN;
-    const size = Number.isInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : 5;
+    /**
+     * clamp **เท่ากับที่ service ทำ** (`Math.min(Math.max(…, 1), 200)`) ก่อน
+     * คำนวณ offset — เดิม offset ใช้ `size` ดิบ: `?limit=500&page=2` → offset
+     * 500 แต่ service คืน 200 แถว = เพจเพี้ยน (ข้าม/ซ้ำแถว)
+     */
+    const size = Math.min(
+      Math.max(Number.isInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : 5, 1),
+      200,
+    );
     const pageNum = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
     return this.notifications.list(Number(user.id), {
       limit: size,

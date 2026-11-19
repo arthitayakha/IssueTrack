@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { memo, useCallback, useEffect, useRef } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useTheme } from "@mui/material/styles";
 import {
@@ -74,6 +74,135 @@ function getInitials(name: string): string {
     .toUpperCase();
 }
 
+/** Which of the three built-in sentences a row's title reads like. */
+type RowVariant = "stale" | "system" | "actor";
+
+interface NotificationRowProps {
+  item: AppNotification;
+  variant: RowVariant;
+  /** `actionLabels[item.action] ?? item.action` — a plain, stable string. */
+  label: string;
+  /** `index > 0` — a divider belongs to the row below it. */
+  divider: boolean;
+  /** The popover's click handler — kept identical across renders (see openRow). */
+  onOpen: (item: AppNotification) => void;
+}
+
+/**
+ * แถวเดียวของ inbox — ห่อ `React.memo` เพราะ list re-render ทุกครั้งที่โหลดหน้า
+ * ต่อ (`loadingMore` toggle) หรือ append แถวใหม่: ถ้าไม่มี memo แถว ~70 แถว
+ * (sx object ใหม่ทุกแถว + `timeAgo()`) จะถูกสร้างใหม่บน main thread กลางตอน
+ * กำลัง scroll → หลุดเฟรม = อาการ "กระตุก" ที่รายงานมา
+ */
+const NotificationRow = memo(function NotificationRow({
+  item,
+  variant,
+  label,
+  divider,
+  onOpen,
+}: NotificationRowProps) {
+  const locale = useLocale();
+  const handleClick = useCallback(() => onOpen(item), [onOpen, item]);
+  const strike =
+    item.action === "deleted"
+      ? { color: "text.secondary", textDecoration: "line-through" }
+      : {};
+  return (
+    <Box>
+      {divider && <Divider />}
+      <ListItemButton
+        onClick={handleClick}
+        sx={{
+          alignItems: "flex-start",
+          gap: 1.5,
+          px: 2,
+          py: 1.5,
+          "&:hover": { bgcolor: "action.hover" },
+          "&.Mui-selected, &.Mui-selected:hover": { bgcolor: "action.hover" },
+        }}
+      >
+        <Avatar
+          sx={{
+            width: 36,
+            height: 36,
+            fontSize: 14,
+            fontWeight: 600,
+            bgcolor: AVATAR_COLORS[item.id % AVATAR_COLORS.length],
+            color: "background.paper",
+            flexShrink: 0,
+          }}
+        >
+          {getInitials(variant === "actor" ? item.actorName ?? "System" : item.target)}
+        </Avatar>
+
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography
+            variant="body2"
+            color="text.primary"
+            sx={{
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {variant === "stale" ? (
+              <>
+                <Box component="span" sx={{ fontWeight: 700 }}>
+                  {item.target}
+                </Box>{" "}
+                {label} {item.context}
+              </>
+            ) : variant === "system" ? (
+              <>
+                <Box component="span" sx={{ fontWeight: 700 }}>
+                  {item.target}
+                </Box>{" "}
+                {label}
+              </>
+            ) : (
+              <>
+                <Box component="span" sx={{ fontWeight: 700, ...strike }}>
+                  {item.actorName ?? "System"}
+                </Box>{" "}
+                {label}{" "}
+                <Box component="span" sx={{ fontWeight: 700, ...strike }}>
+                  {item.target}
+                </Box>
+              </>
+            )}
+          </Typography>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: 0.75,
+              minWidth: 0,
+            }}
+          >
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {timeAgo(item.createdAt, locale)}
+              {/* stale ใช้ context บนบรรทัดหัวแล้ว — ห้ามพิมพ์ซ้ำ */}
+              {item.context && variant !== "stale" ? ` • ${item.context}` : ""}
+            </Typography>
+            {/* chip ความสำคัญ (สูง/กลาง/ต่ำ) ถูกถอดออกตามคำสั่ง — ความสำคัญ
+                ยังคงบอกผ่านลำดับเรียง (สูงขึ้นก่อน) ฝั่ง server เท่านั้น */}
+          </Box>
+        </Box>
+      </ListItemButton>
+    </Box>
+  );
+});
+NotificationRow.displayName = "NotificationRow";
+
 export default function NotificationPopover({
   open,
   anchorEl,
@@ -87,7 +216,6 @@ export default function NotificationPopover({
   onMarkAllRead,
 }: NotificationPopoverProps) {
   const t = useTranslations("Notifications");
-  const locale = useLocale();
   const theme = useTheme();
   const router = useRouter();
 
@@ -119,15 +247,21 @@ export default function NotificationPopover({
     app_expiring: t("actions.app_expiring"),
     app_expired: t("actions.app_expired"),
     ma_depleted: t("actions.ma_depleted"),
-    // แถวเตือน 09:00 ที่ DailyReminderService สร้างให้ (ไม่ใช่เหตุการณ์จริง)
-    daily_digest: t("actions.daily_digest"),
   };
 
-  function handleItemClick(item: AppNotification) {
-    onMarkRead(item.id);
-    onClose();
-    router.push(resolveLink(item));
-  }
+  /**
+   * Row click behind a ref: `openRow` keeps ONE identity forever even though
+   * `onMarkRead` / `onClose` arrive as fresh closures on every navbar render —
+   * otherwise the memoized rows would re-render on each of them.
+   */
+  const rowHandlersRef = useRef({ onMarkRead, onClose, router });
+  rowHandlersRef.current = { onMarkRead, onClose, router };
+  const openRow = useCallback((item: AppNotification) => {
+    const handlers = rowHandlersRef.current;
+    handlers.onMarkRead(item.id);
+    handlers.onClose();
+    handlers.router.push(resolveLink(item));
+  }, []);
 
   // Keep pulling pages until the list fills the box or runs out of rows.
   // A scroll heuristic never fires when a short batch leaves no scrollbar,
@@ -137,9 +271,14 @@ export default function NotificationPopover({
     if (!open || !hasMore || loadingMore) return;
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) onLoadMore();
-    });
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) onLoadMore();
+      },
+      // เริ่มดึงหน้าถัดไป "ก่อน" ถึงท้าย ~300px — sentinel 1px ที่ปลายล่างสุด
+      // เท่ากับรอจนกว่าจะถึงท้ายแล้วค่อยเริ่มรอ (จังหวะที่เห็นชัดว่า "ต้องรอ")
+      { rootMargin: "300px 0px" },
+    );
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, [open, hasMore, loadingMore, visibleItems.length, onLoadMore]);
@@ -260,6 +399,10 @@ export default function NotificationPopover({
           flex: 1,
           overflowY: "auto",
           overflowX: "hidden",
+          // ซ่อน scrollbar ของ Windows/macOS — เลื่อนด้วยล้อเมาส์/สัมผัสยังใช้ได้
+          // (ตรงกับคอลัมน์บอร์ดใน boards/page.tsx)
+          scrollbarWidth: "none",
+          "&::-webkit-scrollbar": { display: "none" },
           // spinner / error / empty state all fill the same box as the list
           ...(visibleItems.length === 0
             ? { display: "flex", flexDirection: "column", justifyContent: "center" }
@@ -299,125 +442,23 @@ export default function NotificationPopover({
               item.action === "app_expiring" ||
               item.action === "app_expired" ||
               item.action === "ma_depleted" ||
-              // digest 09:00 ก็ไม่มีคนกระทำ — ขึ้นหัวด้วยจำนวนที่ค้าง
-              item.action === "daily_digest" ||
               // การ์ดค้าง (sweep 09:00) ก็ไม่มีคนกระทำ — เดิมหลุดไปโหมด "มีคนกระทำ"
               // แล้วเจอ fallback ตายตัว "System" หัวบรรทัดจึงอ่านว่า "System ค้างนาน …"
               item.action === "stale";
             // stale มีประโยคของตัวเองบรรทัดเดียวครบ:
             // **งาน ทดสอบ** ค้างที่สถานะ รอดำเนินการ · 7 วัน (context ไม่ซ้ำที่บรรทัดล่าง)
             const isStaleRow = item.action === "stale";
+            // label ถูก derive ที่นี่ (string คงที่) เพื่อให้ row memo เทียบได้ —
+            // object `actionLabels` ที่สร้างใหม่ทุก render ห้ามส่งเข้าไปใน row
             return (
-              <Box key={item.id}>
-                {index > 0 && <Divider />}
-                <ListItemButton
-                  onClick={() => handleItemClick(item)}
-                  sx={{
-                    alignItems: "flex-start",
-                    gap: 1.5,
-                    px: 2,
-                    py: 1.5,
-                    "&:hover": { bgcolor: "action.hover" },
-                    "&.Mui-selected, &.Mui-selected:hover": { bgcolor: "action.hover" },
-                  }}
-                >
-                  <Avatar
-                    sx={{
-                      width: 36,
-                      height: 36,
-                      fontSize: 14,
-                      fontWeight: 600,
-                      bgcolor: AVATAR_COLORS[item.id % AVATAR_COLORS.length],
-                      color: "background.paper",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {getInitials(isSystemRow ? item.target : (item.actorName ?? "System"))}
-                  </Avatar>
-
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography
-                      variant="body2"
-                      color="text.primary"
-                      sx={{
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {isStaleRow ? (
-                        <>
-                          <Box
-                            component="span"
-                            sx={{ fontWeight: 700 }}
-                          >
-                            {item.target}
-                          </Box>{" "}
-                          {t("actions.stale")} {item.context}
-                        </>
-                      ) : isSystemRow ? (
-                        <>
-                          <Box component="span" sx={{ fontWeight: 700 }}>
-                            {item.target}
-                          </Box>{" "}
-                          {actionLabels[item.action] ?? item.action}
-                        </>
-                      ) : (
-                        <>
-                          <Box
-                            component="span"
-                            sx={{
-                              fontWeight: 700,
-                              ...(item.action === "deleted"
-                                ? { color: "text.secondary", textDecoration: "line-through" }
-                                : {}),
-                            }}
-                          >
-                            {item.actorName ?? "System"}
-                          </Box>{" "}
-                          {actionLabels[item.action] ?? item.action}{" "}
-                          <Box
-                            component="span"
-                            sx={{
-                              fontWeight: 700,
-                              ...(item.action === "deleted"
-                                ? { color: "text.secondary", textDecoration: "line-through" }
-                                : {}),
-                            }}
-                          >
-                            {item.target}
-                          </Box>
-                        </>
-                      )}
-                    </Typography>
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.75,
-                        minWidth: 0,
-                      }}
-                    >
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{
-                          minWidth: 0,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {timeAgo(item.createdAt, locale)}
-                        {/* stale ใช้ context บนบรรทัดหัวแล้ว — ห้ามพิมพ์ซ้ำ */}
-                        {item.context && !isStaleRow ? ` • ${item.context}` : ""}
-                      </Typography>
-                      {/* chip ความสำคัญ (สูง/กลาง/ต่ำ) ถูกถอดออกตามคำสั่ง — ความสำคัญ
-                          ยังคงบอกผ่านลำดับเรียง (สูงขึ้นก่อน) ฝั่ง server เท่านั้น */}
-                    </Box>
-                  </Box>
-                </ListItemButton>
-              </Box>
+              <NotificationRow
+                key={item.id}
+                item={item}
+                variant={isStaleRow ? "stale" : isSystemRow ? "system" : "actor"}
+                label={actionLabels[item.action] ?? item.action}
+                divider={index > 0}
+                onOpen={openRow}
+              />
             );
           })
         )}

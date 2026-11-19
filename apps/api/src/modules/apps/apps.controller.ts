@@ -11,6 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
+import { IsActiveDto } from "../../common/dto/is-active.dto";
 import {
   AppsService,
   AppBuyInput,
@@ -228,7 +229,7 @@ export class AppsController {
   @Permissions("app.update", "system.update")
   updateActive(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { isActive: boolean },
+    @Body() body: IsActiveDto,
   ) {
     return this.apps.updateActive(id, body.isActive);
   }

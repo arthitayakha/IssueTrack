@@ -38,3 +38,24 @@ export function paginate<T>(items: T[], params: PaginationParams): Paginated<T> 
     totalPages,
   };
 }
+
+/**
+ * รูปแบบเดียวกับ `paginate()` แต่สำหรับคนที่ **นับยอดด้วย SQL ไปแล้ว**
+ * (`findAndCount` / `getCount` + `skip/take`) — โหลดมาเฉพาะแถวของหน้านั้น
+ * แล้วค่อย map/นับรายแถว เทียบกับแบบเดิมที่โหลดทั้งตารางแล้วค่อย slice
+ * ในหน่วยความจำ (ผลลัพธ์ byte-for-byte เหมือนกัน — ไม่มีแถวไหนถูกทิ้ง
+ * ระหว่าง map)
+ */
+export function paginateTotal<T>(
+  data: T[],
+  total: number,
+  params: PaginationParams,
+): Paginated<T> {
+  return {
+    data,
+    total,
+    page: params.page,
+    limit: params.limit,
+    totalPages: Math.max(1, Math.ceil(total / params.limit)),
+  };
+}

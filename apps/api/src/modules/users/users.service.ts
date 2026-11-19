@@ -6,7 +6,7 @@ import { User } from "../auth/entities/user.entity";
 import { Position } from "../positions/position.entity";
 import { Role } from "../roles/entities/role.entity";
 import { Company } from "../companies/entities/company.entity";
-import { paginate, PaginationParams } from "../../common/pagination";
+import { paginateTotal, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class UsersService {
@@ -52,7 +52,17 @@ export class UsersService {
       qb.andWhere("user.positionId IN (:...positionIds)", { positionIds });
     }
 
-    const users = await qb.orderBy("user.id", "ASC").getMany();
+    /**
+     * **นับ + เลือกหน้าด้วย SQL** (`getCount` ก่อน แล้วค่อย `skip/take`) —
+     * เดิมโหลดทั้งตาราง + join 3 ตัวแล้วค่อย slice ในหน่วยความจำ = ทุก
+     * request ดึงทุกแถวเสมอ · ผลลัพธ์เหมือน `paginate()` เดิมเป๊ะ
+     */
+    const total = await qb.getCount();
+    const users = await qb
+      .orderBy("user.id", "ASC")
+      .skip((params.page - 1) * params.limit)
+      .take(params.limit)
+      .getMany();
 
     const mapped = users.map((user) => ({
       id: String(user.id),
@@ -68,7 +78,7 @@ export class UsersService {
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     }));
-    return paginate(mapped, params);
+    return paginateTotal(mapped, total, params);
   }
 
   /**
@@ -112,8 +122,22 @@ export class UsersService {
     const roleId = data.roleId ?? null;
     const roleName = await this.roleNameOf(roleId);
     const companyId = await this.resolveCompanyId(roleName, data.companyId ?? null);
+    /**
+     * **ระบุ field เอง ห้าม spread ร่าง body** — `create({ ...data })` จะให้
+     * TypeORM copy ทุกคีย์ที่ตรงกับ entity (PlainObjectToNewEntityTransformer)
+     * ดังนั้น key ที่ไม่ได้ประกาศใน TS แต่มีจริงใน DB เช่น `id` / `isActive`
+     * จะหลุดเข้าไป = mass assignment (ส่ง `{ id: 1 }` ทับ row เดิมได้) —
+     * DTO ฝั่ง controller strip ให้แล้ว แต่เข็มขัดน้ำเสื้อตัวนี้กันชั้นสอง
+     */
     const user = await this.users.save(
-      this.users.create({ ...data, companyId, passwordHash }),
+      this.users.create({
+        email: data.email,
+        name: data.name,
+        passwordHash,
+        roleId,
+        positionId: data.positionId ?? null,
+        companyId,
+      }),
     );
     const positionName = user.positionId
       ? (await this.positions.findOne({ where: { id: user.positionId } }))?.name ?? null

@@ -11,8 +11,9 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { normalizePagination } from "../../common/pagination";
+import { IsActiveDto } from "../../common/dto/is-active.dto";
 import { IssueStatusesService } from "./issue-statuses.service";
-import { CreateIssueStatusDto, UpdateIssueStatusDto } from "./dto/issue-status.dto";
+import { CreateIssueStatusDto, ReorderStatusesDto, UpdateIssueStatusDto } from "./dto/issue-status.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -35,7 +36,7 @@ export class IssueStatusesController {
 
   @Patch("reorder")
   @Permissions("status.update")
-  reorder(@Body() body: { items: Array<{ id: number; sortOrder: number }> }) {
+  reorder(@Body() body: ReorderStatusesDto) {
     return this.issueStatuses.reorder(body.items);
   }
 
@@ -52,7 +53,7 @@ export class IssueStatusesController {
   @Permissions("status.update")
   updateActive(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { isActive: boolean },
+    @Body() body: IsActiveDto,
   ) {
     return this.issueStatuses.updateActive(id, body.isActive);
   }

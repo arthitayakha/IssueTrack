@@ -563,13 +563,14 @@ describe("NotificationsService — notification priority", () => {
     ]);
   });
 
-  it("an explicit priority beats both maps (the digest row writes its own level)", async () => {
+  it("an explicit priority beats both maps (a system row can override its level)", async () => {
     const { service, notifications } = makeService();
 
+    // ma_depleted sits at "high" in FIXED_PRIORITY — the explicit level wins
     await service.notify({
       userId: 1,
-      action: "daily_digest",
-      title: "3 รายการยังไม่อ่าน",
+      action: "ma_depleted",
+      title: "POS MA หมด",
       priority: "medium",
     });
 

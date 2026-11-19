@@ -13,7 +13,7 @@ import { Issue } from "../issues/entities/issue.entity";
 import { AppExpiryService } from "./app-expiry.service";
 import { MaUsageService } from "./ma-usage.service";
 import { daysBetween, isIsoDate, toIsoDate, todayIso } from "../../common/dates";
-import { paginate, PaginationParams } from "../../common/pagination";
+import { paginateTotal, PaginationParams } from "../../common/pagination";
 import { ViewerScope } from "./viewer-scope";
 
 /**
@@ -212,8 +212,19 @@ export class AppsService {
       }
     }
 
+    /**
+     * `issueCount` นับ**เฉพาะแถวของหน้า** (slice แบบเดียวกับ `paginate` เดิม
+     * — ไม่มีแถวถูกทิ้งระหว่าง map → ผลลัพธ์เท่ากันเป๊ะ) · ส่วน loop
+     * `reconcile` ด้านบนยังคงวิ่งทุกคู่ของ `pickerApps`: มันคิดสถานะในหน่วย
+     * ความจำแล้ว**เขียน DB เฉพาะตอนมีอะไรเปลี่ยน** (ดู `AppExpiryService`)
+     * — โหลดหน้าที่ไหนก็อัปเดตชิป/กระดิ่งตรงนั้นทันที ถ้าย้ายไปพึ่ง cron
+     * 09:00 อย่างเดียว ชิปจะค้างจนถึงพรุ่งนี้
+     */
+    const total = pickerApps.length;
+    const start = (params.page - 1) * params.limit;
+    const pageApps = pickerApps.slice(start, start + params.limit);
     const result = await Promise.all(
-      pickerApps.map(async (a) => ({
+      pageApps.map(async (a) => ({
         id: a.id,
         name: a.name,
         isVisible: a.isVisible,
@@ -224,7 +235,7 @@ export class AppsService {
         issueCount: await this.issues.count({ where: { appId: a.id } }),
       })),
     );
-    return paginate(result, params);
+    return paginateTotal(result, total, params);
   }
 
   /**

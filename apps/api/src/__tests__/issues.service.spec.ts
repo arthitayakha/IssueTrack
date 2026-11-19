@@ -5,7 +5,6 @@ import {
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { IssuesService } from "../modules/issues/issues.service";
-import { REJECT_STATUS_NAME } from "@kanban/shared";
 
 /**
  * `IssuesService.create()` must also emit `issue.category_changed` when the
@@ -586,64 +585,6 @@ describe("IssuesService.findOne — the lock the board renders", () => {
     const result = await service.findOne(5);
 
     expect(result.isLocked).toBe(false);
-  });
-});
-
-describe("IssuesService.move — ตีกลับงาน: ปลายทาง 'ยกเลิก' ข้าม move guards ทั้ง 3", () => {
-  /**
-   * ปลายทาง = สถานะตีกลับ — ชื่อมาจาก `@kanban/shared` → `REJECT_STATUS_NAME`
-   * (จุดเดียวกับปุ่ม "ตีกลับงาน" ฝั่ง web) · เหตุผล: การตีกลับคือการ**ปิด**งาน
-   * ไม่ใช่การลาก → ต้องเข้าคอลัมน์นี้ได้จากทุกคอลัมน์และการ์ดทุกสถานะ
-   */
-  function rejectCtx() {
-    const ctx = makeService();
-    ctx.issueStatuses.findOne.mockResolvedValue({ id: 62, name: REJECT_STATUS_NAME });
-    return ctx;
-  }
-
-  it("jumps over columns while the step-only rule is active (400 otherwise)", async () => {
-    const { service, issues, rulesEngine } = rejectCtx();
-    rulesEngine.isStepOnlyMoveActive.mockResolvedValue(true);
-    issues.findOne.mockResolvedValue(issueRow({ statusId: 1 }));
-
-    await service.move(5, 62, ACTOR);
-
-    expect(issues.update).toHaveBeenCalledWith(5, expect.objectContaining({ statusId: 62 }));
-  });
-
-  it("takes a LOCKED card out anyway (409 for every other destination)", async () => {
-    const { service, issues, rulesEngine } = rejectCtx();
-    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, isLocked: true }));
-    rulesEngine.statusGates.mockResolvedValue({
-      timer: new Set<number>(),
-      analysis: new Set<number>(),
-      resolution: new Set<number>(),
-      locked: new Set<number>([1]),
-      taskType: new Set<number>(),
-    });
-
-    await service.move(5, 62, ACTOR);
-
-    expect(issues.update).toHaveBeenCalledWith(5, expect.objectContaining({ statusId: 62 }));
-  });
-
-  it("leaves รอรับเรื่อง while UNtyped (422 otherwise — the reject flow's main case)", async () => {
-    const { service, issues, rulesEngine } = rejectCtx();
-    rulesEngine.taskTypeGateStatuses.mockResolvedValue(new Set([1]));
-    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, taskType: null }));
-
-    await service.move(5, 62, ACTOR);
-
-    expect(issues.update).toHaveBeenCalledWith(5, expect.objectContaining({ statusId: 62 }));
-  });
-
-  it("any other destination keeps every guard — the target's NAME decides", async () => {
-    const { service, issues, rulesEngine } = makeService(); // target = ค่า default "Todo"
-    rulesEngine.taskTypeGateStatuses.mockResolvedValue(new Set([1]));
-    issues.findOne.mockResolvedValue(issueRow({ statusId: 1, taskType: null }));
-
-    await expect(service.move(5, 2, ACTOR)).rejects.toThrow(UnprocessableEntityException);
-    expect(issues.update).not.toHaveBeenCalled();
   });
 });
 

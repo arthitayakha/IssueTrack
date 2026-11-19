@@ -10,8 +10,8 @@ import { PositionPermission } from "./entities/position-permission.entity";
 import { User } from "../auth/entities/user.entity";
 import { Role } from "../roles/entities/role.entity";
 import { PermissionsService } from "../permissions/permissions.service";
-import { permissionsForRole } from "@kanban/shared";
-import { paginate, PaginationParams } from "../../common/pagination";
+import { ALL_PERMISSIONS, permissionsForRole, type Permission } from "@kanban/shared";
+import { paginateTotal, PaginationParams } from "../../common/pagination";
 
 @Injectable()
 export class PositionsService {
@@ -29,9 +29,14 @@ export class PositionsService {
   ) {}
 
   async findAll(params: PaginationParams) {
-    const positions = await this.positions.find({ order: { id: "ASC" } });
+    /** SQL page — เดิมโหลดทุกแถว + `userCount` รายแถว แล้วค่อย slice (ดู companies) */
+    const [rows, total] = await this.positions.findAndCount({
+      order: { id: "ASC" },
+      skip: (params.page - 1) * params.limit,
+      take: params.limit,
+    });
     const result = await Promise.all(
-      positions.map(async (p) => ({
+      rows.map(async (p) => ({
         id: p.id,
         name: p.name,
         roleId: p.roleId,
@@ -42,7 +47,7 @@ export class PositionsService {
         userCount: await this.users.count({ where: { positionId: p.id } }),
       })),
     );
-    return paginate(result, params);
+    return paginateTotal(result, total, params);
   }
 
   async create(name: string, roleId?: number | null) {
@@ -100,15 +105,23 @@ export class PositionsService {
     if (!position) {
       throw new NotFoundException(`Position ${id} not found`);
     }
+    /** whitelist `ALL_PERMISSIONS` — ตรงกับ `permissions.updateMatrix` (เดิม insert อะไรก็ได้) */
+    const granted = [
+      ...new Set(
+        permissions.filter((permission) =>
+          ALL_PERMISSIONS.includes(permission as Permission),
+        ),
+      ),
+    ];
     await this.dataSource.transaction(async (manager) => {
       await manager.delete(PositionPermission, { positionId: id });
-      const rows = permissions.map((permission) =>
+      const rows = granted.map((permission) =>
         manager.create(PositionPermission, { positionId: id, permission }),
       );
       await manager.save(PositionPermission, rows);
     });
     await this.permissionsService.refreshCache();
-    return { id: position.id, name: position.name, permissions };
+    return { id: position.id, name: position.name, permissions: granted };
   }
 
   async update(id: number, name: string, roleId?: number | null) {

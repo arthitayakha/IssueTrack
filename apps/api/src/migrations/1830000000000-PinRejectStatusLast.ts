@@ -3,8 +3,9 @@ import { MigrationInterface, QueryRunner } from "typeorm";
 /**
  * ปักสถานะ **"ยกเลิก" ไว้ท้ายสุด** — `position` มากสุดของตาราง `issue_statuses`
  *
- * **ที่มา**: "ยกเลิก" คือสถานะปลายทางของงานที่ถูก **ตีกลับ** (`REJECT_STATUS_NAME`
- * ใน `packages/shared/src/issues.ts` — ปุ่ม "ตีกลับงาน" ฝั่งเว็บหาชื่อนี้จาก
+ * **ที่มา**: "ยกเลิก" คือสถานะปลายทางของงานที่ถูก **ตีกลับ** (ค่าคงที่
+ * `REJECT_STATUS_NAME` ใน `packages/shared/src/issues.ts` — ตอนนี้**ถูกลบไปแล้ว**
+ * พร้อมกับสถานะนี้เอง ดู migration `1831000000000-DropRejectStatus`) และ
  * รายการสถานะ แล้วย้ายการ์ดไปพร้อมเหตุผล) และข้อสรุปจากผู้ใช้คือ
  * *"ล็อกที่ไว้เลย คือต้องอยู่หลังสุด"* — เพราะคอลัมน์บอร์ดเรียงตาม
  * `issue_statuses.position` (`findAll` → `position ASC, id ASC`)
@@ -24,8 +25,8 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * ⚠️ ใช้ค่าชื่อเป็น **literal ใน SQL** แบบเดียวกับ migration อื่น (เช่น
  * `1801000000000-SeedMoveStepOnlyRule`) เพราะ `migration:run` รันผ่าน
  * `typeorm-ts-node-commonjs` ซึ่งไม่ได้ register `tsconfig-paths` → import
- * `@kanban/shared` ใน migration จะพัง — ถ้า rename "ยกเลิก" ใน DB ให้แก้ทั้ง
- * ค่าในไฟล์นี้และ `REJECT_STATUS_NAME`
+ * `@kanban/shared` ใน migration จะพัง — แต่ตอนนี้สถานะ "ยกเลิก" ถูกถอดออกแล้ว
+ * (migration `1831000000000-DropRejectStatus`) ไฟล์นี้จึงกลายเป็น no-op ของตัวมันเอง
  */
 export class PinRejectStatusLast1830000000000 implements MigrationInterface {
   name = "PinRejectStatusLast1830000000000";

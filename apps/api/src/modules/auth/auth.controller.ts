@@ -22,11 +22,11 @@ import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { UpdateProfileDto } from "./dto/update-profile.dto";
 import { ChangeEmailDto } from "./dto/change-email.dto";
 import { ChangePasswordDto } from "./dto/change-password.dto";
-import { SetDailyReminderDto } from "./dto/set-daily-reminder.dto";
 import { ResetOwnPasswordDto } from "./dto/reset-own-password.dto";
 import { RolesGuard } from "./roles.guard";
 import { CurrentUser } from "./current-user.decorator";
 import { Public } from "./public.decorator";
+import { RateLimit, RateLimitGuard } from "../../common/rate-limit.guard";
 import { User } from "./entities/user.entity";
 
 @Controller("auth")
@@ -35,7 +35,13 @@ export class AuthController {
 
   constructor(private readonly auth: AuthService) {}
 
+  /**
+   * Rate limit: **20 ครั้ง/นาทีต่อ IP** — กัน brute-force รหัสผ่าน (เดิมไม่มี
+   * limit เลยทั้งแอป) · e2e ทั้ง 3 suite รวม 6 logins/รอบ = ใต้เพดานนี้
+   */
   @Public()
+  @UseGuards(RateLimitGuard)
+  @RateLimit(20, 60_000)
   @Post("login")
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
@@ -45,15 +51,26 @@ export class AuthController {
    * Step 1 of "forgot password". Always 200 with the same body — an unknown
    * or inactive address is only logged, never revealed (anti-enumeration).
    * With no SMTP configured the link is printed to the API console instead.
+   *
+   * Rate limit: **5 ครั้ง/นาทีต่อ IP** — กัน spam เมลรีเซ็ต (anti-enumeration
+   * ป้องกันการเดาอีเมล แต่ไม่ได้ป้องกันการยิงรัวใส่อีเมลจริง)
    */
   @Public()
+  @UseGuards(RateLimitGuard)
+  @RateLimit(5, 60_000)
   @Post("forgot-password")
   forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.auth.requestPasswordReset(dto.email, dto.locale);
   }
 
-  /** Step 2 — exchanging the one-time link for a brand new password. */
+  /**
+   * Step 2 — exchanging the one-time link for a brand new password.
+   * Rate limit: 10 ครั้ง/นาทีต่อ IP — กันเดา token (token เป็น random ยาว
+   * อยู่แล้ว แต่จำกัดไว้ไม่ให้ยิงรัว)
+   */
   @Public()
+  @UseGuards(RateLimitGuard)
+  @RateLimit(10, 60_000)
   @Post("reset-password")
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.auth.resetPassword(dto.token, dto.newPassword);
@@ -99,17 +116,6 @@ export class AuthController {
   }
 
   /**
-   * Self-service daily-reminder switch — `false` silences the 09:00 digest rows
-   * and the day-1 e-mail for THIS user only (normal notifications never touch
-   * it). No `@Permissions`, like every other `/auth/profile*` route: it only
-   * ever changes the caller's own row.
-   */
-  @Patch("profile/reminder")
-  setDailyReminder(@CurrentUser() user: User, @Body() dto: SetDailyReminderDto) {
-    return this.auth.setDailyReminder(user.id, dto.enabled);
-  }
-
-  /**
    * Self-service password RESET — the counterpart for people who cannot
    * remember the current one: no current password and no e-mail, because the
    * caller is already signed in and the session is the proof (that is why
@@ -139,6 +145,12 @@ export class AuthController {
         if (!file.mimetype.startsWith("image/")) {
           // a plain Error would surface as 500 — say what went wrong instead
           cb(new BadRequestException("Only image files are allowed"), false);
+          return;
+        }
+        // SVG มี script ได้ — เสิร์ฟ avatar แบบ inline บน origin ของ API
+        // = stored XSS (JWT อยู่คนละ origin จึงกระทบจำกัด แต่ก็ปิดที่ประตูนี้)
+        if (file.mimetype === "image/svg+xml") {
+          cb(new BadRequestException("SVG files are not allowed"), false);
           return;
         }
         cb(null, true);

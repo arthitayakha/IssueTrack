@@ -8,7 +8,7 @@ import {
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DeepPartial, Not, IsNull, Repository } from "typeorm";
+import { DeepPartial, Repository } from "typeorm";
 import { Issue } from "./entities/issue.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
 import { User } from "../auth/entities/user.entity";
@@ -22,9 +22,13 @@ import { RulesEngineService, type StatusGates } from "../rules/rules-engine.serv
 import { NotificationsService } from "../notifications/notifications.service";
 import { MaUsageService } from "../apps/ma-usage.service";
 import { AppsService } from "../apps/apps.service";
-import { REJECT_STATUS_NAME } from "@kanban/shared";
 import { PaginationParams } from "../../common/pagination";
 import { AuthUser } from "../auth/auth-user";
+import {
+  assertIssueVisible,
+  canViewAllIssues,
+  loadVisibleIssue,
+} from "./issue-access";
 
 const ISSUE_DETAIL_RELATIONS = [
   "status",
@@ -190,7 +194,7 @@ export class IssuesService {
       qb.andWhere("issue.status_id IN (:...statuses)", { statuses });
     }
 
-    const canViewAll = await this.canViewAllIssues(user);
+    const canViewAll = await canViewAllIssues(this.permissions, user);
     if (user && !canViewAll) {
       qb.andWhere(
         "(issue.programmer_id = :uid OR issue.customer_id = :uid)",
@@ -440,15 +444,15 @@ export class IssuesService {
     return rows as Array<T & WorkTimeline>;
   }
 
-  private async canViewAllIssues(
-    user?: AuthUser | null,
-  ): Promise<boolean> {
-    if (!user) return true;
-    const permissions = await this.permissions.getUserPermissions(user.roleId, user.positionId);
-    return permissions.includes("issue.all.view");
-  }
-
-  async findOne(id: number) {
+  /**
+   * `GET /issues/:id` — **ขอบเขตเดียวกับ list** (ดู `issue-access.ts`):
+   * ส่ง `user` เข้ามา = เช็ค `issue.all.view` / ผู้รับผิดชอบ-ผู้แจ้งก่อนคืน
+   * (กัน IDOR — เดิมเส้นนี้โหลดด้วย id ล้วน)
+   *
+   * `user` **optional เพื่อเทสต์/ผู้เรียกภายในเท่านั้น** — เส้น HTTP ทุกเส้น
+   * ต้องส่ง ( controller ส่งเสมอ) การไม่ส่ง = ข้ามการเช็ค = ไว้ใจ internal เท่านั้น
+   */
+  async findOne(id: number, user?: AuthUser) {
     const issue = await this.issues.findOne({
       where: { id },
       relations: ISSUE_DETAIL_RELATIONS,
@@ -456,7 +460,17 @@ export class IssuesService {
     if (!issue || issue.deletedAt) {
       throw new NotFoundException(`Issue ${id} not found`);
     }
+    if (user) await assertIssueVisible(issue, this.permissions, user);
     return this.toResponse(issue);
+  }
+
+  /**
+   * ประตูอ่านสำหรับเส้นที่อ้างงานด้วย id โดยไม่ผ่าน `findOne` —
+   * ตอนนี้ใช้โดย `GET /issues/:id/activity` (timeline ไม่ผูกกับ deleted_at:
+   * งานถูกยกเลิกไปแล้วยังดูประวัติได้ เหมือนเดิมทุกประการ)
+   */
+  async assertVisible(id: number, user: AuthUser): Promise<void> {
+    await loadVisibleIssue(this.issues, this.permissions, id, user);
   }
 
   async create(
@@ -473,7 +487,27 @@ export class IssuesService {
       labelId?: number;
     },
     actor?: ActorInfo | null,
+    user?: AuthUser | null,
   ) {
+    /**
+     * **มอบหมายตอนสร้างต้องมี `issue.assign`** — เส้น `POST /issues` guard ด้วย
+     * `issue.create` อย่างเดียว: บทบาท `customer` (มี `issue.create` แต่ไม่มี
+     * `issue.assign`) จะส่ง `programmerId` มากำหนดผู้รับตั้งแต่สร้างได้ =
+     * ข้ามกฎ "มอบหมายมือ" · `user` ไม่ส่งมา (caller ภายใน/เทสต์) = ไว้ใจ
+     * ไม่เช็ค — แบบเดียวกับ `findOne`/`assertVisible`
+     */
+    if (data.programmerId != null && user) {
+      const perms = await this.permissions.getUserPermissions(
+        user.roleId,
+        user.positionId,
+      );
+      if (!perms.includes("issue.assign")) {
+        throw new ForbiddenException(
+          "Assigning a card at creation requires the issue.assign permission",
+        );
+      }
+    }
+
     const status = await this.issueStatuses.findOne({
       where: { id: data.statusId },
     });
@@ -843,22 +877,13 @@ export class IssuesService {
     }
     if (issue.statusId === statusId) return this.toResponse(issue);
 
-    // **ตีกลับงาน (ปลายทาง = สถานะ "ยกเลิก") → ข้าม move guards ทั้ง 3** —
-    // "การตีกลับ" ไม่ใช่การลาก แต่เป็นการ**ปิด**งาน จึงต้องเข้าคอลัมน์นี้ได้จาก
-    // ทุกคอลัมน์ (step-only ห้ามข้ามคอลัมน์) และจากการ์ดทุกสถานะ (status lock
-    // กับตาข่าย "เลือกประเภทงานก่อนลาก" ที่ seed เปิดกับ รอรับเรื่อง — case หลัก
-    // ของการตีกลับคือการ์ดยังไม่ระบุประเภทนั่นเอง) ไม่งั้นปุ่มตีกลับฝั่งเว็บจะ
-    // พังบนเครื่อง fresh ที่กฎ seed เปิด ON · ชื่อมาจาก `@kanban/shared`
-    // (`REJECT_STATUS_NAME`) — ตัวเดียวกับที่ปุ่ม web ใช้หาสถานะปลายทาง
-    const isRejectMove = targetStatus.name === REJECT_STATUS_NAME;
-
     // status locks: an active `issue.lock` rule naming the card's status
     // freezes it — checked before anything is written, like the step-only
     // guard, so a rejected drag leaves no notification or activity behind.
     // The board's unlock button (or an `issue.unlock` rule) releases the
     // card exactly once via `lock_exempted`, consumed by the move below.
     // 409 (not 400) so the board can tell this apart from the step-only guard.
-    if (!isRejectMove && !(await this.isMoveAllowedByLock(issue))) {
+    if (!(await this.isMoveAllowedByLock(issue))) {
       throw new ConflictException(
         "This card is locked in its status — unlock it before moving",
       );
@@ -867,7 +892,7 @@ export class IssuesService {
     // the "one column at a time" rule (an active issue.move_step_only rule;
     // pause it in the ระบบอัตโนมัติ tab of /master-data for free dragging) — checked before anything is
     // written, so a rejected drag leaves no notification or activity behind
-    if (!isRejectMove && (await this.rulesEngine.isStepOnlyMoveActive())) {
+    if (await this.rulesEngine.isStepOnlyMoveActive()) {
       await this.assertAdjacentMove(issue.statusId, statusId);
     }
 
@@ -879,13 +904,11 @@ export class IssuesService {
     // 400 (step-only) nor 409 (status lock) — so the board can tell this
     // refusal apart and print its own message. Fail open: no rule / paused /
     // unreadable rules → the set is empty → dragging stays free.
-    if (!isRejectMove) {
-      const taskTypeGates = await this.rulesEngine.taskTypeGateStatuses();
-      if (issue.statusId != null && taskTypeGates.has(issue.statusId) && !issue.taskType) {
-        throw new UnprocessableEntityException(
-          "Choose a task type for this card before moving it out of this status",
-        );
-      }
+    const taskTypeGates = await this.rulesEngine.taskTypeGateStatuses();
+    if (issue.statusId != null && taskTypeGates.has(issue.statusId) && !issue.taskType) {
+      throw new UnprocessableEntityException(
+        "Choose a task type for this card before moving it out of this status",
+      );
     }
 
     const sourceStatus = issue.statusId
@@ -1207,22 +1230,33 @@ export class IssuesService {
     return this.toResponse(issue);
   }
 
-  async findAllDeleted() {
-    const issues = await this.issues.find({
-      where: { deletedAt: Not(IsNull()) },
-      order: { deletedAt: "DESC" },
-      relations: [
-        "priority",
-        "category",
-        "label",
-        "labels",
-        "programmer",
-        "customer",
-        "customer.company",
-        "deletedByUser",
-      ],
-      withDeleted: true,
-    });
+  /**
+   * รายการยกเลิก (ถังขยะ) — **กรอบเดียวกับ list**: ไม่มี `issue.all.view`
+   * = เห็นเฉพาะงานตัวเอง ไม่งั้น list กับ detail จะขัดกัน (รายการโชว์ทุกใบ
+   * แต่เปิดดูไม่ได้) และการมีอยู่/หัวข้องานคนอื่นก็รั่วทางนี้ด้วย
+   */
+  async findAllDeleted(user?: AuthUser) {
+    const qb = this.issues
+      .createQueryBuilder("issue")
+      .where("issue.deleted_at IS NOT NULL")
+      // relations + order = byte-for-byte the old `find()` version (see below)
+      .leftJoinAndSelect("issue.priority", "priority")
+      .leftJoinAndSelect("issue.category", "category")
+      .leftJoinAndSelect("issue.label", "label")
+      .leftJoinAndSelect("issue.labels", "labels")
+      .leftJoinAndSelect("issue.programmer", "programmer")
+      .leftJoinAndSelect("issue.customer", "customer")
+      .leftJoinAndSelect("customer.company", "customerCompany")
+      .leftJoinAndSelect("issue.deletedByUser", "deletedByUser")
+      .orderBy("issue.deletedAt", "DESC");
+    const canViewAll = await canViewAllIssues(this.permissions, user);
+    if (user && !canViewAll) {
+      qb.andWhere(
+        "(issue.programmer_id = :uid OR issue.customer_id = :uid)",
+        { uid: Number(user.id) },
+      );
+    }
+    const issues = await qb.getMany();
     // one rules query for the whole trash page (see `toResponse`)
     const gates = await this.rulesEngine.statusGates(issues.map((i) => i.statusId ?? null));
     const order = await this.fieldOrder(gates);

@@ -27,18 +27,6 @@ export interface MaDepletedMailParams {
   url: string;
 }
 
-/** What the daily high-priority digest mail needs — once per episode, day 1. */
-export interface DailyReminderMailParams {
-  to: string;
-  name: string;
-  /** แถวความสำคัญสูงที่ยังไม่อ่าน (อย่างน้อย 1 — service เช็กก่อนแล้ว) */
-  count: number;
-  /** หัวข้อสูงสุด 10 รายการแรก ที่เหลือเป็น "…และอีก N รายการ" */
-  titles: string[];
-  /** Absolute URL — `/notifications` (the inbox). */
-  url: string;
-}
-
 /**
  * The app's single e-mail sender: the "forgot password" link (AuthModule) and
  * the milestone status updates to the customer (NotificationsModule).
@@ -160,41 +148,6 @@ export class MailService {
     });
   }
 
-  /**
-   * **"ยังมีการแจ้งเตือนสำคัญค้างอยู่"** — ฝั่งอีเมลของ digest 09:00
-   * (`DailyReminderService`) · ส่ง **ครั้งเดียวต่อ episode** (เฉพาะตอนแถวสูงยัง
-   * อยู่ในวันแรก) ไม่ใช่ทุกวัน · Thai by design เหมือนเมลอื่น ๆ ของแอป
-   */
-  async sendDailyReminder(params: DailyReminderMailParams): Promise<void> {
-    const subject = `การแจ้งเตือนความสำคัญสูง ${params.count} รายการที่ยังไม่อ่าน`;
-    const listed = params.titles.map((title) => `• ${title}`);
-    const more =
-      params.count > params.titles.length
-        ? `… และอีก ${params.count - params.titles.length} รายการ`
-        : "";
-    const text = [
-      `สวัสดี ${params.name},`,
-      "",
-      `คุณมีการแจ้งเตือนความสำคัญสูง ${params.count} รายการที่ยังไม่ได้อ่าน:`,
-      ...listed,
-      ...(more ? [more] : []),
-      "",
-      "เปิดลิงก์นี้เพื่อดูทั้งหมด:",
-      params.url,
-      "",
-      "อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker — ไม่ต้องตอบกลับ",
-    ].join("\n");
-
-    await this.send({
-      to: params.to,
-      subject,
-      text,
-      html: this.dailyReminderHtml(params, more),
-      context: "daily reminder mail",
-      devNote: `daily reminder mail for ${params.to}: ${subject}`,
-    });
-  }
-
   /** One door to the transport — no SMTP and send failures both end in the log. */
   private async send(opts: {
     to: string;
@@ -258,19 +211,6 @@ export class MailService {
       `<p>หากต้องการใช้งานต่อ กรุณาต่ออายุหรือซื้อชั่วโมงเพิ่ม:</p>`,
       `<p><a href="${escapeHtml(params.url)}">${escapeHtml(params.url)}</a></p>`,
       `<p>อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker</p>`,
-    ].join("");
-  }
-  private dailyReminderHtml(params: DailyReminderMailParams, more: string): string {
-    const items = params.titles
-      .map((title) => `<li>${escapeHtml(title)}</li>`)
-      .join("");
-    return [
-      `<p>สวัสดี ${escapeHtml(params.name)},</p>`,
-      `<p>คุณมีการแจ้งเตือนความสำคัญสูง <strong>${params.count} รายการ</strong>ที่ยังไม่ได้อ่าน:</p>`,
-      `<ul>${items}</ul>`,
-      more ? `<p>${escapeHtml(more)}</p>` : "",
-      `<p><a href="${escapeHtml(params.url)}">เปิดลิงก์นี้เพื่อดูทั้งหมด</a></p>`,
-      `<p>อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker — ไม่ต้องตอบกลับ</p>`,
     ].join("");
   }
 }

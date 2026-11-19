@@ -1,10 +1,14 @@
-import { Transform } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
+  ArrayMaxSize,
+  IsArray,
+  IsInt,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
   MinLength,
+  ValidateNested,
 } from "class-validator";
 
 /** Names reach the DB with surrounding whitespace stripped ("  g " → "g"). */
@@ -77,4 +81,28 @@ export class UpdateIssueStatusDto {
       "color must be a palette name (green, red, yellow, blue, purple, orange, pink, gray, default) or a hex value like #4caf50",
   })
   color?: string;
+}
+
+/** หนึ่งแถวในการลากเรียงลำดับ — `id` ของสถานะ + ตำแหน่งใหม่ */
+export class ReorderItemDto {
+  @IsInt()
+  id!: number;
+
+  @IsInt()
+  sortOrder!: number;
+}
+
+/**
+ * `PATCH /issue-statuses/reorder` — เดิมเป็น inline type ไม่ผ่าน
+ * `ValidationPipe`: `items` ไม่ใช่ array → `TypeError` ใน service = 500,
+ * array ยาวแค่ไหนก็ผ่าน (loop update ใน transaction ไม่จำกัด) — ตอนนี้
+ * บังคับ array ของ object ที่มี `id`/`sortOrder` เป็น int และเพดาน 200
+ * แถว (สถานะจริงหลักสิบ — เกินนี้คือ payload แปลกปลอม)
+ */
+export class ReorderStatusesDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ReorderItemDto)
+  @ArrayMaxSize(200)
+  items!: ReorderItemDto[];
 }

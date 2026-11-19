@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { PaginatedResponse, type IssueTaskType } from "@kanban/shared";
-import { apiFetch } from "./api";
+import { apiFetch, apiFetchResponse } from "./api";
 import { useAuthStore } from "./auth-store";
 import type { AppCompanyLink } from "./apps-api";
 
@@ -13,9 +13,9 @@ export interface IssueStatus {
   color?: string | null;
   isActive: boolean;
   /**
-   * Legacy โ€” the API no longer returns a status order field. The board's real
+   * Legacy — the API no longer returns a status order field. The board's real
    * order is `position` (written by `POST /issue-statuses/reorder`, whose
-   * request payload still names the field `sortOrder` โ€” see `reorderStatuses`).
+   * request payload still names the field `sortOrder` — see `reorderStatuses`).
    */
   customName?: string | null;
   issueCount: number;
@@ -411,20 +411,15 @@ export async function uploadAttachment(
   issueId: number,
   file: File,
 ): Promise<Attachment> {
-  const token = getToken();
   const formData = new FormData();
   formData.append("file", file);
-  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002"}/issues/${issueId}/attachments`, {
-    method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    body: formData,
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { message?: string | string[] };
-    const message = Array.isArray(body.message) ? body.message[0] : (body.message ?? res.statusText);
-    throw new Error(message);
-  }
-  return res.json();
+  // `apiFetch` รู้จัก FormData (ไม่ตั้ง Content-Type เอง) → ได้ 401 = logout
+  // + ข้อความจาก API เหมือนเส้นอื่น (เดิม raw fetch = 401 เงียบ ๆ)
+  return apiFetch<Attachment>(
+    `/issues/${issueId}/attachments`,
+    { method: "POST", body: formData },
+    getToken(),
+  );
 }
 
 export async function fetchAttachments(issueId: number): Promise<Attachment[]> {
@@ -436,14 +431,9 @@ export async function deleteAttachment(id: number): Promise<void> {
 }
 
 export async function openAttachment(id: number): Promise<void> {
-  const token = getToken();
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002"}/attachments/${id}/download`,
-    { headers: token ? { Authorization: `Bearer ${token}` } : {} },
-  );
-  if (!res.ok) {
-    throw new Error(`Failed to open attachment: ${res.statusText}`);
-  }
+  // raw Response เพราะต้องการ blob — แต่ผ่าน `apiFetchResponse` จึงได้
+  // 401 = logout + ApiError เหมือนเส้นอื่น (เดิม raw fetch เงียบ ๆ)
+  const res = await apiFetchResponse(`/attachments/${id}/download`, {}, getToken());
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   window.open(url, "_blank");

@@ -14,6 +14,9 @@ interface QbStub {
   leftJoinAndSelect: jest.Mock;
   andWhere: jest.Mock;
   orderBy: jest.Mock;
+  getCount: jest.Mock;
+  skip: jest.Mock;
+  take: jest.Mock;
   getMany: jest.Mock;
 }
 
@@ -22,6 +25,11 @@ function qbStub(rows: Record<string, unknown>[] = []): QbStub {
     leftJoinAndSelect: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    // นับด้วย SQL แล้ว (`getCount`) — ยอดรวม = จำนวนแถวของ stub
+    getCount: jest.fn().mockResolvedValue(rows.length),
+    skip: jest.fn().mockReturnThis(),
+    take: jest.fn().mockReturnThis(),
+    // stub ไม่รู้จัก skip/take — คืนทุกแถวเท่าที่มี (ไม่ slice ให้)
     getMany: jest.fn().mockResolvedValue(rows),
   };
 }
@@ -116,13 +124,16 @@ describe("UsersService.findAll — filters", () => {
     });
   });
 
-  it("slices the requested page out of the full list", async () => {
+  it("asks the DATABASE for the requested page (no more load-everything-then-slice)", async () => {
     const rows = Array.from({ length: 3 }, (_, i) => ({ ...USER, id: i + 1 }));
-    const { service } = makeService(rows);
+    const { service, qb } = makeService(rows);
 
     const page2 = await service.findAll({ page: 2, limit: 2 });
 
-    expect(page2.data.map((u) => u.id)).toEqual(["3"]);
+    // `skip/take` ไปที่ QB (stub คืนทุกแถว → data ไม่ถูก slice ในการทดสอบนี้)
+    expect(qb.getCount).toHaveBeenCalledTimes(1);
+    expect(qb.skip).toHaveBeenCalledWith(2);
+    expect(qb.take).toHaveBeenCalledWith(2);
     expect(page2).toMatchObject({ total: 3, totalPages: 2, page: 2, limit: 2 });
   });
 });

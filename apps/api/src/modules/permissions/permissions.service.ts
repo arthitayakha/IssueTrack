@@ -138,18 +138,30 @@ export class PermissionsService implements OnModuleInit {
 
   async updateMatrix(grants: Record<string, string[]>) {
     try {
-      await this.repo.clear();
-      const rows: RolePermission[] = [];
-      for (const [roleName, permissions] of Object.entries(grants)) {
-        if (roleName === "admin") continue;
-        const role = await this.rolesRepo.findOne({ where: { name: roleName } });
-        if (!role) continue;
-        for (const permission of permissions) {
-          if (!ALL_PERMISSIONS.includes(permission as Permission)) continue;
-          rows.push(this.repo.create({ roleId: role.id, permission }));
+      /**
+       * **ทุกขั้นอยู่ใน transaction เดียว** — เดิม `clear()` (ซึ่งจริง ๆ คือ
+       * `TRUNCATE/DELETE ทั้งตาราง` — ดู `EntityManager.clear`) แล้วค่อย insert
+       * ใหม่ **นอก transaction**: ถ้า fail กลางทาง (role lookup / save พัง)
+       * ตาราง `role_permissions` จะว่าง/บางส่วน = **ทุกคนล็อก out ตัวเอง** ·
+       * เทียบ `positions.updatePermissions` ที่ห่อ `dataSource.transaction`
+       * ไว้แล้ว — ตอนนี้สองเส้นนี้เท่ากัน
+       */
+      await this.repo.manager.transaction(async (em) => {
+        const rolePerms = em.getRepository(RolePermission);
+        const roles = em.getRepository(Role);
+        await rolePerms.clear();
+        const rows: RolePermission[] = [];
+        for (const [roleName, permissions] of Object.entries(grants)) {
+          if (roleName === "admin") continue;
+          const role = await roles.findOne({ where: { name: roleName } });
+          if (!role) continue;
+          for (const permission of permissions) {
+            if (!ALL_PERMISSIONS.includes(permission as Permission)) continue;
+            rows.push(rolePerms.create({ roleId: role.id, permission }));
+          }
         }
-      }
-      await this.repo.save(rows);
+        await rolePerms.save(rows);
+      });
       await this.refreshCache();
     } catch (err) {
       console.error("updateMatrix error:", err);
@@ -158,17 +170,24 @@ export class PermissionsService implements OnModuleInit {
   }
 
   async resetToDefaults() {
-    await this.repo.clear();
-    const dbRoles = await this.getRolesFromDb();
-    const dbPermissions = await this.getPermissionsFromDb();
-    const rows: RolePermission[] = [];
-    for (const role of dbRoles) {
-      for (const permission of permissionsForRole(role.name)) {
-        if (!dbPermissions.includes(permission)) continue;
-        rows.push(this.repo.create({ roleId: role.id, permission }));
+    /**
+     * เช่นเดียวกับ `updateMatrix` — `clear()` + insert ต้องอยู่ใน transaction
+     * เดียว (เดิม fail กลางทาง = ตารางสิทธิ์ว่าง)
+     */
+    await this.repo.manager.transaction(async (em) => {
+      const rolePerms = em.getRepository(RolePermission);
+      await rolePerms.clear();
+      const dbRoles = await this.getRolesFromDb();
+      const dbPermissions = await this.getPermissionsFromDb();
+      const rows: RolePermission[] = [];
+      for (const role of dbRoles) {
+        for (const permission of permissionsForRole(role.name)) {
+          if (!dbPermissions.includes(permission)) continue;
+          rows.push(rolePerms.create({ roleId: role.id, permission }));
+        }
       }
-    }
-    await this.repo.save(rows);
+      await rolePerms.save(rows);
+    });
     await this.refreshCache();
   }
 

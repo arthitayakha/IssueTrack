@@ -6,6 +6,7 @@ import {
   useEffect,
   useCallback,
   useMemo,
+  memo,
   useRef,
   type Dispatch,
   type ReactNode,
@@ -55,6 +56,8 @@ import {
   DndContext,
   DragOverlay,
   closestCenter,
+  pointerWithin,
+  type CollisionDetection,
   KeyboardSensor,
   PointerSensor,
   useSensor,
@@ -113,14 +116,12 @@ import LabelIcon from "@mui/icons-material/Label";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import TimerOutlinedIcon from "@mui/icons-material/TimerOutlined";
 import SwapVertIcon from "@mui/icons-material/SwapVert";
-import UndoIcon from "@mui/icons-material/Undo";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { usePermissions } from "@/lib/permissions";
 import { useAuthStore } from "@/lib/auth-store";
-import { isApiError, errorMessage } from "@/lib/api";
+import { isApiError, errorMessage, apiFetchResponse } from "@/lib/api";
 import type { IssueTaskType } from "@kanban/shared";
-import { REJECT_STATUS_NAME } from "@kanban/shared";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
@@ -324,6 +325,26 @@ function totalTimeSeconds(issue: BoardIssue, runningSince: string | null | undef
   return banked + (runningSince ? elapsedSince(runningSince, nowMs) : 0);
 }
 
+/**
+ * A clock that only ticks **inside the component that needs it**.
+ *
+ * The board used to keep ONE `setInterval(…, 1000)` at the page root, so the
+ * whole tree re-rendered every second — including mid-drag, which is what made
+ * the board stutter in one-second beats. Now only a card with a *running*
+ * timer owns a ticking clock (and the table cell that shows one), so a board
+ * with no active timer re-renders zero times per second.
+ */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
+
 const timerPulse = keyframes`
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
@@ -331,19 +352,23 @@ const timerPulse = keyframes`
 
 /**
  * Running timers shared by every view: `running` maps issueId → ISO start,
- * `now` is one shared clock (ticks once a second while anything runs) and
  * `refresh` reloads the map (a drag can start/stop/reset timers via rules).
+ *
+ * There is deliberately **no shared `now`** any more — each cell that shows a
+ * live clock ticks its own `useNow()` (see the hook above), so the page root
+ * stops re-rendering once a second.
  */
 interface BoardTimers {
   running: Record<number, string>;
-  now: number;
   refresh: () => void;
 }
 
 /** "เวลาที่จับได้" cell — live clock while running, banked total otherwise. */
 function TrackedTimeCell({ issue, timers }: { issue: BoardIssue; timers: BoardTimers }) {
   const runningSince = timers.running[issue.id] ?? null;
-  const total = totalTimeSeconds(issue, runningSince, timers.now);
+  // Ticks only while THIS row has a session running; a static row never re-renders.
+  const nowMs = useNow(!!runningSince);
+  const total = totalTimeSeconds(issue, runningSince, nowMs);
   if (!runningSince && total <= 0) return <>—</>;
   return (
     <Box component="span" sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}>
@@ -559,11 +584,21 @@ function isHiddenFromFolder(
  * gap) sorts last, matching the server's NULLS LAST.
  */
 function sortByEnteredAt(items: BoardIssue[], order: "desc" | "asc"): BoardIssue[] {
-  const enteredAt = (issue: BoardIssue) =>
-    issue.statusChangedAt ? new Date(issue.statusChangedAt).getTime() : null;
+  // Parse each timestamp ONCE. The comparator runs O(n log n) times and this
+  // runs for every column on every render, so calling `new Date()` inside the
+  // sort was measurable with 1000+ cards.
+  const keys = new Map<number, { entered: number | null; created: number }>();
+  for (const issue of items) {
+    keys.set(issue.id, {
+      entered: issue.statusChangedAt ? new Date(issue.statusChangedAt).getTime() : null,
+      created: new Date(issue.createdAt).getTime(),
+    });
+  }
   return [...items].sort((a, b) => {
-    const ea = enteredAt(a);
-    const eb = enteredAt(b);
+    const ka = keys.get(a.id);
+    const kb = keys.get(b.id);
+    const ea = ka?.entered ?? null;
+    const eb = kb?.entered ?? null;
     if (ea !== eb) {
       // null (never entered) loses to every real timestamp → bottom of the list
       if (ea === null) return 1;
@@ -571,16 +606,42 @@ function sortByEnteredAt(items: BoardIssue[], order: "desc" | "asc"): BoardIssue
       return order === "asc" ? ea - eb : eb - ea;
     }
     // tie-breaks mirror the server's fixed addOrderBy: always newest-first
-    const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    const diff = (kb?.created ?? 0) - (ka?.created ?? 0);
     return diff !== 0 ? diff : b.id - a.id;
   });
 }
 
-function TrelloCardContent({
+/**
+ * A module-level constant so a column with no data yet passes the SAME empty
+ * array every render — `?? []` built a fresh array each time, which alone was
+ * enough to defeat `React.memo(KanbanColumn)` on every empty column.
+ */
+const EMPTY_ITEMS: BoardIssue[] = [];
+
+/**
+ * Where the board decides a card is being dropped.
+ *
+ * `pointerWithin` first: "which droppable is the cursor actually INSIDE?" — a
+ * point test over the visible rects, and it picks the column the pointer is
+ * really over, *including* that column's empty space and the gaps between
+ * cards. The old bare `closestCenter` measured every card **and** every column
+ * against one center point on every pointer move, and while the cursor sat in
+ * a column's empty area it would happily pick a card in the NEIGHBOURING
+ * column — that is the sideways preview jump.
+ *
+ * Falls back to `closestCenter` only when the pointer is inside no droppable
+ * at all (between columns, over the toolbar), so that case behaves exactly as
+ * it did before — no regression, no new failure mode.
+ */
+const boardCollisionDetection: CollisionDetection = (args) => {
+  const hits = pointerWithin(args);
+  return hits.length > 0 ? hits : closestCenter(args);
+};
+
+const TrelloCardContent = memo(function TrelloCardContent({
   issue,
   actions,
   runningSince,
-  nowMs,
   showTime = true,
   canUnlockIssue = false,
   staleDays = null,
@@ -590,8 +651,6 @@ function TrelloCardContent({
   actions?: ReactNode;
   /** ISO start of this card's running session, when there is one. */
   runningSince?: string | null;
-  /** Shared clock so every chip ticks from the same second. */
-  nowMs?: number;
   /** Gate for the timer (`time.system.view`). */
   showTime?: boolean;
   /** May the viewer unlock a rule-locked card from the bottom bar? */
@@ -606,6 +665,9 @@ function TrelloCardContent({
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
+  // This card's OWN clock — ticks only while a session runs on it, so the
+  // board no longer re-renders every second (see `useNow`).
+  const nowMs = useNow(!!runningSince);
   const priorityColor = issue.priorityName
     ? PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"
     : "default";
@@ -614,7 +676,7 @@ function TrelloCardContent({
     : null;
 
   const isRunning = Boolean(runningSince);
-  const totalSeconds = totalTimeSeconds(issue, runningSince, nowMs ?? Date.now());
+  const totalSeconds = totalTimeSeconds(issue, runningSince, nowMs);
   // bottom bar: lock + tracked time — hidden when the card has neither
   const timeVisible = showTime && (isRunning || totalSeconds > 0);
   const showBottomBar = Boolean(issue.isLocked || timeVisible);
@@ -824,16 +886,15 @@ function TrelloCardContent({
       )}
     </Box>
   );
-}
+});
 
-function TrelloCard({
+const TrelloCard = memo(function TrelloCard({
   issue,
   canManage = false,
   canEdit = false,
   canDelete = false,
   canUnlockIssue = false,
   runningSince,
-  nowMs,
   showTime = true,
   staleDays = null,
   onOpen,
@@ -841,10 +902,6 @@ function TrelloCard({
   onDelete,
   onViewActivity,
   onUnlock,
-  onCancelIssue,
-  cancelStatusId = null,
-  onRecoverIssue,
-  flash = false,
 }: {
   issue: BoardIssue;
   canManage?: boolean;
@@ -852,40 +909,14 @@ function TrelloCard({
   canDelete?: boolean;
   canUnlockIssue?: boolean;
   runningSince?: string | null;
-  nowMs?: number;
   showTime?: boolean;
   /** Days past a stale rule's limit — paints the card's own border red. */
   staleDays?: number | null;
-  /**
-   * **Cancel-reveal highlight** — `true` for ~1.8s after "ยกเลิกงาน" succeeds
-   * so the eye follows the card into the "ยกเลิก" column (outline, not a
-   * border: the stale rule owns the border and must not be clobbered).
-   */
-  flash?: boolean;
   onOpen?: (issue: BoardIssue) => void;
   onEdit?: (issue: BoardIssue) => void;
   onDelete?: (issue: BoardIssue) => void;
   onViewActivity?: (issue: BoardIssue) => void;
   onUnlock?: (issue: BoardIssue) => void;
-  /**
-   * **"ยกเลิกงาน"** — ย้ายการ์ดไปสถานะ "ยกเลิก" (คนละเรื่องกับ "ลบ" ที่ส่ง
-   * ไปถังขยะ และคนละปุ่มกับ "ตีกลับงาน" ในป๊อปอัพซึ่งเป็นนโยบาย MA) ·
-   * ตั้งค่าโดย host (KanbanView) — ไม่ส่ง = ไม่ขึ้นเมนูนี้
-   */
-  onCancelIssue?: (issue: BoardIssue) => void;
-  /**
-   * id ของสถานะ "ยกเลิก" (`null` = ไม่มีสถานะนี้ในระบบ) — การ์ดที่**อยู่ใน
-   * สถานะนี้แล้ว**จะไม่เห็นเมนูนี้ (ไม่ต้อง "ยกเลิก" ซ้ำ)
-   */
-  cancelStatusId?: number | null;
-  /**
-   * **"ย้ายกลับ"** — ปุ่มบนหน้าการ์ด**ก็ต่อเมื่อการ์ดอยู่ในสถานะ "ยกเลิก"**
-   * (กลับด้านกับเมนู "ยกเลิกงาน" ด้านล่าง) · กดครั้งเดียว = host ย้ายไป
-   * **สถานะแรก** (`statuses[0]`) ทันที ไม่มีเมนูเลือก — ตั้งค่าโดย `KanbanView`
-   * · ไม่ส่ง `onRecoverIssue` = ไม่ขึ้นปุ่ม (host ใช้กัน config ที่สถานะแรก
-   * เป็น "ยกเลิก" เอง)
-   */
-  onRecoverIssue?: (issue: BoardIssue) => void;
 }) {
   const {
     attributes,
@@ -897,7 +928,6 @@ function TrelloCard({
   } = useSortable({ id: `issue-${issue.id}`, data: { type: "issue" }, disabled: issue.isLocked });
 
   const t = useTranslations("Boards");
-  const theme = useTheme();
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -909,11 +939,30 @@ function TrelloCard({
   const [hovered, setHovered] = useState(false);
 
   /**
-   * การ์ดอยู่ในสถานะ "ยกเลิก" → ปุ่ม **"กู้คืน" เห็นตรง ๆ บนหน้าการ์ด**
-   * (กลับด้านกับเมนู "ยกเลิกงาน" ที่ซ่อนเมื่ออยู่ในนั้นแล้ว) · เงื่อนไขเดียว
-   * กับที่ host เปิดเมนูสถานะให้ — ไม่มีสิทธิ์แก้ / ไม่มีสถานะนี้ = ไม่ขึ้น
+   * The "…" button lives here (it needs this card's `hovered` state), but it is
+   * handed to `TrelloCardContent` as a prop — an inline JSX literal would be a
+   * brand-new element on every render and defeat that child's `memo`. Keeping it
+   * in a `useMemo` means a dnd-kit context re-render passes the SAME element
+   * down and the card's content skips rendering entirely.
    */
-  const showRecover = canEdit && cancelStatusId != null && issue.statusId === cancelStatusId;
+  const cardActions = useMemo(
+    () =>
+      canEdit || canDelete || canUnlockIssue ? (
+        <IconButton
+          size="small"
+          onClick={(e) => { e.stopPropagation(); setMenuAnchor(e.currentTarget); }}
+          sx={{
+            p: 0.3,
+            opacity: hovered ? 1 : 0,
+            pointerEvents: hovered ? "auto" : "none",
+            transition: "opacity 0.15s ease",
+          }}
+        >
+          <MoreHorizIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+        </IconButton>
+      ) : undefined,
+    [canEdit, canDelete, canUnlockIssue, hovered],
+  );
 
   return (
     <Paper
@@ -938,11 +987,6 @@ function TrelloCard({
         // no overlay, no extra box; back to "none" the moment it moves
         border: staleDays != null ? "2px solid" : "none",
         borderColor: "error.main",
-        // cancel-reveal highlight (see `flash`) — an OUTLINE so the stale
-        // rule's red border above keeps owning the border slot
-        ...(flash
-          ? { outline: "2px solid", outlineOffset: 2, outlineColor: "primary.main" }
-          : {}),
         boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
         transition: "box-shadow 0.2s ease, transform 0.2s ease",
       }}
@@ -950,64 +994,12 @@ function TrelloCard({
     <TrelloCardContent
       issue={issue}
       runningSince={runningSince}
-      nowMs={nowMs}
       showTime={showTime}
       canUnlockIssue={canUnlockIssue}
       staleDays={staleDays}
       onUnlock={onUnlock}
-      actions={
-        (canEdit || canDelete || canUnlockIssue) ? (
-          <IconButton
-            size="small"
-            onClick={(e) => { e.stopPropagation(); setMenuAnchor(e.currentTarget); }}
-            sx={{
-              p: 0.3,
-              opacity: hovered ? 1 : 0,
-              pointerEvents: hovered ? "auto" : "none",
-              transition: "opacity 0.15s ease",
-            }}
-          >
-            <MoreHorizIcon sx={{ fontSize: 16, color: "text.secondary" }} />
-          </IconButton>
-        ) : undefined
-      }
+      actions={cardActions}
     />
-    {/* **"ย้ายกลับ"** — pill ใต้การ์ดเฉพาะใบที่อยู่ในสถานะ "ยกเลิก" · label =
-        `Boards.recover` ("ย้ายกลับ"/"Move back" — เดิมยืม `Boards.restore`
-        "กู้คืน" ซึ่งยังเป็นของถังขยะ) · **สีแบรนด์ sky/navy** (พื้น sky.light +
-        ตัว navy.main): เขียว success เหมาะกับ "กู้คืน" แต่ไม่เหมาะกับ "ย้ายกลับ"
-        ที่เป็นแค่การย้ายสถานะ · ไม่มีไอคอน ชิดขวา · กดครั้งเดียว = ย้ายไป
-        **สถานะแรก** ทันที (ไม่มีเมนูเลือก) — หยุด propagation ก่อนไม่งั้นฟองขึ้น
-        `onClick` ของ `<Paper>` แล้วเปิดป๊อปอัพทับ */}
-    {showRecover && onRecoverIssue && (
-      <Box
-        onClick={(e) => e.stopPropagation()}
-        onPointerDown={(e) => e.stopPropagation()}
-        sx={{ mt: 0.75, display: "flex", justifyContent: "flex-end" }}
-      >
-        <Button
-          size="small"
-          variant="contained"
-          disableElevation
-          onClick={() => onRecoverIssue(issue)}
-          sx={{
-            borderRadius: 999,
-            px: 1.75,
-            py: 0.2,
-            minHeight: 0,
-            bgcolor: theme.palette.sky.light,
-            color: theme.palette.navy.main,
-            fontWeight: 700,
-            fontSize: "0.75rem",
-            textTransform: "none",
-            boxShadow: "none",
-            "&:hover": { bgcolor: theme.palette.sky.main, boxShadow: "none" },
-          }}
-        >
-          {t("recover")}
-        </Button>
-      </Box>
-    )}
     <Menu
       anchorEl={menuAnchor}
       open={Boolean(menuAnchor)}
@@ -1047,15 +1039,6 @@ function TrelloCard({
           <ListItemText sx={{ color: "warning.main" }}>{t("unlock")}</ListItemText>
         </MenuItem>
       )}
-      {/* "ยกเลิกงาน" — ย้ายการ์ดไปสถานะ "ยกเลิก" (คนละความหมายกับ "ลบ" ที่ส่ง
-          ไปถังขยะ, และคนละปุ่มกับ "ตีกลับงาน" ในป๊อปอัพซึ่งเป็นนโยบาย MA) ·
-          ซ่อนเมื่อไม่มีสิทธิ์แก้ / ไม่มีสถานะปลายทาง / การ์ดอยู่ในนั้นแล้ว */}
-      {canEdit && onCancelIssue && cancelStatusId != null && issue.statusId !== cancelStatusId && (
-        <MenuItem onClick={() => { setMenuAnchor(null); onCancelIssue(issue); }}>
-          <ListItemIcon><CancelIcon fontSize="small" color="error" /></ListItemIcon>
-          <ListItemText sx={{ color: "error.main" }}>{t("cancelIssue")}</ListItemText>
-        </MenuItem>
-      )}
       {canDelete && (
         <MenuItem onClick={() => { setMenuAnchor(null); onDelete?.(issue); }}>
           <ListItemIcon><DeleteIcon fontSize="small" color="error" /></ListItemIcon>
@@ -1065,9 +1048,9 @@ function TrelloCard({
     </Menu>
     </Paper>
   );
-}
+});
 
-function KanbanColumn({
+const KanbanColumn = memo(function KanbanColumn({
   status,
   items,
   total,
@@ -1090,10 +1073,6 @@ function KanbanColumn({
   onDeleteIssue,
   onViewActivity,
   onUnlockIssue,
-  onCancelIssue,
-  cancelStatusId,
-  onRecoverIssue,
-  flashIssueId = null,
 }: {
   status: IssueStatus;
   items: BoardIssue[];
@@ -1124,14 +1103,6 @@ function KanbanColumn({
   onDeleteIssue: (issue: BoardIssue) => void;
   onViewActivity: (issue: BoardIssue) => void;
   onUnlockIssue: (issueId: number) => void;
-  /** "ยกเลิกงาน" → ย้ายไปสถานะ "ยกเลิก" (ดู TrelloCard.onCancelIssue) */
-  onCancelIssue?: (issue: BoardIssue) => void;
-  /** id ของสถานะ "ยกเลิก" (`null` = ไม่มี) — การ์ดในสถานะนั้นซ่อนเมนู */
-  cancelStatusId?: number | null;
-  /** ปุ่ม "ย้ายกลับ" บนหน้าการ์ด (ดู TrelloCard.onRecoverIssue) */
-  onRecoverIssue?: (issue: BoardIssue) => void;
-  /** Card id to outline for the cancel-reveal flash (see TrelloCard.flash). */
-  flashIssueId?: number | null;
 }) {
   const { setNodeRef: setDroppableNodeRef, isOver: isColumnOver } = useDroppable({
     id: `status-drop-${status.id}`,
@@ -1145,15 +1116,37 @@ function KanbanColumn({
   // (`?sortBy=statusChangedAt&sortOrder=<order>`). `desc` (default) puts a card
   // that was just dragged in on TOP of its new column, `asc` puts the
   // longest-sitting card on top (the stale rules' targets).
-  const visibleIssues = sortByEnteredAt(items, order);
-  // A transient duplicate (a preview racing a reload) must never render twice:
-  // two components sharing one `issue-<id>` sortable id confuse the drag layer.
-  const seenIds = new Set<number>();
-  const uniqueIssues = visibleIssues.filter((issue) => {
-    if (seenIds.has(issue.id)) return false;
-    seenIds.add(issue.id);
-    return true;
-  });
+  /**
+   * Sorted + de-duped ONCE per `(items, order)`. This column owns a
+   * `useDroppable`, so dnd-kit re-renders it on every pointer move during a
+   * drag — re-running a sort (which parses `Date`s) plus a filter over every
+   * card on each of those renders was a large slice of the jank.
+   */
+  const uniqueIssues = useMemo(() => {
+    const visible = sortByEnteredAt(items, order);
+    // A transient duplicate (a preview racing a reload) must never render twice:
+    // two components sharing one `issue-<id>` sortable id confuse the drag layer.
+    const seenIds = new Set<number>();
+    return visible.filter((issue) => {
+      if (seenIds.has(issue.id)) return false;
+      seenIds.add(issue.id);
+      return true;
+    });
+  }, [items, order]);
+
+  // Stable identity so the memoized `TrelloCard` children can bail out.
+  const handleUnlock = useCallback(
+    (iss: BoardIssue) => onUnlockIssue(iss.id),
+    [onUnlockIssue],
+  );
+
+  // `SortableContext` rebuilds its context value whenever this array identity
+  // changes, which would re-render every card in the column — keep it tied to
+  // `uniqueIssues` (already memoized) instead of rebuilding it per render.
+  const sortableIds = useMemo(
+    () => uniqueIssues.map((i) => `issue-${i.id}`),
+    [uniqueIssues],
+  );
 
   const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const el = event.currentTarget;
@@ -1164,8 +1157,6 @@ function KanbanColumn({
 
   return (
     <Box
-      // anchor for `revealTarget` — the board scrolls THIS column into
-      // view after a successful "ยกเลิกงาน" so the card visibly lands here
       id={`status-col-${status.id}`}
       sx={{
         flex: "0 0 272px",
@@ -1177,7 +1168,9 @@ function KanbanColumn({
         p: 1.5,
         display: "flex",
         flexDirection: "column",
-        maxHeight: "calc(100vh - 200px)",
+        // Fill the row (its height is definite now) — the header stays pinned
+        // on top and only the card list below scrolls.
+        maxHeight: "100%",
         border: isDropTarget ? "2px solid" : "1px solid",
         borderColor: isDropTarget ? "primary.main" : theme.palette.divider,
         transition: "background-color 0.15s ease, border-color 0.15s ease",
@@ -1197,7 +1190,7 @@ function KanbanColumn({
           </Typography>
         </Box>
       </Box>
-      <SortableContext items={uniqueIssues.map((i) => `issue-${i.id}`)} strategy={verticalListSortingStrategy}>
+      <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
         <Box
           ref={setDroppableNodeRef}
           data-status-drop-id={status.id}
@@ -1211,6 +1204,9 @@ function KanbanColumn({
             position: "relative",
             scrollbarWidth: "none",
             "&::-webkit-scrollbar": { display: "none" },
+            // Wheel-up at the top of the list must stop here — no chaining to
+            // an ancestor (the board itself no longer scrolls anyway).
+            overscrollBehavior: "contain",
           }}
         >
           {uniqueIssues.map((issue) => (
@@ -1222,18 +1218,13 @@ function KanbanColumn({
               canDelete={canDelete && (roleName !== "customer" || isFirstColumn)}
               canUnlockIssue={canUnlockIssue}
               runningSince={timers.running[issue.id] ?? null}
-              nowMs={timers.now}
               showTime={showTime}
-              staleDays={staleDaysFor(issue, staleRules, timers.now || Date.now())}
+              staleDays={staleDaysFor(issue, staleRules)}
               onOpen={onOpenIssue}
               onEdit={onEditIssue}
               onDelete={onDeleteIssue}
               onViewActivity={onViewActivity}
-              onUnlock={(iss) => onUnlockIssue(iss.id)}
-              onCancelIssue={onCancelIssue}
-              cancelStatusId={cancelStatusId}
-              onRecoverIssue={onRecoverIssue}
-              flash={flashIssueId === issue.id}
+              onUnlock={handleUnlock}
             />
           ))}
           {items.length === 0 && !loading && (
@@ -1267,7 +1258,7 @@ function KanbanColumn({
 
     </Box>
   );
-}
+});
 
 function AddColumnInline({
   onAdd,
@@ -1654,17 +1645,11 @@ function EditableTextField({
 }
 
 /**
- * **เหตุผลที่บันทึกตอนตีกลับงาน** (ข้อมูล ไม่ใช่ข้อความ UI — ค่าคงที่ภาษาไทย
- * เหมือนชื่อสถานะ/หมวดหมู่อื่นในระบบ) · ส่วน**ชื่อสถานะปลายทาง**มาจาก
- * `@kanban/shared` → `REJECT_STATUS_NAME` (จุดเดียวทั้ง web/API — API ยกเว้น
- * move guards ทั้ง 3 เมื่อปลายทางคือสถานะนี้ด้วยค่าเดียวกันนี้)
- *
- * กฎที่มาของปุ่ม: "ถ้า MA หมด ยังแจ้งได้อยู่ แต่ถ้าเป็น MA/Requirement เราจะ
- * ตีกลับ" — การ์ดถูกย้ายไปสถานะ "ยกเลิก" พร้อมเหตุผลในความคิดเห็น (และ
- * `resolution` แบบ best-effort เพราะฟิลด์นี้ถูก rule ล็อกได้)
+ * **เหตุผลที่เคยบันทึกตอนตีกลับงาน** — ฟีเจอร์ "ตีกลับงาน" (ย้ายไปสถานะ
+ * "ยกเลิก" พร้อมเหตุผล) ถูก**ถอดออกทั้งหมด** พร้อมกับสถานะ "ยกเลิก" เอง
+ * (ดู migration `1831000000000-DropRejectStatus`) — เส้นทาง "ยกเลิก" เหลือแค่
+ * เมนู "ลบ" (ส่งถังขยะ) อันเดียว · ค่าคงที่นี้ถูกลบไปแล้วพร้อม `handleReject`
  */
-const REJECT_REASON =
-  "ตีกลับ: สัญญา MA หมดอายุ — ไม่สามารถรับงานประเภท MA/Requirement ได้";
 
 function IssueDetailDialog({
   issue,
@@ -1736,15 +1721,6 @@ function IssueDetailDialog({
   const [savingComment, setSavingComment] = useState(false);
   const [deletingComment, setDeletingComment] = useState<Comment | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
-  /** ตีกลับงาน — dialog ยืนยัน + สถานะระหว่างย้าย (ปุ่มอยู่ที่ footer ของ popup) */
-  const [confirmReject, setConfirmReject] = useState(false);
-  const [rejecting, setRejecting] = useState(false);
-  /**
-   * **"ย้ายกลับ"** — ปุ่มแทน "ตีกลับงาน" ใน footer เมื่อการ์ดอยู่ในสถานะ "ยกเลิก"
-   * · กดครั้งเดียว = ย้ายไป**สถานะแรก** (`statuses[0]`) ทันที ไม่มีเมนูเลือก ·
-   * `recovering` กันกดซ้ำระหว่างย้าย
-   */
-  const [recovering, setRecovering] = useState(false);
   const currentUser = useAuthStore((s) => s.user) ?? null;
   const currentUserId = currentUser?.id ?? null;
   const t = useTranslations("Boards");
@@ -1761,14 +1737,6 @@ function IssueDetailDialog({
   // the card as the dialog currently shows it (fresher than the `issue` prop
   // after any in-dialog save) — declared early so every helper can read it
   const current = localIssue;
-  /**
-   * สถานะปลายทาง "ยกเลิก" + การ์ดอยู่ในนั้นหรือไม่ — ปุ่ม footer สลับระหว่าง
-   * "ตีกลับงาน" (การ์ดปกติ) กับ **"กู้คืน"** (การ์ดใน "ยกเลิก" แล้ว) · ปุ่ม
-   * ตีกลับที่กดซ้ำบนการ์ดที่ยกเลิกไปแล้วเคยเขียน comment/resolution ทับ
-   * เปล่า ๆ → ตอนนี้ถูกแทนด้วยปุ่มกู้คืนตั้งแต่แรก
-   */
-  const rejectStatusId = statuses.find((s) => s.name === REJECT_STATUS_NAME)?.id ?? null;
-  const isCancelled = rejectStatusId != null && current?.statusId === rejectStatusId;
 
   const canViewComments = can("comment.view");
   const canPostComment = can("comment.create");
@@ -2045,80 +2013,6 @@ function IssueDetailDialog({
       fail(getErrorMessage(e, "บันทึกไม่สำเร็จ"));
     } finally {
       setSaving(false);
-    }
-  };
-
-  /**
-   * **ตีกลับงาน** — ย้ายไปสถานะ "ยกเลิก" พร้อมเหตุผล (ข้อสรุป: MA หมดอายุ →
-   * รับงาน MA/Requirement ไม่ได้) · เหตุผล (comment + `resolution`) เป็น
-   * **best-effort**: comment อาจติดสิทธิ์ และ `resolution` ถูก rule ล็อกในบาง
-   * สถานะ (`assertFieldEditable` ฝั่งเซิร์ฟเวอร์) — ส่วนที่**บังคับคือย้ายสถานะ**
-   * เพราะนั่นคือ "การตีกลับ" จริง (การย้ายส่ง notification ถึงผู้รับ + ผู้แจ้ง
-   * จากกลไกเดิมเอง)
-   */
-  const handleReject = async () => {
-    if (!current || rejecting) return;
-    const target = statuses.find((s) => s.name === REJECT_STATUS_NAME);
-    if (!target) {
-      // ยังไม่มีสถานะปลายทาง → ยังไม่เขียนอะไรเลย (บอกให้ไปเพิ่มใน master-data)
-      setConfirmReject(false);
-      notify(t("detail.rejectNoStatus"), "error");
-      return;
-    }
-    setRejecting(true);
-    try {
-      try {
-        await createComment(current.id, REJECT_REASON);
-      } catch {
-        /* best-effort — เหตุผลหลักอยู่ที่การย้ายสถานะ */
-      }
-      try {
-        await updateIssue(current.id, { resolution: REJECT_REASON });
-      } catch {
-        /* best-effort — resolution อาจถูก rule ล็อกในสถานะนี้ */
-      }
-      await moveIssue(current.id, target.id);
-      resetDrafts();
-      onRefresh();
-      onClose();
-      notify(t("detail.rejectSuccess"), "success");
-    } catch (e) {
-      const msg = getErrorMessage(e, t("detail.rejectFailed"));
-      if (msg) notify(msg, "error");
-    } finally {
-      setRejecting(false);
-      setConfirmReject(false);
-    }
-  };
-
-  /**
-   * **ย้ายกลับ** — กดครั้งเดียว = ย้ายออกจาก "ยกเลิก" ไป**สถานะแรก**
-   * (`statuses[0]` ตามลำดับ position = รอรับเรื่อง) ทันที · comment /
-   * `resolution` ที่ "ตีกลับงาน" ฝังไว้ **เก็บเป็นประวัติ** (ไม่ลบ) ·
-   * activity + notification มาจาก `move()` เดิม · ไม่มี dialog ยืนยัน —
-   * ย้ายกลับย้อนได้เสมอ · 400 = ตาข่าย "ลากทีละคอลัมน์" ถูกเปิดทีหลัง →
-   * ข้อความไทยเดียวกับตอนลากถูกกัน, ไม่ใช่ข้อความอังกฤษดิบ
-   */
-  const handleRecover = async () => {
-    const target = statuses[0];
-    if (!current || recovering || !target || target.id === rejectStatusId) return;
-    setRecovering(true);
-    try {
-      await moveIssue(current.id, target.id);
-      resetDrafts();
-      onRefresh();
-      onClose();
-      notify(t("detail.recoverSuccess", { status: target.name }), "success");
-    } catch (e) {
-      const refusal = isApiError(e, 400) ? t("invalidTransition") : null;
-      if (refusal) notify(refusal, "warning");
-      else {
-        // `getErrorMessage` คืน `null` เมื่อไม่มีข้อความ — เงียบแทนที่จะ notify null
-        const msg = getErrorMessage(e, t("detail.recoverFailed"));
-        if (msg) notify(msg, "error");
-      }
-    } finally {
-      setRecovering(false);
     }
   };
 
@@ -3397,34 +3291,6 @@ function IssueDetailDialog({
               </Button>
             </DialogActions>
           </Dialog>
-          {/* ยืนยันตีกลับงาน — ย้ายไปสถานะ "ยกเลิก" + บันทึกเหตุผล (handleReject) */}
-          <Dialog
-            open={confirmReject}
-            onClose={() => !rejecting && setConfirmReject(false)}
-            maxWidth="xs"
-          >
-            <DialogTitle>{t("detail.rejectConfirmTitle")}</DialogTitle>
-            <DialogContent>
-              {rejecting ? (
-                <CircularProgress size={24} />
-              ) : (
-                <Typography variant="body2">{t("detail.rejectConfirmMessage")}</Typography>
-              )}
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setConfirmReject(false)} disabled={rejecting}>
-                {t("cancel")}
-              </Button>
-              <Button
-                variant="contained"
-                color="error"
-                onClick={handleReject}
-                disabled={rejecting}
-              >
-                {t("detail.reject")}
-              </Button>
-            </DialogActions>
-          </Dialog>
         </Box>
       </Box>
       <Divider />
@@ -3446,41 +3312,6 @@ function IssueDetailDialog({
           </Button>
         )}
         <Box sx={{ flex: 1 }} />
-        {/* การ์ดอยู่ใน "ยกเลิก" → ปุ่ม **ย้ายกลับ** แทน "ตีกลับงาน" (ไม่มี
-            ประโยชน์บนการ์ดที่ยกเลิกไปแล้ว) · กดครั้งเดียว = ย้ายไป**สถานะแรก**
-            ทันที ไม่มีเมนูเลือก · ซ่อนเมื่อไม่มีสถานะแรก หรือสถานะแรกเป็น
-            "ยกเลิก" เอง (ไม่มีที่ให้ย้าย = กดแล้วไม่เกิดอะไร) */}
-        {!readOnly && canEditIssue && isCancelled && statuses[0] != null && statuses[0].id !== rejectStatusId && (
-          <Button
-            size="small"
-            variant="contained"
-            disableElevation
-            disabled={saving || recovering || !current}
-            onClick={handleRecover}
-            // สีเดียวกับ pill บนการ์ด (sky/navy) — ไอคอนถังขยะถูกถอดเพราะ
-            // ไม่เหมาะกับคำว่า "ย้ายกลับ" (ผู้ใช้เคยทักไอคอนนี้แล้ว)
-            sx={{
-              bgcolor: theme.palette.sky.light,
-              color: theme.palette.navy.main,
-              fontWeight: 700,
-              boxShadow: "none",
-              "&:hover": { bgcolor: theme.palette.sky.main, boxShadow: "none" },
-            }}
-          >
-            {t("recover")}
-          </Button>
-        )}
-        {!readOnly && canEditIssue && !isCancelled && (
-          <Button
-            size="small"
-            variant="outlined"
-            color="error"
-            disabled={saving || rejecting || !current}
-            onClick={() => setConfirmReject(true)}
-          >
-            {t("detail.reject")}
-          </Button>
-        )}
         {!readOnly && (
           <Button
             size="small"
@@ -3840,69 +3671,11 @@ function useDebouncedValue<T>(value: T, delay = 300): T {
 }
 
 /**
- * กล่องยืนยัน **"ยกเลิกงาน"** — ย้ายการ์ดไปสถานะ "ยกเลิก" (`REJECT_STATUS_NAME`)
- *
- * - **ไม่เขียน comment / ไม่แตะ `resolution`** — เหตุผล hardcode "สัญญา MA หมดอายุ"
- *   เป็นของปุ่ม "ตีกลับงาน" ในป๊อปอัพรายละเอียด (นโยบาย MA) อยู่แล้ว การ
- *   ยกเลิกทั่วไปจึงเป็นแค่ "ย้ายสถานะ" — activity log + notification มาจาก
- *   `moveIssue()` เดิมเอง
- * - **เซิร์ฟเวอร์ไม่ต้องแก้อะไร**: `IssuesService.move()` ข้าม move guards ทั้ง 3
- *   (step-only / status lock / task-type) **อัตโนมัติ** เมื่อปลายทางชื่อ
- *   `REJECT_STATUS_NAME` — ใช้กติกาเดียวกับปุ่มตีกลับ จึงย้ายข้ามกี่คอลัมน์ก็ได้
- *   แม้กฎ "ลากทีละคอลัมน์" จะเปิดอยู่
- * - Host เป็นคนผูก `issue` (การ์ดที่กดเมนู "…") และ `onDone` หลังย้ายสำเร็จ
- *   (KanbanView → `reloadColumns()`, TableView → `onRefresh()`)
+ * กล่องยืนยัน **"ยกเลิกงาน"** ถูก**ถอดออกทั้งตัว** — ฟีเจอร์นี้ย้ายการ์ดไป
+ * สถานะ "ยกเลิก" ซึ่งถูกลบไปแล้วพร้อมกัน (migration
+ * `1831000000000-DropRejectStatus`) · เส้นทาง "ยกเลิกงาน" เดียวที่เหลือคือ
+ * เมนู **"ลบ"** (ส่งถังขยะ ที่ตอนนี้ UI เรียกว่า "ยกเลิก")
  */
-function CancelIssueDialog({
-  issue,
-  statusId,
-  onClose,
-  onDone,
-}: {
-  issue: BoardIssue | null;
-  /** id ของสถานะ "ยกเลิก" — `null` = ไม่มีสถานะนี้ในระบบ → ไม่เปิด dialog */
-  statusId: number | null;
-  onClose: () => void;
-  /** หลังย้ายสำเร็จ — host ใช้รีเฟรชคอลัมน์/รายการ */
-  onDone: () => void;
-}) {
-  const t = useTranslations("Boards");
-  const { notify } = useNotification();
-  const [saving, setSaving] = useState(false);
-
-  // ไม่มีสถานะปลายทาง = ไม่มีอะไรให้ย้าย → ปิดทิ้ง (เมนูก็ถูก host ซ่อนไว้แล้ว)
-  const open = Boolean(issue) && statusId != null;
-
-  const handleConfirm = async () => {
-    if (!issue || statusId == null || saving) return;
-    setSaving(true);
-    try {
-      await moveIssue(issue.id, statusId);
-      notify(t("cancelIssueSuccess"), "success");
-      onClose();
-      onDone();
-    } catch (e) {
-      notify(getErrorMessage(e, t("cancelIssueFailed")) ?? t("cancelIssueFailed"), "error");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Dialog open={open} onClose={saving ? undefined : onClose}>
-      <DialogTitle>{t("cancelIssueConfirmTitle")}</DialogTitle>
-      <DialogContent>
-        <Typography>{t("cancelIssueConfirmMessage")}</Typography>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={saving}>{t("cancel")}</Button>
-        <Button onClick={handleConfirm} color="error" disabled={saving}>
-          {t("cancelIssue")}
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
 
 function KanbanView({
   statuses,
@@ -3987,13 +3760,6 @@ function KanbanView({
   const [detailTab, setDetailTab] = useState<"comments" | "history">("comments");
   const [addColumnOpen, setAddColumnOpen] = useState(false);
   const [issueToDelete, setIssueToDelete] = useState<BoardIssue | null>(null);
-  /** การ์ดที่กด "ยกเลิกงาน" ในเมนู "…" — รอ confirm ก่อนย้ายไปสถานะ "ยกเลิก" */
-  const [issueToCancel, setIssueToCancel] = useState<BoardIssue | null>(null);
-  /**
-   * **ปุ่ม "ย้ายกลับ" บนหน้าการ์ด** — กดครั้งเดียว = ย้ายไป**สถานะแรก**
-   * ทันที (ไม่มีเมนูเลือก) · `recoveringId` กันกดซ้ำระหว่างย้าย
-   */
-  const [recoveringId, setRecoveringId] = useState<number | null>(null);
   const [localStatuses, setLocalStatuses] = useState<IssueStatus[]>(statuses);
   const [columns, setColumns] = useState<Record<number, KanbanColumnState>>({});
   const [dragStartStatusId, setDragStartStatusId] = useState<number | null>(null);
@@ -4013,15 +3779,28 @@ function KanbanView({
   const dropChainRef = useRef<Promise<void>>(Promise.resolve());
   const isDraggingRef = useRef(false);
   const requestSeqRef = useRef<Record<number, number>>({});
+  /**
+   * Requests currently in flight, per column — independent of the `loading`
+   * STATE so a *silent* reload (the one after a successful drop) still blocks
+   * `handleLoadMore`. Without it a scroll during that window would append
+   * page 2 onto the very list the silent reload is about to replace.
+   */
+  const inFlightRef = useRef<Record<number, number>>({});
+  /**
+   * Mirror of `columns` for callbacks that must keep ONE identity across data
+   * changes — see `handleLoadMore`. Always current by the time a scroll
+   * handler can run (synced in the effect below).
+   */
+  const columnsRef = useRef<Record<number, KanbanColumnState>>({});
+  useEffect(() => {
+    columnsRef.current = columns;
+  }, [columns]);
 
   const debouncedSearch = useDebouncedValue(searchQuery);
 
   /**
-   * Columns the board renders — **"ยกเลิก" shows like any other column**
-   * (always last — see the pin rule); a cancelled card lands there and the
-   * board scrolls itself to it (`revealTarget`) so it never looks like
-   * the card vanished. The status FILTER still narrows to the selected
-   * statuses only — that is its meaning for every status alike.
+   * Columns the board renders — the status FILTER narrows to the selected
+   * statuses only; that is its meaning for every status alike.
    */
   const visibleStatuses = useMemo(
     () =>
@@ -4037,57 +3816,24 @@ function KanbanView({
    */
   const firstStatusId = localStatuses[0]?.id ?? null;
 
-  /**
-   * สถานะปลายทางของ **"ยกเลิกงาน"** — หาด้วยชื่อ `REJECT_STATUS_NAME`
-   * (จุดเดียวกับปุ่ม "ตีกลับงาน" ในป๊อปอัพ) · `null` = ยังไม่มีสถานะนี้ในระบบ
-   * → เมนู "ยกเลิกงาน" ไม่ขึ้นเลย (ไม่มีทางกดแล้วเจอ error)
-   */
-  const cancelStatusId =
-    localStatuses.find((s) => s.name === REJECT_STATUS_NAME)?.id ?? null;
-
-  /**
-   * **Reveal** — หลังย้ายสำเร็จ การ์ดกระโดดไปคอลัมน์ใหม่ (อาจอยู่นอกสายตา —
-   * บอร์ดเลื่อนมาทางขวาตอนกด "ยกเลิก", หรือกลับไปคอลัมน์แรกตอนกด "ย้ายกลับ")
-   * → เลื่อนคอลัมน์ปลายทางเข้าจอ + วาด outline การ์ด ~1.8 วิ — การ์ดต้องไม่
-   * "หายจากบอร์ด" ทั้งสองทาง · ใช้ร่วมกัน: กดยกเลิก (`revealTarget(id,
-   * cancelStatusId)`) และกดย้ายกลับ (`revealTarget(id, firstStatusId)`) ·
-   * `onDone` ของ dialog รันหลัง `onClose()` แต่ก่อน re-render → issue ที่
-   * capture ไว้ยังเป็นการ์ดที่เพิ่งย้ายอยู่
-   */
-  const [flashIssueId, setFlashIssueId] = useState<number | null>(null);
-  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const revealTarget = useCallback(
-    (issueId: number | null, statusId: number | null) => {
-      requestAnimationFrame(() => {
-        if (statusId == null) return;
-        document
-          .getElementById(`status-col-${statusId}`)
-          ?.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
-      });
-      if (issueId == null) return;
-      setFlashIssueId(issueId);
-      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
-      flashTimerRef.current = setTimeout(() => setFlashIssueId(null), 1800);
-    },
-    [],
-  );
-  useEffect(
-    () => () => {
-      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
-    },
-    [],
-  );
-
   const loadColumn = useCallback(
-    async (statusId: number, pageNum: number, append: boolean) => {
+    async (statusId: number, pageNum: number, append: boolean, silent = false) => {
       const seq = (requestSeqRef.current[statusId] = (requestSeqRef.current[statusId] ?? 0) + 1);
-      setColumns((prev) => ({
-        ...prev,
-        [statusId]: {
-          ...(prev[statusId] ?? { items: [], page: 0, total: 0, loading: false }),
-          loading: true,
-        },
-      }));
+      inFlightRef.current[statusId] = seq;
+      // `silent` = this reload is the follow-up to a drop that just succeeded.
+      // The preview already shows the card where the server is about to put it,
+      // so the only thing the optimistic `loading` flag added was a spinner
+      // flashing in both columns on every single drop. The data write below is
+      // byte-identical either way — only the intermediate spinner is skipped.
+      if (!silent) {
+        setColumns((prev) => ({
+          ...prev,
+          [statusId]: {
+            ...(prev[statusId] ?? { items: [], page: 0, total: 0, loading: false }),
+            loading: true,
+          },
+        }));
+      }
       try {
         const res = await fetchIssues(
           pageNum,
@@ -4132,6 +3878,9 @@ function KanbanView({
           if (!existing) return prev;
           return { ...prev, [statusId]: { ...existing, loading: false } };
         });
+      } finally {
+        // only clear OUR slot — a newer request owns it now
+        if (inFlightRef.current[statusId] === seq) delete inFlightRef.current[statusId];
       }
     },
     [
@@ -4163,17 +3912,28 @@ function KanbanView({
 
   const handleLoadMore = useCallback(
     (statusId: number) => {
-      const col = columns[statusId];
+      // Auto-scroll fires the column's `onScroll` while a card is in flight —
+      // paginating there would call `setColumns` mid-drag and re-render every
+      // column under the pointer. `isDraggingRef` existed for exactly this and
+      // was never read; load the next page once the drop settles instead.
+      if (isDraggingRef.current) return;
+      // a reload (visible OR silent) is already bringing this column up to date
+      if (inFlightRef.current[statusId] !== undefined) return;
+      const col = columnsRef.current[statusId];
       if (!col || col.loading || col.items.length >= col.total) return;
       void loadColumn(statusId, col.page + 1, true);
     },
-    [columns, loadColumn],
+    // `columns` deliberately NOT a dep: reading it through the ref keeps this
+    // callback stable, so an unrelated `setColumns` (a drag preview, another
+    // column's page append) no longer hands every KanbanColumn a new
+    // `onLoadMore` and defeats `React.memo`.
+    [loadColumn],
   );
 
   const reloadColumns = useCallback(
-    (ids?: number[]) => {
+    (ids?: number[], silent = false) => {
       const targets = ids ?? visibleStatuses.map((s) => s.id);
-      void Promise.all(targets.map((id) => loadColumn(id, 1, false)));
+      void Promise.all(targets.map((id) => loadColumn(id, 1, false, silent)));
     },
     [loadColumn, visibleStatuses],
   );
@@ -4311,20 +4071,9 @@ function KanbanView({
       return;
     }
 
-    /**
-     * ปลายทาง = สถานะ "ยกเลิก" → **ข้ามทั้งสองเช็คด้านล่าง** — parity กับ
-     * `IssuesService.move()` (`isRejectMove` ข้าม move guards ทั้ง 3): "การ
-     * ตีกลับ" ต้องเข้าคอลัมน์นี้ได้จากทุกคอลัมน์ (คอลัมน์นี้อยู่ท้ายสุดเสมอ
-     * จึงไม่เคยติดกับใครเมื่อมีหลายคอลัมน์) และเคสหลักคือการ์ดยังไม่ระบุ
-     * ประเภทใน "รอรับเรื่อง" — ไม่งั้น preview จะปฏิเสธทั้งที่ API จะรับ
-     * · คอลัมน์ "ยกเลิก" ถูกซ่อนจากบอร์ดตามปกติ (ดู `visibleStatuses`) จึง
-     * เจอเช็คนี้ก็ต่อเมื่อฟิลเตอร์สถานะ reveal มันออกมา
-     */
-    const isCancelTarget = targetStatusId === cancelStatusId;
-
     // "one column at a time": a jump-over column gets no preview — the card
     // stays put and handleDragEnd explains it on release
-    if (!isCancelTarget && stepOnlyMoves && !isAdjacentStatus(sourceStatusId, targetStatusId)) {
+    if (stepOnlyMoves && !isAdjacentStatus(sourceStatusId, targetStatusId)) {
       blockedTargetStatusId.current = targetStatusId;
       blockedReasonRef.current = "step";
       dragTargetStatusId.current = null;
@@ -4334,7 +4083,6 @@ function KanbanView({
     // "ประเภทงานก่อนลาก": the card sits in a gated status with no task type —
     // same snap-back as the step-only refusal, its own message on release
     if (
-      !isCancelTarget &&
       sourceStatusId != null &&
       taskTypeGateIds.includes(sourceStatusId) &&
       !activeIssue.taskType
@@ -4405,6 +4153,7 @@ function KanbanView({
 
     if (!over) {
       blockedTargetStatusId.current = null;
+      dragTargetStatusId.current = null;
       reloadDragColumns(dragStartStatusId, previewedStatusId);
       setDragStartStatusId(null);
       return;
@@ -4417,27 +4166,11 @@ function KanbanView({
       const overStatusId = Number(String(over.id).replace("status-", ""));
       if (activeStatusId === overStatusId) return;
 
-      const activeStatus = localStatuses.find((s) => s.id === activeStatusId);
-      if (!activeStatus) return;
-
-      // คอลัมน์ "ยกเลิก" ลากไม่ได้ — ถูกล็อกไว้ท้ายสุดเสมอ (server ยัง pin ให้
-      // อีกชั้นใน `PATCH /issue-statuses/reorder` → `pinRejectLast`)
-      if (activeStatus.name === REJECT_STATUS_NAME) return;
-
       const oldIndex = localStatuses.findIndex((s) => s.id === activeStatusId);
       const newIndex = localStatuses.findIndex((s) => s.id === overStatusId);
       if (oldIndex === -1 || newIndex === -1) return;
 
       const reordered = arrayMove(localStatuses, oldIndex, newIndex);
-      // กันไว้อีกชั้น: ลากคอลัมน์อื่นไป "ทับ" ตำแหน่งของ "ยกเลิก" ก็ตาม
-      // ดันกลับท้ายสุดก่อนบันทึก (payload จึงไม่มีทางเอา "ยกเลิก" ไปไว้กลาง list)
-      const rejectAt = reordered.findIndex(
-        (s, i) => i !== reordered.length - 1 && s.name === REJECT_STATUS_NAME,
-      );
-      if (rejectAt !== -1) {
-        const [rejectCol] = reordered.splice(rejectAt, 1);
-        reordered.push(rejectCol);
-      }
       setLocalStatuses(reordered);
       try {
         await reorderStatuses(
@@ -4475,8 +4208,19 @@ function KanbanView({
           blockedReason === "taskType" ? t("taskTypeRequired") : t("invalidTransition"),
           "warning",
         );
+        // the preview may already sit in an earlier column → snap it back
+        reloadDragColumns(sourceStatusId, previewedStatusId);
+        setDragStartStatusId(null);
+        return;
       }
-      reloadDragColumns(sourceStatusId, previewedStatusId);
+      // Nothing was written AND `handleDragOver` never moved the card: every
+      // hover over the card's own column returns early (source === target), so
+      // `columns` is still byte-for-byte what the server sent. The reload that
+      // used to sit here just flashed a spinner and re-sorted an already
+      // correct list on every same-column drop. A round-trip (out and back)
+      // does NOT land here — `handleDragOver` sets `dragTargetStatusId` on
+      // every real preview move, so it falls through to the same-column
+      // branch below and still reloads to drop the preview's fake stamp.
       setDragStartStatusId(null);
       return;
     }
@@ -4491,7 +4235,13 @@ function KanbanView({
         await moveIssue(issueId, targetStatusId);
         // the rules may have started/stopped/reset a timer on this drag
         timers.refresh();
-        reloadColumns(sourceStatusId !== null ? [sourceStatusId, targetStatusId] : [targetStatusId]);
+        // silent: the preview already put the card where this reload will find
+        // it, so no spinner — the list is just replaced with the server's
+        // authoritative order (which drops the preview's fake stamp)
+        reloadColumns(
+          sourceStatusId !== null ? [sourceStatusId, targetStatusId] : [targetStatusId],
+          true,
+        );
       });
     } catch (e) {
       // 409 = the server's status lock refused the drag (client state was
@@ -4570,44 +4320,69 @@ function KanbanView({
     }
   };
 
-  const handleUnlockIssue = async (issueId: number) => {
-    try {
-      await unlockIssue(issueId);
-      reloadColumns();
-    } catch (e) {
-      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
-    }
-  };
+  const handleUnlockIssue = useCallback(
+    async (issueId: number) => {
+      try {
+        await unlockIssue(issueId);
+        reloadColumns();
+      } catch (e) {
+        fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      }
+    },
+    [reloadColumns, fail],
+  );
 
-  /**
-   * **ย้ายกลับ** — กดปุ่มบนการ์ดครั้งเดียว = ย้ายออกจาก "ยกเลิก" ไป**สถานะ
-   * แรก** (`firstStatusId` = `localStatuses[0]` ตามลำดับ position = รอรับเรื่อง)
-   * ทันที ไม่มีเมนูเลือก · comment / `resolution` ที่ฝังตอนตีกลับเก็บเป็น
-   * ประวัติ, activity + notification มาจาก `move()` เดิม · `reloadColumns()` +
-   * `revealTarget` — คอลัมน์แรกอาจอยู่นอกสายตา (บอร์ดเลื่อนมาทางขวาตอนอยู่
-   * ใน "ยกเลิก") → เลื่อนไปหา + ไฮไลท์การ์ด ~1.8 วิ เหมือนตอนกดยกเลิก ·
-   * 400 = ตาข่าย "ลากทีละคอลัมน์" ถูกเปิดทีหลัง (62→1 ไม่ติดกัน) → ข้อความ
-   * ไทยเดียวกับตอนลากถูกกัน, ไม่ใช่ข้อความอังกฤษดิบ
-   */
-  const handleRecover = async (issue: BoardIssue) => {
-    if (recoveringId != null || firstStatusId == null) return;
-    setRecoveringId(issue.id);
-    try {
-      await moveIssue(issue.id, firstStatusId);
-      notify(t("detail.recoverSuccess", { status: localStatuses[0]?.name ?? "" }), "success");
-      reloadColumns();
-      revealTarget(issue.id, firstStatusId);
-    } catch (e) {
-      const refusal = isApiError(e, 400) ? t("invalidTransition") : null;
-      if (refusal) notify(refusal, "warning");
-      else fail(getErrorMessage(e, t("detail.recoverFailed")));
-    } finally {
-      setRecoveringId(null);
-    }
-  };
+  // Stable identities for the memoized `KanbanColumn` → `TrelloCard` →
+  // `TrelloCardContent` chain. Inline lambdas here would be a new function per
+  // render and every memo below them would bail out on the first check.
+  const openDetailComments = useCallback((issue: BoardIssue) => {
+    setDetailIssue(issue);
+    setDetailTab("comments");
+  }, []);
+  const handleDeleteIssueClick = useCallback((issue: BoardIssue) => {
+    setDetailIssue(null);
+    setIssueToDelete(issue);
+  }, []);
+  const openDetailHistory = useCallback((issue: BoardIssue) => {
+    setDetailIssue(issue);
+    setDetailTab("history");
+  }, []);
+
+  // Stable ids for the column SortableContext — a fresh array per render would
+  // rebuild its context value and re-render every column underneath.
+  const statusSortableIds = useMemo(
+    () => visibleStatuses.map((s) => `status-${s.id}`),
+    [visibleStatuses],
+  );
 
   return (
-    <Box sx={{ width: "100%", minWidth: 0 }}>
+    /**
+     * The board owns the viewport height so the DOCUMENT never scrolls here:
+     * the search bar and the column headers must stay put while only the card
+     * lists inside each column scroll. The `calc` subtracts the chrome stacked
+     * around this box — AppBar/Toolbar spacer (`mixins.toolbar`: 56, 64 from
+     * the `sm` breakpoint 600px) + `main` padding (12, 24 from the `md`
+     * breakpoint 900px, both sides) + the page wrapper's `pb: 2` (16), which
+     * matches the xs/sm/md keys below exactly: 56+12+16+12 = 96,
+     * 64+12+16+12 = 104, 64+24+16+24 = 128. The toolbar block above can wrap
+     * on a narrow screen; as a flex item with `flexShrink: 0` it keeps its
+     * height and the row below shrinks instead of pushing the page into
+     * overflow (a landscape phone gets a toolbar 8px shorter → an 8px gap at
+     * the bottom, never an overflow).
+     */
+    <Box
+      sx={{
+        width: "100%",
+        minWidth: 0,
+        display: "flex",
+        flexDirection: "column",
+        height: {
+          xs: "calc(100vh - 96px)",
+          sm: "calc(100vh - 104px)",
+          md: "calc(100vh - 128px)",
+        },
+      }}
+    >
       <Box
         component="nav"
         sx={{
@@ -4617,28 +4392,38 @@ function KanbanView({
           bgcolor: "background.default",
           pb: 1,
           mb: 3,
-          borderBottom: "1px solid",
-          borderColor: "divider",
+          flexShrink: 0,
           width: "100%",
         }}
       >
         {toolbar}
       </Box>
-      <Box sx={{ display: "flex", gap: 2, overflowX: "auto", pb: 2, width: "100%", minWidth: 0, minHeight: 0 }}>
+      <Box
+        sx={{
+          display: "flex",
+          gap: 2,
+          overflowX: "auto",
+          pb: 2,
+          width: "100%",
+          minWidth: 0,
+          minHeight: 0,
+          flex: 1,
+        }}
+      >
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCenter}
+          collisionDetection={boardCollisionDetection}
           onDragStart={handleDragStart}
           onDragOver={handleDragOver}
           onDragEnd={handleDragEnd}
           onDragCancel={handleDragCancel}
         >
-          <SortableContext items={visibleStatuses.map((s) => `status-${s.id}`)} strategy={horizontalListSortingStrategy}>
+          <SortableContext items={statusSortableIds} strategy={horizontalListSortingStrategy}>
             {visibleStatuses.map((status) => (
               <KanbanColumn
                 key={status.id}
                 status={status}
-                items={columns[status.id]?.items ?? []}
+                items={columns[status.id]?.items ?? EMPTY_ITEMS}
                 total={columns[status.id]?.total ?? 0}
                 hasMore={(columns[status.id]?.items.length ?? 0) < (columns[status.id]?.total ?? 0)}
                 loading={columns[status.id]?.loading ?? false}
@@ -4654,25 +4439,15 @@ function KanbanView({
                 showTime={showTime}
                 staleRules={staleRules}
                 order={cardOrder}
-                onOpenIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
-                onEditIssue={(issue) => { setDetailIssue(issue); setDetailTab("comments"); }}
-                onDeleteIssue={(issue) => { setDetailIssue(null); setIssueToDelete(issue); }}
-                onCancelIssue={(issue) => { setDetailIssue(null); setIssueToCancel(issue); }}
-                cancelStatusId={cancelStatusId}
-                // ปุ่ม "ย้ายกลับ" ซ่อนเมื่อไม่มีสถานะแรก หรือสถานะแรกดันเป็น
-                // "ยกเลิก" เอง (ไม่มีที่ให้ย้าย = กดแล้วไม่เกิดอะไร)
-                onRecoverIssue={
-                  firstStatusId != null && firstStatusId !== cancelStatusId
-                    ? handleRecover
-                    : undefined
-                }
-                flashIssueId={flashIssueId}
-                onViewActivity={(issue) => { setDetailIssue(issue); setDetailTab("history"); }}
+                onOpenIssue={openDetailComments}
+                onEditIssue={openDetailComments}
+                onDeleteIssue={handleDeleteIssueClick}
+                onViewActivity={openDetailHistory}
                 onUnlockIssue={handleUnlockIssue}
               />
             ))}
           </SortableContext>
-          <DragOverlay dropAnimation={dropAnimation}>
+          <DragOverlay dropAnimation={dropAnimation} zIndex={1400}>
             {activeIssue ? (
               <Box
                 sx={{
@@ -4688,7 +4463,6 @@ function KanbanView({
                 <TrelloCardContent
                   issue={activeIssue}
                   runningSince={timers.running[activeIssue.id] ?? null}
-                  nowMs={timers.now}
                   showTime={showTime}
                   staleDays={staleDaysFor(activeIssue, staleRules)}
                 />
@@ -4755,7 +4529,7 @@ function KanbanView({
         priorities={priorities}
       />
       <Dialog open={!!issueToDelete} onClose={() => setIssueToDelete(null)}>
-        <DialogTitle>ยืนยันการลบ</DialogTitle>
+        <DialogTitle>ยืนยันการยกเลิก</DialogTitle>
         <DialogContent>
           <Typography>
             {t("deleteIssueConfirmTrash", { title: issueToDelete?.title ?? "" })}
@@ -4764,24 +4538,10 @@ function KanbanView({
         <DialogActions>
           <Button onClick={() => setIssueToDelete(null)}>{t("cancel")}</Button>
           <Button onClick={handleDeleteIssue} color="error">
-            {t("delete")}
+            {t("confirm")}
           </Button>
         </DialogActions>
       </Dialog>
-      {/* "ยกเลิกงาน" — ย้ายไปสถานะ "ยกเลิก"; `reloadColumns()` ดึงทุกคอลัมน์ใหม่
-          ทั้งคอลัมน์ต้นทาง (การ์ดหายไป) และคอลัมน์ปลายทาง (การ์ดโผล่) แล้ว
-          `revealTarget` เลื่อนบอร์ดไปคอลัมน์ปลายทาง + ไฮไลท์การ์ด ~1.8 วิ
-          — อ่าน `issueToCancel` จาก closure ของ render ที่ dialog เปิดอยู่
-          (onDone ถูกเรียกหลัง `onClose()` แต่ก่อน re-render จึงยังเป็นการ์ดเดิม) */}
-      <CancelIssueDialog
-        issue={issueToCancel}
-        statusId={cancelStatusId}
-        onClose={() => setIssueToCancel(null)}
-        onDone={() => {
-          reloadColumns();
-          revealTarget(issueToCancel?.id ?? null, cancelStatusId);
-        }}
-      />
     </Box>
   );
 }
@@ -4841,9 +4601,10 @@ function TableView({
   currentUserId: string | null;
   onRefresh: () => void;
   /**
-   * Shared ↑↓ toggle (the toolbar button) — `desc` = newest status change on
-   * top, `asc` = longest-sitting on top, same comparator as the Kanban
-   * columns (`sortByEnteredAt`).
+   * Shared ↑↓ direction (the toolbar button is gone — only the folder view's
+   * dropdown flips it now) — `desc` = newest status change on top, `asc` =
+   * longest-sitting on top, same comparator as the Kanban columns
+   * (`sortByEnteredAt`).
    */
   cardOrder: "desc" | "asc";
   toolbar?: React.ReactNode;
@@ -4861,23 +4622,10 @@ function TableView({
   const [editIssue, setEditIssue] = useState<BoardIssue | null>(null);
   const [detailTab, setDetailTab] = useState<"comments" | "history">("comments");
   const [issueToDelete, setIssueToDelete] = useState<BoardIssue | null>(null);
-  /** การ์ดที่กด "ยกเลิกงาน" ในเมนูแถว — รอ confirm ก่อนย้ายไปสถานะ "ยกเลิก" */
-  const [issueToCancel, setIssueToCancel] = useState<BoardIssue | null>(null);
   const [actionAnchor, setActionAnchor] = useState<{
     el: HTMLElement;
     issue: BoardIssue;
   } | null>(null);
-  /**
-   * **"ย้ายกลับ" ในเมนูแถว** — กดครั้งเดียว = ย้ายไป**สถานะแรก** ทันที (ไม่มี
-   * เมนูเลือก) · `recoveringId` กันกดซ้ำระหว่างย้าย · mirror ของ `handleRecover`
-   * ใน `KanbanView`
-   */
-  const [recoveringId, setRecoveringId] = useState<number | null>(null);
-  /**
-   * สถานะปลายทางของ **"ยกเลิกงาน"** — หาด้วยชื่อ `REJECT_STATUS_NAME` (จุดเดียว
-   * กับปุ่ม "ตีกลับงาน") · `null` = ไม่มีสถานะนี้ในระบบ → เมนูไม่ขึ้น
-   */
-  const cancelStatusId = statuses.find((s) => s.name === REJECT_STATUS_NAME)?.id ?? null;
   const [page, setPage] = useState(1);
   const hasActiveFilters =
     selectedStatusIds.length > 0 ||
@@ -4963,30 +4711,6 @@ function TableView({
     }
   };
 
-  /**
-   * **ย้ายกลับจากเมนูแถว** — กดครั้งเดียว = ย้ายออกจาก "ยกเลิก" ไป**สถานะ
-   * แรก** (`statuses[0]` ตามลำดับ position = รอรับเรื่อง) ทันที · mirror ของ
-   * `handleRecover` ใน `KanbanView` (comment/`resolution` ที่ฝังตอนตีกลับเก็บ
-   * เป็นประวัติ, activity + notification มาจาก `move()` เดิม) · 400 = ตาข่าย
-   * "ลากทีละคอลัมน์" ถูกเปิดทีหลัง → ข้อความไทยเดียวกับตอนลากถูกกัน
-   */
-  const handleRecover = async (issue: BoardIssue) => {
-    const target = statuses[0];
-    if (recoveringId != null || !target || target.id === cancelStatusId) return;
-    setRecoveringId(issue.id);
-    try {
-      await moveIssue(issue.id, target.id);
-      notify(t("detail.recoverSuccess", { status: target.name }), "success");
-      onRefresh();
-    } catch (e) {
-      const refusal = isApiError(e, 400) ? t("invalidTransition") : null;
-      if (refusal) notify(refusal, "warning");
-      else fail(getErrorMessage(e, t("detail.recoverFailed")));
-    } finally {
-      setRecoveringId(null);
-    }
-  };
-
   const getStatusName = (statusId: number | null): string => {
     if (!statusId) return "—";
     const s = statuses.find((st) => st.id === statusId);
@@ -5018,8 +4742,6 @@ function TableView({
             pb: 1,
             mb: 3,
             minWidth: 0,
-            borderBottom: "1px solid",
-            borderColor: "divider",
             width: "100%",
           }}
         >
@@ -5168,53 +4890,7 @@ function TableView({
                             <ListItemText>{t("history")}</ListItemText>
                           </MenuItem>
                         )}
-                        {/* "ยกเลิกงาน" — ย้ายไปสถานะ "ยกเลิก" (คนละความหมายกับ
-                            "ลบ" ที่ส่งไปถังขยะ) · ซ่อนเมื่อไม่มีสิทธิ์แก้ /
-                            ไม่มีสถานะปลายทาง / การ์ดอยู่ในนั้นแล้ว */}
-                        {canEdit &&
-                          cancelStatusId != null &&
-                          actionAnchor &&
-                          actionAnchor.issue.statusId !== cancelStatusId && (
-                            <MenuItem
-                              onClick={() => {
-                                const selected = actionAnchor?.issue;
-                                setActionAnchor(null);
-                                if (selected) {
-                                  setDetailIssue(null);
-                                  setIssueToCancel(selected);
-                                }
-                              }}
-                            >
-                              <ListItemIcon><CancelIcon fontSize="small" color="error" /></ListItemIcon>
-                              <ListItemText sx={{ color: "error.main" }}>{t("cancelIssue")}</ListItemText>
-                            </MenuItem>
-                          )}
-                        {/* "ย้ายกลับ" — กลับด้านกับ "ยกเลิกงาน": ขึ้นเฉพาะแถวที่อยู่
-                            ในสถานะ "ยกเลิก" แล้ว · กดครั้งเดียว = ย้ายไปสถานะแรก
-                            ทันที (mirror ปุ่มบนหน้าการ์ด) · ซ่อนเมื่อสถานะแรกเป็น
-                            "ยกเลิก" เอง (ไม่มีที่ให้ย้าย) */}
-                        {canEdit &&
-                          cancelStatusId != null &&
-                          actionAnchor &&
-                          actionAnchor.issue.statusId === cancelStatusId &&
-                          statuses[0] != null &&
-                          statuses[0].id !== cancelStatusId && (
-                            <MenuItem
-                              disabled={recoveringId != null}
-                              onClick={() => {
-                                const selected = actionAnchor?.issue;
-                                setActionAnchor(null);
-                                if (selected) void handleRecover(selected);
-                              }}
-                            >
-                              <ListItemIcon>
-                                <UndoIcon fontSize="small" sx={{ color: "navy.main" }} />
-                              </ListItemIcon>
-                              <ListItemText sx={{ color: "navy.main", fontWeight: 600 }}>
-                                {t("recover")}
-                              </ListItemText>
-                            </MenuItem>
-                          )}
+                        {/* "ลบ" — ส่งการ์ดไปถังขยะ (รายการ "ยกเลิก" ใน toolbar) */}
                         {canManage && (
                           <MenuItem
                             onClick={() => {
@@ -5287,7 +4963,7 @@ function TableView({
         priorities={priorities}
       />
       <Dialog open={!!issueToDelete} onClose={() => setIssueToDelete(null)}>
-        <DialogTitle>ยืนยันการลบ</DialogTitle>
+        <DialogTitle>ยืนยันการยกเลิก</DialogTitle>
         <DialogContent>
           <Typography>
             {t("deleteIssueConfirmTrash", { title: issueToDelete?.title ?? "" })}
@@ -5296,17 +4972,10 @@ function TableView({
         <DialogActions>
           <Button onClick={() => setIssueToDelete(null)}>{t("cancel")}</Button>
           <Button onClick={handleDeleteIssue} color="error">
-            {t("delete")}
+            {t("confirm")}
           </Button>
         </DialogActions>
       </Dialog>
-      {/* "ยกเลิกงาน" — ย้ายไปสถานะ "ยกเลิก" แล้วดึงรายการใหม่ (`onRefresh`) */}
-      <CancelIssueDialog
-        issue={issueToCancel}
-        statusId={cancelStatusId}
-        onClose={() => setIssueToCancel(null)}
-        onDone={onRefresh}
-      />
     </Box>
   );
 }
@@ -5351,20 +5020,20 @@ function loadFolderThumb(issueId: number, attachmentCount: number): Promise<stri
         return null;
       }
       const token = getToken();
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002"}/attachments/${image.id}/download`,
-        { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      // ผ่าน `apiFetchResponse` → 401 (token หมดอายุ) เรียก logout handler
+      // เหมือนเส้นอื่น แต่ 403 ยังเป็น `ApiError` ให้เช็คเป็น miss ด้านล่าง
+      const res = await apiFetchResponse(
+        `/attachments/${image.id}/download`,
+        {},
+        token,
       );
-      if (!res.ok) {
-        // 403 = no permission — cache the miss; anything else stays retryable
-        if (res.status === 403) thumbCache.set(issueId, { count: attachmentCount, url: null });
-        return null;
-      }
       const url = URL.createObjectURL(await res.blob());
       thumbCache.set(issueId, { count: attachmentCount, url });
       return url;
-    } catch {
-      // network hiccup — leave uncached so the next mount retries
+    } catch (e) {
+      // 403 = no permission — cache the miss; 401 (logout already fired) and a
+      // network hiccup stay uncached so the next mount retries
+      if (isApiError(e, 403)) thumbCache.set(issueId, { count: attachmentCount, url: null });
       return null;
     } finally {
       thumbPending.delete(issueId);
@@ -5520,9 +5189,10 @@ function FolderView({
   /**
    * Shared ↑↓ direction — of whichever sort criterion this view's dropdown is
    * on (`sortByEnteredAt` for the entered/created criteria, reversed priority
-   * order for ความสำคัญ). Flipped by the toolbar button in the board/table
-   * views; **this view hides that button**, so the dropdown's two direction
-   * items below call `onToggleCardOrder` instead.
+   * order for ความสำคัญ). The board/table toolbar no longer renders a flip
+   * button, so **this dropdown's two direction items are the only control
+   * left** — they call `onToggleCardOrder`, and the board/table follow along
+   * because the state is shared.
    */
   cardOrder: "desc" | "asc";
   /** Flip `cardOrder` — the folder view's own direction control (see above). */
@@ -5543,9 +5213,10 @@ function FolderView({
   const [visibleCount, setVisibleCount] = useState(FOLDER_PAGE_SIZE);
   /**
    * Sort **criterion** for the level-5 card grid — the direction is NOT in
-   * here: the shared `cardOrder` flips it (toolbar ↑↓ in the board/table
-   * views, this dropdown's direction items in THIS view), so no label ever
-   * bakes in a direction. `entered` (default) = วันที่เข้าสถานะ, the very
+   * here: the shared `cardOrder` flips it (this dropdown's direction items —
+   * the only direction control left now that the toolbar's ↑↓ is gone), so
+   * no label ever bakes in a direction. `entered` (default) = วันที่เข้าสถานะ,
+   * the very
    * criterion the board's columns use; `created` = the old creation-date
    * order; `prio` = ความสำคัญ (criterion borrowed from the old dropdown,
    * unchanged).
@@ -5737,11 +5408,10 @@ function FolderView({
   const visibleFolders = hasActiveFilters ? folders.filter((f) => f.count > 0) : folders;
 
   /* Level 5: flat card grid — paged client-side. The CRITERION comes from the
-     dropdown below, the DIRECTION from the shared `cardOrder` — flipped by the
-     toolbar's ↑↓ in the board/table views and by that dropdown's direction
-     items here (folder hides the button), so one arrow means "flip the
-     order" in every view. (Plain code, not a memo: `branch` is rebuilt every
-     render anyway, exactly as before.) */
+     dropdown below, the DIRECTION from the shared `cardOrder` — flipped ONLY
+     by that dropdown's direction items now (the toolbar's ↑↓ is gone), so one
+     arrow means "flip the order" in every view. (Plain code, not a memo:
+     `branch` is rebuilt every render anyway, exactly as before.) */
   const sortedCards = (() => {
     // Creation time, newest-first by default and flipped by the same arrow —
     // tie-breaks (createdAt, id) mirror the API's fixed addOrderBy exactly
@@ -5906,10 +5576,11 @@ function FolderView({
                 value={sort}
                 onChange={(e) => {
                   const v = e.target.value as string;
-                  // The two DIRECTION items live in this menu too (this view
-                  // hides the toolbar's ↑↓): flip the shared order and leave
-                  // the criterion alone. Only the OTHER direction flips, so
-                  // clicking the state you are already on is a no-op.
+                  // The two DIRECTION items live in this menu too (there is no
+                  // toolbar ↑↓ any more, so this menu owns the flip): flip the
+                  // shared order and leave the criterion alone. Only the OTHER
+                  // direction flips, so clicking the state you are already on
+                  // is a no-op.
                   if (v === "order-desc" || v === "order-asc") {
                     const want = v === "order-asc" ? "asc" : "desc";
                     if (want !== cardOrder) onToggleCardOrder();
@@ -5922,9 +5593,9 @@ function FolderView({
                   return (
                     <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
                       <Typography sx={PILL_VALUE_SX}>{sortLabel(value)}</Typography>
-                      {/* Current direction at a glance — the SAME glyph +
-                          rotation as the toolbar's ↑↓, which this view does
-                          not render. */}
+                      {/* Current direction at a glance — the glyph + rotation
+                          the removed toolbar ↑↓ used to show; this dropdown
+                          is the only place left that carries it. */}
                       <SwapVertIcon
                         sx={{
                           fontSize: 16,
@@ -5956,10 +5627,9 @@ function FolderView({
                     </Box>
                   </MenuItem>
                 ))}
-                {/* DIRECTION — the toolbar's ↑↓ is hidden in this view, so the
-                    flip lives here: the two states (✓ = the one you are on),
-                    wording shared with the toolbar button's tooltip
-                    (`cardOrderNewest`/`cardOrderOldest`). These values are NOT
+                {/* DIRECTION — the toolbar's ↑↓ is gone, so the flip lives
+                    here: the two states (✓ = the one you are on), wording
+                    shared with the closed box's glyph. These values are NOT
                     Select values — the `onChange` above intercepts them and
                     never touches `sort`. */}
                 <Divider sx={{ my: 0.75 }} />
@@ -6319,7 +5989,9 @@ function BoardsPageInner() {
    * floats the cards the stale rules are about to catch). The Kanban columns
    * ask the API for it (`?sortBy=statusChangedAt`), the table and the folder
    * grid sort the same list with the same comparator (`sortByEnteredAt`), and
-   * the folder's dropdown picks the CRITERION while this flips its direction.
+   * the folder's dropdown picks the CRITERION while this flips its direction —
+   * that dropdown is the ONLY control left (the toolbar's ↑↓ was removed), so
+   * the board and table simply follow whatever it last chose.
    * `/reports` keeps its own `createdAt` order — out of scope. The choice
    * survives a reload (localStorage) — read in an effect because SSR has no
    * `localStorage`, and a stored `desc` equals the default so it never costs
@@ -6407,9 +6079,11 @@ function BoardsPageInner() {
       : null;
   const [deepLinkIssue, setDeepLinkIssue] = useState<BoardIssue | null>(null);
 
-  // running timers — one fetch for the whole board + one shared ticking clock
+  // running timers — one fetch for the whole board. There is deliberately NO
+  // shared ticking clock here any more: each chip that shows a live timer owns
+  // its own `useNow()`, so the page root no longer re-rendered once a second
+  // (a visible one-second stutter across the whole board, mid-drag included).
   const [openTimers, setOpenTimers] = useState<Record<number, string>>({});
-  const [timerNow, setTimerNow] = useState(() => Date.now());
   const refreshTimers = useCallback(async () => {
     try {
       const sessions = await fetchOpenTimers();
@@ -6420,19 +6094,13 @@ function BoardsPageInner() {
       // no permission or offline — chips just keep showing the banked totals
       setOpenTimers({});
     }
-    setTimerNow(Date.now());
   }, []);
   useEffect(() => {
     refreshTimers();
   }, [refreshTimers]);
-  useEffect(() => {
-    if (Object.keys(openTimers).length === 0) return;
-    const interval = setInterval(() => setTimerNow(Date.now()), 1000);
-    return () => clearInterval(interval);
-  }, [openTimers]);
   const timers: BoardTimers = useMemo(
-    () => ({ running: openTimers, now: timerNow, refresh: refreshTimers }),
-    [openTimers, timerNow, refreshTimers],
+    () => ({ running: openTimers, refresh: refreshTimers }),
+    [openTimers, refreshTimers],
   );
 
   const canEdit = can("issue.all.update");
@@ -6897,43 +6565,12 @@ function BoardsPageInner() {
               </Tooltip>
             </>
           )}
-          {/* Flips the ORDER of whatever view is on: the Kanban columns'
-              "newest entry on top" (desc) ↔ "longest-sitting on top" (asc) —
-              the stale rules' targets float up in asc — and the very same
-              arrow flips the table's rows and the folder grid's chosen
-              criterion (`sortByEnteredAt`, so board/table/folder always
-              agree). Shown for EVERY role (customers live in the table) and
-              ALWAYS visible — the earlier hover-to-reveal hid it from anyone
-              who did not already know it existed (and `pointerEvents: none`
-              suppressed its tooltip too, so nothing could reveal it). The
-              tooltip/aria-label spell out the CURRENT direction
-              (`cardOrderNewest`/`cardOrderOldest`, th+en) and the glyph's
-              rotation mirrors it. Folder view is the exception: its sort
-              dropdown owns the direction there (arrow in the closed box +
-              the two direction items in the menu), so this button is simply
-              not rendered in that view. */}
-          {!isFolderView && (
-            <Tooltip
-              title={cardOrder === "desc" ? t("cardOrderNewest") : t("cardOrderOldest")}
-            >
-              <IconButton
-                size="small"
-                aria-label={cardOrder === "desc" ? t("cardOrderNewest") : t("cardOrderOldest")}
-                onClick={toggleCardOrder}
-                sx={{ width: 36, height: 36, color: "text.secondary" }}
-              >
-                <SwapVertIcon
-                  fontSize="small"
-                  sx={{
-                    // the glyph points the way the list reads: ↓ newest
-                    // first (default), ↑ oldest first after the flip
-                    transform: cardOrder === "asc" ? "rotate(180deg)" : "none",
-                    transition: "transform 150ms ease-in-out",
-                  }}
-                />
-              </IconButton>
-            </Tooltip>
-          )}
+          {/* No ↑↓ direction button here — the toolbar used to carry one for
+              the board + table views, and it was removed ("จะมีอันนี้ทำไม").
+              The folder view's sort dropdown is now the ONLY direction
+              control (arrow in the closed box + the two direction items in
+              the menu), and it flips the shared `cardOrder`, so board/table
+              follow whatever that dropdown last chose. */}
           {can("issue.trash.view") && (
             <Tooltip title={t("recycleBin")}>
               <IconButton
