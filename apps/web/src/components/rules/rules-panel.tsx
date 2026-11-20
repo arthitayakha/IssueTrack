@@ -123,7 +123,20 @@ export default function RulesPanel({ canUpdate }: RulesPanelProps) {
    * ไปแท็บเดียวกันแล้ว เหมือนหน้า list/wizard/edit ที่ถอดไปก่อนหน้า
    */
   const header = (
-    <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", mb: 3 }}>
+    <Box
+      sx={{
+        display: "flex",
+        justifyContent: "flex-end",
+        alignItems: "center",
+        mb: 3,
+        // sticky ที่ขอบบนของ scroll box ใน master-data/page.tsx —
+        // เลื่อนรายการแล้วปุ่มยังอยู่ในจอ (พื้นขาวกันเนื้อหาลอดผ่าน)
+        position: "sticky",
+        top: 0,
+        zIndex: 2,
+        bgcolor: "common.white",
+      }}
+    >
       <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
         <Button
           variant="outlined"

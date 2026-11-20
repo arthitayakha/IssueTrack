@@ -26,15 +26,20 @@ import type {
   DashboardPeriod,
   DashboardScope,
   DashboardTrendIssue,
+  DashboardTrendSeries,
 } from "@kanban/shared";
 
 /**
  * What one drill-down is behind — one trend bar or one donut slice. Both hit
  * the same row shape (`DashboardTrendIssue`), so they share this dialog and
  * the `/boards?issue=` deep link it opens on click.
+ *
+ * A trend source carries WHICH of the chart's two bars was clicked: the list
+ * has to be cut from that series' own timestamp (the card's `created_at` vs
+ * the move into เสร็จสิ้น) or it would not add up to the number on the bar.
  */
 export type DrillSource =
-  | { kind: "trend"; bucket: string; period: DashboardPeriod }
+  | { kind: "trend"; bucket: string; period: DashboardPeriod; series: DashboardTrendSeries }
   | {
       kind: "dimension";
       dim: "app" | "category" | "status";
@@ -100,6 +105,9 @@ export default function IssuesDrillDialog({
   const kind = source.kind;
   const bucket = kind === "trend" ? source.bucket : "";
   const period = kind === "trend" ? source.period : null;
+  // which of the chart's two bars — "created" is the harmless default for a
+  // source that is not a trend at all (it never reaches the fetch below)
+  const series = kind === "trend" ? source.series : "created";
   const dim = kind === "dimension" ? source.dim : null;
   const dimId = kind === "dimension" ? source.id : 0;
   const parentApp = kind === "dimension" ? (source.app ?? null) : null;
@@ -113,7 +121,7 @@ export default function IssuesDrillDialog({
     const companyList = companyKey ? companyKey.split(",").map(Number) : [];
     const load =
       kind === "trend" && period
-        ? fetchTrendIssues({ bucket, period, scope, statusId, companyIds: companyList })
+        ? fetchTrendIssues({ bucket, period, series, scope, statusId, companyIds: companyList })
         : kind === "dimension" && dim
           ? fetchDimensionIssues({
               dim,
@@ -136,7 +144,7 @@ export default function IssuesDrillDialog({
     return () => {
       cancelled = true;
     };
-  }, [kind, bucket, period, dim, dimId, parentApp, scope, statusId, companyKey, attempt]);
+  }, [kind, bucket, period, series, dim, dimId, parentApp, scope, statusId, companyKey, attempt]);
 
   /** The caller formats the title — only it knows which chart was clicked. */
   const truncated = status === "ready" && rows.length < count;

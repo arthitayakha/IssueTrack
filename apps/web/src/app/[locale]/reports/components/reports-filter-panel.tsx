@@ -178,13 +178,14 @@ export function ReportsFilterPanel({
   };
 
   /**
-   * "ไม่มีแอป" / "ไม่มีหมวดหมู่" / "ไม่ระบุประเภทงาน" — the NULL bucket of
-   * each dimension, which has no id to sit in `appIds`/`categoryIds`/
-   * `taskTypes` (the dashboard's `id: null` slices land here via `?noApp=1`).
-   * A plain boolean beside the id list, so ticking it together with a real
-   * value means OR on the server, never an empty AND.
+   * "ไม่มีแอป" / "ไม่มีหมวดหมู่" / "ไม่ระบุความสำคัญ" / "ไม่ระบุประเภทงาน" — the
+   * NULL bucket of each dimension, which has no id to sit in `appIds`/
+   * `categoryIds`/`priorityIds`/`taskTypes` (the dashboard's `id: null` slices
+   * land here via `?noApp=1` / `?noPriority=1`). A plain boolean beside the id
+   * list, so ticking it together with a real value means OR on the server,
+   * never an empty AND.
    */
-  const toggleFlag = (key: "noApp" | "noCategory" | "noTaskType") => {
+  const toggleFlag = (key: "noApp" | "noCategory" | "noPriority" | "noTaskType") => {
     onFiltersChange({ ...filters, [key]: !filters[key] });
   };
 
@@ -269,6 +270,15 @@ export function ReportsFilterPanel({
       <FlagIcon sx={{ fontSize: 16, flexShrink: 0, color: getPriorityColor(theme, priority.name) }} />
     ),
   }));
+  // NULL bucket — the dashboard's "ไม่ระบุ" priority bar lands here via
+  // ?noPriority=1; OR-part of this dimension, never an AND with the ids above
+  priorityOptions.push({
+    id: "no-priority",
+    label: t("filters.noPriority"),
+    checked: filters.noPriority,
+    onToggle: () => toggleFlag("noPriority"),
+    start: <FlagIcon sx={{ fontSize: 16, flexShrink: 0, color: "text.disabled" }} />,
+  });
 
   /**
    * **ประเภทงาน** — 3 ค่าคงที่ (ไม่มี endpoint list type จึงไม่ยิง API) +
@@ -352,7 +362,7 @@ export function ReportsFilterPanel({
     priority: {
       title: t("filters.priority"),
       icon: <FlagIcon sx={{ fontSize: 18 }} />,
-      count: filters.priorityIds.length,
+      count: filters.priorityIds.length + (filters.noPriority ? 1 : 0),
       options: priorityOptions,
     },
     taskType: {

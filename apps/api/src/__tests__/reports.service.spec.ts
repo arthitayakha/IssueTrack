@@ -151,6 +151,28 @@ describe("ReportsService — noApp / noCategory (the dashboard's NULL slices)", 
     );
   });
 
+  it("noPriority alone → priority_id IS NULL (the dashboard's ไม่ระบุ bar)", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", { noPriority: true });
+
+    const clause = whereCalls().find(([sql]) => String(sql).includes("priority_id"));
+    expect(clause).toBeDefined();
+    expect(String((clause as [string])[0])).toBe("issue.priority_id IS NULL");
+  });
+
+  it("noPriority + priorityIds → ONE OR clause", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", { noPriority: true, priorityIds: [1, 3] });
+
+    const clauses = whereCalls().filter(([sql]) => String(sql).includes("priority_id"));
+    expect(clauses).toHaveLength(1);
+    const [sql, params] = clauses[0] as [string, Record<string, unknown>];
+    expect(sql).toBe("(issue.priority_id IS NULL OR issue.priority_id IN (:...priorityIds))");
+    expect(params.priorityIds).toEqual([1, 3]);
+  });
+
   /** Every issue-shaped reader shares `applyIssueDims` — usage must agree. */
   it("usageByPair applies the same NULL clause (shared applyIssueDims)", async () => {
     const { service, whereCalls } = makeService();
@@ -174,5 +196,40 @@ describe("ReportsService — noApp / noCategory (the dashboard's NULL slices)", 
       "issue.category_id IN (:...categoryIds)",
       "issue.app_id IN (:...appIds)",
     ]);
+  });
+});
+
+describe("ReportsService — completedFrom/To (the trend's completed bar)", () => {
+  it("cuts grouped rows by a move into เสร็จสิ้น, not by creation date", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", {
+      completedFrom: "2026-10-12",
+      completedTo: "2026-10-18",
+    });
+
+    const clause = whereCalls().find(([sql]) => String(sql).includes("activity_logs al"));
+    expect(clause).toBeDefined();
+    const [sql, params] = clause as [string, Record<string, unknown>];
+    expect(sql).toContain("al.action = 'card.moved'");
+    expect(sql).toContain("al.detail::json->>'toStatusId'");
+    expect(sql).toContain("al.created_at >= :completedFrom");
+    expect(sql).toContain("al.created_at <= :completedTo");
+    expect(sql).not.toContain("issue.created_at >= :repFrom");
+    expect(params.doneStatusId).toBe("4");
+    expect(params.doneStatusNames).toEqual(expect.arrayContaining(["เสร็จสิ้น"]));
+  });
+
+  it("keeps the ordinary created-date path untouched", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", {
+      createdFrom: "2026-10-12",
+      createdTo: "2026-10-18",
+    });
+
+    const calls = whereCalls();
+    expect(calls.some(([sql]) => String(sql).includes("issue.created_at >= :repFrom"))).toBe(true);
+    expect(calls.some(([sql]) => String(sql).includes("activity_logs al"))).toBe(false);
   });
 });

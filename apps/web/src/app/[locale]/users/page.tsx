@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   Box,
@@ -46,7 +46,6 @@ import PriorityHighIcon from "@mui/icons-material/PriorityHigh";
 import ChatIcon from "@mui/icons-material/Chat";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import AssessmentIcon from "@mui/icons-material/Assessment";
-import LockIcon from "@mui/icons-material/Lock";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import HistoryIcon from "@mui/icons-material/History";
 import BusinessIcon from "@mui/icons-material/Business";
@@ -75,13 +74,6 @@ interface PageInfo {
 }
 
 const PERMISSION_GROUPS = [
-  {
-    key: "auth",
-    icon: LockIcon,
-    children: [
-      { key: "auth", permissions: ["auth.login", "auth.logout"] },
-    ],
-  },
   {
     key: "dashboard",
     icon: DashboardIcon,
@@ -452,11 +444,23 @@ export default function UsersPage() {
 
   // ชุด dropdown — ดึงครั้งเดียวตอนแท็บแรกที่ต้องใช้เปิด (เช็ค `=== null` ก่อน
   // จึงเรียกซ้ำได้ไม่ลูป และ retry เองได้ตอนสลับแท็บถ้าดึงพลาด)
+  //
+  // `dropdownLoadingRef` กัน StrictMode ยิงชุดนี้ 2 รอบตอน mount: รอบที่ 2
+  // เห็น `null` เหมือนกัน (state ยังไม่ทันเซ็ต) → เดิมยิง /roles + /positions
+  // + /companies ซ้ำ · ref ถูก set ก่อน await จึง block รอบที่ 2 ได้ ทันทีที่
+  // เสร็จจะ reset → สลับแท็บ/retry ยังดึงใหม่ได้เหมือนเดิม (fail-open เดิม)
+  const dropdownLoadingRef = useRef(false);
   useEffect(() => {
-    if (!activeContent) return;
-    if ((activeContent === "users" || activeContent === "positions") && rolesAll === null) void loadRolesAll();
-    if (activeContent === "users" && positionsAll === null) void loadPositionsAll();
-    if (activeContent === "users" && companies === null) void loadCompanies();
+    if (!activeContent || dropdownLoadingRef.current) return;
+    const jobs: Promise<unknown>[] = [];
+    if ((activeContent === "users" || activeContent === "positions") && rolesAll === null) jobs.push(loadRolesAll());
+    if (activeContent === "users" && positionsAll === null) jobs.push(loadPositionsAll());
+    if (activeContent === "users" && companies === null) jobs.push(loadCompanies());
+    if (jobs.length === 0) return;
+    dropdownLoadingRef.current = true;
+    void Promise.allSettled(jobs).finally(() => {
+      dropdownLoadingRef.current = false;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeContent, rolesAll, positionsAll, companies]);
 
@@ -471,6 +475,11 @@ export default function UsersPage() {
       return;
     }
     let cancelled = false;
+    // StrictMode รัน effect นี้ 2 รอบตอน mount — `cancelled` อย่างเดียวพอให้
+    // ทิ้งผลรอบแรกได้ แต่ request ยังไป server อยู่ → Network เห็นซ้ำ · abort
+    // รอบแรกใน cleanup จะตัดมันก่อนเสียงาน (AbortError ไม่ใช่ network error
+    // ใน apiFetch เลยไม่ถูก retry ซ้ำอีกด้วย)
+    const controller = new AbortController();
     async function load() {
       try {
         if (activeContent === "users") {
@@ -478,7 +487,7 @@ export default function UsersPage() {
           if (userFilters.companyIds.length) qs.set("companyIds", userFilters.companyIds.join(","));
           if (userFilters.roleIds.length) qs.set("roleIds", userFilters.roleIds.join(","));
           if (userFilters.positionIds.length) qs.set("positionIds", userFilters.positionIds.join(","));
-          const r = await apiFetch<PaginatedResponse<User>>(`/users?${qs.toString()}`, {}, token);
+          const r = await apiFetch<PaginatedResponse<User>>(`/users?${qs.toString()}`, { signal: controller.signal }, token);
           if (cancelled) return;
           if (r.data.length === 0 && pages.users > 1) {
             // หน้าเกิน (เช่น เพิ่มรายการใหม่ตอนกรองฟิวเตอร์ค้างอยู่) → ถอยกลับหน้าหนึ่งแล้วดึงใหม่
@@ -491,7 +500,7 @@ export default function UsersPage() {
         } else if (activeContent === "roles") {
           const r = await apiFetch<PaginatedResponse<Role>>(
             `/roles?page=${pages.roles}&limit=${PAGE_SIZE}`,
-            {},
+            { signal: controller.signal },
             token,
           );
           if (cancelled) return;
@@ -505,7 +514,7 @@ export default function UsersPage() {
         } else {
           const r = await apiFetch<PaginatedResponse<Position>>(
             `/positions?page=${pages.positions}&limit=${PAGE_SIZE}`,
-            {},
+            { signal: controller.signal },
             token,
           );
           if (cancelled) return;
@@ -531,6 +540,7 @@ export default function UsersPage() {
     void load();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [activeContent, pages, userFilters, reloadKeys, token]);
 

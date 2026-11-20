@@ -1,15 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Box, Card, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
-import { alpha, useTheme } from "@mui/material/styles";
+import { useTheme } from "@mui/material/styles";
 import { useLocale, useTranslations } from "next-intl";
-import type { ReactNode } from "react";
 import {
   Bar,
   BarChart,
+  CartesianGrid,
   ResponsiveContainer,
-  Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
@@ -18,21 +17,24 @@ import type {
   DashboardRange,
   DashboardScope,
   DashboardTrendRow,
+  DashboardTrendSeries,
 } from "@kanban/shared";
 import { DateRangeIconButton } from "@/components/date-range-select";
-import IssuesDrillDialog, { type DrillSource } from "./issues-drill-dialog";
 import { formatBucketLabel } from "./trend-labels";
 import { useRouter } from "@/i18n/navigation";
-import { usePermissions } from "@/lib/permissions";
 import { bucketToRange, reportsHref } from "@/lib/dashboard-nav";
 
 /**
- * Trend chart: new cards per bucket (day / week / month / year).
+ * Trend chart: two bars per bucket (day / week / month / year) —
+ *   - **สร้างเข้ามา** = cards born inside the bucket (the old series);
+ *   - **เสร็จสิ้น** = cards moved INTO the done status inside the bucket
+ *     (an event count off `activity_logs`, so a card that leaves and comes
+ *     back counts twice — see `trendCounts`).
  *
- * The server returns only non-empty buckets (`date_trunc` in Bangkok time);
- * zero-filling the gaps is presentation, so it happens here — never an
- * aggregation. Every bar wears the same sky gradient from the theme — no
- * highlight for the peak.
+ * The server returns only non-empty buckets (`date_trunc` in Bangkok time)
+ * and one row carries BOTH counts; zero-filling the gaps is presentation, so
+ * it happens here — never an aggregation. The two bars wear theme colours
+ * only (indigo = created, cyan = completed) — no highlight for the peak.
  *
  * Two controls sit in the header:
  *   - the period toggle = the bucket size;
@@ -41,10 +43,12 @@ import { bucketToRange, reportsHref } from "@/lib/dashboard-nav";
  *     component mirrors the same fallback rules when zero-filling, so the bars
  *     never span a different period than the query did.
  *
- * Clicking a bar jumps to /reports filtered to that bucket's `from`/`to`
- * (plus the active status cross-filter) — the drill dialog only stays as a
- * fallback for users without `report.view`, who would otherwise be bounced
- * off the reports page.
+ * Clicking EITHER bar navigates to /reports filtered to that bucket's
+ * `from`/`to` (plus the active status and company filters). The created bar
+ * leaves `series` empty = the ordinary created-date list; the completed bar
+ * sends `series=completed` so /reports filters by when cards entered
+ * เสร็จสิ้น — the two bars therefore open two DIFFERENT lists that each add
+ * up to the number on the bar.
  */
 
 const PERIODS: DashboardPeriod[] = ["day", "week", "month", "year"];
@@ -105,7 +109,10 @@ function addPeriod(d: Date, period: DashboardPeriod, n: number): Date {
 
 interface Bucket {
   bucket: string;
-  count: number;
+  /** Cards born in the bucket. */
+  created: number;
+  /** Cards that entered เสร็จสิ้น in the bucket (an event count). */
+  completed: number;
   /** Start-of-bucket Date for label formatting. */
   date: Date;
 }
@@ -115,14 +122,15 @@ interface Bucket {
  *   custom `from` → that bucket; otherwise the period's look-back counted back
  *   from `to` (when only `to` was given) or from today; `to` caps the end.
  * Without a custom range this is exactly the old "last N buckets" behaviour,
- * leftover server buckets included.
+ * leftover server buckets included. Both series are filled together — a
+ * bucket with only completions (or only creations) must still render.
  */
 function zeroFilled(
   rows: DashboardTrendRow[],
   period: DashboardPeriod,
   range: DashboardRange,
 ): Bucket[] {
-  const counts = new Map(rows.map((r) => [r.bucket, r.count]));
+  const counts = new Map(rows.map((r) => [r.bucket, { created: r.created, completed: r.completed }]));
   const hasFrom = Boolean(range.from);
   const hasTo = Boolean(range.to);
   const custom = hasFrom || hasTo;
@@ -131,6 +139,12 @@ function zeroFilled(
   const start = hasFrom
     ? bucketStart(parseYmd(range.from) as Date, period)
     : addPeriod(end, period, -(BUCKETS[period] - 1));
+
+  const bucketOf = (key: string, date: Date): Bucket => {
+    const seen = counts.get(key);
+    counts.delete(key);
+    return { bucket: key, created: seen?.created ?? 0, completed: seen?.completed ?? 0, date };
+  };
 
   const out: Bucket[] = [];
   if (custom) {
@@ -141,29 +155,27 @@ function zeroFilled(
     }
     let guard = 0;
     while (cursor.getTime() <= end.getTime() && guard++ < MAX_BUCKETS) {
-      const key = ymd(cursor);
-      out.push({ bucket: key, count: counts.get(key) ?? 0, date: new Date(cursor) });
-      counts.delete(key);
+      out.push(bucketOf(ymd(cursor), new Date(cursor)));
       cursor = addPeriod(cursor, period, 1);
     }
     // server buckets inside the span this clock did not line up with keep data
     const lo = out[0]?.bucket ?? "";
     const hi = out[out.length - 1]?.bucket ?? "";
-    for (const [bucket, count] of counts) {
-      if (count > 0 && bucket >= lo && bucket <= hi) {
-        out.push({ bucket, count, date: new Date(`${bucket}T00:00:00`) });
+    for (const [bucket, seen] of counts) {
+      if ((seen.created > 0 || seen.completed > 0) && bucket >= lo && bucket <= hi) {
+        out.push(bucketOf(bucket, new Date(`${bucket}T00:00:00`)));
       }
     }
   } else {
     for (let i = BUCKETS[period] - 1; i >= 0; i--) {
       const date = addPeriod(end, period, -i);
-      const key = ymd(date);
-      out.push({ bucket: key, count: counts.get(key) ?? 0, date });
-      counts.delete(key);
+      out.push(bucketOf(ymd(date), date));
     }
     // any bucket the server saw but this clock did not (timezone edge) keeps its data
-    for (const [bucket, count] of counts) {
-      if (count > 0) out.push({ bucket, count, date: new Date(`${bucket}T00:00:00`) });
+    for (const [bucket, seen] of counts) {
+      if (seen.created > 0 || seen.completed > 0) {
+        out.push(bucketOf(bucket, new Date(`${bucket}T00:00:00`)));
+      }
     }
   }
   out.sort((a, b) => a.bucket.localeCompare(b.bucket));
@@ -181,12 +193,20 @@ function bucketDistance(a: Date, b: Date, period: DashboardPeriod): number {
   return n;
 }
 
-interface DrillTarget {
-  /** The bar behind the click — drives which endpoint the dialog calls. */
-  source: DrillSource;
-  /** "{label} · {count} งาน", built here where the bucket label lives. */
-  title: string;
-  count: number;
+/**
+ * Y-axis scale derived from the data instead of fixed 8/16/24/32: aim for
+ * ~4 intervals and round the step up to a readable number (a multiple of 50
+ * once we reach the hundreds). The top is the first step that covers the
+ * peak, so the labels change as soon as the data does — 31 gives
+ * 0/8/16/24/32, 400 gives 0/100/200/300/400, 450 gives 0/150/300/450.
+ */
+function yAxisTicks(peak: number): { domain: [number, number]; ticks: number[] } {
+  const raw = Math.max(1, Math.ceil(Math.max(0, peak) / 4));
+  const step = raw >= 100 ? Math.ceil(raw / 50) * 50 : raw;
+  const top = Math.max(step, Math.ceil(Math.max(0, peak) / step) * step);
+  const ticks: number[] = [];
+  for (let value = 0; value <= top; value += step) ticks.push(value);
+  return { domain: [0, top], ticks };
 }
 
 export default function TrendChart({
@@ -208,22 +228,71 @@ export default function TrendChart({
   onRangeChange: (range: DashboardRange) => void;
   /** The page's status cross-filter — a bar's list must match its count. */
   statusId?: number | null;
-  /** The page's company filter — carried into /reports and the drill list. */
+  /** The page's company filter — carried into /reports. */
   companyIds?: number[];
 }) {
   const theme = useTheme();
   const t = useTranslations("Dashboard");
   const locale = useLocale();
   const router = useRouter();
-  const { can } = usePermissions();
 
-  const [drill, setDrill] = useState<DrillTarget | null>(null);
+  /**
+   * Our own tooltip — Recharts' <Tooltip> is deliberately NOT used: it owns
+   * the active index and positions the box at the hovered bar's centre, which
+   * puts it away from the cursor. Here the box follows the pointer exactly.
+   */
+  type TrendHover = {
+    x: number;
+    y: number;
+    label: string;
+    series: DashboardTrendSeries;
+    value: number;
+  };
+  const [hover, setHover] = useState<TrendHover | null>(null);
+  /** Latest pointer position, so a bar's onMouseEnter can place the box
+   * on the very first frame (no flash at 0,0 before the next mousemove). */
+  const pointerRef = useRef({ x: 0, y: 0 });
 
   const data = useMemo(() => zeroFilled(rows, period, range), [rows, period, range]);
-  const hasAny = data.some((b) => b.count > 0);
+  const hasAny = data.some((b) => b.created > 0 || b.completed > 0);
   const hasRange = Boolean(range.from || range.to);
+  /** The ticks follow the data — see yAxisTicks(). */
+  const yAxis = useMemo(
+    () => yAxisTicks(data.reduce((max, b) => Math.max(max, b.created, b.completed), 0)),
+    [data],
+  );
 
   const labelOf = (key: string) => formatBucketLabel(key, period, locale);
+
+  /**
+   * The two series — the legend's dots, the tooltip's words and the bar
+   * order all read from here so they can never drift apart. Colours come
+   * from the theme's chart palette only (indigo = the bar on the left, cyan
+   * = the one on the right), same order as the `<Bar>`s below.
+   */
+  const series: { key: DashboardTrendSeries; label: string; color: string }[] = [
+    { key: "created", label: t("trend.seriesCreated"), color: theme.custom.chartColors.created },
+    { key: "completed", label: t("trend.seriesCompleted"), color: theme.custom.chartColors.completed },
+  ];
+  /**
+   * EITHER bar navigates to /reports with this bucket's range. The created
+   * bar needs no `series`; the completed bar sends `series=completed` so the
+   * report cuts by "moved into เสร็จสิ้น" instead of "created at" — two
+   * different lists that each add up to the number on the bar.
+   */
+  const openBucket = (payload: Partial<Bucket> | undefined, seriesKey: DashboardTrendSeries) => {
+    if (!payload?.bucket) return;
+    const { from, to } = bucketToRange(payload.bucket, period);
+    router.push(
+      reportsHref({
+        from,
+        to,
+        series: seriesKey === "completed" ? "completed" : null,
+        status: statusId,
+        company: companyIds,
+      }),
+    );
+  };
 
   return (
     <>
@@ -300,18 +369,54 @@ export default function TrendChart({
           </Box>
         </Box>
 
+        {/* legend — dot + label per bar, drawn here (not by recharts) so it
+            can wrap with the header and stay in the theme's typography */}
+        {hasAny && (
+          <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 1, flexWrap: "wrap" }}>
+            {series.map((s) => (
+              <Box key={s.key} sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+                <Box
+                  sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: s.color, flexShrink: 0 }}
+                />
+                <Typography sx={{ fontSize: 12.5, color: "text.secondary" }}>{s.label}</Typography>
+              </Box>
+            ))}
+          </Box>
+        )}
+
         {hasAny ? (
           <Box
+            // the tooltip is absolutely positioned inside this box, so the
+            // pointer coordinates below map 1:1 to where the box is painted
+            onMouseMove={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              const x = event.clientX - rect.left;
+              const y = event.clientY - rect.top;
+              pointerRef.current = { x, y };
+              // Recharts fires a Bar's onMouseEnter for the WHOLE category
+              // band, not just the drawn rectangle — so a tooltip can hang
+              // around after the pointer has left the bar. Hit-test the real
+              // element under the cursor instead and drop it immediately.
+              const overBar = Boolean(
+                (event.target as Element | null)?.closest?.(".recharts-bar-rectangle"),
+              );
+              if (!overBar) {
+                setHover(null);
+                return;
+              }
+              setHover((prev) => (prev ? { ...prev, x, y } : null));
+            }}
+            onMouseLeave={() => setHover(null)}
             sx={{
               flex: 1,
-              minHeight: 220,
+              minHeight: 340,
               mx: -1,
+              position: "relative",
               "& .recharts-bar-rectangle": { cursor: "pointer" },
               // recharts makes the <svg> focusable (accessibilityLayer) AND stamps
-              // tabindex=-1 on the bar layer <g>; MUI restores focus to that <g>
-              // when the drill-down dialog closes — which is exactly when Chrome
-              // painted the frame around the plot. Nothing inside the chart ever
-              // needs a visible ring (author styles beat the UA focus outline).
+              // tabindex=-1 on the bar layer <g>; the browser can then paint a
+              // focus ring around the plot after a click. Nothing inside the
+              // chart needs a visible ring (author styles beat the UA outline).
               "& .recharts-surface, & .recharts-surface *": { outline: "none" },
             }}
           >
@@ -319,16 +424,16 @@ export default function TrendChart({
               <BarChart
                 data={data}
                 margin={{ top: 16, right: 8, bottom: 0, left: 0 }}
+                // two bars per bucket: keep them tight against each other and
+                // a clear notch between neighbouring buckets
+                barGap={2}
+                barCategoryGap="25%"
                 // no focusable <svg>: it was the other source of the ring, and the
                 // chart has no keyboard-only feature that needs it
                 accessibilityLayer={false}
               >
-                <defs>
-                  <linearGradient id="dashBarFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={theme.palette.sky.light} />
-                    <stop offset="100%" stopColor={theme.palette.sky.main} />
-                  </linearGradient>
-                </defs>
+                {/* horizontal dashed grid only — the reference look */}
+                <CartesianGrid vertical={false} stroke={theme.palette.divider} strokeDasharray="4 4" />
                 <XAxis
                   dataKey="bucket"
                   tickFormatter={labelOf}
@@ -341,57 +446,113 @@ export default function TrendChart({
                 <YAxis
                   allowDecimals={false}
                   width={32}
+                  // domain/ticks come from the data so the labels scale from
+                  // single digits to the hundreds instead of staying at 8/16
+                  domain={yAxis.domain}
+                  ticks={yAxis.ticks}
                   tick={{ fontSize: 11, fill: theme.palette.text.disabled }}
                   axisLine={false}
                   tickLine={false}
                 />
-                <Tooltip
-                  cursor={{ fill: alpha(theme.palette.sky.main, 0.08) }}
-                  contentStyle={{
-                    borderRadius: 10,
-                    border: "1px solid",
-                    borderColor: theme.palette.divider,
-                    boxShadow: theme.custom.tableShadow,
-                    fontSize: 12.5,
-                  }}
-                  labelFormatter={(label: ReactNode) =>
-                    typeof label === "string" ? labelOf(label) : String(label ?? "")
-                  }
-                  formatter={(value) => [String(value), t("trend.title")]}
-                />
                 <Bar
-                  dataKey="count"
-                  fill="url(#dashBarFill)"
-                  radius={[8, 8, 3, 3]}
+                  dataKey="created"
+                  name={series[0].label}
+                  fill={series[0].color}
+                  barSize={14}
+                  radius={[5, 5, 2, 2]}
+                  isAnimationActive={false}
+                  onMouseEnter={(entry) => {
+                    const payload = entry?.payload as Partial<Bucket> | undefined;
+                    if (!payload?.bucket) return;
+                    setHover({
+                      ...pointerRef.current,
+                      label: labelOf(payload.bucket),
+                      series: "created",
+                      value: Number(payload.created ?? 0),
+                    });
+                  }}
                   onClick={(clicked) => {
                     const payload = clicked?.payload as Partial<Bucket> | undefined;
+                    openBucket(payload, "created");
+                  }}
+                />
+                <Bar
+                  dataKey="completed"
+                  name={series[1].label}
+                  fill={series[1].color}
+                  barSize={14}
+                  radius={[5, 5, 2, 2]}
+                  isAnimationActive={false}
+                  onMouseEnter={(entry) => {
+                    const payload = entry?.payload as Partial<Bucket> | undefined;
                     if (!payload?.bucket) return;
-                    // to /reports with this bar's window (+ the status
-                    // cross-filter and the company filter as context); the
-                    // dialog is only for seats without report.view, who
-                    // cannot open the reports page
-                    if (can("report.view")) {
-                      const { from, to } = bucketToRange(payload.bucket, period);
-                      router.push(reportsHref({ from, to, status: statusId, company: companyIds }));
-                      return;
-                    }
-                    const count = Number(payload.count ?? 0);
-                    const label = formatBucketLabel(payload.bucket, period, locale, true);
-                    setDrill({
-                      source: { kind: "trend", bucket: payload.bucket, period },
-                      title: t("trend.issuesTitle", { label, count }),
-                      count,
+                    setHover({
+                      ...pointerRef.current,
+                      label: labelOf(payload.bucket),
+                      series: "completed",
+                      value: Number(payload.completed ?? 0),
                     });
+                  }}
+                  onClick={(clicked) => {
+                    const payload = clicked?.payload as Partial<Bucket> | undefined;
+                    openBucket(payload, "completed");
                   }}
                 />
               </BarChart>
             </ResponsiveContainer>
+
+            {/* our own tooltip: painted at the pointer, not at the bar's
+                centre — no Recharts active-index/position/animation involved */}
+            {hover && (
+              <Box
+                sx={{
+                  position: "absolute",
+                  left: hover.x + 12,
+                  top: Math.max(0, hover.y - 64),
+                  zIndex: 2,
+                  pointerEvents: "none",
+                  whiteSpace: "nowrap",
+                  // fixed footprint: a value going 8 → 16 → 400 must never
+                  // resize the box (tabular digits stop the text shifting)
+                  width: 164,
+                  height: 60,
+                  boxSizing: "border-box",
+                  overflow: "hidden",
+                  fontVariantNumeric: "tabular-nums",
+                  bgcolor: theme.palette.navy.main,
+                  color: theme.palette.common.white,
+                  borderRadius: "8px",
+                  boxShadow: theme.custom.cardShadow,
+                  px: 1.5,
+                  py: 1,
+                  fontSize: 12.5,
+                }}
+              >
+                <Typography sx={{ color: "inherit", fontWeight: 700, mb: 0.5 }}>
+                  {hover.label}
+                </Typography>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+                  <Box
+                    sx={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      bgcolor: hover.series === "completed" ? series[1].color : series[0].color,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <Typography sx={{ color: "inherit", fontSize: 12.5 }}>
+                    {hover.series === "completed" ? series[1].label : series[0].label} : {hover.value}
+                  </Typography>
+                </Box>
+              </Box>
+            )}
           </Box>
         ) : (
           <Box
             sx={{
               flex: 1,
-              minHeight: 220,
+              minHeight: 340,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -403,18 +564,6 @@ export default function TrendChart({
           </Box>
         )}
       </Card>
-
-      {drill && (
-        <IssuesDrillDialog
-          title={drill.title}
-          count={drill.count}
-          source={drill.source}
-          scope={scope}
-          statusId={statusId}
-          companyIds={companyIds}
-          onClose={() => setDrill(null)}
-        />
-      )}
     </>
   );
 }

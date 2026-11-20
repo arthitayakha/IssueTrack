@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { Avatar, Box, Card, MenuItem, Select, Typography } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import CheckIcon from "@mui/icons-material/Check";
@@ -19,6 +19,11 @@ import type { DashboardWorkloadRow } from "@kanban/shared";
  *     always-on divider border, tinted menu rows, a check on the picked one);
  *   - a score bar per row (share of the busiest person's open load), shown
  *     only once the list is long enough to make comparison worthwhile.
+ *
+ * A row with open work navigates to `/reports` filtered to that programmer
+ * and to the SAME open-status set the count used, so the report agrees with
+ * the number printed on the row — no popup. A zero-open row (or a seat without
+ * `report.view`) stays plain.
  *
  * Overview readers only — personal scopes never reach this card.
  */
@@ -44,7 +49,13 @@ const POSITION_ITEM_SX = {
   "&.Mui-selected:hover": { bgcolor: "action.selected" },
 } as const;
 
-export default function WorkloadCard({ rows }: { rows: DashboardWorkloadRow[] }) {
+export default function WorkloadCard({
+  rows,
+  onSelect,
+}: {
+  rows: DashboardWorkloadRow[];
+  onSelect?: (row: DashboardWorkloadRow) => void;
+}) {
   const theme = useTheme();
   const t = useTranslations("Dashboard");
 
@@ -219,17 +230,42 @@ export default function WorkloadCard({ rows }: { rows: DashboardWorkloadRow[] })
         >
           {visibleRows.map((m, i) => {
             const hasOpen = m.openCount > 0;
+            const clickable = hasOpen && Boolean(onSelect);
             return (
               <Box
                 key={m.userId}
+                {...(clickable && onSelect
+                  ? {
+                      role: "button" as const,
+                      tabIndex: 0,
+                      onClick: () => onSelect(m),
+                      onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onSelect(m);
+                        }
+                      },
+                    }
+                  : {})}
                 sx={{
                   display: "flex",
                   alignItems: "center",
                   gap: 1.25,
                   py: 1.4,
+                  mx: -1,
+                  px: 1,
+                  borderRadius: "10px",
                   borderBottom: i === visibleRows.length - 1 ? "none" : "1px solid",
                   borderColor: "divider",
                   minWidth: 0,
+                  cursor: clickable ? "pointer" : "default",
+                  transition: "background-color 150ms ease",
+                  ...(clickable
+                    ? {
+                        "&:hover": { bgcolor: "action.hover" },
+                        "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" },
+                      }
+                    : {}),
                 }}
               >
                 <Avatar

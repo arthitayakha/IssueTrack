@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -15,6 +16,7 @@ import { MaUsageService } from "./ma-usage.service";
 import { daysBetween, isIsoDate, toIsoDate, todayIso } from "../../common/dates";
 import { paginateTotal, PaginationParams } from "../../common/pagination";
 import { ViewerScope } from "./viewer-scope";
+import { NotificationsService } from "../notifications/notifications.service";
 
 /**
  * 1 รายการข้อมูลที่ฟอร์มส่งมา — **append หรือแก้แถวเดียว** ไม่ใช่ส่ง list
@@ -89,6 +91,8 @@ interface LoadedLinks {
 
 @Injectable()
 export class AppsService {
+  private readonly logger = new Logger(AppsService.name);
+
   constructor(
     @InjectRepository(App)
     private readonly apps: Repository<App>,
@@ -100,7 +104,34 @@ export class AppsService {
     private readonly companies: Repository<Company>,
     private readonly expiry: AppExpiryService,
     private readonly maUsage: MaUsageService,
+    private readonly notifications: NotificationsService,
   ) {}
+
+  /**
+   * ต่ออายุ/ซื้อชม. สำเร็จ → แถวแจ้งเตือนในกล่องเข้าของลูกค้าบริษัทนั้น +
+   * แอดมิน (ไม่ส่งอีเมล — ดู `NotificationsService.notifyContractChange`) ·
+   * fire-and-forget: ปัญหาการแจ้งเตือน/หาชื่อบริษัทไม่มีทางทำให้การบันทึกที่
+   * สำเร็จแล้วดูเหมือนพัง
+   */
+  private async notifyContractEvent(
+    companyId: number,
+    appName: string,
+    action: "app_renewed" | "app_hours_purchased",
+    context: string,
+  ): Promise<void> {
+    try {
+      const company = await this.companies.findOne({ where: { id: companyId } });
+      await this.notifications.notifyContractChange({
+        companyId,
+        appName,
+        companyName: company?.name ?? "",
+        action,
+        context,
+      });
+    } catch (error) {
+      this.logger.warn(`contract change notification failed: ${(error as Error).message}`);
+    }
+  }
 
   /**
    * **ขอบเขตการอ่านรายการแอป** — `scope.visible` มาจาก `?visible=1` ของฟอร์ม
@@ -501,6 +532,7 @@ export class AppsService {
         expiryNotified: "none",
       }),
     );
+    void this.notifyContractEvent(source.companyId, app.name, "app_renewed", `MA ${maHours} ชม.`);
     return this.appPayload(app);
   }
 
@@ -559,6 +591,12 @@ export class AppsService {
         expiryStatus: source.expiryStatus,
         expiryNotified: source.expiryNotified,
       }),
+    );
+    void this.notifyContractEvent(
+      source.companyId,
+      app.name,
+      "app_hours_purchased",
+      `+${hours} ชม. (รวม ${hours + (carriedHours ?? 0)} ชม.)`,
     );
     return this.appPayload(app);
   }

@@ -117,11 +117,10 @@ const PILL_VALUE_SX = { ...PILL_ROW_TEXT_SX, fontSize: 14, fontWeight: 600 } as 
  * จำนวนแถวต่อหน้า — **client-side เท่านั้น** (`GET /rules` ดึงชุดเต็ม ไม่มี page/limit;
  * filter/ค้นหา/นับแท็บยังทำงานบน `rules` ชุดเต็มเหมือนเดิม แล้วค่อย slice หลัง filter)
  *
- * 15 = ~1 จอเต็มของ list แบบ 2 บรรทัด (แถวละ ~50px) — `<Pagination>` ซ่อนตัวเอง
- * เมื่อไม่เกิน 1 หน้า กฎ 15 ตัวจึงยังโชว์ครบเหมือนไม่มีอะไรเปลี่ยน แถบหน้าโผล่ตอนเกิน 15
- * (หน้าอื่นใช้ 10 เพราะเป็นตาราง row สูง — แถว list นี้สั้นกว่า)
+ * 10 = ครึ่งจอของ list แบบ 2 บรรทัด (แถวละ ~50px) → กฎ 15 ตัวแบ่งเป็น 2 หน้า
+ * และแถบ `<Pagination>` โผล่ขึ้นมา (component ซ่อนตัวเองเมื่อไม่เกิน 1 หน้า)
  */
-const PAGE_SIZE = 15;
+const PAGE_SIZE = 10;
 
 export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate = true }: RuleListProps) {
   const t = useTranslations("Automation");
@@ -130,18 +129,37 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
   const tWizard = useTranslations("Automation.wizard");
   const theme = useTheme();
 
+  /** sx ของ paper ใช้ร่วมกันทั้ง 2 dropdown — ค่าเดิมทุกประการ. */
+  const pillMenuPaperSx = {
+    borderRadius: "14px",
+    mt: 1,
+    p: 0.75,
+    border: "1px solid",
+    borderColor: "divider",
+    boxShadow: theme.custom.cardShadow,
+    maxWidth: 320,
+  };
+
   /** เมนูของ pill ทั้งสองช่อง — มุมมน + เงา เหมือนฝั่งแดชบอร์ดเป๊ะ. */
   const pillMenuProps = {
     slotProps: {
+      paper: { sx: pillMenuPaperSx },
+    },
+  };
+
+  /**
+   * เฉพาะ dropdown "ทุกการกระทำ" — มี ~25 รายการ ยาวเกินจอ (MUI ตั้ง
+   * `maxHeight: calc(100% - 96px)` ให้ paper) → จำกัดความสูงแล้วซ่อนแถบเลื่อน
+   * ตาม pattern ของ `master-data/page.tsx` · ล้อเมาส์/สัมผัสเลื่อนได้ตามเดิม
+   */
+  const actionMenuProps = {
+    slotProps: {
       paper: {
         sx: {
-          borderRadius: "14px",
-          mt: 1,
-          p: 0.75,
-          border: "1px solid",
-          borderColor: "divider",
-          boxShadow: theme.custom.cardShadow,
-          maxWidth: 320,
+          ...pillMenuPaperSx,
+          maxHeight: "min(440px, 60vh)",
+          scrollbarWidth: "none",
+          "&::-webkit-scrollbar": { display: "none" },
         },
       },
     },
@@ -465,7 +483,7 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
                 : (RULE_ACTIONS.find((a) => a.key === value)?.label.th ?? t("allActions"));
             return <Typography sx={PILL_VALUE_SX}>{label}</Typography>;
           }}
-          MenuProps={pillMenuProps}
+          MenuProps={actionMenuProps}
           sx={PILL_SELECT_SX}
         >
           {[

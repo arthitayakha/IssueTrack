@@ -24,6 +24,8 @@ function parseFilters(query: Record<string, string | undefined>): ReportIssueFil
   return {
     createdFrom: isDay(query.createdFrom) ? query.createdFrom : undefined,
     createdTo: isDay(query.createdTo) ? query.createdTo : undefined,
+    completedFrom: isDay(query.completedFrom) ? query.completedFrom : undefined,
+    completedTo: isDay(query.completedTo) ? query.completedTo : undefined,
     search: query.search,
     assigneeIds: parseIdList(query.assigneeIds),
     reporterIds: parseIdList(query.reporterIds),
@@ -35,6 +37,7 @@ function parseFilters(query: Record<string, string | undefined>): ReportIssueFil
     // ReportsService.applyIssueDims); mirrors GET /issues so one filter set
     // drives every report view the same way
     noCategory: query.noCategory === "1" || query.noCategory === "true",
+    noPriority: query.noPriority === "1" || query.noPriority === "true",
     noApp: query.noApp === "1" || query.noApp === "true",
     companyIds: parseIdList(query.companyIds),
     // ประเภทงาน — whitelist กลาง (`common/task-types.ts`) ชุดเดียวกับ GET /issues

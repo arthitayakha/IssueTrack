@@ -5,6 +5,7 @@ import { Issue } from "../issues/entities/issue.entity";
 import { IssueStatus } from "../issue-statuses/entities/issue-status.entity";
 import { AuthUser } from "../auth/auth-user";
 import { PermissionsService } from "../permissions/permissions.service";
+import { DONE_MOVE_MATCH, DONE_STATUS_ID, doneMoveParams } from "../../common/done-moves";
 
 /**
  * Dashboard backend — powers the `/` page (GET /dashboard/summary).
@@ -62,10 +63,24 @@ export interface DashboardCountRow {
   count: number;
 }
 
-/** One trend bucket — `bucket` is `yyyy-mm-dd` (bucket start, Bangkok time). */
+/**
+ * Which of the chart's two series a drill-down list belongs to — the trend
+ * bar shows "created" and "completed" side by side, and a list must add up
+ * to the number on the bar it came from.
+ */
+export type DashboardTrendSeries = "created" | "completed";
+
+/**
+ * One trend bucket — `bucket` is `yyyy-mm-dd` (bucket start, Bangkok time).
+ * Two counts live in the same row so one round trip feeds both bars:
+ * `created` = cards born in the bucket, `completed` = moves into the done
+ * status that happened in the bucket (an event count — a card that leaves
+ * and re-enters counts twice).
+ */
 export interface DashboardTrendRow {
   bucket: string;
-  count: number;
+  created: number;
+  completed: number;
 }
 
 /**
@@ -126,13 +141,6 @@ export interface DashboardTrendIssue {
   reporter: { id: number; name: string } | null;
   assignee: { id: number; name: string } | null;
 }
-
-/**
- * The completion status — created as "Done", since renamed to "เสร็จสิ้น".
- * Ids do not move when names do, so open counts key off the id (same constant
- * as reports.service.ts).
- */
-const DONE_STATUS_ID = 4;
 
 /** Trend buckets use Thai wall-clock days, not UTC or server-local ones. */
 const TREND_TIMEZONE = "Asia/Bangkok";
@@ -414,9 +422,18 @@ export class DashboardService {
   }
 
   /**
-   * New cards per bucket — `date_trunc` in Bangkok time so "today" means the
-   * Thai day regardless of the DB server timezone. The client zero-fills the
-   * gaps inside the window (that is presentation, not aggregation).
+   * New cards AND completions per bucket — `date_trunc` in Bangkok time so
+   * "today" means the Thai day regardless of the DB server timezone. The
+   * client zero-fills the gaps inside the window (that is presentation, not
+   * aggregation), and one row carries BOTH series so the two bars can never
+   * disagree about the window:
+   *
+   *   - `created`  — cards whose `created_at` falls in the bucket (unchanged);
+   *   - `completed` — one row per move INTO the done status, bucketed by the
+   *     MOVE's own `activity_logs.created_at`, so "how many finished that
+   *     day" is answered by the day they finished, not the day they were
+   *     born. Same `baseQb` scope (status cross-filter + company + personal
+   *     scope) as every other aggregate on the page.
    *
    * Window: a custom `from`/`to` (Bangkok days) wins; a missing bound falls
    * back to the period's look-back — counted back from `to` when only `to`
@@ -436,22 +453,51 @@ export class DashboardService {
     const lower =
       bkkDayStart(range.from) ??
       new Date((upperExclusive?.getTime() ?? Date.now()) - TREND_WINDOW_DAYS[period] * DAY_MS);
-    const qb = this.baseQb(scope, uid, statusId, companyIds).andWhere("issue.created_at >= :trendFrom", {
-      trendFrom: lower,
-    });
-    if (upperExclusive) {
-      qb.andWhere("issue.created_at < :trendTo", { trendTo: upperExclusive });
-    }
-    const raw = await qb
-      .select(
-        `to_char(date_trunc('${period}', issue.created_at AT TIME ZONE '${TREND_TIMEZONE}'), 'YYYY-MM-DD')`,
-        "bucket",
-      )
-      .addSelect("COUNT(*)::int", "count")
-      .groupBy("bucket")
-      .orderBy("bucket", "ASC")
-      .getRawMany();
-    return raw.map((r) => ({ bucket: String(r.bucket), count: num(r.count) }));
+
+    const bucketOf = (column: string): string =>
+      `to_char(date_trunc('${period}', ${column} AT TIME ZONE '${TREND_TIMEZONE}'), 'YYYY-MM-DD')`;
+    const window = (qb: SelectQueryBuilder<Issue>, column: string): void => {
+      qb.andWhere(`${column} >= :trendFrom`, { trendFrom: lower });
+      if (upperExclusive) qb.andWhere(`${column} < :trendTo`, { trendTo: upperExclusive });
+    };
+    const countByBucket = (qb: SelectQueryBuilder<Issue>, column: string) =>
+      qb
+        .select(bucketOf(column), "bucket")
+        .addSelect("COUNT(*)::int", "count")
+        .groupBy("bucket")
+        .orderBy("bucket", "ASC")
+        .getRawMany();
+
+    // 1) created — the card's own birth date
+    const createdQb = this.baseQb(scope, uid, statusId, companyIds);
+    window(createdQb, "issue.created_at");
+
+    // 2) completed — the log rows behind the second bar. The join is a raw
+    //    table (no `ActivityLog` relation exists on `Issue`), and the window
+    //    keys off `al.created_at`, NOT `issue.created_at`.
+    const completedQb = this.baseQb(scope, uid, statusId, companyIds)
+      .innerJoin("activity_logs", "al", "al.entity_id = issue.id")
+      .andWhere("al.action = 'card.moved'")
+      .andWhere(DONE_MOVE_MATCH, doneMoveParams());
+    window(completedQb, "al.created_at");
+
+    const [createdRaw, completedRaw] = await Promise.all([
+      countByBucket(createdQb, "issue.created_at"),
+      countByBucket(completedQb, "al.created_at"),
+    ]);
+
+    const merged = new Map<string, DashboardTrendRow>();
+    const rowFor = (bucket: string): DashboardTrendRow => {
+      let row = merged.get(bucket);
+      if (!row) {
+        row = { bucket, created: 0, completed: 0 };
+        merged.set(bucket, row);
+      }
+      return row;
+    };
+    for (const r of createdRaw) rowFor(String(r.bucket)).created = num(r.count);
+    for (const r of completedRaw) rowFor(String(r.bucket)).completed = num(r.count);
+    return [...merged.values()].sort((a, b) => a.bucket.localeCompare(b.bucket));
   }
 
   /**
@@ -459,8 +505,11 @@ export class DashboardService {
    *
    * Same `baseQb` (scope + the page's status cross-filter + its company
    * filter) and the very same Bangkok `date_trunc` expression as
-   * `trendCounts`, so the list always adds up to the number on the bar. Rows
-   * are capped: a bucket can never return more than TREND_ISSUES_LIMIT.
+   * `trendCounts`, so the list always adds up to the number on the bar — for
+   * BOTH series: `created` buckets `issue.created_at` (the default, so old
+   * callers keep their behaviour), `completed` buckets the move's own
+   * `al.created_at` behind the second bar. Rows are capped: a bucket can
+   * never return more than TREND_ISSUES_LIMIT.
    */
   async trendIssues(
     requestedScope: DashboardScope,
@@ -469,23 +518,40 @@ export class DashboardService {
     user?: AuthUser | null,
     statusId?: number,
     companyIds?: number[],
+    series: DashboardTrendSeries = "created",
   ): Promise<DashboardTrendIssue[]> {
     if (!YMD_RE.test(bucket)) {
       throw new BadRequestException("bucket must be a yyyy-mm-dd date");
     }
     const scope = await this.effectiveScope(requestedScope, user);
     const uid = Number(user?.id ?? 0);
-    const rows = await this.baseQb(scope, uid, statusId, companyIds)
-      .andWhere(
+    const qb = this.baseQb(scope, uid, statusId, companyIds);
+    if (series === "completed") {
+      // one row per completion — a card that entered the column twice in the
+      // same bucket still comes back once (`getMany` groups by primary key)
+      qb.innerJoin("activity_logs", "al", "al.entity_id = issue.id")
+        .andWhere("al.action = 'card.moved'")
+        .andWhere(DONE_MOVE_MATCH, doneMoveParams())
+        .andWhere(
+          `to_char(date_trunc('${period}', al.created_at AT TIME ZONE '${TREND_TIMEZONE}'), 'YYYY-MM-DD') = :bucket`,
+          { bucket },
+        )
+        // newest completion first — the mirror of the created list's order
+        .orderBy("al.created_at", "DESC")
+        .addOrderBy("al.id", "DESC");
+    } else {
+      qb.andWhere(
         `to_char(date_trunc('${period}', issue.created_at AT TIME ZONE '${TREND_TIMEZONE}'), 'YYYY-MM-DD') = :bucket`,
         { bucket },
       )
+        .orderBy("issue.created_at", "DESC")
+        .addOrderBy("issue.id", "DESC");
+    }
+    const rows = await qb
       .leftJoinAndSelect("issue.status", "status")
       .leftJoinAndSelect("issue.priority", "priority")
       .leftJoinAndSelect("issue.customer", "customer")
       .leftJoinAndSelect("issue.programmer", "programmer")
-      .orderBy("issue.created_at", "DESC")
-      .addOrderBy("issue.id", "DESC")
       .limit(TREND_ISSUES_LIMIT)
       .getMany();
 

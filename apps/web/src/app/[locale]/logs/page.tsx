@@ -3,13 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
-  Badge,
   Box,
   Button,
   Chip,
   CircularProgress,
-  IconButton,
   InputAdornment,
+  MenuItem,
+  Select,
   TextField,
   Tooltip,
   Typography,
@@ -17,9 +17,7 @@ import {
 } from "@mui/material";
 import HistoryIcon from "@mui/icons-material/History";
 import SearchIcon from "@mui/icons-material/Search";
-import FilterListIcon from "@mui/icons-material/FilterList";
-import PersonIcon from "@mui/icons-material/Person";
-import CategoryIcon from "@mui/icons-material/Category";
+import CheckIcon from "@mui/icons-material/Check";
 import { useLocale, useTranslations } from "next-intl";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
@@ -27,15 +25,14 @@ import { Pagination } from "@/components/pagination";
 import { useNotification } from "@/components/notification";
 import { usePermissions } from "@/lib/permissions";
 import { errorMessage } from "@/lib/api";
-import { fetchActivityLogs, fetchAllLogRows, fetchLogActors } from "@/lib/logs-api";
+import { fetchActivityLogs, fetchAllLogRows } from "@/lib/logs-api";
 import type { LogFilters, PaginatedLogs } from "@/lib/logs-api";
 import { buildCsv, downloadCsv } from "@/lib/reports-api";
 import { RANGE_LABEL_KEYS, RANGE_PRESET_KEYS, rangeDates } from "@/lib/date-presets";
 import { DateRangeIconButton, type DateRangePreset, type DateRangeValue } from "@/components/date-range-select";
-import { FilterPanel, type FilterSectionData } from "@/components/filter-panel";
 import { ExportButton } from "@/components/export-button";
 import { timeAgo } from "@/lib/time-ago";
-import type { ActivityActorDto, ActivityLogDto, ActivityLogType } from "@kanban/shared";
+import type { ActivityLogDto, ActivityLogType } from "@kanban/shared";
 import { ACTIVITY_GROUP_ORDER } from "@kanban/shared";
 import DataTable, {
   DataTableBody,
@@ -45,6 +42,35 @@ import DataTable, {
 } from "@/components/data-table";
 
 const PAGE_SIZE = 10;
+
+/**
+ * The ประเภท filter is a single Select, not the old funnel popover — same
+ * pill shape as the reports view picker (see `reports-toolbar.tsx`): outlined
+ * box, white rest / grey hover / primary focus, and a ✓ on the chosen row.
+ * Colours come from the theme, never a raw hex.
+ */
+const TYPE_SELECT_SX = {
+  minWidth: 215,
+  fontSize: 14,
+  bgcolor: "common.white",
+  borderRadius: "10px",
+  transition: "background-color 150ms ease",
+  "&:hover": { bgcolor: "grey.50" },
+  "& .MuiOutlinedInput-notchedOutline": { border: "1px solid", borderColor: "divider" },
+  "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: "grey.400" },
+  "&.Mui-focused .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main" },
+  "& .MuiSelect-select": { py: 1, pr: "30px !important" },
+} as const;
+const TYPE_ITEM_SX = {
+  borderRadius: "8px",
+  fontSize: 13,
+  py: 0.75,
+  px: 1.25,
+  gap: 1,
+  "&.Mui-selected": { bgcolor: "action.selected", fontWeight: 600 },
+  "&.Mui-selected:hover": { bgcolor: "action.selected" },
+} as const;
+const TYPE_ROW_TEXT_SX = { fontSize: 13 } as const;
 
 /**
  * Every group the feed can be narrowed to — the order comes from shared so the
@@ -212,33 +238,17 @@ export default function LogsPage() {
   const { can } = usePermissions();
 
   const [logs, setLogs] = useState<PaginatedLogs | null>(null);
-  const [actors, setActors] = useState<ActivityActorDto[]>([]);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const [actorFilter, setActorFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<ActivityLogType | "">("");
   const [range, setRange] = useState<DateRangeValue>({ from: "", to: "" });
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
 
   const [exporting, setExporting] = useState(false);
-  const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
-
-  // the actor list only feeds the filter popover — its failure must not hide the feed
-  useEffect(() => {
-    let cancelled = false;
-    fetchLogActors()
-      .then((data) => {
-        if (!cancelled) setActors(data);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // debounce the search box so typing does not fire a request per keystroke
   useEffect(() => {
@@ -251,13 +261,12 @@ export default function LogsPage() {
 
   const filters = useMemo<LogFilters>(
     () => ({
-      ...(actorFilter !== "all" ? { actorId: Number(actorFilter) } : {}),
       ...(typeFilter ? { type: typeFilter } : {}),
       ...(search ? { search } : {}),
       ...(range.from ? { from: range.from } : {}),
       ...(range.to ? { to: range.to } : {}),
     }),
-    [actorFilter, typeFilter, search, range],
+    [typeFilter, search, range],
   );
 
   useEffect(() => {
@@ -282,7 +291,6 @@ export default function LogsPage() {
   }, [filters, page, reloadKey]);
 
   const resetFilters = useCallback(() => {
-    setActorFilter("all");
     setTypeFilter("");
     setRange({ from: "", to: "" });
     setSearchInput("");
@@ -291,29 +299,10 @@ export default function LogsPage() {
   }, []);
 
   const hasFilters =
-    actorFilter !== "all" ||
     typeFilter !== "" ||
     Boolean(search) ||
     Boolean(range.from) ||
     Boolean(range.to);
-
-  /** One chip per lit filter — actor / type / date range. */
-  const filterCount =
-    (actorFilter !== "all" ? 1 : 0) +
-    (typeFilter !== "" ? 1 : 0) +
-    (range.from || range.to ? 1 : 0) +
-    (search.trim() ? 1 : 0);
-
-  /** Single-select: picking a checkbox clears the other one in its section. */
-  const toggleActor = (id: number) => () => {
-    setActorFilter((prev) => (prev === String(id) ? "all" : String(id)));
-    setPage(1);
-  };
-
-  const toggleType = (value: ActivityLogType) => () => {
-    setTypeFilter((prev) => (prev === value ? "" : value));
-    setPage(1);
-  };
 
   /** Same preset menu as the reports toolbar — labels come from `Logs.filters`. */
   const rangePresets: DateRangePreset[] = RANGE_PRESET_KEYS.map((key) => ({
@@ -321,54 +310,6 @@ export default function LogsPage() {
     label: t(`filters.${RANGE_LABEL_KEYS[key]}`),
     dates: rangeDates(key) ?? { from: "", to: "" },
   }));
-
-  /**
-   * The funnel popover: actor list (searchable in-panel past 6 entries) and
-   * the three log groups. Both sections stay single-select to match the API.
-   */
-  const filterSections: FilterSectionData[] = [
-    {
-      key: "actor",
-      title: t("filters.actor"),
-      icon: <PersonIcon sx={{ fontSize: 18 }} />,
-      count: actorFilter !== "all" ? 1 : 0,
-      options: actors.map((actor) => ({
-        id: actor.id,
-        label: actor.name,
-        checked: actorFilter === String(actor.id),
-        onToggle: toggleActor(actor.id),
-        start: <PersonIcon sx={{ fontSize: 16, flexShrink: 0, color: "primary.main" }} />,
-      })),
-      // ไม่มีอะไรเลือกเลย → เปิด section แรกไว้ (เหมือน /reports)
-      initialOpen: actorFilter !== "all" || (typeFilter === "" && !range.from && !range.to),
-    },
-    {
-      key: "type",
-      title: t("filters.type"),
-      icon: <CategoryIcon sx={{ fontSize: 18 }} />,
-      count: typeFilter !== "" ? 1 : 0,
-      options: TYPES.filter((value): value is ActivityLogType => value !== "").map((value) => ({
-        id: value,
-        label: t(`type.${value}`),
-        checked: typeFilter === value,
-        onToggle: toggleType(value),
-        // จุดสีเดียวกับ chip คอลัมน์ "ประเภท" ในตาราง — ไม่ซ้ำคำกับ label
-        start: (
-          <Box
-            component="span"
-            sx={{
-              width: 8,
-              height: 8,
-              flexShrink: 0,
-              borderRadius: "50%",
-              bgcolor: `${TYPE_COLOR[value]}.main`,
-            }}
-          />
-        ),
-      })),
-      initialOpen: typeFilter !== "",
-    },
-  ];
 
   const handleExportCsv = useCallback(async () => {
     setExporting(true);
@@ -446,29 +387,52 @@ export default function LogsPage() {
             ariaLabel={t("filters.range")}
           />
 
-          {/* ตัวกรอง: ผู้กระทำ + ประเภท ใน popover เดียว (shared FilterPanel) */}
-          <Tooltip title={t("filters.filtersBtn")}>
-            <IconButton
-              size="medium"
-              color={filterCount > 0 ? "primary" : "default"}
-              onClick={(e) => setFilterAnchor(e.currentTarget)}
-              aria-label={t("filters.filtersBtn")}
-              aria-expanded={Boolean(filterAnchor)}
-            >
-              <Badge badgeContent={filterCount} color="primary">
-                <FilterListIcon fontSize="small" />
-              </Badge>
-            </IconButton>
-          </Tooltip>
-          <FilterPanel
-            open={Boolean(filterAnchor)}
-            anchorEl={filterAnchor}
-            onClose={() => setFilterAnchor(null)}
-            sections={filterSections}
-            // ล้างให้หมดทุกชิ้นที่ badge นับ (ผู้กระทำ/ประเภท/วันที่/ค้นหา) — เหมือน /reports
-            onClearAll={resetFilters}
-            selectedCount={filterCount}
-          />
+          {/* ตัวกรองเดียว: ประเภท — dropdown แบบเดียวกับตัวเลือก view ของ /reports
+              (ไม่มี_chip จำนวน ไม่มี popover ผู้กระทำแล้ว) */}
+          <Select<ActivityLogType | "">
+            size="small"
+            value={typeFilter}
+            onChange={(e) => {
+              setTypeFilter(e.target.value as ActivityLogType | "");
+              setPage(1);
+            }}
+            renderValue={(v) => (
+              <Typography sx={{ fontSize: 14 }}>
+                {v ? t(`type.${v}`) : t("filters.typeAll")}
+              </Typography>
+            )}
+            sx={TYPE_SELECT_SX}
+            inputProps={{ "aria-label": t("filters.type") }}
+          >
+            <MenuItem value="" sx={TYPE_ITEM_SX}>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+                <Typography sx={TYPE_ROW_TEXT_SX}>{t("filters.typeAll")}</Typography>
+                {typeFilter === "" && (
+                  <CheckIcon sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }} />
+                )}
+              </Box>
+            </MenuItem>
+            {TYPES.filter((value): value is ActivityLogType => value !== "").map((value) => (
+              <MenuItem key={value} value={value} sx={TYPE_ITEM_SX}>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+                  <Box
+                    component="span"
+                    sx={{
+                      width: 8,
+                      height: 8,
+                      flexShrink: 0,
+                      borderRadius: "50%",
+                      bgcolor: `${TYPE_COLOR[value]}.main`,
+                    }}
+                  />
+                  <Typography sx={TYPE_ROW_TEXT_SX}>{t(`type.${value}`)}</Typography>
+                  {typeFilter === value && (
+                    <CheckIcon sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }} />
+                  )}
+                </Box>
+              </MenuItem>
+            ))}
+          </Select>
 
           {hasFilters && (
             <Button size="small" onClick={resetFilters} sx={{ textTransform: "none", fontWeight: 600 }}>

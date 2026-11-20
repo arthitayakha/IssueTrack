@@ -981,7 +981,7 @@ describe("IssuesService.update — MA หมดอายุ → รับงา�
     issues.findOne.mockResolvedValue(typedRow());
     apps.isPairExpired.mockResolvedValue(true);
 
-    await expect(service.update(5, { taskType: "ma" }, ACTOR)).rejects.toThrow("สัญญา MA");
+    await expect(service.update(5, { taskType: "ma" }, ACTOR)).rejects.toThrow("MA หมดอายุ");
     expect(apps.isPairExpired).toHaveBeenCalledWith(4, 5);
     expect(issues.update).not.toHaveBeenCalled();
   });
@@ -992,7 +992,7 @@ describe("IssuesService.update — MA หมดอายุ → รับงา�
     apps.isPairExpired.mockResolvedValue(true);
 
     await expect(service.update(5, { taskType: "requirement" }, ACTOR)).rejects.toThrow(
-      "สัญญา MA",
+      "MA หมดอายุ",
     );
     expect(issues.update).not.toHaveBeenCalled();
   });
@@ -1093,6 +1093,84 @@ describe("IssuesService.update — MA หมดอายุ → รับงา�
   });
 });
 
+describe("IssuesService.findOne — maExpired ธงให้ป๊อปอัพบนบอร์ด", () => {
+  const pairRow = (overrides: Record<string, unknown> = {}) =>
+    issueRow({ appId: 4, customerId: 2, customer: { companyId: 5 }, ...overrides });
+
+  it("sends maExpired=true when the reporter's pair is expired", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(pairRow());
+    apps.isPairExpired.mockResolvedValue(true);
+
+    const res = await service.findOne(5);
+
+    expect(res.maExpired).toBe(true);
+    expect(apps.isPairExpired).toHaveBeenCalledWith(4, 5);
+  });
+
+  it("sends maExpired=false while the contract is still valid", async () => {
+    const { service, issues } = makeService();
+    issues.findOne.mockResolvedValue(pairRow());
+
+    const res = await service.findOne(5);
+
+    expect(res.maExpired).toBe(false);
+  });
+
+  it("skips the lookup (false) with no app or no reporter company", async () => {
+    const { service, issues, apps } = makeService();
+    apps.isPairExpired.mockResolvedValue(true);
+    issues.findOne.mockResolvedValue(issueRow({ customer: { companyId: 5 } }));
+    expect((await service.findOne(5)).maExpired).toBe(false);
+
+    issues.findOne.mockResolvedValue(pairRow({ customer: { companyId: null } }));
+    expect((await service.findOne(5)).maExpired).toBe(false);
+    expect(apps.isPairExpired).not.toHaveBeenCalled();
+  });
+
+  it("fails open (false) when the contract lookup breaks", async () => {
+    const { service, issues, apps } = makeService();
+    issues.findOne.mockResolvedValue(pairRow());
+    apps.isPairExpired.mockRejectedValue(new Error("connection lost"));
+
+    await expect(service.findOne(5)).resolves.toMatchObject({ maExpired: false });
+  });
+});
+
+describe("IssuesService.move — MA bell when the card enters เสร็จสิ้น", () => {
+  /** source = 3 (กำลังดำเนินการ), target ตามที่เรียก */
+  const setup = () => {
+    const ctx = makeService();
+    ctx.issues.findOne.mockResolvedValue(
+      issueRow({ statusId: 3, appId: 7, customerId: 2, customer: { companyId: 5 } }),
+    );
+    ctx.issueStatuses.findOne.mockImplementation(({ where }: { where: { id: number } }) =>
+      Promise.resolve(
+        where.id === 4 ? { id: 4, name: "เสร็จสิ้น" } : { id: 3, name: "กำลังดำเนินการ" },
+      ),
+    );
+    return ctx;
+  };
+
+  it("checks MA depletion after the write — hours entered back in review now count", async () => {
+    const { service, maUsage } = setup();
+
+    await service.move(5, 4, ACTOR);
+
+    expect(maUsage.checkAndNotify).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 5, appId: 7, customerId: 2 }),
+    );
+  });
+
+  it("does not check on a move to any other status", async () => {
+    const { service, maUsage } = setup();
+
+    await service.move(5, 7, ACTOR);
+
+    expect(maUsage.checkAndNotify).not.toHaveBeenCalled();
+  });
+});
+
 describe("IssuesService.movePolicy — the stale rules the board paints from", () => {
   it("passes the engine's active rules straight through", async () => {
     const { service, rulesEngine } = makeService();
@@ -1130,6 +1208,53 @@ describe("IssuesService.movePolicy — the hide rules the folder filters with", 
     const policy = await service.movePolicy();
 
     expect(policy.hideStaleRules).toEqual([]);
+  });
+});
+
+describe("IssuesService.findAll — the board search finds a card by ANY field", () => {
+  const PARAMS = { page: 1, limit: 20 };
+  const builderOf = (issues: { createQueryBuilder: jest.Mock }) =>
+    issues.createQueryBuilder.mock.results.at(-1)?.value;
+
+  it("covers number/id, text, people, status/app and dates — not just the title", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, "281026", {});
+
+    const builder = builderOf(issues);
+    const searchCall = builder.andWhere.mock.calls.find(([sql]: unknown[]) => String(sql).includes("ILIKE"));
+    expect(searchCall).toBeDefined();
+    const clause = String(searchCall?.[0]);
+    for (const field of [
+      "issue.title ILIKE :q",
+      "issue.issue_number ILIKE :q",
+      "CAST(issue.id AS TEXT) ILIKE :q",
+      "issue.analysis_cause ILIKE :q",
+      "issue.resolution ILIKE :q",
+      "searchStatus.name ILIKE :q",
+      "searchProgrammer.name ILIKE :q",
+      "searchCustomer.name ILIKE :q",
+      "searchCustomerCompany.name ILIKE :q",
+      "searchApp.name ILIKE :q",
+      "CAST(issue.created_at AS TEXT) ILIKE :q",
+    ]) {
+      expect(clause).toContain(field);
+    }
+    expect((searchCall?.[1] as { q: string }).q).toBe("%281026%");
+
+    const joins = builder.leftJoin.mock.calls.map(([path]: unknown[]) => String(path));
+    expect(joins).toEqual(
+      expect.arrayContaining(["issue.status", "issue.programmer", "issue.customer", "searchCustomer.company"]),
+    );
+  });
+
+  it("adds no search clause when the box is empty", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {});
+
+    const builder = builderOf(issues);
+    expect(builder.andWhere.mock.calls.some(([sql]: unknown[]) => String(sql).includes("ILIKE"))).toBe(false);
   });
 });
 
@@ -1357,6 +1482,28 @@ describe("IssuesService.findAll — noApp / noCategory (the dashboard's NULL sli
     );
   });
 
+  it("noPriority alone → priority_id IS NULL (the dashboard's ไม่ระบุ bar)", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { noPriority: true });
+
+    const clause = whereCalls(issues).find(([sql]) => String(sql).includes("priority_id"));
+    expect(clause).toBeDefined();
+    expect(String((clause as [string])[0])).toBe("issue.priority_id IS NULL");
+  });
+
+  it("noPriority + priorityIds → ONE OR clause", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { noPriority: true, priorityIds: [1, 3] });
+
+    const clauses = whereCalls(issues).filter(([sql]) => String(sql).includes("priority_id"));
+    expect(clauses).toHaveLength(1);
+    const [sql, params] = clauses[0] as [string, Record<string, unknown>];
+    expect(sql).toBe("(issue.priority_id IS NULL OR issue.priority_id IN (:...priorityIds))");
+    expect(params.priorityIds).toEqual([1, 3]);
+  });
+
   /** The flag is opt-in: every other caller must keep the plain `IN` clause. */
   it("neither flag set → the plain IN clause, unchanged", async () => {
     const { service, issues } = makeService();
@@ -1438,5 +1585,46 @@ describe("IssuesService.findAll — taskTypes / noTaskType (ประเภท�
     await service.findAll(PARAMS, [], null, undefined, { appIds: [3] });
 
     expect(typeClauses(issues)).toHaveLength(0);
+  });
+});
+
+describe("IssuesService.findAll — completedFrom/To (the trend's completed bar)", () => {
+  const PARAMS = { page: 1, limit: 20 };
+
+  function whereCalls(issues: { createQueryBuilder: jest.Mock }): unknown[][] {
+    const builder = issues.createQueryBuilder.mock.results.at(-1)?.value;
+    return builder?.andWhere?.mock.calls ?? [];
+  }
+
+  it("filters by a card.moved into เสร็จสิ้น inside the window, not by created_at", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {
+      completedFrom: "2026-10-12",
+      completedTo: "2026-10-18",
+    });
+
+    const clause = whereCalls(issues).find(([sql]) => String(sql).includes("activity_logs al"));
+    expect(clause).toBeDefined();
+    const [sql, params] = clause as [string, Record<string, unknown>];
+    expect(sql).toContain("al.action = 'card.moved'");
+    expect(sql).toContain("al.detail::json->>'toStatusId'");
+    expect(sql).toContain("al.created_at >= :completedFrom");
+    expect(sql).toContain("al.created_at <= :completedTo");
+    expect(sql).not.toContain("issue.created_at >= :");
+    expect(params.doneStatusId).toBe("4");
+    expect(params.doneStatusNames).toEqual(expect.arrayContaining(["เสร็จสิ้น"]));
+    expect(params.completedFrom).toBeInstanceOf(Date);
+    expect(params.completedTo).toBeInstanceOf(Date);
+  });
+
+  it("emits no completion clause without the filter", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {});
+
+    expect(
+      whereCalls(issues).some(([sql]) => String(sql).includes("activity_logs al")),
+    ).toBe(false);
   });
 });

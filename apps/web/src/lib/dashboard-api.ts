@@ -6,6 +6,7 @@ import type {
   DashboardScope,
   DashboardSummary,
   DashboardTrendIssue,
+  DashboardTrendSeries,
 } from "@kanban/shared";
 import { apiFetch } from "./api";
 import { getToken } from "./board-api";
@@ -51,15 +52,19 @@ export async function fetchDashboardSummary(
 /**
  * The issues behind one trend bar:
  *
- *   GET /dashboard/trend-issues?bucket=yyyy-mm-dd&period=...&scope=...&statusId=...&companyIds=...
+ *   GET /dashboard/trend-issues?bucket=yyyy-mm-dd&period=...&series=...&scope=...&statusId=...&companyIds=...
  *
  * Same scope + the same Bangkok `date_trunc` as the count on the bar, so the
- * list always matches the number (capped server-side at 200 rows). `statusId`
- * and `companyIds` keep it matching while the page is filtered.
+ * list always matches the number (capped server-side at 200 rows). `series`
+ * says WHICH bar: the chart draws two per bucket ("created" + "completed"),
+ * and each one buckets its own timestamp. `statusId` and `companyIds` keep it
+ * matching while the page is filtered.
  */
 export async function fetchTrendIssues(input: {
   bucket: string;
   period: DashboardPeriod;
+  /** Which of the chart's two bars — defaults to "created" server-side. */
+  series?: DashboardTrendSeries;
   scope: DashboardScope;
   statusId?: number | null;
   companyIds?: number[];
@@ -69,6 +74,7 @@ export async function fetchTrendIssues(input: {
     period: input.period,
     scope: input.scope,
   });
+  if (input.series) params.set("series", input.series);
   if (input.statusId != null) params.set("statusId", String(input.statusId));
   if (input.companyIds?.length) params.set("companyIds", input.companyIds.join(","));
   return apiFetch<DashboardTrendIssue[]>(`/dashboard/trend-issues?${params}`, {}, getToken());
@@ -106,3 +112,4 @@ export async function fetchDimensionIssues(input: {
   if (input.companyIds?.length) params.set("companyIds", input.companyIds.join(","));
   return apiFetch<DashboardTrendIssue[]>(`/dashboard/dimension-issues?${params}`, {}, getToken());
 }
+

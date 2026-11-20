@@ -165,10 +165,11 @@ export class AppExpiryService {
   }
 
   /**
-   * Who hears about it: every active admin today. When the policy becomes
-   * "the customer / company that uses this app", load the users of
-   * `link.companyId` and merge their ids in here — nothing else in the feature
-   * has to change.
+   * Who hears about it: the active customers of `link.companyId` **and** every
+   * active admin — the same audience as the MA / renew bells, resolved once in
+   * `NotificationsService.contractRecipients()`. The customer rows carry a
+   * "ติดต่อ..." hint and every recipient also gets a Thai e-mail; both are
+   * best-effort inside `notifyAppExpiry()`.
    *
    * The pair *is* the subject now, so the company name is not decoration: one
    * app can be due on three different dates for three different companies and
@@ -192,12 +193,14 @@ export class AppExpiryService {
         : left === null
           ? null
           : `เหลือ ${left} วัน`;
-    await this.notifications.notifyAdmins({
+    await this.notifications.notifyAppExpiry({
+      companyId: link.companyId,
+      appName: names.appName,
+      companyName: names.companyName,
       action: stage === "expired" ? "app_expired" : "app_expiring",
       title,
-      context: context ? context.slice(0, 100) : null,
-      // วันที่รายคู่อยู่ที่หน้า `/systems` (ข้อมูลระบบ) — ไม่ใช่ที่แท็บแอป
-      link: "/systems",
+      context: context ?? "",
+      daysLeft: left,
     });
   }
 }

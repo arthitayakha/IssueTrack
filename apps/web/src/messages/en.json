@@ -77,6 +77,8 @@
     "unassigned": "Unassigned",
     "trend": {
       "title": "Issue trend",
+      "seriesCreated": "Created",
+      "seriesCompleted": "Completed",
       "empty": "No new issues in this period",
       "pickRange": "Custom range",
       "rangeAuto": "Recent",
@@ -93,6 +95,7 @@
       "issuesTitle": "{label} · {count} issues",
       "emptyIssues": "No issues in this bucket",
       "truncated": "Showing {shown} of {total} issues",
+      "openInReports": "Open in reports",
       "close": "Close"
     },
     "period": {
@@ -182,6 +185,7 @@
     "titlePlaceholder": "Issue title",
     "app": "App",
     "appPlaceholder": "Select an app",
+    "noApp": "No apps",
     "noCompanyApps": "No apps are available for your account. Please contact an administrator.",
     "maExpiredBlock": "The MA contract for this app has expired — you can still report issues, but MA/requirement requests will be rejected.",
     "category": "Category",
@@ -198,7 +202,7 @@
     "noColumnsWarning": "There are no columns on the board yet. Please add a column before reporting an issue.",
     "submit": "Submit",
     "submitReport": "Submit Issue",
-    "reportSuccess": "Issue reported successfully — it has been added to the board",
+    "reportSuccess": "Issue reported successfully",
     "errorSubmit": "Failed to report the issue",
     "cancel": "Cancel",
     "addCard": "Add Card",
@@ -320,6 +324,7 @@
       "priority": "Priority",
       "taskType": "Task type",
       "taskTypeUnset": "Not set",
+      "maExpiredAlert": "MA contract expired — cannot save changes",
       "notSet": "Not set",
       "labels": "Labels",
       "description": "Description",
@@ -855,6 +860,8 @@
       "app_expiring": "expiring soon",
       "app_expired": "expired",
       "ma_depleted": "MA exhausted",
+      "app_renewed": "renewed",
+      "app_hours_purchased": "hours purchased",
       "daily_digest": "daily reminder"
     },
     "priority": {
@@ -1298,6 +1305,7 @@
       "app": "App",
       "noApp": "No app",
       "noCategory": "No category",
+      "noPriority": "No priority",
       "company": "Company",
       "sectionAssignee": "Programmer",
       "sectionReporter": "Reporter",

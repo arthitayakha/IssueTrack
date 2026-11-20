@@ -110,6 +110,14 @@ export interface BoardIssue {
    * (fail open on a payload from an older API).
    */
   canEditTaskType?: boolean;
+  /**
+   * สัญญาของคู่ "แอป × บริษัทผู้แจ้ง" หมดอายุแล้วหรือยัง — คำนวณฝั่งเซิร์ฟเวอร์
+   * ด้วย `AppsService.isPairExpired()` ตัวเดียวกับตาข่าย 400 ตอนตั้งประเภทงาน
+   * · ป๊อปอัพใช้แสดง inline alert + ขีดปุ่มบันทึกทันทีที่**เปลี่ยน**ประเภทงาน
+   * เป็น MA/Requirement (การ์ดที่เป็น MA อยู่แล้วแก้ฟิลด์อื่น/ชั่วโมงได้ตามปกติ)
+   * (ไม่ส่ง/older API = ถือว่าไม่หมดอายุ = fail open)
+   */
+  maExpired?: boolean;
   /** An active start-timer rule covers this card's status (computed). */
   timerRuleApplies?: boolean;
   /** "Actual fix time" field states: editable now / shown at least once. */

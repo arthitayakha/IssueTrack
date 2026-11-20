@@ -64,6 +64,8 @@ function mailStub() {
   return {
     sendPasswordReset: jest.fn().mockResolvedValue(undefined),
     sendIssueStatusUpdate: jest.fn().mockResolvedValue(undefined),
+    sendMaDepleted: jest.fn().mockResolvedValue(undefined),
+    sendAppExpiry: jest.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -76,10 +78,11 @@ function makeService() {
   const mail = mailStub();
   // issue_priorities lookup — null by default = "card has no priority" (medium)
   const priorities = repo();
+  const permissions = { hasPermission: jest.fn().mockResolvedValue(true) };
   const service = new NotificationsService(
-    ...([notifications, users, mail, priorities] as unknown as ServiceArgs),
+    ...([notifications, users, mail, priorities, permissions] as unknown as ServiceArgs),
   );
-  return { service, notifications, users, mail, priorities };
+  return { service, notifications, users, mail, priorities, permissions };
 }
 
 const ISSUE = {
@@ -575,6 +578,149 @@ describe("NotificationsService — notification priority", () => {
     });
 
     expect(written(notifications)[0].priority).toBe("medium");
+  });
+});
+
+/**
+ * Contract events — วันหมดอายุ / MA หมด / ต่ออายุ / ซื้อชม. ต้องมี " audience
+ * เดียวกัน" (ลูกค้าของบริษัท + แอดมิน) และแยกว่าอันไหนได้อีเมลบ้าง
+ */
+describe("NotificationsService — contract audience, contact hint and mail policy", () => {
+  const ADMIN = { id: 1, name: "aom", email: "admin@x.com", roleId: 1, positionId: null };
+  const CUSTOMER = { id: 2, name: "ลูกค้า", email: "customer@x.com", roleId: 3, positionId: null, companyId: 5 };
+
+  function withAudience(service: ReturnType<typeof makeService>) {
+    service.users.find.mockImplementation((opts?: { where?: { role?: { name?: string } } }) => {
+      const role = opts?.where?.role?.name;
+      if (role === "admin") return Promise.resolve([ADMIN]);
+      if (role === "customer") return Promise.resolve([CUSTOMER]);
+      return Promise.resolve([]);
+    });
+  }
+
+  function rows(notifications: Stub) {
+    return notifications.save.mock.calls.map(([row]) => row as Record<string, unknown>);
+  }
+
+  it("expiry reaches the customer AND the admin; only the customer row/mail carries the contact hint", async () => {
+    const ctx = makeService();
+    withAudience(ctx);
+
+    await ctx.service.notifyAppExpiry({
+      companyId: 5,
+      appName: "CRM",
+      companyName: "บริษัท ครัวบ้านสวน จำกัด",
+      action: "app_expired",
+      title: "CRM บริษัท ครัวบ้านสวน จำกัด",
+      context: "เลยกำหนด 1 วัน",
+      daysLeft: -1,
+    });
+
+    const writtenRows = rows(ctx.notifications);
+    expect(writtenRows).toHaveLength(2);
+    expect(writtenRows.map((r) => r.userId)).toEqual([2, 1]);
+    expect(writtenRows[0]).toMatchObject({
+      type: "app_expired",
+      context: "เลยกำหนด 1 วัน • ติดต่อ: admin@x.com",
+      link: "/systems",
+      priority: "high",
+    });
+    expect(writtenRows[1].context).toBe("เลยกำหนด 1 วัน");
+    expect(ctx.mail.sendAppExpiry).toHaveBeenCalledTimes(2);
+    expect(ctx.mail.sendAppExpiry).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "customer@x.com", contact: "ติดต่อผู้ดูแลระบบ: admin@x.com" }),
+    );
+    expect(ctx.mail.sendAppExpiry).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "admin@x.com", contact: null }),
+    );
+  });
+
+  it("MA depletion keeps the audience but switches every link to /systems", async () => {
+    const ctx = makeService();
+    withAudience(ctx);
+
+    await ctx.service.notifyMaDepleted({
+      companyId: 5,
+      appName: "POS",
+      companyName: "บริษัท ครัวบ้านสวน จำกัด",
+      maHours: 80,
+      usedHours: 80,
+    });
+
+    const writtenRows = rows(ctx.notifications);
+    expect(writtenRows.map((r) => r.userId)).toEqual([2, 1]);
+    expect(writtenRows.every((r) => r.link === "/systems")).toBe(true);
+    expect(writtenRows[0].context).toBe("ใช้ไป 80 / 80 ชม. • ติดต่อ: admin@x.com");
+    expect(ctx.mail.sendMaDepleted).toHaveBeenCalledTimes(2);
+  });
+
+  it("customer without system.view falls back to /boards", async () => {
+    const ctx = makeService();
+    withAudience(ctx);
+    ctx.permissions.hasPermission.mockResolvedValue(false);
+
+    await ctx.service.notifyMaDepleted({
+      companyId: 5,
+      appName: "POS",
+      companyName: "ACME",
+      maHours: 10,
+      usedHours: 10,
+    });
+
+    expect(rows(ctx.notifications).map((r) => r.link)).toEqual(["/boards", "/systems"]);
+  });
+
+  it("renew / buy-hours notify both sides IN APP only — no mail, no contact hint, low priority", async () => {
+    const ctx = makeService();
+    withAudience(ctx);
+
+    await ctx.service.notifyContractChange({
+      companyId: 5,
+      appName: "POS",
+      companyName: "ACME",
+      action: "app_renewed",
+      context: "MA 80 ชม.",
+    });
+    await ctx.service.notifyContractChange({
+      companyId: 5,
+      appName: "POS",
+      companyName: "ACME",
+      action: "app_hours_purchased",
+      context: "+40 ชม. (รวม 80 ชม.)",
+    });
+
+    expect(rows(ctx.notifications).map((r) => r.type)).toEqual([
+      "app_renewed",
+      "app_renewed",
+      "app_hours_purchased",
+      "app_hours_purchased",
+    ]);
+    expect(new Set(rows(ctx.notifications).map((r) => r.priority))).toEqual(new Set(["low"]));
+    expect(rows(ctx.notifications).every((r) => !String(r.context).includes("ติดต่อ"))).toBe(true);
+    expect(ctx.mail.sendMaDepleted).not.toHaveBeenCalled();
+    expect(ctx.mail.sendAppExpiry).not.toHaveBeenCalled();
+  });
+
+  it("a broken customer lookup still leaves the admins hearing about it", async () => {
+    const ctx = makeService();
+    ctx.users.find.mockImplementation((opts?: { where?: { role?: { name?: string } } }) => {
+      if (opts?.where?.role?.name === "customer") return Promise.reject(new Error("db down"));
+      return Promise.resolve([ADMIN]);
+    });
+
+    await expect(
+      ctx.service.notifyAppExpiry({
+        companyId: 5,
+        appName: "POS",
+        companyName: "ACME",
+        action: "app_expiring",
+        title: "POS ACME",
+        context: "เหลือ 5 วัน",
+        daysLeft: 5,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(rows(ctx.notifications).map((r) => r.userId)).toEqual([1]);
   });
 });
 

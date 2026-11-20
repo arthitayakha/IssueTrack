@@ -340,6 +340,18 @@ describe("MaUsageService.checkAndNotify — the usage query matches usage-counts
     expect(clauses.some((c) => c.includes("deleted_at IS NULL"))).toBe(true);
   });
 
+  it("counts only cards in เสร็จสิ้น — hours entered while still in review are not deducted", async () => {
+    const { service, qb } = makeService({ reporter: REPORTER, usedSeconds: 40 * HOUR });
+
+    await service.checkAndNotify(ISSUE);
+
+    const statusCall = qb.andWhere.mock.calls.find(([sql]) =>
+      String(sql).includes("issue.status_id"),
+    );
+    expect(statusCall?.[0]).toContain("issue.status_id = :doneStatusId");
+    expect(statusCall?.[1]).toEqual({ doneStatusId: 4 });
+  });
+
   it("never throws when the notification itself fails (hook fire-and-forget)", async () => {
     const { service, notifications } = makeService({
       reporter: REPORTER,

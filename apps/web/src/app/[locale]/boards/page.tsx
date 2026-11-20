@@ -50,6 +50,7 @@ import {
   List,
   ListItem,
   keyframes,
+  ClickAwayListener,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import {
@@ -83,7 +84,6 @@ import TableChartIcon from "@mui/icons-material/TableChart";
 import FolderIcon from "@mui/icons-material/Folder";
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
-import SaveIcon from "@mui/icons-material/Save";
 import HistoryIcon from "@mui/icons-material/History";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import SearchIcon from "@mui/icons-material/Search";
@@ -290,6 +290,54 @@ function formatDate(dateStr: string): string {
 function formatDateTime(dateStr: string): string {
   const date = new Date(dateStr);
   return `${date.toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })} ${date.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+/**
+ * Every field a card exposes, lowercased into one string — the board's search
+ * (table + folder) and the recycle bin share this so "find by id / reporter /
+ * status / date / …" behaves identically everywhere. `extra` carries fields
+ * that only a trashed card has (deletedAt, deletedByName). Kept in sync with
+ * the `search` clause of `IssuesService.findAll` on the API.
+ */
+function issueSearchText(issue: BoardIssue, extra: (string | null | undefined)[] = []): string {
+  const rawDates = [issue.createdAt, issue.updatedAt, issue.statusChangedAt];
+  const parsed = [...rawDates, ...extra]
+    .filter((d): d is string => typeof d === "string" && d !== "" && !Number.isNaN(Date.parse(d)))
+    // Both shapes the UI shows: "14 ต.ค. 2568 09:30" (popup) and
+    // "14 ต.ค. 69" (the date on the card) — so either one is searchable.
+    .flatMap((d) => [formatDateTime(d), formatDate(d)]);
+  return [
+    String(issue.id),
+    issue.issueNumber ?? "",
+    issue.title ?? "",
+    issue.description ?? "",
+    issue.analysisCause ?? "",
+    issue.resolution ?? "",
+    issue.statusName ?? "",
+    issue.priorityName ?? "",
+    issue.categoryName ?? "",
+    issue.customCategory ?? "",
+    issue.appName ?? "",
+    issue.labelName ?? "",
+    (issue.labels ?? []).map((l) => l.name ?? "").join(" "),
+    issue.programmerName ?? "",
+    issue.customerName ?? "",
+    issue.customerCompanyName ?? "",
+    issue.taskType ?? "",
+    ...rawDates.filter((d): d is string => !!d),
+    ...extra.filter((d): d is string => !!d),
+    ...parsed,
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+/** Multi-word search: every typed token must appear somewhere in the card. */
+function matchesIssueSearch(issue: BoardIssue, query: string, extra: (string | null | undefined)[] = []): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const hay = issueSearchText(issue, extra);
+  return q.split(/\s+/).filter(Boolean).every((token) => hay.includes(token));
 }
 
 function formatDuration(seconds: number | null | undefined): string {
@@ -550,6 +598,12 @@ function staleDaysFor(
   // fire paints the card, and the tooltip always shows the real age
   const covered = staleRules.some((rule) => rule.statusId === issue.statusId && days >= rule.days);
   return covered ? days : null;
+}
+
+/** Search tokens for the red "ค้าง N วัน" badge the card actually renders. */
+function staleSearchTokens(issue: BoardIssue, staleRules: StaleRule[]): string[] {
+  const days = staleDaysFor(issue, staleRules);
+  return days == null ? [] : ["ค้าง", `ค้าง ${days} วัน`];
 }
 
 /**
@@ -1340,15 +1394,23 @@ function RecycleBinDialog({
   const [items, setItems] = useState<TrashedIssue[]>([]);
   const [loading, setLoading] = useState(false);
   const [restoringId, setRestoringId] = useState<number | null>(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     if (!open) return;
+    setSearch("");
     setLoading(true);
     fetchTrashedIssues()
       .then(setItems)
       .catch((e) => fail(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ")))
       .finally(() => setLoading(false));
   }, [open, fail]);
+
+  // Same "find by anything" search as the board — plus the trash-only fields.
+  const filteredItems = useMemo(
+    () => items.filter((i) => matchesIssueSearch(i, search, [i.deletedAt, i.deletedByName])),
+    [items, search],
+  );
 
   const handleRestore = async (id: number) => {
     setRestoringId(id);
@@ -1365,23 +1427,38 @@ function RecycleBinDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-        <RestoreFromTrashIcon color="error" />
-        {t("recycleBin")}
-      </DialogTitle>
+      <DialogTitle>{t("recycleBin")}</DialogTitle>
       <DialogContent>
         {loading ? (
           <Box sx={{ display: "flex", justifyContent: "center", p: 3 }}>
             <CircularProgress />
           </Box>
-        ) : items.length === 0 ? (
-          <Box sx={{ textAlign: "center", py: 4 }}>
-            <RestoreFromTrashIcon sx={{ fontSize: 48, color: "text.disabled", mb: 1 }} />
-            <Typography color="text.secondary">{t("noTrashItems")}</Typography>
-          </Box>
         ) : (
-          <List>
-            {items.map((item, idx) => (
+          <>
+            <TextField
+              fullWidth
+              size="small"
+              autoComplete="off"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t("searchPlaceholder")}
+              sx={{ mb: 1 }}
+              InputProps={{
+                startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
+              }}
+            />
+            {items.length === 0 ? (
+              <Box sx={{ textAlign: "center", py: 4 }}>
+                <RestoreFromTrashIcon sx={{ fontSize: 48, color: "text.disabled", mb: 1 }} />
+                <Typography color="text.secondary">{t("noTrashItems")}</Typography>
+              </Box>
+            ) : filteredItems.length === 0 ? (
+              <Box sx={{ textAlign: "center", py: 4 }}>
+                <Typography color="text.secondary">{t("filter.noResults")}</Typography>
+              </Box>
+            ) : (
+              <List sx={{ maxHeight: "60vh", overflowY: "auto", pr: 1 }}>
+                {filteredItems.map((item, idx) => (
               <Box key={item.id}>
                 <ListItem
                   alignItems="flex-start"
@@ -1423,10 +1500,12 @@ function RecycleBinDialog({
                     />
                   </Box>
                 </ListItem>
-                {idx < items.length - 1 && <Divider />}
-              </Box>
-            ))}
-          </List>
+                  {idx < filteredItems.length - 1 && <Divider />}
+                </Box>
+              ))}
+              </List>
+            )}
+          </>
         )}
       </DialogContent>
       <DialogActions>
@@ -1533,95 +1612,58 @@ function IssueDialog({
 }
 
 /**
- * A click-to-edit text block (same pattern as the description editor):
- * read-only text until clicked, then a multiline field with cancel/save.
- * Used for the analysis/cause and resolution fields on the issue card.
+ * A click-to-edit text block used for analysis/cause and resolution. The
+ * typed value lives in the PARENT as a draft — there is deliberately NO
+ * per-field save button: the dialog's single footer "บันทึก" commits every
+ * edited field at once and "ยกเลิก" throws all drafts away. The ✎/✕ in the
+ * header only opens/closes the editor; closing keeps the typed draft.
  */
 function EditableTextField({
   label,
   value,
   placeholder,
   canEdit,
-  saving,
-  onSave,
+  disabled,
+  onDraftChange,
 }: {
   label: string;
   value: string | null;
   placeholder: string;
   canEdit: boolean;
-  saving: boolean;
-  onSave: (next: string) => Promise<void>;
+  disabled: boolean;
+  onDraftChange: (next: string) => void;
 }) {
-  const t = useTranslations("Boards");
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value ?? "");
-  const [savingField, setSavingField] = useState(false);
-
-  useEffect(() => {
-    if (!editing) setDraft(value ?? "");
-  }, [value, editing]);
-
-  const busy = saving || savingField;
-
-  const handleSave = async () => {
-    if (busy) return;
-    setSavingField(true);
-    try {
-      await onSave(draft);
-      setEditing(false);
-    } finally {
-      setSavingField(false);
-    }
-  };
 
   return (
     <Box>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
         <Typography variant="caption" color="text.secondary">{label}</Typography>
-        {canEdit && !editing && (
-          <IconButton
-            size="small"
-            onClick={() => {
-              setDraft(value ?? "");
-              setEditing(true);
-            }}
-            sx={{ p: 0.25 }}
-          >
-            <EditIcon sx={{ fontSize: 14 }} />
+        {canEdit && (
+          <IconButton size="small" onClick={() => setEditing((v) => !v)} sx={{ p: 0.25 }}>
+            {editing ? <CloseIcon sx={{ fontSize: 14 }} /> : <EditIcon sx={{ fontSize: 14 }} />}
           </IconButton>
         )}
       </Box>
       {editing ? (
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-          <TextField
-            fullWidth
-            multiline
-            rows={3}
-            size="small"
-            placeholder={placeholder}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            disabled={busy}
-            autoFocus
-          />
-          <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end" }}>
-            <Button size="small" onClick={() => setEditing(false)} disabled={busy}>
-              {t("cancel")}
-            </Button>
-            <Button
+        <ClickAwayListener onClickAway={() => setEditing(false)}>
+          <Box>
+            <TextField
+              fullWidth
+              multiline
+              rows={3}
               size="small"
-              variant="contained"
-              disabled={busy}
-              startIcon={<SaveIcon sx={{ fontSize: 16 }} />}
-              onClick={handleSave}
-            >
-              {t("save")}
-            </Button>
+              placeholder={placeholder}
+              value={value ?? ""}
+              onChange={(e) => onDraftChange(e.target.value)}
+              disabled={disabled}
+              autoFocus
+            />
           </Box>
-        </Box>
+        </ClickAwayListener>
       ) : (
         <Box
-          onClick={canEdit ? () => { setDraft(value ?? ""); setEditing(true); } : undefined}
+          onClick={canEdit ? () => setEditing(true) : undefined}
           sx={{
             p: 1.5,
             border: "1px solid",
@@ -1710,10 +1752,12 @@ function IssueDetailDialog({
   const [saving, setSaving] = useState(false);
   const [isEditingDesc, setIsEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState("");
-  const [savingDesc, setSavingDesc] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-  const [savingTitle, setSavingTitle] = useState(false);
+  // analysis/resolution drafts — like title/description, they are committed
+  // ONLY by the dialog's single footer Save (never on their own)
+  const [analysisDraft, setAnalysisDraft] = useState("");
+  const [resolutionDraft, setResolutionDraft] = useState("");
   const [restoring, setRestoring] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
   const [editingComment, setEditingComment] = useState<Comment | null>(null);
@@ -1760,6 +1804,14 @@ function IssueDetailDialog({
     setDraftProgrammerId(issue?.programmerId ?? null);
     setDraftLabelIds(issue?.labelIds ?? []);
     setDraftTaskType(issue?.taskType ?? null);
+    // every text field starts as a draft of the stored value — nothing is
+    // written until the single footer Save is pressed
+    setTitleDraft(issue?.title ?? "");
+    setDescDraft(issue?.description ?? "");
+    setAnalysisDraft(issue?.analysisCause ?? "");
+    setResolutionDraft(issue?.resolution ?? "");
+    setIsEditingTitle(false);
+    setIsEditingDesc(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issue?.id]);
 
@@ -1801,18 +1853,11 @@ function IssueDetailDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, current?.actualFixDuration]);
 
-  const saveActualTime = async () => {
-    if (!current) return;
+  /** Draft value of the manual time entry — written ONLY by the footer Save. */
+  const draftActualSeconds = () => {
     const hours = Math.max(0, Math.floor(Number(actualHours) || 0));
     const minutes = Math.min(59, Math.max(0, Math.floor(Number(actualMinutes) || 0)));
-    setSavingActual(true);
-    try {
-      const updated = await setActualFixDuration(current.id, hours * 3600 + minutes * 60);
-      setLocalIssue(updated);
-      onRefresh();
-    } finally {
-      setSavingActual(false);
-    }
+    return hours * 3600 + minutes * 60;
   };
 
   // derived values for the time section
@@ -1968,17 +2013,36 @@ function IssueDetailDialog({
   const sortedEqual = (a: number[], b: number[]) =>
     JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 
+  // ONE gate for the dialog's single footer Save: true as soon as ANY field
+  // has an unsaved draft (text fields included). Keeping every comparison
+  // here is what makes "save all / save nothing" impossible to half-apply.
   const hasDraftChanges =
+    (localIssue?.title ?? "") !== titleDraft ||
+    (localIssue?.description ?? "") !== descDraft ||
+    (localIssue?.analysisCause ?? "") !== analysisDraft ||
+    (localIssue?.resolution ?? "") !== resolutionDraft ||
+    (localIssue?.actualFixDuration ?? 0) !== draftActualSeconds() ||
     (localIssue?.priorityId ?? null) !== draftPriorityId ||
     (localIssue?.programmerId ?? null) !== draftProgrammerId ||
     (localIssue?.taskType ?? null) !== draftTaskType ||
     !sortedEqual(localIssue?.labelIds ?? [], draftLabelIds);
 
-  const resetDrafts = () => {
-    setDraftPriorityId(localIssue?.priorityId ?? null);
-    setDraftProgrammerId(localIssue?.programmerId ?? null);
-    setDraftLabelIds(localIssue?.labelIds ?? []);
-    setDraftTaskType(localIssue?.taskType ?? null);
+  // `source` lets handleSave reset to the values just written (state updates
+  // from setLocalIssue are not visible inside the same function run).
+  const resetDrafts = (source: BoardIssue | null = localIssue) => {
+    setDraftPriorityId(source?.priorityId ?? null);
+    setDraftProgrammerId(source?.programmerId ?? null);
+    setDraftLabelIds(source?.labelIds ?? []);
+    setDraftTaskType(source?.taskType ?? null);
+    setTitleDraft(source?.title ?? "");
+    setDescDraft(source?.description ?? "");
+    setAnalysisDraft(source?.analysisCause ?? "");
+    setResolutionDraft(source?.resolution ?? "");
+    setIsEditingTitle(false);
+    setIsEditingDesc(false);
+    const total = source?.actualFixDuration ?? 0;
+    setActualHours(String(Math.floor(total / 3600)));
+    setActualMinutes(String(Math.floor((total % 3600) / 60)));
   };
 
   const handleCancel = () => {
@@ -1990,24 +2054,44 @@ function IssueDetailDialog({
     if (!localIssue || saving) return;
     setSaving(true);
     try {
-      const data: { priorityId?: number | null; labelIds?: number[]; taskType?: IssueTaskType | null } = {};
-      if ((localIssue.priorityId ?? null) !== draftPriorityId) {
-        data.priorityId = draftPriorityId;
-      }
-      if (!sortedEqual(localIssue.labelIds ?? [], draftLabelIds)) {
-        data.labelIds = draftLabelIds;
-      }
-      if ((localIssue.taskType ?? null) !== draftTaskType) {
-        data.taskType = draftTaskType;
-      }
-      if (Object.keys(data).length > 0) {
-        await updateIssue(localIssue.id, data);
-      }
+      const data: {
+        title?: string;
+        description?: string;
+        analysisCause?: string;
+        resolution?: string;
+        priorityId?: number | null;
+        labelIds?: number[];
+        taskType?: IssueTaskType | null;
+      } = {};
+      if ((localIssue.title ?? "") !== titleDraft) data.title = titleDraft;
+      if ((localIssue.description ?? "") !== descDraft) data.description = descDraft;
+      if ((localIssue.analysisCause ?? "") !== analysisDraft) data.analysisCause = analysisDraft;
+      if ((localIssue.resolution ?? "") !== resolutionDraft) data.resolution = resolutionDraft;
+      if ((localIssue.priorityId ?? null) !== draftPriorityId) data.priorityId = draftPriorityId;
+      if (!sortedEqual(localIssue.labelIds ?? [], draftLabelIds)) data.labelIds = draftLabelIds;
+      if ((localIssue.taskType ?? null) !== draftTaskType) data.taskType = draftTaskType;
+
+      let saved = localIssue;
+      // all text/pick fields go in ONE write; assignee and time are the only
+      // separate endpoints (they carry notification / MA-bell side effects)
+      if (Object.keys(data).length > 0) saved = await updateIssue(saved.id, data);
       if ((localIssue.programmerId ?? null) !== draftProgrammerId) {
-        await assignIssue(localIssue.id, draftProgrammerId);
+        saved = await assignIssue(saved.id, draftProgrammerId);
+      }
+      if ((localIssue.actualFixDuration ?? 0) !== draftActualSeconds()) {
+        setSavingActual(true);
+        try {
+          saved = await setActualFixDuration(saved.id, draftActualSeconds());
+        } finally {
+          setSavingActual(false);
+        }
       }
       onRefresh();
-      resetDrafts();
+      // ธง maExpired คำนวณเฉพาะตอนอ่าน (findAll/findOne) — update() ไม่ส่ง
+      // จึงคงค่าที่มีอยู่ไว้ ไม่งั้น alert หายกลางทางตอนแก้ฟิลด์อื่น
+      const merged = { ...saved, maExpired: saved.maExpired ?? localIssue.maExpired };
+      setLocalIssue(merged);
+      resetDrafts(merged);
       onClose();
     } catch (e) {
       fail(getErrorMessage(e, "บันทึกไม่สำเร็จ"));
@@ -2096,56 +2180,41 @@ function IssueDetailDialog({
   // the ประเภทงาน lock (issue.require_task_type) — false only when the SERVER
   // says so; an absent flag (older API) stays editable, fail open
   const canFillTaskType = canEditIssue && current?.canEditTaskType !== false;
+  // สัญญา MA หมดอายุ + **กำลังเปลี่ยน**ไปเป็นประเภทงานที่ห้ามเซฟ → โชว์ inline
+  // alert ทันที (ไม่ต้องรอ API 400) และขีด/ปิดปุ่มบันทึก · ตรงกับตาข่ายใน
+  // `IssuesService.update()` เป๊ะ: 400 เฉพาะตอน `next !== เดิม` และ next เป็น
+  // ma/requirement — การ์ดที่เป็น ma อยู่แล้วจึงยังแก้ชื่อ/รายละเอียด/**ชั่วโมง**
+  // ได้ตามปกติ (จำเป็นมาก เพราะตอนนี้หัก MA ตอนเสร็จสิ้น → ต้องแก้ตัวเลขในรีวิวได้)
+  const maBlocked =
+    current?.maExpired === true &&
+    draftTaskType !== (current?.taskType ?? null) &&
+    (draftTaskType === "ma" || draftTaskType === "requirement");
 
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={handleCancel}
       maxWidth={false}
       PaperProps={{ sx: { borderRadius: 4, width: { xs: "100%", md: 1100 }, maxWidth: "95vw", height: { xs: "100%", md: "90vh" }, display: "flex", flexDirection: "column", overflow: "hidden" } }}
     >
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, px: 2.5, pt: 2, pb: 1.5 }}>
         {isEditingTitle ? (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1, flex: 1, minWidth: 0 }}>
-            <TextField
-              fullWidth
-              size="small"
-              value={titleDraft}
-              onChange={(e) => setTitleDraft(e.target.value)}
-              disabled={savingTitle}
-              autoFocus
-            />
-            <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end" }}>
-              <Button size="small" onClick={() => setIsEditingTitle(false)} disabled={savingTitle}>
-                {t("cancel")}
-              </Button>
-              <Button
+          <ClickAwayListener onClickAway={() => setIsEditingTitle(false)}>
+            <Box sx={{ display: "flex", flex: 1, minWidth: 0 }}>
+              <TextField
+                fullWidth
                 size="small"
-                variant="contained"
-                disabled={savingTitle}
-                startIcon={<SaveIcon sx={{ fontSize: 16 }} />}
-                onClick={async () => {
-                  if (!current) return;
-                  setSavingTitle(true);
-                  try {
-                    const updated = await updateIssue(current.id, { title: titleDraft });
-                    setLocalIssue(updated);
-                    onRefresh();
-                    setIsEditingTitle(false);
-                  } finally {
-                    setSavingTitle(false);
-                  }
-                }}
-              >
-                {t("save")}
-              </Button>
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                disabled={saving}
+                autoFocus
+              />
             </Box>
-          </Box>
+          </ClickAwayListener>
         ) : (
           <Box
             onClick={() => {
               if (readOnly) return;
-              setTitleDraft(current?.title ?? "");
               setIsEditingTitle(true);
             }}
             sx={{ display: "flex", alignItems: "center", gap: 1, flex: 1, minWidth: 0, cursor: readOnly ? "default" : "pointer" }}
@@ -2161,7 +2230,7 @@ function IssueDetailDialog({
                 "&:hover": readOnly ? {} : { color: "primary.main" },
               }}
             >
-              {current?.title}
+              {titleDraft}
             </Typography>
             {!readOnly && <EditIcon sx={{ fontSize: 16, color: "text.secondary" }} />}
           </Box>
@@ -2169,7 +2238,7 @@ function IssueDetailDialog({
         <Typography variant="subtitle2" fontWeight={700} color="common.black">
           {issueKey}
         </Typography>
-        <IconButton size="small" onClick={onClose} aria-label={t("close")}>
+        <IconButton size="small" onClick={handleCancel} aria-label={t("close")}>
           <CloseIcon />
         </IconButton>
       </Box>
@@ -2490,98 +2559,98 @@ function IssueDetailDialog({
               <Box sx={{ display: "flex", gap: 3, flexWrap: "wrap", alignItems: "flex-start" }}>
                 {(timeBoxVisible || actualRowVisible) && (
                   <Box sx={{ flex: "1 1 260px", minWidth: 0 }}>
-                    {timeBoxVisible && (
-                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
-                        {t("detail.time.title")}
-                      </Typography>
-                    )}
+                    {/* Timer and actual-time entry share ONE row — both labels,
+                        the chip and the inputs sit inline (wrapping only when
+                        the column gets too narrow). */}
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                      {timeBoxVisible &&
-                        (neverTimed ? (
-                          <Typography variant="body2" color="text.secondary">
-                            {t("detail.time.never")}
+                      {timeBoxVisible && (
+                        <>
+                          <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
+                            {t("detail.time.title")}
                           </Typography>
-                        ) : (
-                          <>
-                            <Chip
-                              size="small"
-                              variant="outlined"
-                              color={runningSince ? "success" : "default"}
-                              icon={
-                                <TimerOutlinedIcon
-                                  sx={{
-                                    fontSize: 14,
-                                    animation: runningSince ? `${timerPulse} 1.5s ease-in-out infinite` : "none",
-                                  }}
-                                />
-                              }
-                              label={
-                                <Box component="span" sx={{ fontFamily: "monospace", fontWeight: 700 }}>
-                                  {formatClock(trackedTotal)}
-                                </Box>
-                              }
-                            />
-                            <Typography variant="caption" color="text.secondary">
-                              {runningSince ? t("detail.time.running") : t("detail.time.stopped")}
+                          {neverTimed ? (
+                            <Typography variant="body2" color="text.secondary">
+                              {t("detail.time.never")}
                             </Typography>
-                          </>
-                        ))}
+                          ) : (
+                            <>
+                              <Chip
+                                size="small"
+                                variant="outlined"
+                                color={runningSince ? "success" : "default"}
+                                icon={
+                                  <TimerOutlinedIcon
+                                    sx={{
+                                      fontSize: 14,
+                                      animation: runningSince ? `${timerPulse} 1.5s ease-in-out infinite` : "none",
+                                    }}
+                                  />
+                                }
+                                label={
+                                  <Box component="span" sx={{ fontFamily: "monospace", fontWeight: 700 }}>
+                                    {formatClock(trackedTotal)}
+                                  </Box>
+                                }
+                              />
+                              <Typography variant="caption" color="text.secondary">
+                                {runningSince ? t("detail.time.running") : t("detail.time.stopped")}
+                              </Typography>
+                            </>
+                          )}
+                        </>
+                      )}
+                      {actualRowVisible && (
+                        <>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ whiteSpace: "nowrap", ml: timeBoxVisible ? 1 : 0 }}
+                          >
+                            {t("detail.time.actualLabel")}
+                          </Typography>
+                          {actualEditable ? (
+                            <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                              <TextField
+                                size="small"
+                                type="number"
+                                value={actualHours}
+                                onChange={(e) => setActualHours(e.target.value)}
+                                disabled={saving || savingActual}
+                                sx={actualInputSx}
+                                inputProps={{ min: 0, style: { textAlign: "right" } }}
+                              />
+                              <Typography variant="caption" color="text.secondary">
+                                {t("detail.time.hours")}
+                              </Typography>
+                              <TextField
+                                size="small"
+                                type="number"
+                                value={actualMinutes}
+                                onChange={(e) => setActualMinutes(e.target.value)}
+                                disabled={saving || savingActual}
+                                sx={actualInputSx}
+                                inputProps={{ min: 0, max: 59, style: { textAlign: "right" } }}
+                              />
+                              <Typography variant="caption" color="text.secondary">
+                                {t("detail.time.minutes")}
+                              </Typography>
+                            </Box>
+                          ) : (
+                            <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                              <LockIcon sx={{ fontSize: 14, color: "text.disabled" }} />
+                              <Typography variant="body2" sx={{ fontFamily: "monospace", fontWeight: 600 }}>
+                                {(current?.actualFixDuration ?? 0) > 0
+                                  ? formatClock(current?.actualFixDuration ?? 0)
+                                  : "—"}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {t("detail.time.actualReadonlyHint")}
+                              </Typography>
+                            </Box>
+                          )}
+                        </>
+                      )}
                     </Box>
-                    {actualRowVisible && (
-                      <Box sx={{ mt: timeBoxVisible ? 1.5 : 0 }}>
-                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
-                          {t("detail.time.actualLabel")}
-                        </Typography>
-                        {actualEditable ? (
-                          <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
-                            <TextField
-                              size="small"
-                              type="number"
-                              value={actualHours}
-                              onChange={(e) => setActualHours(e.target.value)}
-                              disabled={savingActual}
-                              sx={actualInputSx}
-                              inputProps={{ min: 0, style: { textAlign: "right" } }}
-                            />
-                            <Typography variant="caption" color="text.secondary">
-                              {t("detail.time.hours")}
-                            </Typography>
-                            <TextField
-                              size="small"
-                              type="number"
-                              value={actualMinutes}
-                              onChange={(e) => setActualMinutes(e.target.value)}
-                              disabled={savingActual}
-                              sx={actualInputSx}
-                              inputProps={{ min: 0, max: 59, style: { textAlign: "right" } }}
-                            />
-                            <Typography variant="caption" color="text.secondary">
-                              {t("detail.time.minutes")}
-                            </Typography>
-                            <Button
-                              size="small"
-                              disabled={savingActual}
-                              startIcon={<SaveIcon sx={{ fontSize: 16 }} />}
-                              onClick={saveActualTime}
-                            >
-                              {t("save")}
-                            </Button>
-                          </Box>
-                        ) : (
-                          <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
-                            <LockIcon sx={{ fontSize: 14, color: "text.disabled" }} />
-                            <Typography variant="body2" sx={{ fontFamily: "monospace", fontWeight: 600 }}>
-                              {(current?.actualFixDuration ?? 0) > 0
-                                ? formatClock(current?.actualFixDuration ?? 0)
-                                : "—"}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {t("detail.time.actualReadonlyHint")}
-                            </Typography>
-                          </Box>
-                        )}
-                      </Box>
-                    )}
                   </Box>
                 )}
               </Box>
@@ -2590,63 +2659,32 @@ function IssueDetailDialog({
           <Box>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
               <Typography variant="caption" color="text.secondary">{t("detail.description")}</Typography>
-              {!isEditingDesc && !readOnly && (
-                <IconButton
-                  size="small"
-                  onClick={() => {
-                    setDescDraft(current?.description ?? "");
-                    setIsEditingDesc(true);
-                  }}
-                  sx={{ p: 0.25 }}
-                >
-                  <EditIcon sx={{ fontSize: 14 }} />
+              {!readOnly && (
+                <IconButton size="small" onClick={() => setIsEditingDesc((v) => !v)} sx={{ p: 0.25 }}>
+                  {isEditingDesc ? <CloseIcon sx={{ fontSize: 14 }} /> : <EditIcon sx={{ fontSize: 14 }} />}
                 </IconButton>
               )}
             </Box>
             {isEditingDesc ? (
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={5}
-                  size="small"
-                  placeholder={t("detail.descriptionPlaceholder")}
-                  value={descDraft}
-                  onChange={(e) => setDescDraft(e.target.value)}
-                  disabled={savingDesc}
-                  autoFocus
-                />
-                <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end" }}>
-                  <Button size="small" onClick={() => setIsEditingDesc(false)} disabled={savingDesc}>
-                    {t("cancel")}
-                  </Button>
-                  <Button
+              <ClickAwayListener onClickAway={() => setIsEditingDesc(false)}>
+                <Box>
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={5}
                     size="small"
-                    variant="contained"
-                    disabled={savingDesc}
-                    startIcon={<SaveIcon sx={{ fontSize: 16 }} />}
-                    onClick={async () => {
-                      if (!current) return;
-                      setSavingDesc(true);
-                      try {
-                        const updated = await updateIssue(current.id, { description: descDraft });
-                        setLocalIssue(updated);
-                        onRefresh();
-                        setIsEditingDesc(false);
-                      } finally {
-                        setSavingDesc(false);
-                      }
-                    }}
-                  >
-                    {t("save")}
-                  </Button>
+                    placeholder={t("detail.descriptionPlaceholder")}
+                    value={descDraft}
+                    onChange={(e) => setDescDraft(e.target.value)}
+                    disabled={saving}
+                    autoFocus
+                  />
                 </Box>
-              </Box>
+              </ClickAwayListener>
             ) : (
               <Box
                 onClick={() => {
                   if (readOnly) return;
-                  setDescDraft(current?.description ?? "");
                   setIsEditingDesc(true);
                 }}
                 sx={{
@@ -2664,9 +2702,9 @@ function IssueDetailDialog({
               >
                 <Typography
                   variant="body2"
-                  sx={{ whiteSpace: "pre-wrap", color: current?.description ? "text.primary" : "text.secondary" }}
+                  sx={{ whiteSpace: "pre-wrap", color: descDraft ? "text.primary" : "text.secondary" }}
                 >
-                  {current?.description || t("detail.descriptionPlaceholder")}
+                  {descDraft || t("detail.descriptionPlaceholder")}
                 </Typography>
               </Box>
             )}
@@ -2678,47 +2716,27 @@ function IssueDetailDialog({
             {(current?.isAnalysisOpen || current?.analysisCause) && (
               <EditableTextField
                 label={t("detail.analysisCause")}
-                value={current?.analysisCause ?? null}
+                value={analysisDraft}
                 placeholder={
                   canFillAnalysis ? t("detail.analysisPlaceholder") : t("detail.lockedHint")
                 }
                 canEdit={canFillAnalysis}
-                saving={saving}
-                onSave={async (next) => {
-                  if (!current) return;
-                  try {
-                    const updated = await updateIssue(current.id, { analysisCause: next });
-                    setLocalIssue(updated);
-                    onRefresh();
-                  } catch (e) {
-                    fail(getErrorMessage(e, "บันทึกวิเคราะห์/สาเหตุไม่สำเร็จ"));
-                    throw e;
-                  }
-                }}
+                disabled={saving}
+                onDraftChange={setAnalysisDraft}
               />
             )}
             {(current?.isResolutionOpen || current?.resolution) && (
               <EditableTextField
                 label={t("detail.resolution")}
-                value={current?.resolution ?? null}
+                value={resolutionDraft}
                 placeholder={
                   canFillResolution
                     ? t("detail.resolutionPlaceholder")
                     : t("detail.lockedHint")
                 }
                 canEdit={canFillResolution}
-                saving={saving}
-                onSave={async (next) => {
-                  if (!current) return;
-                  try {
-                    const updated = await updateIssue(current.id, { resolution: next });
-                    setLocalIssue(updated);
-                    onRefresh();
-                  } catch (e) {
-                    fail(getErrorMessage(e, "บันทึกการแก้ไขไม่สำเร็จ"));
-                    throw e;
-                  }
-                }}
+                disabled={saving}
+                onDraftChange={setResolutionDraft}
               />
             )}
           </Box>
@@ -2794,6 +2812,16 @@ function IssueDetailDialog({
               </Typography>
             </Box>
           </Box>
+          {/* สัญญา MA หมดอายุ + กำลังเปลี่ยนเป็น MA/Requirement — แจ้งแบบ inline
+              เลย (ไม่ยิง toast) แล้วขีดปุ่มบันทึกด้านล่าง · MUI Alert severity=error
+              ใช้โทนชมพู/แดงจาก theme (ไม่ hardcode hex) */}
+          {maBlocked && (
+            <Alert severity="error" sx={{ borderRadius: "10px" }}>
+              <Typography variant="body2" fontWeight={700}>
+                {t("detail.maExpiredAlert")}
+              </Typography>
+            </Alert>
+          )}
           <Popover
             open={Boolean(priorityAnchor)}
             anchorEl={priorityAnchor}
@@ -3090,7 +3118,9 @@ function IssueDetailDialog({
           />
         </Box>
         <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          <Tabs value={tab} onChange={(_, v) => { setTab(v); setIsEditingDesc(false); setIsEditingTitle(false); }} variant="fullWidth" sx={{ px: 2, minHeight: 44, borderBottom: "1px solid", borderColor: "divider" }}>
+          {/* Switching tabs must NOT collapse an inline editor — the typed
+              draft stays until the footer Save/Cancel (or the field's own ✕). */}
+          <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="fullWidth" sx={{ px: 2, minHeight: 44, borderBottom: "1px solid", borderColor: "divider" }}>
             <Tab value="comments" label="ความคิดเห็น" sx={{ minHeight: 44, fontSize: "0.85rem", textTransform: "none", fontWeight: 600 }} />
             <Tab value="history" label="ประวัติ" sx={{ minHeight: 44, fontSize: "0.85rem", textTransform: "none", fontWeight: 600 }} />
           </Tabs>
@@ -3158,6 +3188,7 @@ function IssueDetailDialog({
                   const canEdit = !readOnly && canEditComment && isOwner;
                   const canDelete =
                     !readOnly && ((canDeleteOwnComment && isOwner) || canDeleteAnyComment);
+                  const isEditing = editingComment?.id === c.id;
                   return (
                     <Box key={c.id} sx={{ display: "flex", gap: 1.5 }}>
                       <Avatar
@@ -3185,14 +3216,15 @@ function IssueDetailDialog({
                             {formatDateTime(c.createdAt)}
                           </Typography>
                           <Box sx={{ flex: 1 }} />
-                          {canEdit && (
+                          {/* ขณะแก้ไขแถวนี้ → ซ่อนปุ่มเดิมของแถวนั้นกันสับสน */}
+                          {canEdit && !isEditing && (
                             <Tooltip title="แก้ไข">
                               <IconButton size="small" sx={{ color: "text.secondary" }} onClick={() => openEditComment(c)}>
                                 <EditIcon sx={{ fontSize: 18 }} />
                               </IconButton>
                             </Tooltip>
                           )}
-                          {canDelete && (
+                          {canDelete && !isEditing && (
                             <Tooltip title="ลบ">
                               <IconButton size="small" color="error" onClick={() => setDeletingComment(c)}>
                                 <DeleteIcon sx={{ fontSize: 18 }} />
@@ -3200,7 +3232,56 @@ function IssueDetailDialog({
                             </Tooltip>
                           )}
                         </Box>
-                        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.5 }}>{c.content}</Typography>
+                        {isEditing ? (
+                          // แก้แบบ inline ในแถวเลย — ช่องกรอกชุดเดียวกับ "เขียนความคิดเห็น..."
+                          // ด้านบน · Enter = บันทึก / Esc = ยกเลิก (เหมือนช่องโพสต์)
+                          <Box sx={{ mt: 0.5 }}>
+                            <TextField
+                              fullWidth
+                              size="small"
+                              multiline
+                              maxRows={3}
+                              autoFocus
+                              value={editDraft}
+                              onChange={(e) => setEditDraft(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Escape") {
+                                  // กัน event ไหลไปปิด Dialog หลักของป๊อปอัพงานด้วย
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setEditingComment(null);
+                                } else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                                  e.preventDefault();
+                                  void handleUpdateComment();
+                                }
+                              }}
+                              sx={{ "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
+                            />
+                            <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 0.5, mt: 0.5 }}>
+                              <Tooltip title={t("cancel")}>
+                                <span>
+                                  <IconButton size="small" onClick={() => setEditingComment(null)} disabled={savingComment}>
+                                    <CloseIcon sx={{ fontSize: 18 }} />
+                                  </IconButton>
+                                </span>
+                              </Tooltip>
+                              <Tooltip title={t("save")}>
+                                <span>
+                                  <IconButton
+                                    size="small"
+                                    color="primary"
+                                    onClick={() => void handleUpdateComment()}
+                                    disabled={savingComment || !editDraft.trim()}
+                                  >
+                                    {savingComment ? <CircularProgress size={16} /> : <CheckIcon sx={{ fontSize: 18 }} />}
+                                  </IconButton>
+                                </span>
+                              </Tooltip>
+                            </Box>
+                          </Box>
+                        ) : (
+                          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.5 }}>{c.content}</Typography>
+                        )}
                       </Box>
                     </Box>
                   );
@@ -3238,37 +3319,6 @@ function IssueDetailDialog({
               )
             ) : null}
           </Box>
-          <Dialog
-            open={!!editingComment}
-            onClose={() => !savingComment && setEditingComment(null)}
-            maxWidth="sm"
-            fullWidth
-          >
-            <DialogTitle>แก้ไขความคิดเห็น</DialogTitle>
-            <DialogContent>
-              <TextField
-                fullWidth
-                size="small"
-                multiline
-                minRows={3}
-                value={editDraft}
-                onChange={(e) => setEditDraft(e.target.value)}
-                sx={{ mt: 1 }}
-              />
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setEditingComment(null)} disabled={savingComment}>
-                ยกเลิก
-              </Button>
-              <Button
-                variant="contained"
-                onClick={handleUpdateComment}
-                disabled={savingComment || !editDraft.trim()}
-              >
-                บันทึก
-              </Button>
-            </DialogActions>
-          </Dialog>
           <Dialog
             open={!!deletingComment}
             onClose={() => !deleteLoading && setDeletingComment(null)}
@@ -3327,9 +3377,22 @@ function IssueDetailDialog({
         <Button
           size="small"
           variant={readOnly ? "outlined" : "contained"}
-          onClick={readOnly ? onClose : handleSave}
-          disabled={!readOnly && (saving || !hasDraftChanges)}
-          sx={{ px: 3 }}
+          onClick={readOnly ? handleCancel : handleSave}
+          disabled={!readOnly && (saving || !hasDraftChanges || maBlocked)}
+          sx={{
+            px: 3,
+            ...(maBlocked
+              ? {
+                  // "กดไม่ได้" แบบเห็นชัด — ขีดแดงทับข้อความ ปิดการกด
+                  textDecoration: "line-through",
+                  "&.Mui-disabled": {
+                    color: "error.main",
+                    bgcolor: "action.disabledBackground",
+                    cursor: "not-allowed",
+                  },
+                }
+              : {}),
+          }}
         >
           {readOnly ? t("close") : t("save")}
         </Button>
@@ -3778,14 +3841,17 @@ function KanbanView({
   /** Drop writes run one at a time through this chain (see enqueueDrop). */
   const dropChainRef = useRef<Promise<void>>(Promise.resolve());
   const isDraggingRef = useRef(false);
-  const requestSeqRef = useRef<Record<number, number>>({});
   /**
-   * Requests currently in flight, per column — independent of the `loading`
-   * STATE so a *silent* reload (the one after a successful drop) still blocks
-   * `handleLoadMore`. Without it a scroll during that window would append
-   * page 2 onto the very list the silent reload is about to replace.
+   * The board fetches ALL of its cards in ONE request and splits them into
+   * columns in memory (the table/folder keep their own separate load). These
+   * replace the old per-column seq/in-flight maps: `allBoardIssuesRef` holds
+   * every card grouped by status so "load more on scroll" is a pure slice
+   * with no API call, and the seq guard drops a stale response when a newer
+   * filter/search change fires another request.
    */
-  const inFlightRef = useRef<Record<number, number>>({});
+  const allBoardIssuesRef = useRef<Record<number, BoardIssue[]>>({});
+  const boardRequestSeqRef = useRef(0);
+  const boardInFlightRef = useRef(false);
   /**
    * Mirror of `columns` for callbacks that must keep ONE identity across data
    * changes — see `handleLoadMore`. Always current by the time a scroll
@@ -3816,74 +3882,120 @@ function KanbanView({
    */
   const firstStatusId = localStatuses[0]?.id ?? null;
 
-  const loadColumn = useCallback(
-    async (statusId: number, pageNum: number, append: boolean, silent = false) => {
-      const seq = (requestSeqRef.current[statusId] = (requestSeqRef.current[statusId] ?? 0) + 1);
-      inFlightRef.current[statusId] = seq;
-      // `silent` = this reload is the follow-up to a drop that just succeeded.
-      // The preview already shows the card where the server is about to put it,
-      // so the only thing the optimistic `loading` flag added was a spinner
-      // flashing in both columns on every single drop. The data write below is
-      // byte-identical either way — only the intermediate spinner is skipped.
+  /**
+   * Board data now comes from ONE fetch (plus extra pages only if the board
+   * ever outgrows the API's 100-row page cap), then gets split into columns in
+   * memory. The old code fired one request per status, which duplicated the
+   * table/folder's 100-row load and made one board open cost ~6 issue requests.
+   * Everything below still talks to `columns` exactly as before — the drag
+   * preview / drop / cancel paths are untouched.
+   */
+  const visibleStatusIds = useMemo(
+    () => visibleStatuses.map((s) => s.id),
+    [visibleStatuses],
+  );
+
+  const loadBoard = useCallback(
+    async (silent = false) => {
+      const seq = ++boardRequestSeqRef.current;
+      boardInFlightRef.current = true;
+      // `silent` = the follow-up to a successful drop: the preview already
+      // shows the card where the server put it, so skip the intermediate
+      // spinner (same contract as the old per-column reload).
       if (!silent) {
-        setColumns((prev) => ({
-          ...prev,
-          [statusId]: {
-            ...(prev[statusId] ?? { items: [], page: 0, total: 0, loading: false }),
-            loading: true,
-          },
-        }));
+        setColumns((prev) => {
+          const next: Record<number, KanbanColumnState> = { ...prev };
+          for (const s of localStatuses) {
+            next[s.id] = {
+              ...(prev[s.id] ?? { items: [], page: 0, total: 0, loading: false }),
+              loading: true,
+            };
+          }
+          return next;
+        });
       }
       try {
-        const res = await fetchIssues(
-          pageNum,
-          20,
-          [statusId],
-          debouncedSearch,
-          roleName === "programmer",
-          {
-            priorityIds: selectedPriorityIds,
-            categoryIds: selectedCategoryIds,
-            appIds: selectedAppIds,
-            // the API resolves companies through the card's REPORTER
-            // (issues.customer_id → users.company_id) — same rule the table
-            // and folder apply in memory via `companyReporterIds`
-            companyIds: selectedCompanyIds,
-            assigneeIds: selectedAssigneeIds,
-            reporterIds: selectedReporterIds,
-            // the board hides stale cards AT THE API — column counts, pages
-            // and search all drop them together (the table never sends this)
-            hideStaleDone: true,
-            // cards are ordered by "entered this column when" — newest first
-            // (desc) or longest-sitting first (asc), per the toolbar toggle.
-            // `cardOrder` is a dep below, so flipping it reloads every column
-            // through the mount effect; KanbanColumn mirrors this direction.
-            sort: { field: "statusChangedAt", dir: cardOrder },
-          },
+        const request = (pageNum: number) =>
+          fetchIssues(
+            pageNum,
+            100,
+            visibleStatusIds,
+            // Search is applied in memory below — the API's raw-timestamp
+            // match can't find the Thai-formatted dates ("14 ต.ค. 69") the
+            // cards actually show. All three views share one matcher now.
+            "",
+            roleName === "programmer",
+            {
+              priorityIds: selectedPriorityIds,
+              categoryIds: selectedCategoryIds,
+              appIds: selectedAppIds,
+              // the API resolves companies through the card's REPORTER — same
+              // rule the table/folder apply in memory via `companyReporterIds`
+              companyIds: selectedCompanyIds,
+              assigneeIds: selectedAssigneeIds,
+              reporterIds: selectedReporterIds,
+              // the board hides stale cards AT THE API — column counts, pages
+              // and search all drop them together (the table never sends this)
+              hideStaleDone: true,
+              // "entered this column when" — newest first or longest-sitting
+              // first, per the toolbar toggle. KanbanColumn mirrors it.
+              sort: { field: "statusChangedAt", dir: cardOrder },
+            },
+          );
+        const first = await request(1);
+        // MAX_PAGE_SIZE is 100 — only pay for extra pages if the board has
+        // actually outgrown one page (normally this block never runs).
+        const rest =
+          first.totalPages > 1
+            ? await Promise.all(
+                Array.from({ length: first.totalPages - 1 }, (_, i) => request(i + 2)),
+              )
+            : [];
+        if (boardRequestSeqRef.current !== seq) return;
+        const allIssues = [...first.data, ...rest.flatMap((r) => r.data)].filter((i) =>
+          matchesIssueSearch(i, debouncedSearch, staleSearchTokens(i, staleRules)),
         );
-        if (requestSeqRef.current[statusId] !== seq) return;
+        const grouped: Record<number, BoardIssue[]> = {};
+        for (const s of localStatuses) grouped[s.id] = [];
+        for (const issue of allIssues) {
+          if (issue.statusId == null) continue;
+          (grouped[issue.statusId] ??= []).push(issue);
+        }
+        allBoardIssuesRef.current = grouped;
         setColumns((prev) => {
-          const existing = prev[statusId] ?? { items: [], page: 0, total: 0, loading: false };
-          const items = append ? [...existing.items, ...res.data] : res.data;
-          return {
-            ...prev,
-            [statusId]: { items, page: res.page, total: res.total, loading: false },
-          };
+          const next: Record<number, KanbanColumnState> = {};
+          for (const s of localStatuses) {
+            const all = grouped[s.id] ?? [];
+            // keep however many cards the user had scroll-loaded, but never
+            // fewer than the first page (20)
+            const shown = Math.min(all.length, Math.max(20, prev[s.id]?.items.length ?? 0));
+            const items = all.slice(0, shown);
+            next[s.id] = {
+              items,
+              page: Math.ceil(items.length / 20),
+              total: all.length,
+              loading: false,
+            };
+          }
+          return next;
         });
       } catch (e) {
-        if (requestSeqRef.current[statusId] !== seq) return;
+        if (boardRequestSeqRef.current !== seq) return;
         fail(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ"));
         setColumns((prev) => {
-          const existing = prev[statusId];
-          if (!existing) return prev;
-          return { ...prev, [statusId]: { ...existing, loading: false } };
+          const next = { ...prev };
+          for (const s of localStatuses) {
+            if (next[s.id]) next[s.id] = { ...next[s.id], loading: false };
+          }
+          return next;
         });
       } finally {
-        // only clear OUR slot — a newer request owns it now
-        if (inFlightRef.current[statusId] === seq) delete inFlightRef.current[statusId];
+        if (boardRequestSeqRef.current === seq) boardInFlightRef.current = false;
       }
     },
     [
+      localStatuses,
+      visibleStatusIds,
       debouncedSearch,
       roleName,
       cardOrder,
@@ -3893,14 +4005,15 @@ function KanbanView({
       selectedCompanyIds,
       selectedAssigneeIds,
       selectedReporterIds,
+      staleRules,
       fail,
     ],
   );
 
   useEffect(() => {
-    if (visibleStatuses.length === 0) return;
-    void Promise.all(visibleStatuses.map((s) => loadColumn(s.id, 1, false)));
-  }, [loadColumn, visibleStatuses]);
+    if (visibleStatusIds.length === 0) return;
+    void loadBoard();
+  }, [loadBoard, visibleStatusIds]);
 
   const issueMap = useMemo(() => {
     const map = new Map<number, BoardIssue>();
@@ -3912,30 +4025,39 @@ function KanbanView({
 
   const handleLoadMore = useCallback(
     (statusId: number) => {
-      // Auto-scroll fires the column's `onScroll` while a card is in flight —
-      // paginating there would call `setColumns` mid-drag and re-render every
-      // column under the pointer. `isDraggingRef` existed for exactly this and
-      // was never read; load the next page once the drop settles instead.
+      // Same guards as before: don't paginate mid-drag or while a reload is in
+      // flight — both would re-render every column under the pointer.
       if (isDraggingRef.current) return;
-      // a reload (visible OR silent) is already bringing this column up to date
-      if (inFlightRef.current[statusId] !== undefined) return;
+      if (boardInFlightRef.current) return;
       const col = columnsRef.current[statusId];
       if (!col || col.loading || col.items.length >= col.total) return;
-      void loadColumn(statusId, col.page + 1, true);
+      // The cards are already in memory — no API call for "load more".
+      const all = allBoardIssuesRef.current[statusId] ?? [];
+      const items = all.slice(0, col.items.length + 20);
+      if (items.length === col.items.length) return;
+      setColumns((prev) => {
+        const existing = prev[statusId];
+        if (!existing || existing.items.length !== col.items.length) return prev;
+        return {
+          ...prev,
+          [statusId]: { ...existing, items, page: existing.page + 1 },
+        };
+      });
     },
     // `columns` deliberately NOT a dep: reading it through the ref keeps this
     // callback stable, so an unrelated `setColumns` (a drag preview, another
     // column's page append) no longer hands every KanbanColumn a new
     // `onLoadMore` and defeats `React.memo`.
-    [loadColumn],
+    [],
   );
 
   const reloadColumns = useCallback(
-    (ids?: number[], silent = false) => {
-      const targets = ids ?? visibleStatuses.map((s) => s.id);
-      void Promise.all(targets.map((id) => loadColumn(id, 1, false, silent)));
+    (_ids?: number[], silent = false) => {
+      // One board request replaces the old per-column fan-out. Every caller
+      // (drop, save, delete, unlock, drag-cancel) keeps its existing signature.
+      void loadBoard(silent);
     },
-    [loadColumn, visibleStatuses],
+    [loadBoard],
   );
 
   /**
@@ -4560,6 +4682,7 @@ function TableView({
   selectedAssigneeIds,
   selectedReporterIds,
   searchQuery,
+  staleRules,
   canManage,
   canEdit,
   canSeeReporter,
@@ -4590,6 +4713,7 @@ function TableView({
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
   searchQuery: string;
+  staleRules: StaleRule[];
   canManage: boolean;
   /** `issue.all.update` — gates the "ยกเลิกงาน" row (same as the board card's). */
   canEdit: boolean;
@@ -4660,14 +4784,10 @@ function TableView({
       if (selectedReporterIds.length > 0) {
         if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
       }
-      if (query) {
-        const matchTitle = issue.title.toLowerCase().includes(query);
-        const matchLabel = (issue.labels ?? []).some((l) => l.name.toLowerCase().includes(query));
-        if (!matchTitle && !matchLabel) return false;
-      }
+      if (query && !matchesIssueSearch(issue, query, staleSearchTokens(issue, staleRules))) return false;
       return true;
     });
-  }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, companyReporterIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters]);
+  }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, companyReporterIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters, staleRules]);
   /**
    * Row order — the SAME comparator as the Kanban columns (`sortByEnteredAt`),
    * so the table reads in the same order the board's columns do. Purely
@@ -5283,11 +5403,7 @@ function FolderView({
       if (selectedReporterIds.length > 0) {
         if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
       }
-      if (query) {
-        const matchTitle = issue.title.toLowerCase().includes(query);
-        const matchLabel = (issue.labels ?? []).some((l) => l.name.toLowerCase().includes(query));
-        if (!matchTitle && !matchLabel) return false;
-      }
+      if (query && !matchesIssueSearch(issue, query, staleSearchTokens(issue, staleRules))) return false;
       return true;
     });
   }, [
@@ -5302,6 +5418,7 @@ function FolderView({
     selectedReporterIds,
     searchQuery,
     hasActiveFilters,
+    staleRules,
   ]);
 
   /* Cards inside the current folder path (app → category → priority → status). */
@@ -6741,6 +6858,7 @@ function BoardsPageInner() {
                 selectedAssigneeIds={selectedAssigneeIds}
                 selectedReporterIds={selectedReporterIds}
                 searchQuery={searchQuery}
+                staleRules={staleRules}
                 canManage={canManage}
                 canEdit={canEdit}
                 canSeeReporter={canSeeReporter}

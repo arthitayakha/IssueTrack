@@ -24,10 +24,22 @@ export interface DashboardCountRow {
   count: number;
 }
 
-/** One trend bucket — `bucket` is `yyyy-mm-dd` (bucket start, Bangkok time). */
+/**
+ * Which of the trend chart's two series a drill-down list belongs to — the
+ * bar shows "created" and "completed" side by side.
+ */
+export type DashboardTrendSeries = "created" | "completed";
+
+/**
+ * One trend bucket — `bucket` is `yyyy-mm-dd` (bucket start, Bangkok time).
+ * `created` = cards born in the bucket; `completed` = moves into the done
+ * status that happened in the bucket (an event count — leaving and
+ * re-entering counts twice).
+ */
 export interface DashboardTrendRow {
   bucket: string;
-  count: number;
+  created: number;
+  completed: number;
 }
 
 /**

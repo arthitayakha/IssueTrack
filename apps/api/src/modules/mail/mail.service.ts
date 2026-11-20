@@ -23,7 +23,22 @@ export interface MaDepletedMailParams {
   companyName: string;
   maHours: number;
   usedHours: number;
-  /** Absolute URL — `/systems` for staff, `/boards` for customers. */
+  /** Absolute URL — `/systems` for everyone with `system.view`, else `/boards`. */
+  url: string;
+  /** Customer copies only — "ติดต่อผู้ดูแลระบบ: …"; admins get `null`. */
+  contact: string | null;
+}
+
+/** What the "สัญญาใกล้/หมดอายุ" mail needs — once per threshold, per pair. */
+export interface AppExpiryMailParams {
+  to: string;
+  name: string;
+  appName: string;
+  companyName: string;
+  stage: "expiring" | "expired";
+  daysLeft: number | null;
+  /** Customer copies only — see `MaDepletedMailParams.contact`. */
+  contact: string | null;
   url: string;
 }
 
@@ -120,8 +135,9 @@ export class MailService {
   /**
    * "ชั่วโมง MA หมดแล้ว" — ส่งถึงลูกค้าของบริษัทนั้น + แอดมินพร้อมกับ in-app
    * bell (`NotificationsService.notifyMaDepleted`) ครั้งเดียวต่อรอบการหมด ·
-   * Thai by design like the other two; `url` ชี้ `/systems` สำหรับทีมงาน
-   * และ `/boards` สำหรับลูกค้า (ไม่มี `system.view`)
+   * Thai by design like the other two; `url` ชี้ `/systems` สำหรับทุกคนที่มี
+   * `system.view` (ลูกค้าก็มีแล้ว — หน้าเป็น read-only และเห็นเฉพาะบริษัทตัวเอง)
+   * ส่วน `contact` เป็นบรรทัด "ติดต่อ..." เฉพาะฉบับลูกค้า
    */
   async sendMaDepleted(params: MaDepletedMailParams): Promise<void> {
     const subject = `ชั่วโมง MA หมดแล้ว — ${params.appName}`;
@@ -133,6 +149,7 @@ export class MailService {
       `(ใช้ไปแล้ว ${params.usedHours} ชม.)`,
       "",
       "หากต้องการใช้งานต่อ กรุณาต่ออายุหรือซื้อชั่วโมงเพิ่ม:",
+      ...(params.contact ? [params.contact, ""] : []),
       params.url,
       "",
       "อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker",
@@ -145,6 +162,40 @@ export class MailService {
       html: this.maDepletedHtml(params, scope),
       context: "ma depleted mail",
       devNote: `ma depleted mail for ${params.to}: ${subject}`,
+    });
+  }
+
+  /**
+   * "สัญญาใกล้หมดอายุ / หมดอายุแล้ว" — ต่อคู่ แอป×บริษัท ต่อ threshold
+   * (30 วัน / 7 วัน / วันหมดอายุ) เหมือนแถวในกล่องเข้า · Thai by design,
+   * fire-and-forget จาก `NotificationsService.notifyAppExpiry()`
+   */
+  async sendAppExpiry(params: AppExpiryMailParams): Promise<void> {
+    const scope = params.companyName ? ` (บริษัท ${params.companyName})` : "";
+    const detail =
+      params.stage === "expired"
+        ? `หมดอายุแล้ว${params.daysLeft === null ? "" : ` (เลยกำหนด ${Math.abs(params.daysLeft)} วัน)`}`
+        : `ใกล้หมดอายุ${params.daysLeft === null ? "" : ` (เหลือ ${params.daysLeft} วัน)`}`;
+    const subject = `${params.appName}${scope} ${detail} — Kanban Issue Tracker`;
+    const text = [
+      `สวัสดี ${params.name},`,
+      "",
+      `สัญญาการใช้งาน "${params.appName}"${scope} ${detail}`,
+      "",
+      ...(params.contact ? [params.contact, ""] : []),
+      "ดูรายละเอียดสัญญาได้ที่:",
+      params.url,
+      "",
+      "อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker",
+    ].join("\n");
+
+    await this.send({
+      to: params.to,
+      subject,
+      text,
+      html: this.expiryHtml(params, scope, detail),
+      context: "app expiry mail",
+      devNote: `app expiry mail for ${params.to}: ${subject}`,
     });
   }
 
@@ -209,7 +260,18 @@ export class MailService {
       `<p>สวัสดี ${escapeHtml(params.name)},</p>`,
       `<p>ชั่วโมง MA ของแอป <strong>${escapeHtml(params.appName)}</strong>${escapeHtml(scope)} ใช้ครบ <strong>${params.maHours} ชม.</strong> แล้ว<br>(ใช้ไปแล้ว ${params.usedHours} ชม.)</p>`,
       `<p>หากต้องการใช้งานต่อ กรุณาต่ออายุหรือซื้อชั่วโมงเพิ่ม:</p>`,
+      ...(params.contact ? [`<p>${escapeHtml(params.contact)}</p>`] : []),
       `<p><a href="${escapeHtml(params.url)}">${escapeHtml(params.url)}</a></p>`,
+      `<p>อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker</p>`,
+    ].join("");
+  }
+
+  private expiryHtml(params: AppExpiryMailParams, scope: string, detail: string): string {
+    return [
+      `<p>สวัสดี ${escapeHtml(params.name)},</p>`,
+      `<p>สัญญาการใช้งาน <strong>${escapeHtml(params.appName)}</strong>${escapeHtml(scope)} ${escapeHtml(detail)}</p>`,
+      ...(params.contact ? [`<p>${escapeHtml(params.contact)}</p>`] : []),
+      `<p><a href="${escapeHtml(params.url)}">ดูรายละเอียดสัญญา</a></p>`,
       `<p>อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker</p>`,
     ].join("");
   }

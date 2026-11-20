@@ -219,6 +219,7 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
    * (= ยังไม่เคยหัก → ย้อนได้) เคสที่หักแล้ว override ในเทสต์นั้นเอง
    */
   const maUsage = { usageCounts: jest.fn().mockResolvedValue([]) };
+  const notifications = { notifyContractChange: jest.fn().mockResolvedValue(undefined) };
 
   const service = new AppsService(
     apps as unknown as never,
@@ -227,9 +228,10 @@ function makeService(options?: { apps?: AppRow[]; rows?: Row[] }) {
     companies as unknown as never,
     expiry as unknown as never,
     maUsage as unknown as never,
+    notifications as unknown as never,
   );
 
-  return { service, apps, appCompanies, expiry, maUsage, state };
+  return { service, apps, appCompanies, expiry, maUsage, notifications, state };
 }
 
 const POS: AppRow = { id: 7, name: "POS", isVisible: true };
@@ -661,6 +663,24 @@ describe("AppsService.renewRecord — appends the next period, never rewrites", 
     );
     expect(state.rows).toHaveLength(1);
   });
+
+  it("sends an in-app renewal confirmation after the write (no e-mail)", async () => {
+    const { service, notifications } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, companyId: 2, ...period })],
+    });
+
+    await service.renewRecord(7, 11, period);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(notifications.notifyContractChange).toHaveBeenCalledWith({
+      companyId: 2,
+      appName: "POS",
+      companyName: "บริษัท ครัวบ้านสวน จำกัด",
+      action: "app_renewed",
+      context: "MA 40 ชม.",
+    });
+  });
 });
 
 describe("AppsService.buyHours — same dates, more hours (ซื้อชั่วโมง MA เพิ่ม)", () => {
@@ -818,6 +838,33 @@ describe("AppsService.buyHours — same dates, more hours (ซื้อชั่
 
     await expect(service.buyHours(999, 11, { hours: 10 })).rejects.toThrow(NotFoundException);
     expect(state.rows).toHaveLength(1);
+  });
+
+  it("sends an in-app purchase row with the carried hours folded into the total", async () => {
+    const { service, notifications } = makeService({
+      apps: [POS],
+      rows: [
+        row({
+          id: 11,
+          companyId: 2,
+          startedAt: "2026-01-01",
+          expiresAt: "2026-12-08",
+          maHours: 40,
+        }),
+      ],
+    });
+
+    await service.buyHours(7, 11, { hours: 40, carriedHours: 10 });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(notifications.notifyContractChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: 2,
+        appName: "POS",
+        action: "app_hours_purchased",
+        context: "+40 ชม. (รวม 50 ชม.)",
+      }),
+    );
   });
 });
 

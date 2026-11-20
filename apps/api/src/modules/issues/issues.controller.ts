@@ -60,6 +60,8 @@ export class IssuesController {
       appIds?: string;
       /** "ไม่มีหมวดหมู่" — the dashboard's NULL slice lands here (`?noCategory=1`). */
       noCategory?: string;
+      /** "ไม่ระบุความสำคัญ" — the priority bar's NULL slice (`?noPriority=1`). */
+      noPriority?: string;
       /** "ไม่มีแอป" — same deal, for cards with no app at all. */
       noApp?: string;
       companyIds?: string;
@@ -75,6 +77,9 @@ export class IssuesController {
       noTaskType?: string;
       createdFrom?: string;
       createdTo?: string;
+      /** Completed bar's window — cards moved into เสร็จสิ้น in this range. */
+      completedFrom?: string;
+      completedTo?: string;
       sortBy?: string;
       sortOrder?: string;
       withTimeline?: string;
@@ -90,6 +95,7 @@ export class IssuesController {
       // "no app"/"no category" is an OR-part of the same dimension, so it rides
       // along with the id list instead of replacing it (see IssuesService)
       noCategory: query.noCategory === "1" || query.noCategory === "true",
+      noPriority: query.noPriority === "1" || query.noPriority === "true",
       noApp: query.noApp === "1" || query.noApp === "true",
       companyIds: parseIdList(query.companyIds),
       assigneeIds: parseIdList(query.assigneeIds),
@@ -99,6 +105,8 @@ export class IssuesController {
       noTaskType: parseNoTaskType(query.noTaskType),
       createdFrom: query.createdFrom,
       createdTo: query.createdTo,
+      completedFrom: query.completedFrom,
+      completedTo: query.completedTo,
       sortBy: query.sortBy,
       sortOrder: query.sortOrder,
       // only the board's per-column fetch sets it — the table never does, so

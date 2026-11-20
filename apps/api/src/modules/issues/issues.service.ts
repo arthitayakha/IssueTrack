@@ -29,6 +29,7 @@ import {
   canViewAllIssues,
   loadVisibleIssue,
 } from "./issue-access";
+import { completedInRange, DONE_STATUS_ID } from "../../common/done-moves";
 
 const ISSUE_DETAIL_RELATIONS = [
   "status",
@@ -149,14 +150,16 @@ export class IssuesService {
       categoryIds?: number[];
       appIds?: number[];
       /**
-       * "ไม่มีแอป" / "ไม่มีหมวดหมู่" — the dashboard's NULL slices (`id: null`)
-       * have no id to filter by, so the list carries a flag instead. It is an
-       * **OR-part of its own dimension**: ticking POS *and* "ไม่มีแอป" means
-       * `app_id IN (POS) OR app_id IS NULL`, never an AND (which would always
-       * be empty). Absent flag → the old `IN`-only clause, byte for byte.
+       * "ไม่มีแอป" / "ไม่มีหมวดหมู่" / "ไม่ระบุความสำคัญ" — the dashboard's NULL
+       * slices (`id: null`) have no id to filter by, so the list carries a flag
+       * instead. It is an **OR-part of its own dimension**: ticking POS *and*
+       * "ไม่มีแอป" means `app_id IN (POS) OR app_id IS NULL`, never an AND
+       * (which would always be empty). Absent flag → the old `IN`-only clause.
        */
       noApp?: boolean;
       noCategory?: boolean;
+      /** "ไม่ระบุความสำคัญ" — priority_id IS NULL, the priority bar's NULL bucket. */
+      noPriority?: boolean;
       companyIds?: number[];
       assigneeIds?: number[];
       reporterIds?: number[];
@@ -175,6 +178,9 @@ export class IssuesService {
       noTaskType?: boolean;
       createdFrom?: string;
       createdTo?: string;
+      /** Completed-bar drill: cards moved into เสร็จสิ้น inside this window. */
+      completedFrom?: string;
+      completedTo?: string;
       sortBy?: string;
       sortOrder?: string;
       /**
@@ -203,15 +209,62 @@ export class IssuesService {
     }
 
     if (search && search.trim()) {
-      qb.leftJoin("issue.labels", "labels").leftJoin("issue.label", "label");
+      /**
+       * ONE search box serves every board view (columns send the term to this
+       * query; the table/folder mirror the same fields in memory), so it must
+       * find a card by ANYTHING the user can see: issue number/id, every text
+       * field, status/priority/category/app/labels, reporter/programmer/company
+       * names, task type and dates. The extra joins are all many-to-one (the
+       * only to-many, `labels`, was already here), so they never multiply rows
+       * and `getCount()`/DISTINCT stay exact.
+       */
+      qb.leftJoin("issue.labels", "labels")
+        .leftJoin("issue.label", "label")
+        .leftJoin("issue.status", "searchStatus")
+        .leftJoin("issue.priority", "searchPriority")
+        .leftJoin("issue.category", "searchCategory")
+        .leftJoin("issue.app", "searchApp")
+        .leftJoin("issue.programmer", "searchProgrammer")
+        .leftJoin("issue.customer", "searchCustomer")
+        .leftJoin("searchCustomer.company", "searchCustomerCompany");
       qb.andWhere(
-        "(issue.title ILIKE :q OR issue.description ILIKE :q OR labels.name ILIKE :q OR label.name ILIKE :q)",
+        "(" +
+          [
+            "issue.title ILIKE :q",
+            "issue.description ILIKE :q",
+            "issue.analysis_cause ILIKE :q",
+            "issue.resolution ILIKE :q",
+            "issue.issue_number ILIKE :q",
+            "CAST(issue.id AS TEXT) ILIKE :q",
+            "issue.custom_category ILIKE :q",
+            "issue.task_type ILIKE :q",
+            "labels.name ILIKE :q",
+            "label.name ILIKE :q",
+            "searchStatus.name ILIKE :q",
+            "searchPriority.name ILIKE :q",
+            "searchCategory.name ILIKE :q",
+            "searchApp.name ILIKE :q",
+            "searchProgrammer.name ILIKE :q",
+            "searchCustomer.name ILIKE :q",
+            "searchCustomerCompany.name ILIKE :q",
+            "CAST(issue.created_at AS TEXT) ILIKE :q",
+            "CAST(issue.updated_at AS TEXT) ILIKE :q",
+            "CAST(issue.status_changed_at AS TEXT) ILIKE :q",
+          ].join(" OR ") +
+          ")",
         { q: `%${search.trim()}%` },
       );
     }
 
     if (filters.priorityIds && filters.priorityIds.length > 0) {
-      qb.andWhere("issue.priority_id IN (:...priorityIds)", { priorityIds: filters.priorityIds });
+      qb.andWhere(
+        filters.noPriority
+          ? "(issue.priority_id IS NULL OR issue.priority_id IN (:...priorityIds))"
+          : "issue.priority_id IN (:...priorityIds)",
+        { priorityIds: filters.priorityIds },
+      );
+    } else if (filters.noPriority) {
+      qb.andWhere("issue.priority_id IS NULL");
     }
     if (filters.categoryIds && filters.categoryIds.length > 0) {
       qb.andWhere(
@@ -288,6 +341,21 @@ export class IssuesService {
     if (from) qb.andWhere("issue.created_at >= :createdFrom", { createdFrom: from });
     const to = dayEnd(filters.createdTo);
     if (to) qb.andWhere("issue.created_at <= :createdTo", { createdTo: to });
+
+    /**
+     * Completed-bar window — the report link from the trend chart's second
+     * bar sends `completedFrom`/`completedTo` instead of `createdFrom/To`, so
+     * the list adds up to the number on that bar: a card is in when a
+     * `card.moved` event into เสร็จสิ้น happened inside the window, regardless
+     * of when the card itself was born. Reuses the exact matcher as the
+     * dashboard's completed count (common/done-moves.ts).
+     */
+    const completedFrom = dayStart(filters.completedFrom);
+    const completedTo = dayEnd(filters.completedTo);
+    if (completedFrom || completedTo) {
+      const clause = completedInRange(completedFrom, completedTo);
+      qb.andWhere(clause.sql, clause.params);
+    }
 
     /**
      * Stale-hide policy — `?hideStaleDone=1` cuts the rows an active
@@ -378,7 +446,19 @@ export class IssuesService {
     // analysis/resolution gates on every row (the column order rides along)
     const gates = await this.rulesEngine.statusGates(issues.map((i) => i.statusId ?? null));
     const order = await this.fieldOrder(gates);
-    const rows = await Promise.all(issues.map((i) => this.toResponse(i, gates, order)));
+    // ธง maExpired สำหรับป๊อปอัพบนบอร์ด — ถามผ่าน AppsService.isPairExpired()
+    // ตัวเดียวกับตาข่าย 400 ตอนตั้งประเภทงาน (สองฝั่งตรงกันเป๊ะ) · fail-open
+    // ทุกกรณี: ไม่มีแอป / ไม่มีบริษัท / lookup พัง → false
+    const maExpiredFlags = await Promise.all(
+      issues.map((i) =>
+        i.appId == null || i.customer?.companyId == null
+          ? Promise.resolve(false)
+          : this.apps.isPairExpired(i.appId, i.customer.companyId).catch(() => false),
+      ),
+    );
+    const rows = await Promise.all(
+      issues.map((i, idx) => this.toResponse(i, gates, order, maExpiredFlags[idx])),
+    );
     const data = withTimeline ? await this.attachWorkTimeline(rows) : rows;
     return {
       data,
@@ -461,7 +541,15 @@ export class IssuesService {
       throw new NotFoundException(`Issue ${id} not found`);
     }
     if (user) await assertIssueVisible(issue, this.permissions, user);
-    return this.toResponse(issue);
+    // deep link `?issue=<id>` เปิดการ์ดผ่าน route นี้ จึงต้องส่งธง maExpired
+    // ด้วย (เหมือน findAll) — fail-open ถ้า lookup พังหรือไม่มีคู่
+    const maExpired =
+      issue.appId == null || issue.customer?.companyId == null
+        ? false
+        : await this.apps
+            .isPairExpired(issue.appId, issue.customer.companyId)
+            .catch(() => false);
+    return this.toResponse(issue, undefined, undefined, maExpired);
   }
 
   /**
@@ -860,9 +948,7 @@ export class IssuesService {
       return; // fail open — a broken lookup must not block classification
     }
     if (expired) {
-      throw new BadRequestException(
-        "สัญญา MA หมดอายุแล้ว — ไม่สามารถกำหนดประเภทงาน MA/Requirement ได้ (คงไว้เป็นบั๊ก หรือตีกลับงาน)",
-      );
+      throw new BadRequestException("MA หมดอายุ");
     }
   }
 
@@ -950,6 +1036,10 @@ export class IssuesService {
       detail: JSON.stringify({
         from: sourceStatus?.name ?? null,
         to: targetStatus.name,
+        // the stable id rides along so the dashboard's "completed" series can
+        // count entries into เสร็จส้ิน by id — names change, ids do not (the
+        // name stays too: the activity feed reads it and old rows have no id)
+        toStatusId: targetStatus.id,
       }),
       actor,
     });
@@ -961,6 +1051,14 @@ export class IssuesService {
       actorId: actor?.actorId ?? null,
       actorRole: actor?.actorRole ?? null,
     });
+
+    // **นับที่เสร็จสิ้น** — ชั่วโมง MA ถูกหักตอนปิดงาน (ดู `MaUsageService.
+    // deductionRows()`) ดังนั้นกระดิ่ง "MA หมด" ต้องเช็คตอนนี้ด้วย ไม่งั้นงานที่
+    // กรอกเวลาไว้ตั้งแต่ยังอยู่รีวิวจะไม่มีวันทำให้แอดมินรู้ · fire-and-forget
+    // เหมือนตอนกรอกเวลา (service ไม่เคย throw) และ DB ถูก update ไปแล้วด้านบน
+    if (statusId === DONE_STATUS_ID) {
+      void this.maUsage.checkAndNotify(issue);
+    }
 
     const updated = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
     return this.toResponse(updated ?? issue);
@@ -1071,6 +1169,7 @@ export class IssuesService {
     // **fire-and-forget**: ชั่วโมงที่กรอกอาจทำให้ MA ของคู่หมด — แจ้งลูกค้า +
     // แอดมิน (ครั้งเดียวต่อรอบ, ดู `MaUsageService`) โดยไม่รอให้ request นี้
     // ช้าเพราะ SMTP/การแจ้งเตือน · ตัว service ไม่เคย throw อยู่แล้ว
+    // (งานที่ยังไม่เสร็จจะยังไม่ถูกหัก → เช็คอีกทีตอน `move()` เข้าเสร็จสิ้น)
     void this.maUsage.checkAndNotify(issue);
     return this.toResponse(issue);
   }
@@ -1343,7 +1442,18 @@ export class IssuesService {
    * Bulk paths pass precomputed gates/order so a 100-card page costs one
    * rules query instead of 100.
    */
-  private async toResponse(issue: Issue, precomputed?: StatusGates, order?: Map<number, number>) {
+  private async toResponse(
+    issue: Issue,
+    precomputed?: StatusGates,
+    order?: Map<number, number>,
+    /**
+     * ธง "สัญญา MA ของคู่ (แอป × บริษัทผู้แจ้ง) หมดอายุแล้วหรือยัง" — คำนวณ
+     * ที่ `findAll()` / `findOne()` แล้วส่งเข้ามา (ไม่คำนวณใน `toResponse()`
+     * เพราะทุก write ก็เรียกมัน → จะยิง query ซ้ำตอนเซฟ) · ไม่ส่ง = ไม่เปิดเผย
+     * ธงนี้ใน payload (fail-open: popup ถือว่าไม่หมดอายุ)
+     */
+    maExpired?: boolean,
+  ) {
     const statusId = issue.statusId ?? null;
     // a card with no status can never be covered (and costs no rules query)
     const gates = precomputed ?? (await this.rulesEngine.statusGates([statusId]));
@@ -1397,6 +1507,9 @@ export class IssuesService {
       customCategory: issue.customCategory,
       appId: issue.appId,
       appName: issue.app?.name ?? null,
+      // มาจาก AppsService.isPairExpired() ตัวเดียวกับตาข่าย 400 ใน update()
+      // — ป๊อปอัพใช้ย่อข้อความ/ขีดปุ่มบันทึกโดยไม่ต้องรอ error ก่อน
+      ...(maExpired === undefined ? {} : { maExpired }),
       labelId: issue.labelId,
       labelIds: (issue.labels ?? []).map((l) => l.id).sort((a, b) => a - b),
       labelName: issue.labels?.[0]?.name ?? issue.label?.name ?? null,

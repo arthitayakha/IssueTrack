@@ -11,7 +11,6 @@ import {
   Divider,
   IconButton,
   ListItemButton,
-  MenuItem,
   Paper,
   TextField,
   Typography,
@@ -76,6 +75,9 @@ export default function ReportIssuePage() {
   const [catDropOpen, setCatDropOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const catDropRef = useRef<HTMLDivElement>(null);
+  const [appDropOpen, setAppDropOpen] = useState(false);
+  const [appSearchQuery, setAppSearchQuery] = useState("");
+  const appDropRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -118,6 +120,9 @@ export default function ReportIssuePage() {
   const selectedCategory = allCategories.find((c) => c.id === categoryId) ?? null;
   const isOtherSelected = selectedCategory?.name === OTHER_CATEGORY;
   const visibleApps = useMemo(() => apps.filter((a) => a.isVisible), [apps]);
+  const filteredApps = visibleApps.filter((a) =>
+    a.name.toLowerCase().includes(appSearchQuery.toLowerCase()),
+  );
   // แอปที่เลือกอยู่ — `maExpired` มาเป็นธงจาก `GET /apps?visible=1&mine=1` (เซิร์ฟเวอร์
   // รู้บริษัทของผู้เรียกเอง และ `companies` ถูกตัดจากลูกค้าไปแล้ว ฝั่ง web จึง
   // ไม่เหลือวันที่ให้อ่าน — fail-open: ไม่มีธง = ไม่เตือน)
@@ -290,25 +295,119 @@ export default function ReportIssuePage() {
                       {" *"}
                     </Box>
                   </Typography>
-                  <TextField
-                    size="small"
-                    fullWidth
-                    select
-                    SelectProps={{ displayEmpty: true }}
-                    value={appId ?? ""}
-                    onChange={(e) =>
-                      setAppId(e.target.value === "" ? null : Number(e.target.value))
-                    }
-                  >
-                    <MenuItem value="" disabled>
-                      <em>{t("appPlaceholder")}</em>
-                    </MenuItem>
-                    {visibleApps.map((app) => (
-                      <MenuItem key={app.id} value={app.id}>
-                        {app.name}
-                      </MenuItem>
-                    ))}
-                  </TextField>
+                  <ClickAwayListener onClickAway={() => setAppDropOpen(false)}>
+                    <Box ref={appDropRef} sx={{ position: "relative" }}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        placeholder={t("appPlaceholder")}
+                        value={selectedApp?.name ?? ""}
+                        onClick={() => setAppDropOpen(!appDropOpen)}
+                        InputProps={{
+                          readOnly: true,
+                          endAdornment: (
+                            <ArrowDropDownIcon
+                              sx={{
+                                fontSize: 20,
+                                color: "text.secondary",
+                                transform: appDropOpen ? "rotate(180deg)" : "none",
+                                transition: "transform 0.2s",
+                              }}
+                            />
+                          ),
+                        }}
+                        sx={{
+                          cursor: "pointer",
+                          "& .MuiOutlinedInput-root": { cursor: "pointer" },
+                          "& input": { cursor: "pointer" },
+                          "& .MuiInputBase-input::placeholder": {
+                            color: "text.primary",
+                            opacity: 1,
+                            fontStyle: "normal",
+                          },
+                        }}
+                      />
+
+                      {appDropOpen && (
+                        <Paper
+                          sx={{
+                            position: "absolute",
+                            top: "100%",
+                            left: 0,
+                            right: 0,
+                            zIndex: 10,
+                            mt: 0.5,
+                            border: "1px solid",
+                            borderColor: "divider",
+                            borderRadius: 1.5,
+                            boxShadow: theme.custom.cardShadow,
+                            overflow: "hidden",
+                          }}
+                        >
+                          <TextField
+                            size="small"
+                            fullWidth
+                            autoFocus
+                            value={appSearchQuery}
+                            onChange={(e) => setAppSearchQuery(e.target.value)}
+                            placeholder={t("searchPlaceholder")}
+                            // กัน password manager เตอีเมลลงช่องค้นหา (เหมือนช่องหมวดหมู่)
+                            inputProps={{ autoComplete: "off", name: "app-search" }}
+                            InputProps={{
+                              startAdornment: (
+                                <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />
+                              ),
+                            }}
+                            sx={{
+                              p: 1,
+                              "& .MuiOutlinedInput-root": {
+                                "& fieldset": { border: "none" },
+                              },
+                            }}
+                          />
+
+                          <Box sx={{ maxHeight: 200, overflowY: "auto" }}>
+                            {filteredApps.length > 0 ? (
+                              filteredApps.map((app) => (
+                                <ListItemButton
+                                  key={app.id}
+                                  onClick={() => {
+                                    setAppId(app.id);
+                                    setAppDropOpen(false);
+                                    setAppSearchQuery("");
+                                  }}
+                                  sx={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 1.5,
+                                    px: 2,
+                                    py: 1.25,
+                                    bgcolor: appId === app.id ? "sky.dark" : "transparent",
+                                    "&:hover": {
+                                      bgcolor: appId === app.id ? "sky.dark" : "action.hover",
+                                    },
+                                  }}
+                                >
+                                  <Typography variant="body2" sx={{ flex: 1 }}>
+                                    {app.name}
+                                  </Typography>
+                                  {appId === app.id && (
+                                    <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />
+                                  )}
+                                </ListItemButton>
+                              ))
+                            ) : (
+                              <Box sx={{ px: 2, py: 3, textAlign: "center" }}>
+                                <Typography variant="body2" color="text.disabled">
+                                  {t("noApp")}
+                                </Typography>
+                              </Box>
+                            )}
+                          </Box>
+                        </Paper>
+                      )}
+                    </Box>
+                  </ClickAwayListener>
                   {/* เซิร์ฟเวอร์คืนเฉพาะแอปที่เปิดใช้งาน — ถ้าไม่มีแอปที่เปิดใช้
                       เลย dropdown จะว่างและกดส่งไม่ได้ (แอปเป็นช่องบังคับ) จึงต้องบอกให้รู้ */}
                   {visibleApps.length === 0 && (
@@ -364,6 +463,11 @@ export default function ReportIssuePage() {
                         },
                         "& input": {
                           cursor: "pointer",
+                        },
+                        "& .MuiInputBase-input::placeholder": {
+                          color: "text.primary",
+                          opacity: 1,
+                          fontStyle: "normal",
                         },
                       }}
                     />

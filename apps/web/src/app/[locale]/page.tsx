@@ -20,6 +20,8 @@ import TrendChart from "@/components/dashboard/trend-chart";
 import WorkloadCard from "@/components/dashboard/workload-card";
 import UsageCard from "@/components/dashboard/usage-card";
 import PriorityBars from "@/components/dashboard/priority-bars";
+import { useRouter } from "@/i18n/navigation";
+import { reportsHref } from "@/lib/dashboard-nav";
 import { usePermissions } from "@/lib/permissions";
 import { fetchDashboardSummary } from "@/lib/dashboard-api";
 import { fetchCompanies, type Company } from "@/lib/apps-api";
@@ -74,6 +76,7 @@ export default function HomePage() {
   const t = useTranslations("Dashboard");
   const theme = useTheme();
   const { can, roleName } = usePermissions();
+  const router = useRouter();
   const user = useAuthStore((s) => s.user);
 
   const scope: DashboardScope = can("dashboard.overview.view")
@@ -220,7 +223,23 @@ export default function HomePage() {
   }, []);
 
   const showWorkload = can("dashboard.overview.view");
+  const canReport = can("report.view");
   const statusId = statusFilter?.id ?? null;
+
+  /**
+   * Workload's "open" count excludes only the done column (status id 4 —
+   * `DONE_STATUS_ID` in the API). The report must carry that same set or its
+   * rows would include finished cards the number never counted. A status
+   * cross-filter already narrowed the count, so only that id is sent then.
+   */
+  const openStatusIds = useMemo(
+    () =>
+      (data?.statuses ?? []).flatMap((s) =>
+        s.id == null || s.id === 4 ? [] : [s.id],
+      ),
+    [data],
+  );
+  const reportStatusIds = statusId != null ? [statusId] : openStatusIds;
 
   return (
     <RequireAuth>
@@ -370,7 +389,21 @@ export default function HomePage() {
                   statusId={statusId}
                   companyIds={data.companyIds}
                 />
-                <PriorityBars rows={data.priorities} />
+                <PriorityBars
+                  rows={data.priorities}
+                  onSelect={
+                    canReport
+                      ? (row) =>
+                          router.push(
+                            reportsHref({
+                              ...(row.id == null ? { noPriority: 1 } : { priority: row.id }),
+                              status: statusId,
+                              company: companyIds,
+                            }),
+                          )
+                      : undefined
+                  }
+                />
               </Box>
 
               {/* main row: trend 2/3 + การทำงาน 1/3 (กราฟเต็มกว้างเมื่อไม่มีสิทธิ์ภาพรวม) */}
@@ -392,7 +425,23 @@ export default function HomePage() {
                   statusId={statusId}
                   companyIds={data.companyIds}
                 />
-                {showWorkload && <WorkloadCard rows={data.workload} />}
+                {showWorkload && (
+                  <WorkloadCard
+                    rows={data.workload}
+                    onSelect={
+                      canReport
+                        ? (row) =>
+                            router.push(
+                              reportsHref({
+                                assignee: row.userId,
+                                status: reportStatusIds,
+                                company: companyIds,
+                              }),
+                            )
+                        : undefined
+                    }
+                  />
+                )}
               </Box>
             </>
           ) : null}

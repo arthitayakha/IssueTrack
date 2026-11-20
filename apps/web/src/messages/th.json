@@ -78,6 +78,8 @@
     "unassigned": "ยังไม่มอบหมาย",
     "trend": {
       "title": "แนวโน้มการเกิดปัญหา",
+      "seriesCreated": "สร้างเข้ามา",
+      "seriesCompleted": "เสร็จสิ้น",
       "empty": "ไม่มีงานใหม่ในช่วงนี้",
       "pickRange": "กำหนดช่วงวัน",
       "rangeAuto": "ช่วงล่าสุด",
@@ -94,6 +96,7 @@
       "issuesTitle": "{label} · {count} งาน",
       "emptyIssues": "ไม่มีงานในช่วงนี้",
       "truncated": "แสดง {shown} จาก {total} งาน",
+      "openInReports": "เปิดในรายงาน",
       "close": "ปิด"
     },
     "period": {
@@ -180,9 +183,10 @@
     "reportIssue": "แจ้งปัญหา",
     "reportIssueTitle": "แจ้งปัญหาใหม่",
     "reportIssueSubtitle": "กรอกข้อมูลเพื่อแจ้งปัญหาใหม่ให้ทีมงานตรวจสอบ",
-    "titlePlaceholder": "รูปหัวข้อปัญหา",
+    "titlePlaceholder": "หัวข้อปัญหา",
     "app": "แอป",
     "appPlaceholder": "เลือกแอป",
+    "noApp": "ไม่มีแอป",
     "noCompanyApps": "ไม่มีแอปที่พร้อมใช้งานสำหรับบัญชีของคุณ กรุณาติดต่อผู้ดูแล",
     "maExpiredBlock": "สัญญา MA ของแอปนี้หมดอายุแล้ว — ยังแจ้งปัญหาได้ตามปกติ แต่ทีมจะรับงานประเภท MA/Requirement ไม่ได้ (จะถูกตีกลับ)",
     "category": "หมวดหมู่",
@@ -199,7 +203,7 @@
     "noColumnsWarning": "ยังไม่มีคอลัมน์บนบอร์ด กรุณาเพิ่มคอลัมน์ก่อนแจ้งปัญหา",
     "submit": "ส่ง",
     "submitReport": "ส่งปัญหา",
-    "reportSuccess": "แจ้งปัญหาสำเร็จ ปัญหาของคุณถูกเพิ่มในบอร์ดแล้ว",
+    "reportSuccess": "แจ้งปัญหาสำเร็จ",
     "errorSubmit": "แจ้งปัญหาไม่สำเร็จ",
     "cancel": "ยกเลิก",
     "addCard": "เพิ่มการ์ด",
@@ -321,6 +325,7 @@
       "priority": "ความสำคัญ",
       "taskType": "ประเภทงาน",
       "taskTypeUnset": "ยังไม่ระบุ",
+      "maExpiredAlert": "MA หมดอายุแล้ว ไม่สามารถบันทึกข้อมูลได้",
       "notSet": "ยังไม่ระบุ",
       "labels": "ป้ายกำกับ",
       "description": "คำอธิบาย",
@@ -832,6 +837,8 @@
       "app_expiring": "ใกล้หมดอายุ",
       "app_expired": "หมดอายุแล้ว",
       "ma_depleted": "MA หมดแล้ว",
+      "app_renewed": "ต่ออายุแล้ว",
+      "app_hours_purchased": "ซื้อชั่วโมงเพิ่มแล้ว",
       "daily_digest": "เตือนรายวัน"
     },
     "priority": {
@@ -1265,6 +1272,7 @@
       "app": "แอป",
       "noApp": "ไม่มีแอป",
       "noCategory": "ไม่มีหมวดหมู่",
+      "noPriority": "ไม่ระบุความสำคัญ",
       "company": "บริษัท",
       "sectionAssignee": "โปรแกรมเมอร์",
       "sectionReporter": "ผู้แจ้ง",

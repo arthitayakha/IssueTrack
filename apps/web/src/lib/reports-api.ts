@@ -49,12 +49,21 @@ export interface ReportFilters {
   /** yyyy-mm-dd, empty = no bound */
   from: string;
   to: string;
+  /**
+   * A dashboard trend bar's link: `completed` means `from`/`to` bound the
+   * moment a card entered เสร็จสิ้น (sent as `completedFrom/To` to the API),
+   * not its creation date. `created`/"" keeps the ordinary created-date
+   * filter. Carried in the URL so the report link is shareable.
+   */
+  series: "" | "created" | "completed";
   search: string;
   assigneeIds: number[];
   reporterIds: number[];
   categoryIds: number[];
   statusIds: number[];
   priorityIds: number[];
+  /** "ไม่ระบุความสำคัญ" — priority_id IS NULL, from the dashboard's NULL bar. */
+  noPriority: boolean;
   appIds: number[];
   /**
    * "ไม่มีแอป" / "ไม่มีหมวดหมู่" — ชิ้นโดนัท NULL ของ dashboard ไม่มี id ให้กรอง
@@ -92,12 +101,14 @@ export interface ReportFilters {
 export const EMPTY_FILTERS: ReportFilters = {
   from: "",
   to: "",
+  series: "",
   search: "",
   assigneeIds: [],
   reporterIds: [],
   categoryIds: [],
   statusIds: [],
   priorityIds: [],
+  noPriority: false,
   appIds: [],
   noApp: false,
   noCategory: false,
@@ -341,7 +352,7 @@ export function activeFilterCount(f: ReportFilters, view?: ReportView): number {
   if (f.reporterIds.length) n += 1;
   if (f.categoryIds.length || f.noCategory) n += 1;
   if (f.statusIds.length) n += 1;
-  if (f.priorityIds.length) n += 1;
+  if (f.priorityIds.length || f.noPriority) n += 1;
   if (f.taskTypes.length || f.noTaskType) n += 1;
   if (f.appIds.length || f.noApp) n += 1;
   if (f.companyIds.length) n += 1;
@@ -548,8 +559,15 @@ function mapIssue(raw: RawIssue): IssueRow {
 
 function filterParams(f: ReportFilters): URLSearchParams {
   const p = new URLSearchParams();
-  if (f.from) p.set("createdFrom", f.from);
-  if (f.to) p.set("createdTo", f.to);
+  // The same `from`/`to` pair means different things depending on which trend
+  // bar was clicked — the completed bar must not fall back to created_at.
+  if (f.series === "completed") {
+    if (f.from) p.set("completedFrom", f.from);
+    if (f.to) p.set("completedTo", f.to);
+  } else {
+    if (f.from) p.set("createdFrom", f.from);
+    if (f.to) p.set("createdTo", f.to);
+  }
   if (f.search.trim()) p.set("search", f.search.trim());
   if (f.assigneeIds.length) p.set("assigneeIds", f.assigneeIds.join(","));
   if (f.reporterIds.length) p.set("reporterIds", f.reporterIds.join(","));
@@ -557,6 +575,7 @@ function filterParams(f: ReportFilters): URLSearchParams {
   if (f.noCategory) p.set("noCategory", "1");
   if (f.statusIds.length) p.set("statuses", f.statusIds.join(","));
   if (f.priorityIds.length) p.set("priorityIds", f.priorityIds.join(","));
+  if (f.noPriority) p.set("noPriority", "1");
   if (f.appIds.length) p.set("appIds", f.appIds.join(","));
   if (f.noApp) p.set("noApp", "1");
   if (f.companyIds.length) p.set("companyIds", f.companyIds.join(","));

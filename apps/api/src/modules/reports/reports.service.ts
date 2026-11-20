@@ -8,6 +8,7 @@ import { App } from "../apps/entities/app.entity";
 import { AuthUser } from "../auth/auth-user";
 import { PermissionsService } from "../permissions/permissions.service";
 import { paginate, type Paginated, type PaginationParams } from "../../common/pagination";
+import { completedInRange, DONE_STATUS_ID } from "../../common/done-moves";
 
 /**
  * Reports backend — powers the /reports page.
@@ -27,6 +28,9 @@ import { paginate, type Paginated, type PaginationParams } from "../../common/pa
 export interface ReportIssueFilters {
   createdFrom?: string;
   createdTo?: string;
+  /** Completed-bar drill (from the dashboard): moved into เสร็จสิ้น in range. */
+  completedFrom?: string;
+  completedTo?: string;
   search?: string;
   assigneeIds?: number[];
   reporterIds?: number[];
@@ -35,14 +39,16 @@ export interface ReportIssueFilters {
   priorityIds?: number[];
   appIds?: number[];
   /**
-   * "ไม่มีแอป" / "ไม่มีหมวดหมู่" — the dashboard's NULL slices have no id to
-   * filter by, so the list carries a flag instead. Same contract as
-   * `IssuesService.findAll`: an **OR-part of its own dimension** (`noApp` +
-   * `appIds` → `app_id IS NULL OR app_id IN (…)`), never an AND. Absent flag →
-   * the old `IN`-only clause, unchanged.
+   * "ไม่มีแอป" / "ไม่มีหมวดหมู่" / "ไม่ระบุความสำคัญ" — the dashboard's NULL
+   * slices have no id to filter by, so the list carries a flag instead. Same
+   * contract as `IssuesService.findAll`: an **OR-part of its own dimension**
+   * (`noApp` + `appIds` → `app_id IS NULL OR app_id IN (…)`), never an AND.
+   * Absent flag → the old `IN`-only clause, unchanged.
    */
   noApp?: boolean;
   noCategory?: boolean;
+  /** "ไม่ระบุความสำคัญ" — priority_id IS NULL, the priority bar's NULL bucket. */
+  noPriority?: boolean;
   companyIds?: number[];
   /**
    * **ประเภทงาน** (`issues.task_type`) — whitelist ฝั่ง controller กรอกมาเฉพาะ
@@ -134,12 +140,6 @@ export interface ActivityRow {
  * feed without a UNION query.
  */
 const ACTIVITY_FETCH_CAP = 2000;
-
-/**
- * The completion status — created as "Done", since renamed to "เสร็จสิ้น".
- * Ids do not move when names do, so open counts key off the id, not the name.
- */
-const DONE_STATUS_ID = 4;
 
 function isDay(value?: string): boolean {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -258,7 +258,14 @@ export class ReportsService {
       qb.andWhere("issue.status_id IN (:...statuses)", { statuses: f.statuses });
     }
     if (f.priorityIds?.length) {
-      qb.andWhere("issue.priority_id IN (:...priorityIds)", { priorityIds: f.priorityIds });
+      qb.andWhere(
+        f.noPriority
+          ? "(issue.priority_id IS NULL OR issue.priority_id IN (:...priorityIds))"
+          : "issue.priority_id IN (:...priorityIds)",
+        { priorityIds: f.priorityIds },
+      );
+    } else if (f.noPriority) {
+      qb.andWhere("issue.priority_id IS NULL");
     }
     if (f.appIds?.length) {
       qb.andWhere(
@@ -319,6 +326,16 @@ export class ReportsService {
     if (from) qb.andWhere("issue.created_at >= :repFrom", { repFrom: from });
     const to = dayEnd(f.createdTo);
     if (to) qb.andWhere("issue.created_at <= :repTo", { repTo: to });
+
+    // The dashboard's completed bar links here with completedFrom/To instead
+    // of createdFrom/To — grouped views must cut the same cards as the list
+    // (GET /issues) and the bar's own count.
+    const completedFrom = dayStart(f.completedFrom);
+    const completedTo = dayEnd(f.completedTo);
+    if (completedFrom || completedTo) {
+      const clause = completedInRange(completedFrom, completedTo);
+      qb.andWhere(clause.sql, clause.params);
+    }
   }
 
   /**

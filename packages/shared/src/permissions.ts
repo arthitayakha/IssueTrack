@@ -1,8 +1,6 @@
 export type RoleName = "admin" | "programmer" | "customer";
 
 export type Permission =
-  | "auth.login"
-  | "auth.logout"
   | "dashboard.own.view"
   | "dashboard.overview.view"
   | "issue.create"
@@ -86,8 +84,6 @@ export type Permission =
   | "log.export";
 
 export const ALL_PERMISSIONS: readonly Permission[] = [
-  "auth.login",
-  "auth.logout",
   "dashboard.own.view",
   "dashboard.overview.view",
   "issue.create",
@@ -174,8 +170,6 @@ export const ALL_PERMISSIONS: readonly Permission[] = [
 export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
   admin: ALL_PERMISSIONS,
   programmer: [
-    "auth.login",
-    "auth.logout",
     "dashboard.own.view",
     "dashboard.overview.view",
     "issue.create",
@@ -208,8 +202,6 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "issue.lock",
   ],
   customer: [
-    "auth.login",
-    "auth.logout",
     "dashboard.own.view",
     "issue.create",
     "issue.own.view",
@@ -235,13 +227,9 @@ export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
 
 export const ROLE_TEMPLATES: Record<string, readonly Permission[]> = {
   base: [
-    "auth.login",
-    "auth.logout",
     "dashboard.own.view",
   ],
   staff: [
-    "auth.login",
-    "auth.logout",
     "dashboard.own.view",
     "issue.create",
     "issue.all.view",
@@ -255,8 +243,6 @@ export const ROLE_TEMPLATES: Record<string, readonly Permission[]> = {
     "board.view",
   ],
   manager: [
-    "auth.login",
-    "auth.logout",
     "dashboard.own.view",
     "dashboard.overview.view",
     "issue.create",
@@ -292,8 +278,6 @@ export const ROLE_LABELS: Record<string, string> = {
 };
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
-  "auth.login": "เข้าสู่ระบบ",
-  "auth.logout": "ออกจากระบบ",
   "dashboard.own.view": "ดูแดชบอร์ดส่วนตัว",
   "dashboard.overview.view": "ดูภาพรวมแดชบอร์ด",
   "issue.create": "แจ้งปัญหา",

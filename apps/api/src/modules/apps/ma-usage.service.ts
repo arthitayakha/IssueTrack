@@ -9,12 +9,18 @@ import { User } from "../auth/entities/user.entity";
 import { NotificationsService } from "../notifications/notifications.service";
 import { pairKey, pickPeriodId, type PeriodRow } from "./ma-attribution";
 import { ViewerScope } from "./viewer-scope";
+import { DONE_STATUS_ID } from "../../common/done-moves";
 
 /**
  * ประเภทงานที่**หักจาก MA** — ตรงกับฝั่งรายงาน (`GET /reports/usage` ที่หน้าเว็บ
  * ส่ง `taskTypes=ma` มาเอง) · `bug`, `requirement` (เลิกหักตามข้อสรุปผู้ใช้) และ
  * `NULL` (ยังไม่ระบุ) ไม่หัก — ค่า `feature` ถูก rename เป็น `ma` โดย
  * migration `1827000000000`
+ *
+ * นอกจากประเภทแล้ว **ต้องอยู่ในสถานะ `เสร็จสิ้น` ด้วย** (`deductionRows()` กรอง
+ * `status_id = DONE_STATUS_ID`) — ชั่วโมงที่กรอกไว้ขณะงานยังอยู่รีวิว/กำลังทำยัง
+ * **ไม่ถูกหัก** แก้ตัวเลขผิดได้จนกว่าจะปิดงาน · พอปิดปุ๊บค่อยนับ (และกระดิ่ง
+ * `IssuesService.move()` เช็คตอนนั้นด้วย)
  */
 const DEDUCTED_TASK_TYPES = ["ma"] as const;
 
@@ -110,7 +116,9 @@ const MAX_USAGE_COUNT_IDS = 100;
 
 /**
  * **ตรวจว่าชั่วโมง MA ของคู่หมดแล้วหรือยัง** — เรียกหลังกรอกเวลาจริง
- * (`IssuesService.setActualFixDuration`) แบบ fire-and-forget
+ * (`IssuesService.setActualFixDuration`) **และตอนการ์ดเข้า `เสร็จสิ้น`**
+ * (`IssuesService.move()`) แบบ fire-and-forget — ทางหลังจำเป็นเพราะชั่วโมงที่
+ * กรอกไว้ที่รีวิวจะยังไม่ถูกนับจนกว่าจะปิดงาน (ดู `deductionRows()`)
  *
  * สูตรใช้ไป = **ของ "รอบนั้น"** (แถวล่าสุดของคู่) — งานที่กรอกเข้าคู่นั้นซึ่ง
  * `task_type = 'ma'` และ **ผู้แจ้งอยู่บริษัทคู่นั้น**
@@ -204,7 +212,8 @@ export class MaUsageService {
 
   /**
    * **"ใช้ไป" ของ "รอบนั้น"** (วินาที) — membership ชุดเดียวกับ `deductionRows()`
-   * (งานถังขยะถูกทิ้ง, `task_type` ที่หัก, ผู้แจ้งมีบริษัท) แล้ว**ผูกเข้ารอบด้วย
+   * (งานถังขยะถูกทิ้ง, `task_type` ที่หัก, ผู้แจ้งมีบริษัท, **เฉพาะเสร็จสิ้น**)
+   * แล้ว**ผูกเข้ารอบด้วย
    * `pickPeriodId()`** — งานที่กรอก*ก่อน*รอบนั้นจะถูกสร้าง = ของรอบก่อนหน้า ·
    * `actual_fix_at IS NULL` (กรอกก่อนระบบ) = "ไม่ระบุรอบ" → ไม่ถูกนับที่นี่
    * (ตรงกับคอลัมน์ "ใช้ไป" รายรอบบนจอ — ชั่วโม์พวกนั้นถูกเล่าผ่าน
@@ -232,8 +241,13 @@ export class MaUsageService {
   /**
    * ชั่วโม์ที่หักจาก MA ได้ของแอปที่ระบุ — **membership ชุดเดียวกันเป๊ะ** กับ
    * `periodUsedSeconds()` (งานถังขยะถูกทิ้ง, `task_type` ที่หัก, ผู้แจ้งต้องมี
-   * บริษัท) เพื่อให้ผลรวมทุกช่อง = ตัว "ใช้ไป" ระดับคู่เสมอ · คืนมายัง
-   * **ไม่ผูกกับรอบ** เพราะกติกาผูกต้องเห็นแถวทั้งคู่พร้อมกัน (ทำใน `attribute()`)
+   * บริษัท, **ต้องอยู่ใน `เสร็จสิ้น`**) เพื่อให้ผลรวมทุกช่อง = ตัว "ใช้ไป" ระดับคู่
+   * เสมอ · คืนมายัง **ไม่ผูกกับรอบ** เพราะกติกาผูกต้องเห็นแถวทั้งคู่พร้อมกัน
+   * (ทำใน `attribute()`)
+   *
+   * กรอง `status_id = DONE_STATUS_ID` → งานที่ยังไม่ปิด (รอรับเรื่อง / รอดำเนินการ /
+   * กำลังดำเนินการ / รีวิว) **หัก 0** แม้จะกรอกชั่วโมงไว้แล้ว · แก้ตัวเลขในรีวิว
+   * ได้อิสระ แล้วค่อยถูกนับตอนลากเข้าเสร็จสิ้น
    */
   private async deductionRows(appIds: number[]): Promise<DeductionRow[]> {
     if (appIds.length === 0) return [];
@@ -247,6 +261,8 @@ export class MaUsageService {
       .addSelect("issue.actual_fix_at", "at")
       .where("issue.app_id IN (:...appIds)", { appIds })
       .andWhere("issue.deleted_at IS NULL")
+      // นับเฉพาะงานที่ปิดแล้ว — ชั่วโมงที่กรอกไว้ในรีวิวยังไม่หัก (แก้ได้ก่อนปิด)
+      .andWhere("issue.status_id = :doneStatusId", { doneStatusId: DONE_STATUS_ID })
       .andWhere("issue.task_type IN (:...types)", { types: [...DEDUCTED_TASK_TYPES] })
       .andWhere("reporter.company_id IS NOT NULL")
       .getRawMany<{

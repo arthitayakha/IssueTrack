@@ -247,6 +247,8 @@ export default function NotificationPopover({
     app_expiring: t("actions.app_expiring"),
     app_expired: t("actions.app_expired"),
     ma_depleted: t("actions.ma_depleted"),
+    app_renewed: t("actions.app_renewed"),
+    app_hours_purchased: t("actions.app_hours_purchased"),
   };
 
   /**
@@ -442,6 +444,9 @@ export default function NotificationPopover({
               item.action === "app_expiring" ||
               item.action === "app_expired" ||
               item.action === "ma_depleted" ||
+              // ใบยืนยันต่ออายุ/ซื้อชม. ก็ไม่มีคนกระทำ (ระบบเป็นคนส่ง)
+              item.action === "app_renewed" ||
+              item.action === "app_hours_purchased" ||
               // การ์ดค้าง (sweep 09:00) ก็ไม่มีคนกระทำ — เดิมหลุดไปโหมด "มีคนกระทำ"
               // แล้วเจอ fallback ตายตัว "System" หัวบรรทัดจึงอ่านว่า "System ค้างนาน …"
               item.action === "stale";

@@ -49,8 +49,8 @@ type ListStatus = NotificationListStatus;
 /**
  * The badge travels alone: one shared `/notifications/count` request in flight
  * for the whole app, so StrictMode's second effect pass and a Navbar remount on
- * navigation join it instead of firing a duplicate. The inbox ROWS are never
- * fetched here — only when the bell is opened.
+ * navigation join it instead of firing a duplicate. The inbox ROWS are loaded by
+ * the same 10s poll below, so they are fresh even before the bell is opened.
  */
 let countInflight: Promise<number> | null = null;
 function loadCount(): Promise<number> {
@@ -126,7 +126,6 @@ export default function Navbar({
   const listSeqRef = useRef(0); // out-of-order guard for list responses
   const statusRef = useRef(listStatus);
   statusRef.current = listStatus;
-  const openRef = useRef(false); // the rows only ride the 30s poll while visible
 
   /** Badge refresh — cheap COUNT only, never the rows. */
   const refreshCount = useCallback(async () => {
@@ -138,8 +137,8 @@ export default function Navbar({
   }, []);
 
   /**
-   * Fetches the inbox — only ever called when the bell opens (first time =
-   * spinner, later = silent refresh of what is on screen) or on retry. The
+   * Fetches the inbox — on the 10s poll, on mount, when the bell opens, or on
+   * retry. The first load shows the spinner; later ones refresh silently. The
    * sequence ref drops a late response so an old page can never clobber a
    * newer one (the bug behind "badge 43, empty list").
    */
@@ -168,24 +167,24 @@ export default function Navbar({
       setListStatus("ready");
     } catch {
       if (seq !== listSeqRef.current) return;
-      // keep the last known list — the next open / 30s poll retries
+      // keep the last known list — the next poll retries
       if (firstLoad) setListStatus("error");
     }
   }, []);
 
-  // badge poll: COUNT every 30s; the rows only ride along while on screen
+  // poll every 10s: badge COUNT + the inbox rows, whether the bell is open or not
   useEffect(() => {
     void refreshCount();
+    void refreshList();
     const timer = setInterval(() => {
       void refreshCount();
-      if (openRef.current && statusRef.current === "ready") void refreshList();
-    }, 30_000);
+      void refreshList();
+    }, 10_000);
     return () => clearInterval(timer);
   }, [refreshCount, refreshList]);
 
   const handleOpenBell = useCallback(
     (event: MouseEvent<HTMLElement>) => {
-      openRef.current = true;
       setBellAnchorEl(event.currentTarget);
       // every open refreshes: the first shows the spinner, later ones update silently
       void refreshList();
@@ -306,10 +305,7 @@ export default function Navbar({
             loadingMore={loadingMore}
             onLoadMore={handleLoadMore}
             onRetry={() => void refreshList()}
-            onClose={() => {
-              openRef.current = false;
-              setBellAnchorEl(null);
-            }}
+            onClose={() => setBellAnchorEl(null)}
             onMarkRead={handleMarkRead}
             onMarkAllRead={handleMarkAllRead}
           />

@@ -194,15 +194,20 @@ function parsePage(raw: string): number {
 
 function paramsToFilters(raw: string): ReportFilters {
   const p = new URLSearchParams(raw);
+  const series = p.get("series");
   return {
     from: p.get("from") ?? "",
     to: p.get("to") ?? "",
+    // a dashboard bar can point here with `?series=completed` — keep it in
+    // the URL so the list/grouped rows cut by completion time, not birth time
+    series: series === "completed" || series === "created" ? series : "",
     search: p.get("q") ?? "",
     assigneeIds: parseIds(p.get("assignee")),
     reporterIds: parseIds(p.get("reporter")),
     categoryIds: parseIds(p.get("category")),
     statusIds: parseIds(p.get("status")),
     priorityIds: parseIds(p.get("priority")),
+    noPriority: p.get("noPriority") === "1" || p.get("noPriority") === "true",
     appIds: parseIds(p.get("app")),
     // "ไม่มีแอป" / "ไม่มีหมวดหมู่" rides as its own flag (dashboard's NULL slices)
     noApp: p.get("noApp") === "1" || p.get("noApp") === "true",
@@ -219,12 +224,14 @@ function filtersToPatch(f: ReportFilters) {
   return {
     from: f.from || null,
     to: f.to || null,
+    series: f.series || null,
     q: f.search.trim() || null,
     assignee: f.assigneeIds.length ? f.assigneeIds : null,
     reporter: f.reporterIds.length ? f.reporterIds : null,
     category: f.categoryIds.length ? f.categoryIds : null,
     status: f.statusIds.length ? f.statusIds : null,
     priority: f.priorityIds.length ? f.priorityIds : null,
+    noPriority: f.noPriority ? 1 : null,
     app: f.appIds.length ? f.appIds : null,
     noApp: f.noApp ? 1 : null,
     noCategory: f.noCategory ? 1 : null,

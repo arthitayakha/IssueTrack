@@ -17,6 +17,8 @@ declare module "@mui/material/styles" {
       loginGradient: string;
       cardShadow: string;
       tableShadow: string;
+      /** Trend chart bars: created (indigo) vs completed (cyan). */
+      chartColors: { created: string; completed: string };
       columnColors: {
         backlog: string;
         todo: string;
@@ -45,6 +47,7 @@ declare module "@mui/material/styles" {
       loginGradient?: string;
       cardShadow?: string;
       tableShadow?: string;
+      chartColors?: { created: string; completed: string };
       columnColors?: {
         backlog: string;
         todo: string;
@@ -88,6 +91,7 @@ export const theme = createTheme({
       "linear-gradient(180deg, #a8d4f0 0%, #c9e6f7 45%, #e8f4fc 100%)",
     cardShadow: "0 12px 40px rgba(30, 64, 120, 0.15)",
     tableShadow: "0 2px 12px rgba(30, 64, 120, 0.06)",
+    chartColors: { created: "#6366f1", completed: "#38bdf8" },
     columnColors: {
       backlog: "#9e9e9e",
       todo: "#42a5f5",

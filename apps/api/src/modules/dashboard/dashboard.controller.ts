@@ -4,6 +4,7 @@ import {
   type DashboardPeriod,
   type DashboardRange,
   type DashboardScope,
+  type DashboardTrendSeries,
 } from "./dashboard.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
@@ -33,6 +34,15 @@ function parsePeriod(value?: string): DashboardPeriod {
   return value === "day" || value === "week" || value === "month" || value === "year"
     ? value
     : "week";
+}
+
+/**
+ * Which trend series a drill-down list belongs to — the chart draws two bars
+ * per bucket ("created" + "completed"). Anything else falls back to
+ * "created", the shape every caller used before the second bar existed.
+ */
+function parseSeries(value?: string): DashboardTrendSeries {
+  return value === "completed" ? "completed" : "created";
 }
 
 /**
@@ -102,6 +112,7 @@ export class DashboardController {
 
   /**
    * GET /dashboard/trend-issues?bucket=yyyy-mm-dd&period=day|week|month|year
+   *                     &series=created|completed   (which of the two bars)
    *
    * The issues behind one bar — same scope + the same Bangkok `date_trunc` as
    * the count that bar shows, so the list always matches the number. While the
@@ -116,6 +127,7 @@ export class DashboardController {
     @Query("scope") scopeQuery: string | undefined,
     @Query("statusId") statusIdQuery: string | undefined,
     @Query("companyIds") companyIdsQuery: string | undefined,
+    @Query("series") seriesQuery: string | undefined,
     @CurrentUser() user: AuthUser,
   ) {
     return this.dashboard.trendIssues(
@@ -125,6 +137,7 @@ export class DashboardController {
       user,
       parseStatusId(statusIdQuery),
       parseIdList(companyIdsQuery),
+      parseSeries(seriesQuery),
     );
   }
 
@@ -184,4 +197,5 @@ export class DashboardController {
       parseIdList(companyIdsQuery),
     );
   }
+
 }

@@ -30,7 +30,7 @@ function makeService() {
   const apps = { find: jest.fn().mockResolvedValue([]) };
   const companies = { find: jest.fn().mockResolvedValue([]) };
   const notifications = {
-    notifyAdmins: jest.fn().mockResolvedValue(undefined),
+    notifyAppExpiry: jest.fn().mockResolvedValue(undefined),
   };
   const args = [links, apps, companies, notifications] as unknown as ConstructorParameters<
     typeof AppExpiryService
@@ -118,7 +118,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
 
     expect(changed).toBe(false);
     expect(links.update).not.toHaveBeenCalled();
-    expect(notifications.notifyAdmins).not.toHaveBeenCalled();
+    expect(notifications.notifyAppExpiry).not.toHaveBeenCalled();
   });
 
   it("crossing 30 days stores the status, marks d30 and says how many days are left", async () => {
@@ -134,12 +134,15 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       expiryStatus: "expiring_soon",
       expiryNotified: "d30",
     });
-    expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
-    expect(notifications.notifyAdmins).toHaveBeenCalledWith({
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledWith({
+      companyId: 3,
+      appName: "POS",
+      companyName: "ACME",
       action: "app_expiring",
       title: "POS ACME",
       context: "เหลือ 10 วัน",
-      link: "/systems",
+      daysLeft: 10,
     });
   });
 
@@ -156,7 +159,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
     );
 
     expect(links.update).not.toHaveBeenCalled();
-    expect(notifications.notifyAdmins).not.toHaveBeenCalled();
+    expect(notifications.notifyAppExpiry).not.toHaveBeenCalled();
   });
 
   it("crossing 7 days rings once more, with the new day count and the critical chip", async () => {
@@ -175,8 +178,8 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       expiryStatus: "critical",
       expiryNotified: "d7",
     });
-    expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
-    expect(notifications.notifyAdmins).toHaveBeenCalledWith(
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledWith(
       expect.objectContaining({ action: "app_expiring", context: "เหลือ 5 วัน" }),
     );
   });
@@ -193,11 +196,14 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       NAMES,
     );
 
-    expect(notifications.notifyAdmins).toHaveBeenCalledWith({
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledWith({
+      companyId: 3,
+      appName: "POS",
+      companyName: "ACME",
       action: "app_expired",
       title: "POS ACME",
       context: "เลยกำหนด 3 วัน",
-      link: "/systems",
+      daysLeft: -3,
     });
   });
 
@@ -218,8 +224,8 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       expiryStatus: "critical",
       expiryNotified: "d7",
     });
-    expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
-    expect(notifications.notifyAdmins).toHaveBeenCalledWith(
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledWith(
       expect.objectContaining({ context: "เหลือ 5 วัน" }),
     );
   });
@@ -240,7 +246,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       expiryStatus: "normal",
       expiryNotified: "none",
     });
-    expect(notifications.notifyAdmins).not.toHaveBeenCalled();
+    expect(notifications.notifyAppExpiry).not.toHaveBeenCalled();
   });
 
   it("clearing the date is silent and resets both columns", async () => {
@@ -255,7 +261,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       expiryStatus: "none",
       expiryNotified: "none",
     });
-    expect(notifications.notifyAdmins).not.toHaveBeenCalled();
+    expect(notifications.notifyAppExpiry).not.toHaveBeenCalled();
   });
 
   it("renewing an expired pair announces the new deadline again", async () => {
@@ -270,8 +276,8 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       NAMES,
     );
 
-    expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
-    expect(notifications.notifyAdmins).toHaveBeenCalledWith(
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledWith(
       expect.objectContaining({ action: "app_expiring", context: "เหลือ 5 วัน" }),
     );
   });
@@ -298,7 +304,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       { id: 11 },
       { expiryStatus: "critical", expiryNotified: "d7" },
     );
-    expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledTimes(1);
   });
 
   it("the company name in the title is the one of the pair that rang", async () => {
@@ -309,7 +315,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
       { appName: "POS", companyName: "มามี่ฟู้ด จำกัด" },
     );
 
-    expect(notifications.notifyAdmins).toHaveBeenCalledWith(
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "POS มามี่ฟู้ด จำกัด",
         context: "เหลือ 12 วัน",
@@ -346,8 +352,8 @@ describe("AppExpiryService.reconcileAll — the 09:00 sweep", () => {
       { id: 501 },
       { expiryStatus: "critical", expiryNotified: "d7" },
     );
-    expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
-    expect(notifications.notifyAdmins).toHaveBeenCalledWith(
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyAppExpiry).toHaveBeenCalledWith(
       expect.objectContaining({ title: "POS ACME", context: "เหลือ 5 วัน" }),
     );
   });

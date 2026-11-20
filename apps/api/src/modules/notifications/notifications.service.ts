@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { Repository } from "typeorm";
 import {
   Notification,
   type NotificationPriority,
@@ -8,6 +8,7 @@ import {
 import { User } from "../auth/entities/user.entity";
 import { IssuePriority } from "../issue-priorities/entities/issue-priority.entity";
 import { MailService } from "../mail/mail.service";
+import { PermissionsService } from "../permissions/permissions.service";
 
 export type { NotificationPriority };
 
@@ -39,7 +40,11 @@ export type NotificationAction =
   | "app_expired" // หมดอายุแล้ว
   // MA quota ran out (used ≥ ma_hours of the pair) — rings once per episode
   // from the time-entry hook, to the company's customers + every admin
-  | "ma_depleted";
+  | "ma_depleted"
+  // confirmation rows after renew / buying hours — in-app only, no mail,
+  // no "ติดต่อ..." hint (the customer just did the thing the hint asks for)
+  | "app_renewed"
+  | "app_hours_purchased";
 
 /**
  * ระดับความสำคัญของ**ชนิดที่ไม่ผูกการ์ด** — hardcode ที่นี่ที่เดียว (ข้อตกลง:
@@ -58,6 +63,9 @@ const FIXED_PRIORITY: Partial<Record<NotificationAction, NotificationPriority>> 
   rule_created: "low",
   rule_updated: "low",
   rule_deleted: "low",
+  // confirmations sort below the warnings they resolve
+  app_renewed: "low",
+  app_hours_purchased: "low",
 };
 
 /**
@@ -130,6 +138,12 @@ export interface NotificationIssueTarget {
   priorityId?: number | null;
 }
 
+/** A contract event's audience — customers of the pair + every admin. */
+interface ContractRecipient {
+  user: User;
+  kind: "admin" | "customer";
+}
+
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
@@ -142,6 +156,7 @@ export class NotificationsService {
     private readonly mail: MailService,
     @InjectRepository(IssuePriority)
     private readonly priorities: Repository<IssuePriority>,
+    private readonly permissions: PermissionsService,
   ) {}
 
   /** Deep link straight to the card's detail dialog; the plain board when there is no issue. */
@@ -183,6 +198,93 @@ export class NotificationsService {
   }
 
   /**
+   * **One audience for every contract event** — expiry (30/7/expired), MA
+   * depletion and the renew / buy-hours confirmations all read from here so
+   * "who hears about a company's contract" can never drift between them:
+   * active customers of `companyId` + every active admin, deduped (admin wins
+   * if someone somehow holds both), ordered by id so the contact hint is
+   * deterministic. Fail-open: a broken customer lookup still leaves admins in
+   * the list, and vice versa.
+   */
+  private async contractRecipients(companyId: number): Promise<ContractRecipient[]> {
+    let customers: User[] = [];
+    try {
+      customers = await this.users.find({
+        where: { isActive: true, companyId, role: { name: "customer" } },
+        relations: ["role"],
+        order: { id: "ASC" },
+      });
+    } catch (error) {
+      this.logger.warn(`could not load company customers: ${(error as Error).message}`);
+    }
+    let admins: User[] = [];
+    try {
+      admins = await this.users.find({
+        where: { isActive: true, role: { name: "admin" } },
+        relations: ["role"],
+        order: { id: "ASC" },
+      });
+    } catch (error) {
+      this.logger.warn(`could not load admins: ${(error as Error).message}`);
+    }
+    const byId = new Map<number, ContractRecipient>();
+    for (const user of customers) byId.set(user.id, { user, kind: "customer" });
+    for (const user of admins) byId.set(user.id, { user, kind: "admin" });
+    return [...byId.values()];
+  }
+
+  /**
+   * `/systems` is the contract's home for everyone who can see it (a customer
+   * with a position that lacks `system.view` would hit a permission wall
+   * there, so they fall back to `/boards`). Admins always go straight there.
+   */
+  private async contractLink(user: User, kind: "admin" | "customer"): Promise<string> {
+    if (kind === "admin") return "/systems";
+    try {
+      if (
+        await this.permissions.hasPermission(
+          user.roleId ?? null,
+          "system.view",
+          user.positionId ?? null,
+        )
+      ) {
+        return "/systems";
+      }
+    } catch (error) {
+      this.logger.warn(`could not check system.view for contract link: ${(error as Error).message}`);
+    }
+    return "/boards";
+  }
+
+  /**
+   * The "ติดต่อ..." line for customer copies — admin e-mail(s) from the DB for
+   * now (the senior may supply an official address later; change it here and
+   * every contract event follows). The short version uses the first admin so
+   * the inbox's one-line context stays readable; the mail lists them all.
+   */
+  private contactHint(
+    admins: User[],
+    purpose: string,
+  ): { inApp: string; full: string } {
+    const emails = admins
+      .map((u) => u.email)
+      .filter((email): email is string => Boolean(email));
+    if (emails.length === 0) {
+      const fallback = `ติดต่อผู้ดูแลระบบเพื่อ${purpose}`;
+      return { inApp: fallback, full: fallback };
+    }
+    return {
+      inApp: `ติดต่อ: ${emails[0]}`,
+      full: `ติดต่อผู้ดูแลระบบ: ${emails.join(", ")}`,
+    };
+  }
+
+  /** Customer rows get the contact hint appended; admin rows stay as they were. */
+  private withContact(context: string, kind: "admin" | "customer", hint: string): string {
+    return kind === "customer" ? `${context} • ${hint}` : context;
+  }
+
+  /**
    * One notification per active admin, skipping the actor (never notify
    * yourself). Best-effort like `notify()` — a failure never breaks the
    * request that triggered it.
@@ -211,7 +313,9 @@ export class NotificationsService {
           issueId: input.issueId ?? null,
           // who caused it — the name is read off `users` when the list is built
           actorId: input.actor?.actorId ?? null,
-          context: input.context ?? null,
+          // `notifications.context` is varchar(100) — the contract hints append
+          // to it, so trim here rather than risk a DB error on a long title
+          context: input.context?.slice(0, 100) ?? null,
           link: input.link ?? this.issueLink(input.issueId),
           type: input.action,
           title: input.title.slice(0, 200),
@@ -449,18 +553,68 @@ export class NotificationsService {
   }
 
   /**
-   * **"ชั่วโมง MA หมดแล้ว"** — ผู้รับ = ลูกค้า active ของบริษัทคู่นั้น
-   * (`users.company_id` = คู่, บทบาท `customer`) **+ แอดมินทุกคน** (dedupe,
-   * แอดมินชนะถ้าซ้ำ), ไม่มี actor (ระบบเป็นคนส่ง) · เรียกโดย `MaUsageService`
-   * หลังกรอกเวลาจริงทำให้ ใช้ไป ≥ `ma_hours` — **ครั้งเดียวต่อรอบ** (latch
+   * **วันหมดอายุของสัญญา → ลูกค้าของคู่นั้น + แอดมินทุกคน** — เดิมส่งแค่แอดมิน
+   * (`notifyAdmins`) ทำให้ลูกค้าไม่มีทางรู้ว่าสัญญาของตัวเองใกล้/หมดอายุ · คง
+   * latch `expiry_notified` เดิม (ครั้งเดียวต่อ 30/7/expired ต่อคู่) ที่
+   * `AppExpiryService` เป็นคนคุม — ตรงนี้ไม่ยิงซ้ำเอง
+   *
+   * แถวของลูกค้าต่อ "ติดต่อ..." ด้วยอีเมลแอดมิน (ดู `contactHint`) ส่วนแอดมิน
+   * เห็นข้อความเดิม · ส่งอีเมลภาษาไทยด้วย (`sendAppExpiry`) แบบ fire-and-forget
+   */
+  async notifyAppExpiry(params: {
+    companyId: number;
+    appName: string;
+    companyName: string;
+    action: "app_expiring" | "app_expired";
+    title: string;
+    context: string;
+    daysLeft: number | null;
+  }): Promise<void> {
+    try {
+      const recipients = await this.contractRecipients(params.companyId);
+      if (recipients.length === 0) return;
+      const contact = this.contactHint(
+        recipients.filter((r) => r.kind === "admin").map((r) => r.user),
+        "ต่ออายุ",
+      );
+
+      for (const { user, kind } of recipients) {
+        const link = await this.contractLink(user, kind);
+        await this.notify({
+          userId: user.id,
+          action: params.action,
+          title: params.title,
+          context: this.withContact(params.context, kind, contact.inApp).slice(0, 100),
+          link,
+        });
+        if (!user.email) continue;
+        void this.mail
+          .sendAppExpiry({
+            to: user.email,
+            name: user.name,
+            appName: params.appName,
+            companyName: params.companyName,
+            stage: params.action === "app_expired" ? "expired" : "expiring",
+            daysLeft: params.daysLeft,
+            contact: kind === "customer" ? contact.full : null,
+            url: `${this.webBase()}${link}`,
+          })
+          .catch((error) => this.logger.warn(`app expiry mail failed: ${(error as Error).message}`));
+      }
+    } catch (error) {
+      this.logger.warn(`app expiry notification failed: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * **"ชั่วโมง MA หมดแล้ว"** — audience เดียวกับวันหมดอายุ (ลูกค้าบริษัทคู่นั้น
+   * + แอดมิน) ผ่าน `contractRecipients` · เรียกโดย `MaUsageService` หลังกรอก
+   * เวลาจริงทำให้ ใช้ไป ≥ `ma_hours` — **ครั้งเดียวต่อรอบ** (latch
    * `ma_notified_at` อยู่ที่แถวล่าสุดของคู่)
    *
-   * สองช่องทางพร้อมกัน: in-app (`notify()`) + อีเมล (`sendMaDepleted`) ทั้งคู่
-   * best-effort — รายชื่อผู้รับพัง/SMTP พัง ไม่กระทบ request ที่กรอกเวลา
-   *
-   * **ลิงก์ต่างกันตามคน**: แอดมิน → `/systems` (ไปต่ออายุ/ซื้อชม. ได้) ·
-   * ลูกค้า → `/boards` เพราะไม่มี `system.view` — ชี้ไป `/systems` เท่ากับ
-   * พาไปกำแพง permission
+   * แถวลูกค้าต่อ "ติดต่อ..." (อีเมลแอดมิน) ทั้งในกล่องเข้าและในอีเมล; ลิงก์
+   * ทุกคนไป `/systems` (ลูกค้าเป็น read-only และเห็นเฉพาะสัญญาตัวเอง) ·
+   * in-app + mail เป็น best-effort — SMTP พังไม่กระทบ request ที่กรอกเวลา
    */
   async notifyMaDepleted(params: {
     companyId: number;
@@ -472,62 +626,72 @@ export class NotificationsService {
   }): Promise<void> {
     try {
       const { companyId, appName, companyName, maHours, usedHours } = params;
+      const recipients = await this.contractRecipients(companyId);
+      if (recipients.length === 0) return;
+      const contact = this.contactHint(
+        recipients.filter((r) => r.kind === "admin").map((r) => r.user),
+        "ซื้อชั่วโมงเพิ่ม",
+      );
       const title = [appName, companyName].filter(Boolean).join(" ");
       const used = Math.round(usedHours * 10) / 10;
       const context = `ใช้ไป ${used} / ${maHours} ชม.`;
 
-      // ลูกค้าของบริษัทคู่นั้น — ถ้าอ่านไม่ได้ แอดมินยังได้ยิน (best-effort)
-      let customers: User[] = [];
-      try {
-        customers = await this.users.find({
-          where: { isActive: true, companyId, role: { name: "customer" } },
-          relations: ["role"],
+      for (const { user, kind } of recipients) {
+        const link = await this.contractLink(user, kind);
+        await this.notify({
+          userId: user.id,
+          action: "ma_depleted",
+          title,
+          context: this.withContact(context, kind, contact.inApp).slice(0, 100),
+          link,
         });
-      } catch (error) {
-        this.logger.warn(`could not load company customers for MA bell: ${(error as Error).message}`);
-      }
-
-      // `kind` = จะชี้ลิงก์ไปไหน — แอดมินทับลูกค้าถ้าใครเป็นทั้งคู่
-      const recipients = new Map<number, "admin" | "customer">();
-      for (const u of customers) recipients.set(u.id, "customer");
-      try {
-        for (const u of await this.users.find({
-          where: { isActive: true, role: { name: "admin" } },
-          relations: ["role"],
-        })) {
-          recipients.set(u.id, "admin");
-        }
-      } catch (error) {
-        this.logger.warn(`could not load admins for MA bell: ${(error as Error).message}`);
-      }
-      if (recipients.size === 0) return;
-
-      // อีเมลต้องการ address/ชื่อ — โหลดเฉพาะผู้รับที่มีในลิสต์ (best-effort)
-      const withEmail = await this.users.find({
-        where: { id: In([...recipients.keys()]) },
-      });
-      const people = new Map(withEmail.map((u) => [u.id, u]));
-
-      for (const [userId, kind] of recipients) {
-        const link = kind === "admin" ? "/systems" : "/boards";
-        await this.notify({ userId, action: "ma_depleted", title, context, link });
-
-        const person = people.get(userId);
-        if (!person?.email) continue;
+        if (!user.email) continue;
         void this.mail
           .sendMaDepleted({
-            to: person.email,
-            name: person.name,
+            to: user.email,
+            name: user.name,
             appName,
             companyName,
             maHours,
             usedHours: used,
+            contact: kind === "customer" ? contact.full : null,
             url: `${this.webBase()}${link}`,
           })
           .catch((error) => this.logger.warn(`ma depleted mail failed: ${(error as Error).message}`));
       }
     } catch (error) {
       this.logger.warn(`ma depletion notification failed: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * **ต่ออายุ / ซื้อชั่วโมงสำเร็จ** — แถวแจ้งเตือนในกล่องเข้าให้ลูกค้าบริษัทนั้น
+   * + แอดมินเหมือนเหตุการณ์อื่นของสัญญา แต่**ไม่ส่งอีเมล** (ผู้ใช้เพิ่งกดทำ
+   * รายการนั้นเอง ไม่ต้องให้ "ติดต่อ..." ตามไปด้วย) · priority `low` อยู่ใต้
+   * แถวเตือนที่มันไปแก้ · best-effort เหมือน `notify()`
+   */
+  async notifyContractChange(params: {
+    companyId: number;
+    appName: string;
+    companyName: string;
+    action: "app_renewed" | "app_hours_purchased";
+    context: string;
+  }): Promise<void> {
+    try {
+      const recipients = await this.contractRecipients(params.companyId);
+      const title = [params.appName, params.companyName].filter(Boolean).join(" ");
+      for (const { user, kind } of recipients) {
+        const link = await this.contractLink(user, kind);
+        await this.notify({
+          userId: user.id,
+          action: params.action,
+          title,
+          context: params.context.slice(0, 100),
+          link,
+        });
+      }
+    } catch (error) {
+      this.logger.warn(`contract change notification failed: ${(error as Error).message}`);
     }
   }
 
