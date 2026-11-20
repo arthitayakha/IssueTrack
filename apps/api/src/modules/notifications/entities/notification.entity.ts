@@ -34,6 +34,17 @@ export class Notification {
   @JoinColumn({ name: "user_id" })
   user?: User;
 
+  /**
+   * สัญญาที่แถวนี้พูดถึง (เฉพาะ `ma_depleted` / `app_expiring` / `app_expired`
+   * / confirmation) — ไม่ใส่ FK เพราะแถวแจ้งเตือนเป็นของชั่วคราว ให้ fail-open
+   * เสมอถ้าแอป/บริษัทถูกลบไปแล้ว
+   */
+  @Column({ name: "app_id", type: "int", nullable: true })
+  appId!: number | null;
+
+  @Column({ name: "company_id", type: "int", nullable: true })
+  companyId!: number | null;
+
   @Column({ name: "issue_id", type: "int", nullable: true })
   issueId!: number | null;
 

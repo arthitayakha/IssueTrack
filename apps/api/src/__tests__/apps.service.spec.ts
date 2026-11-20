@@ -675,6 +675,7 @@ describe("AppsService.renewRecord — appends the next period, never rewrites", 
 
     expect(notifications.notifyContractChange).toHaveBeenCalledWith({
       companyId: 2,
+      appId: 7,
       appName: "POS",
       companyName: "บริษัท ครัวบ้านสวน จำกัด",
       action: "app_renewed",

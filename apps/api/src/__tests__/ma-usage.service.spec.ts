@@ -170,6 +170,7 @@ describe("MaUsageService.checkAndNotify — one ring per exhaustion episode", ()
     expect(notifications.notifyMaDepleted).toHaveBeenCalledTimes(1);
     expect(notifications.notifyMaDepleted).toHaveBeenCalledWith({
       companyId: 3,
+      appId: 7,
       appName: "POS",
       companyName: "ครัวบ้านสวน",
       maHours: 40,

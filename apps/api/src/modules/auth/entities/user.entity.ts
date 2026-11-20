@@ -25,6 +25,14 @@ export class User {
   @Column({ type: "varchar", length: 100 })
   name!: string;
 
+  /**
+   * เบอร์ติดต่อ — ส่งผ่าน `GET /users` / `/auth/me` / `GET /notifications`
+   * (เฉพาะแอดมิน) เพื่อให้กดแจ้งเตือนสัญญาแล้วโทร/ส่งข้อความหาลูกค้าได้ทันที
+   * `users` เดิมมีแค่ `email` เป็นช่องทางติดต่อ
+   */
+  @Column({ type: "varchar", length: 30, nullable: true })
+  phone!: string | null;
+
   @Column({ name: "role_id", type: "int", nullable: true })
   roleId!: number | null;
 

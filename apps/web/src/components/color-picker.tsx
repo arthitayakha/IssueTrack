@@ -1,17 +1,18 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { Box, TextField, Typography, Popover, Grid } from "@mui/material";
 import { useState, useRef } from "react";
 
 const PRESET_COLORS = [
-  { name: "เขียว", value: "green" },
-  { name: "แดง", value: "red" },
-  { name: "เหลือง", value: "yellow" },
-  { name: "น้ำเงิน", value: "blue" },
-  { name: "ม่วง", value: "purple" },
-  { name: "ส้ม", value: "orange" },
-  { name: "ชมพู", value: "pink" },
-  { name: "เทา", value: "gray" },
+  { name: "green", value: "green" },
+  { name: "red", value: "red" },
+  { name: "yellow", value: "yellow" },
+  { name: "blue", value: "blue" },
+  { name: "purple", value: "purple" },
+  { name: "orange", value: "orange" },
+  { name: "pink", value: "pink" },
+  { name: "gray", value: "gray" },
 ];
 
 const COLOR_MAP: Record<string, string> = {
@@ -32,6 +33,7 @@ interface ColorPickerProps {
 }
 
 export default function ColorPicker({ value, onChange }: ColorPickerProps) {
+  const t = useTranslations("Settings");
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -41,7 +43,7 @@ export default function ColorPicker({ value, onChange }: ColorPickerProps) {
   return (
     <Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-        สี
+        {t("color")}
       </Typography>
       <Box
         ref={containerRef}
@@ -69,9 +71,7 @@ export default function ColorPicker({ value, onChange }: ColorPickerProps) {
           }}
         />
         <Typography variant="body2">
-          {isPreset
-            ? PRESET_COLORS.find((c) => c.value === value)?.name ?? value
-            : value}
+          {isPreset ? t(`colorNames.${value}`) : value}
         </Typography>
       </Box>
 
@@ -84,7 +84,7 @@ export default function ColorPicker({ value, onChange }: ColorPickerProps) {
       >
         <Box sx={{ p: 2, width: 280 }}>
           <Typography variant="subtitle2" sx={{ mb: 1 }}>
-            เลือกสี
+            {t("chooseColor")}
           </Typography>
           <Grid container spacing={1}>
             {PRESET_COLORS.map((color) => (
@@ -104,14 +104,14 @@ export default function ColorPicker({ value, onChange }: ColorPickerProps) {
                     borderColor: value === color.value ? "primary.main" : "divider",
                     "&:hover": { opacity: 0.8 },
                   }}
-                  title={color.name}
+                  title={t(`colorNames.${color.name}`)}
                 />
               </Grid>
             ))}
           </Grid>
 
           <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
-            หรือเลือกสีเอง
+            {t("customColor")}
           </Typography>
           <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
             <input

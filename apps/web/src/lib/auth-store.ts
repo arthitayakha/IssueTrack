@@ -16,6 +16,8 @@ export interface AuthUser {
   /** บริษัทของลูกค้า (null กับแอดมิน/โปรแกรมเมอร์) — โชว์ใน popup โปรไฟล์ */
   companyId?: number | null;
   companyName?: string | null;
+  /** เบอร์ติดต่อ (แก้ได้ในหน้าโปรไฟล์) */
+  phone?: string | null;
 }
 
 const AUTH_KEY = "kanban-auth";

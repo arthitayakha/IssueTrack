@@ -137,6 +137,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
     expect(notifications.notifyAppExpiry).toHaveBeenCalledTimes(1);
     expect(notifications.notifyAppExpiry).toHaveBeenCalledWith({
       companyId: 3,
+      appId: 42,
       appName: "POS",
       companyName: "ACME",
       action: "app_expiring",
@@ -198,6 +199,7 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
 
     expect(notifications.notifyAppExpiry).toHaveBeenCalledWith({
       companyId: 3,
+      appId: 42,
       appName: "POS",
       companyName: "ACME",
       action: "app_expired",

@@ -195,6 +195,7 @@ export class AppExpiryService {
           : `เหลือ ${left} วัน`;
     await this.notifications.notifyAppExpiry({
       companyId: link.companyId,
+      appId: link.appId,
       appName: names.appName,
       companyName: names.companyName,
       action: stage === "expired" ? "app_expired" : "app_expiring",

@@ -28,6 +28,11 @@ import { useAuthStore, type AuthUser } from "@/lib/auth-store";
 import { apiFetch, ApiError } from "@/lib/api";
 import { invalidateAvatar, resizeAvatar, useOwnAvatar } from "@/lib/avatar";
 import { useNotification } from "@/components/notification";
+import {
+  appDialogContentSizing,
+  appDialogPaperSx,
+  appDialogSx,
+} from "@/components/common/dialog-style";
 
 /** Which sub-dialog sits over the popup (password form / e-mail reset / e-mail confirm). */
 type Editor = "password" | "passwordReset" | "emailConfirm" | null;
@@ -225,6 +230,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   // the form itself
   const [name, setName] = useState(user?.name ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
+  const [phone, setPhone] = useState(user?.phone ?? "");
   const [emailError, setEmailError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // e-mail confirm popup (only shown when the e-mail actually changed)
@@ -246,8 +252,9 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
     if (open) {
       setName(user?.name ?? "");
       setEmail(user?.email ?? "");
+      setPhone(user?.phone ?? "");
     }
-  }, [open, user?.name, user?.email]);
+  }, [open, user?.name, user?.email, user?.phone]);
 
   /** Wipes every sub-form and edit mode — used when the popup shuts. */
   const resetSubDialogs = useCallback(() => {
@@ -310,7 +317,9 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   const trimmedEmail = email.trim();
   const nameDirty = trimmedName !== (user?.name ?? "").trim();
   const emailDirty = trimmedEmail.toLowerCase() !== (user?.email ?? "").toLowerCase();
-  const dirty = nameDirty || emailDirty;
+  const trimmedPhone = phone.trim();
+  const phoneDirty = trimmedPhone !== (user?.phone ?? "").trim();
+  const dirty = nameDirty || emailDirty || phoneDirty;
 
   function handlePickPicture() {
     fileInputRef.current?.click();
@@ -437,14 +446,17 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
         );
         updateUser({ email: updated.email });
       }
-      if (nameDirty) {
+      if (nameDirty || phoneDirty) {
         step = "name";
-        const updated = await apiFetch<{ name: string }>(
+        const updated = await apiFetch<{ name: string; phone: string | null }>(
           "/auth/profile",
-          { method: "PATCH", body: JSON.stringify({ name: trimmedName }) },
+          {
+            method: "PATCH",
+            body: JSON.stringify({ name: trimmedName, phone: trimmedPhone || null }),
+          },
           token,
         );
-        updateUser({ name: updated.name });
+        updateUser({ name: updated.name, phone: updated.phone });
       }
       notify(t("profileSaved"), "success");
       // close the confirm popup — success is the only path that never touched
@@ -588,7 +600,13 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
   }
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { maxWidth: 560 } }}>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth={false}
+      PaperProps={{ sx: appDialogPaperSx }}
+      sx={appDialogSx}
+    >
       <DialogTitle
         sx={{
           display: "flex",
@@ -603,7 +621,7 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
         </IconButton>
       </DialogTitle>
 
-      <DialogContent dividers sx={{ px: 3, py: 2.5 }}>
+      <DialogContent dividers sx={{ px: 3, py: 2.5, ...appDialogContentSizing }}>
         {/* --- Header: picture + camera badge, the name, a role chip --- */}
         <Box
           sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1, mb: 2.5 }}
@@ -792,6 +810,28 @@ export default function ProfileDialog({ open, onClose }: ProfileDialogProps) {
             ) : (
               <Typography variant="body2" color="text.primary">
                 {trimmedEmail || "—"}
+              </Typography>
+            )}
+          </InfoRow>
+
+          {/* เบอร์ติดต่อ — แอดมินใช้ในป๊อปอัพ "ติดต่อลูกค้า" ตอนสัญญา MA หมด */}
+          <InfoRow label={t("profilePhone")}>
+            {editMode ? (
+              <TextField
+                size="small"
+                fullWidth
+                aria-label={t("profilePhone")}
+                value={phone}
+                onChange={(event) => {
+                  setPhone(event.target.value);
+                  setFormError(null);
+                }}
+                onKeyDown={handleFieldKeyDown}
+                inputProps={{ maxLength: 30, autoComplete: "tel" }}
+              />
+            ) : (
+              <Typography variant="body2" color="text.primary">
+                {trimmedPhone || "—"}
               </Typography>
             )}
           </InfoRow>

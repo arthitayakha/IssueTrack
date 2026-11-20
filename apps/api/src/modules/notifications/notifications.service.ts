@@ -1,6 +1,6 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import {
   Notification,
   type NotificationPriority,
@@ -44,7 +44,11 @@ export type NotificationAction =
   // confirmation rows after renew / buying hours — in-app only, no mail,
   // no "ติดต่อ..." hint (the customer just did the thing the hint asks for)
   | "app_renewed"
-  | "app_hours_purchased";
+  | "app_hours_purchased"
+  // กดส่งจากป๊อปอัพสัญญา — ข้อความจากอีกฝ่าย (in-app + อีเมล)
+  | "contact_message"
+  // รายงานบั๊กระบบจากศูนย์ช่วยเหลือ — แจ้งแอดมินให้รีบดู
+  | "system_report_created";
 
 /**
  * ระดับความสำคัญของ**ชนิดที่ไม่ผูกการ์ด** — hardcode ที่นี่ที่เดียว (ข้อตกลง:
@@ -66,6 +70,8 @@ const FIXED_PRIORITY: Partial<Record<NotificationAction, NotificationPriority>> 
   // confirmations sort below the warnings they resolve
   app_renewed: "low",
   app_hours_purchased: "low",
+  contact_message: "medium",
+  system_report_created: "medium",
 };
 
 /**
@@ -126,6 +132,21 @@ export interface NotifyInput {
    * `issues.priority_id` มาให้ (แปลงครั้งเดียวต่อ event ไม่ใช่ต่อผู้รับ)
    */
   priority?: NotificationPriority;
+  /** สัญญาที่แจ้งเตือนพูดถึง — ใช้ deep-link ไปแถวนั้นใน `/systems` */
+  appId?: number | null;
+  companyId?: number | null;
+}
+
+/**
+ * ช่องทางติดต่อของ "ฝ่ายตรงข้าม" — แนบมาในแถวแจ้งเตือน:
+ * - แอดมินเห็น **ลูกค้า**ของบริษัทที่แถวพูดถึง (โทร/ส่งเมลหาลูกค้า)
+ * - ลูกค้า/สตาฟฟ์เห็น **แอดมิน**ที่ active (โทร/ส่งเมลหาแอดมิน)
+ */
+export interface ContractContact {
+  userId: number;
+  name: string;
+  email: string | null;
+  phone: string | null;
 }
 
 export interface NotificationIssueTarget {
@@ -234,26 +255,134 @@ export class NotificationsService {
   }
 
   /**
+   * **ช่องทางติดต่อของลูกค้าในบริษัท** — แหล่งเดียวที่ใช้ทั้งตอนแนบข้อมูลลงแถว
+   * แจ้งเตือนและตอน `/systems` เรียกหาตามบริษัท (ผ่าน `GET /notifications/contacts`)
+   * กรอง `isActive` + role customer เหมือน `contractRecipients` ทุกประการ ·
+   * fail-open: lookup พัง → `[]` (ไม่ทำให้การแจ้งเตือนหรือหน้าเว็บพังตาม)
+   */
+  async contactsForCompany(companyId: number): Promise<ContractContact[]> {
+    if (!companyId || companyId <= 0) return [];
+    try {
+      const customers = await this.users.find({
+        where: { isActive: true, companyId, role: { name: "customer" } },
+        relations: ["role"],
+        order: { id: "ASC" },
+      });
+      return customers.map((user) => ({
+        userId: user.id,
+        name: user.name,
+        email: user.email ?? null,
+        phone: user.phone ?? null,
+      }));
+    } catch (error) {
+      this.logger.warn(`could not load company contacts: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * **ลูกค้าทั้งหมดที่ active** — ใช้กับปุ่ม "ติดต่อลูกค้า" บน navbar ของแอดมิน
+   * (ไม่มีบริษัทใดบริษัทหนึ่งเป็นบริบทตรงนั้น) · กันด้วย `user.view` ที่ controller
+   */
+  async allCustomerContacts(): Promise<ContractContact[]> {
+    try {
+      const customers = await this.users.find({
+        where: { isActive: true, role: { name: "customer" } },
+        relations: ["role"],
+        order: { id: "ASC" },
+      });
+      return customers.map((user) => ({
+        userId: user.id,
+        name: user.name,
+        email: user.email ?? null,
+        phone: user.phone ?? null,
+      }));
+    } catch (error) {
+      this.logger.warn(`could not load all customer contacts: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * **ช่องทางติดต่อของแอดมิน** — ใช้กับแถวแจ้งเตือนที่ลูกค้า/สตาฟฟ์เป็นคนดู
+   * (ฝ่ายที่ต้องการโทร/ส่งเมลหาแอดมิน) · ไม่มี company filter เพราะแอดมินไม่ได้
+   * ผูกกับบริษัท · controller กันด้วย JWT อยู่แล้ว (ไม่ต้อง `user.view` เพราะ
+   * ลูกค้าต้องใช้) · fail-open: lookup พัง → `[]`
+   */
+  async adminContacts(): Promise<ContractContact[]> {
+    try {
+      const admins = await this.users.find({
+        where: { isActive: true, role: { name: "admin" } },
+        relations: ["role"],
+        order: { id: "ASC" },
+      });
+      return admins.map((user) => ({
+        userId: user.id,
+        name: user.name,
+        email: user.email ?? null,
+        phone: user.phone ?? null,
+      }));
+    } catch (error) {
+      this.logger.warn(`could not load admin contacts: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * เฉพาะคนที่มี `user.view` (แอดมิน) เท่านั้นที่เห็นอีเมล/เบอร์ของลูกค้า —
+   * ลูกค้าที่มี `system.view` เห็นสัญญาของตัวเองได้ แต่ต้องไม่เห็นข้อมูลส่วนตัว
+   * ของลูกค้าคนอื่นในบริษัทเดียวกัน (หรือบริษัทอื่น)
+   */
+  async maySeeContacts(userId: number): Promise<boolean> {
+    try {
+      const user = await this.users.findOne({ where: { id: userId } });
+      if (!user) return false;
+      return await this.permissions.hasPermission(
+        user.roleId ?? null,
+        "user.view",
+        user.positionId ?? null,
+      );
+    } catch (error) {
+      this.logger.warn(`could not check contact permission: ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
    * `/systems` is the contract's home for everyone who can see it (a customer
    * with a position that lacks `system.view` would hit a permission wall
    * there, so they fall back to `/boards`). Admins always go straight there.
    */
-  private async contractLink(user: User, kind: "admin" | "customer"): Promise<string> {
-    if (kind === "admin") return "/systems";
-    try {
-      if (
-        await this.permissions.hasPermission(
-          user.roleId ?? null,
-          "system.view",
-          user.positionId ?? null,
-        )
-      ) {
-        return "/systems";
+  private async contractLink(
+    user: User,
+    kind: "admin" | "customer",
+    appId?: number | null,
+    companyId?: number | null,
+  ): Promise<string> {
+    let base: string;
+    if (kind === "admin") {
+      base = "/systems";
+    } else {
+      base = "/boards";
+      try {
+        if (
+          await this.permissions.hasPermission(
+            user.roleId ?? null,
+            "system.view",
+            user.positionId ?? null,
+          )
+        ) {
+          base = "/systems";
+        }
+      } catch (error) {
+        this.logger.warn(`could not check system.view for contract link: ${(error as Error).message}`);
       }
-    } catch (error) {
-      this.logger.warn(`could not check system.view for contract link: ${(error as Error).message}`);
     }
-    return "/boards";
+    // เพิ่มพารามิเตอร์เฉพาะคู่ที่มีจริง — แถวเก่าที่ไม่มี id ยังไป `/systems` ธรรมดา
+    if (base === "/systems" && appId && companyId) {
+      return `/systems?app=${appId}&company=${companyId}`;
+    }
+    return base;
   }
 
   /**
@@ -311,6 +440,8 @@ export class NotificationsService {
         this.notifications.create({
           userId: input.userId,
           issueId: input.issueId ?? null,
+          appId: input.appId ?? null,
+          companyId: input.companyId ?? null,
           // who caused it — the name is read off `users` when the list is built
           actorId: input.actor?.actorId ?? null,
           // `notifications.context` is varchar(100) — the contract hints append
@@ -563,6 +694,7 @@ export class NotificationsService {
    */
   async notifyAppExpiry(params: {
     companyId: number;
+    appId: number;
     appName: string;
     companyName: string;
     action: "app_expiring" | "app_expired";
@@ -579,13 +711,15 @@ export class NotificationsService {
       );
 
       for (const { user, kind } of recipients) {
-        const link = await this.contractLink(user, kind);
+        const link = await this.contractLink(user, kind, params.appId, params.companyId);
         await this.notify({
           userId: user.id,
           action: params.action,
           title: params.title,
           context: this.withContact(params.context, kind, contact.inApp).slice(0, 100),
           link,
+          appId: params.appId,
+          companyId: params.companyId,
         });
         if (!user.email) continue;
         void this.mail
@@ -618,6 +752,7 @@ export class NotificationsService {
    */
   async notifyMaDepleted(params: {
     companyId: number;
+    appId: number;
     appName: string;
     companyName: string;
     maHours: number;
@@ -625,7 +760,7 @@ export class NotificationsService {
     usedHours: number;
   }): Promise<void> {
     try {
-      const { companyId, appName, companyName, maHours, usedHours } = params;
+      const { companyId, appId, appName, companyName, maHours, usedHours } = params;
       const recipients = await this.contractRecipients(companyId);
       if (recipients.length === 0) return;
       const contact = this.contactHint(
@@ -637,13 +772,15 @@ export class NotificationsService {
       const context = `ใช้ไป ${used} / ${maHours} ชม.`;
 
       for (const { user, kind } of recipients) {
-        const link = await this.contractLink(user, kind);
+        const link = await this.contractLink(user, kind, appId, companyId);
         await this.notify({
           userId: user.id,
           action: "ma_depleted",
           title,
           context: this.withContact(context, kind, contact.inApp).slice(0, 100),
           link,
+          appId,
+          companyId,
         });
         if (!user.email) continue;
         void this.mail
@@ -672,6 +809,7 @@ export class NotificationsService {
    */
   async notifyContractChange(params: {
     companyId: number;
+    appId: number;
     appName: string;
     companyName: string;
     action: "app_renewed" | "app_hours_purchased";
@@ -681,18 +819,122 @@ export class NotificationsService {
       const recipients = await this.contractRecipients(params.companyId);
       const title = [params.appName, params.companyName].filter(Boolean).join(" ");
       for (const { user, kind } of recipients) {
-        const link = await this.contractLink(user, kind);
+        const link = await this.contractLink(user, kind, params.appId, params.companyId);
         await this.notify({
           userId: user.id,
           action: params.action,
           title,
           context: params.context.slice(0, 100),
           link,
+          appId: params.appId,
+          companyId: params.companyId,
         });
       }
     } catch (error) {
       this.logger.warn(`contract change notification failed: ${(error as Error).message}`);
     }
+  }
+
+  /**
+   * **กด "แจ้งเตือน..." จากป๊อปอัพสัญญา** — ผู้รับถูกกำหนดที่เซิร์ฟเวอร์เสมอ
+   * (client ส่งแค่ข้อความ + คู่สัญญา): แอดมิน → ลูกค้า active ของบริษัทนั้น,
+   * ลูกค้า → แอดมินหลัก (คนแรก) และห้ามข้ามบริษัท · สร้างแถวในกล่องเข้า + ส่ง
+   * อีเมลแบบ fire-and-forget (SMTP พังไม่ทำให้การกดส่งค้าง) · fail-open ตอน lookup
+   */
+  async notifyContactMessage(input: {
+    fromUserId: number;
+    message: string;
+    appId: number;
+    companyId: number;
+    appName: string;
+    companyName: string;
+  }): Promise<{ sent: number }> {
+    const message = input.message?.trim() ?? "";
+    if (!message || message.length > 200) {
+      throw new BadRequestException("Message must be 1–200 characters");
+    }
+    if (
+      !Number.isInteger(input.appId) ||
+      input.appId <= 0 ||
+      !Number.isInteger(input.companyId) ||
+      input.companyId <= 0
+    ) {
+      throw new BadRequestException("Invalid contract");
+    }
+
+    let caller: User | null = null;
+    try {
+      caller = await this.users.findOne({
+        where: { id: input.fromUserId },
+        relations: ["role"],
+      });
+    } catch (error) {
+      this.logger.warn(`could not load message sender: ${(error as Error).message}`);
+    }
+    const isAdmin = caller
+      ? await this.permissions.hasPermission(
+          caller.roleId ?? null,
+          "user.view",
+          caller.positionId ?? null,
+        )
+      : false;
+    if (!isAdmin && caller?.companyId !== input.companyId) {
+      throw new ForbiddenException("Cannot notify another company's contract");
+    }
+
+    let recipients: User[] = [];
+    try {
+      if (isAdmin) {
+        recipients = await this.users.find({
+          where: { isActive: true, companyId: input.companyId, role: { name: "customer" } },
+          relations: ["role"],
+          order: { id: "ASC" },
+        });
+      } else {
+        const primary = await this.users.findOne({
+          where: { isActive: true, role: { name: "admin" } },
+          relations: ["role"],
+          order: { id: "ASC" },
+        });
+        recipients = primary ? [primary] : [];
+      }
+    } catch (error) {
+      this.logger.warn(`could not load message recipients: ${(error as Error).message}`);
+    }
+
+    const link = `/systems?app=${input.appId}&company=${input.companyId}`;
+    const scope = [input.appName, input.companyName].filter(Boolean).join(" ");
+    const fromName = caller?.name ?? "ผู้ใช้";
+    const targets = recipients.filter((user) => user.id !== input.fromUserId);
+    for (const user of targets) {
+      await this.notify({
+        userId: user.id,
+        action: "contact_message",
+        title: scope,
+        context: message,
+        link,
+        appId: input.appId,
+        companyId: input.companyId,
+        actor: { actorId: input.fromUserId },
+        priority: "medium",
+      });
+      if (user.email) {
+        void this.mail
+          .sendContactMessage({
+            to: user.email,
+            name: user.name,
+            fromName,
+            appName: input.appName,
+            companyName: input.companyName,
+            message,
+            url: `${this.webBase()}${link}`,
+          })
+          .catch((error) =>
+            this.logger.warn(`contact message mail failed: ${(error as Error).message}`),
+          );
+      }
+    }
+    return { sent: targets.length };
   }
 
   /**
@@ -723,8 +965,54 @@ export class NotificationsService {
       .offset(offset)
       .limit(limit)
       .getManyAndCount();
+
+    /**
+     * แนบ "ฝ่ายตรงข้าม" ให้ทุกแถว — แอดมิน (`user.view`) ได้ลูกค้าของบริษัทที่
+     * แถวพูดถึง (เทียบทีละบริษัทแล้ว dedupe) · คนที่ไม่ใช่แอดมินได้**รายชื่อแอดมิน**
+     * แนบทุกแถว (ไม่ต้องพึ่ง companyId เพราะแอดมินไม่ได้ผูกบริษัท) → ลูกค้ากด
+     * แถวแจ้งเตือนไหนก็ขึ้นป๊อปอัพ "ติดต่อแอดมิน" ได้ทันที · fail-open ทุกทาง
+     */
+    const isAdmin = await this.maySeeContacts(userId);
+    let contactsByCompany = new Map<number, ContractContact[]>();
+    let adminContactList: ContractContact[] = [];
+    if (isAdmin) {
+      const companyIds = [
+        ...new Set(data.map((n) => n.companyId).filter((id): id is number => Boolean(id))),
+      ];
+      if (companyIds.length > 0) {
+        try {
+          const rows = await this.users.find({
+            where: { isActive: true, companyId: In(companyIds), role: { name: "customer" } },
+            relations: ["role"],
+            order: { id: "ASC" },
+          });
+          for (const row of rows) {
+            const list = contactsByCompany.get(row.companyId!) ?? [];
+            list.push({
+              userId: row.id,
+              name: row.name,
+              email: row.email ?? null,
+              phone: row.phone ?? null,
+            });
+            contactsByCompany.set(row.companyId!, list);
+          }
+        } catch (error) {
+          // fail-open: ได้แจ้งเตือนอยู่ แต่ไม่มีข้อมูลติดต่อ → ปุ่มติดต่อไม่โชว์
+          this.logger.warn(`could not load inbox contacts: ${(error as Error).message}`);
+          contactsByCompany = new Map();
+        }
+      }
+    } else {
+      adminContactList = await this.adminContacts();
+    }
+
     return {
-      data: data.map((n) => this.toResponse(n)),
+      data: data.map((n) =>
+        this.toResponse(
+          n,
+          isAdmin ? contactsByCompany.get(n.companyId ?? -1) ?? [] : adminContactList,
+        ),
+      ),
       page: Math.floor(offset / limit) + 1,
       limit,
       total,
@@ -756,9 +1044,15 @@ export class NotificationsService {
     return { deleted: result.affected ?? 0 };
   }
 
-  private toResponse(n: Notification) {
+  private toResponse(n: Notification, contacts: ContractContact[] = []) {
     return {
       id: n.id,
+      // สัญญาที่แถวนี้พูดถึง — ฝั่งเว็บใช้ deep-link ไปแถวนั้นใน `/systems`
+      appId: n.appId ?? null,
+      companyId: n.companyId ?? null,
+      // ฝ่ายตรงข้าม: ลูกค้า (ถ้าผู้ดูเป็นแอดมิน) หรือแอดมิน (ถ้าเป็นลูกค้า/สตาฟฟ์)
+      // — ดู `list()` / `maySeeContacts()` / `adminContacts()`
+      contacts,
       // the name is joined in at read time (the actor may be gone → null)
       actorName: n.actor?.name ?? null,
       action: n.type,

@@ -66,6 +66,7 @@ function mailStub() {
     sendIssueStatusUpdate: jest.fn().mockResolvedValue(undefined),
     sendMaDepleted: jest.fn().mockResolvedValue(undefined),
     sendAppExpiry: jest.fn().mockResolvedValue(undefined),
+    sendContactMessage: jest.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -608,6 +609,7 @@ describe("NotificationsService — contract audience, contact hint and mail poli
 
     await ctx.service.notifyAppExpiry({
       companyId: 5,
+      appId: 7,
       appName: "CRM",
       companyName: "บริษัท ครัวบ้านสวน จำกัด",
       action: "app_expired",
@@ -622,7 +624,9 @@ describe("NotificationsService — contract audience, contact hint and mail poli
     expect(writtenRows[0]).toMatchObject({
       type: "app_expired",
       context: "เลยกำหนด 1 วัน • ติดต่อ: admin@x.com",
-      link: "/systems",
+      link: "/systems?app=7&company=5",
+      appId: 7,
+      companyId: 5,
       priority: "high",
     });
     expect(writtenRows[1].context).toBe("เลยกำหนด 1 วัน");
@@ -641,6 +645,7 @@ describe("NotificationsService — contract audience, contact hint and mail poli
 
     await ctx.service.notifyMaDepleted({
       companyId: 5,
+      appId: 7,
       appName: "POS",
       companyName: "บริษัท ครัวบ้านสวน จำกัด",
       maHours: 80,
@@ -649,7 +654,7 @@ describe("NotificationsService — contract audience, contact hint and mail poli
 
     const writtenRows = rows(ctx.notifications);
     expect(writtenRows.map((r) => r.userId)).toEqual([2, 1]);
-    expect(writtenRows.every((r) => r.link === "/systems")).toBe(true);
+    expect(writtenRows.every((r) => r.link === "/systems?app=7&company=5")).toBe(true);
     expect(writtenRows[0].context).toBe("ใช้ไป 80 / 80 ชม. • ติดต่อ: admin@x.com");
     expect(ctx.mail.sendMaDepleted).toHaveBeenCalledTimes(2);
   });
@@ -661,13 +666,17 @@ describe("NotificationsService — contract audience, contact hint and mail poli
 
     await ctx.service.notifyMaDepleted({
       companyId: 5,
+      appId: 7,
       appName: "POS",
       companyName: "ACME",
       maHours: 10,
       usedHours: 10,
     });
 
-    expect(rows(ctx.notifications).map((r) => r.link)).toEqual(["/boards", "/systems"]);
+    expect(rows(ctx.notifications).map((r) => r.link)).toEqual([
+      "/boards",
+      "/systems?app=7&company=5",
+    ]);
   });
 
   it("renew / buy-hours notify both sides IN APP only — no mail, no contact hint, low priority", async () => {
@@ -676,6 +685,7 @@ describe("NotificationsService — contract audience, contact hint and mail poli
 
     await ctx.service.notifyContractChange({
       companyId: 5,
+      appId: 7,
       appName: "POS",
       companyName: "ACME",
       action: "app_renewed",
@@ -683,6 +693,7 @@ describe("NotificationsService — contract audience, contact hint and mail poli
     });
     await ctx.service.notifyContractChange({
       companyId: 5,
+      appId: 7,
       appName: "POS",
       companyName: "ACME",
       action: "app_hours_purchased",
@@ -711,6 +722,7 @@ describe("NotificationsService — contract audience, contact hint and mail poli
     await expect(
       ctx.service.notifyAppExpiry({
         companyId: 5,
+        appId: 7,
         appName: "POS",
         companyName: "ACME",
         action: "app_expiring",
@@ -766,5 +778,188 @@ describe("NotificationsService.list — order and response shape", () => {
     expect(res.total).toBe(1);
     expect(res.unreadCount).toBe(1);
     expect(res.page).toBe(1);
+  });
+});
+
+/**
+ * ช่องทางติดต่อของฝ่ายตรงข้าม — แอดมินได้ลูกค้า (ผู้ดูมี `user.view`),
+ * ลูกค้าได้แอดมิน (Every notification row) · `/systems` เรียก `contactsForCompany`
+ * หรือ `adminContacts` เองตามสิทธิ์ของผู้ดู
+ */
+describe("NotificationsService — contacts", () => {
+  const CUSTOMER = {
+    id: 2,
+    name: "ลูกค้า",
+    email: "customer@x.com",
+    phone: "081-234-5678",
+    companyId: 5,
+    roleId: 3,
+  };
+
+  it("contactsForCompany returns active customers with phone and fails open", async () => {
+    const ctx = makeService();
+    ctx.users.find.mockResolvedValue([CUSTOMER]);
+    await expect(ctx.service.contactsForCompany(5)).resolves.toEqual([
+      {
+        userId: 2,
+        name: "ลูกค้า",
+        email: "customer@x.com",
+        phone: "081-234-5678",
+      },
+    ]);
+    expect(ctx.users.find).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ companyId: 5 }) }),
+    );
+    ctx.users.find.mockRejectedValueOnce(new Error("db down"));
+    await expect(ctx.service.contactsForCompany(5)).resolves.toEqual([]);
+  });
+
+  it("maySeeContacts is gated by user.view (admins only)", async () => {
+    const ctx = makeService();
+    ctx.users.findOne.mockResolvedValue({ id: 1, roleId: 1, positionId: null });
+    ctx.permissions.hasPermission.mockResolvedValueOnce(true);
+    await expect(ctx.service.maySeeContacts(1)).resolves.toBe(true);
+    expect(ctx.permissions.hasPermission).toHaveBeenCalledWith(1, "user.view", null);
+    ctx.permissions.hasPermission.mockResolvedValueOnce(false);
+    await expect(ctx.service.maySeeContacts(1)).resolves.toBe(false);
+    ctx.users.findOne.mockResolvedValue(null);
+    await expect(ctx.service.maySeeContacts(999)).resolves.toBe(false);
+  });
+
+  it("adminContacts returns active admins and fails open", async () => {
+    const ctx = makeService();
+    ctx.users.find.mockResolvedValue([
+      { id: 1, name: "แอดมิน", email: "admin@x.com", phone: "081-999-9999", roleId: 1 },
+    ]);
+    await expect(ctx.service.adminContacts()).resolves.toEqual([
+      { userId: 1, name: "แอดมิน", email: "admin@x.com", phone: "081-999-9999" },
+    ]);
+    expect(ctx.users.find).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ role: { name: "admin" } }) }),
+    );
+    ctx.users.find.mockRejectedValueOnce(new Error("db down"));
+    await expect(ctx.service.adminContacts()).resolves.toEqual([]);
+  });
+
+  it("list() attaches customer contacts to admins and admin contacts to customers", async () => {
+    const ctx = makeService();
+    const contract = {
+      id: 11,
+      type: "ma_depleted",
+      title: "POS ครัวบ้านสวน",
+      context: "ใช้ไป 10 / 10 ชม.",
+      link: "/systems?app=7&company=5",
+      appId: 7,
+      companyId: 5,
+      issueId: null,
+      priority: "high",
+      createdAt: new Date(),
+      actor: null,
+    };
+    ctx.notifications.createQueryBuilder.mockReturnValue(
+      queryBuilder([contract], 1),
+    );
+    const ADMIN_CONTACT = {
+      id: 9,
+      name: "แอดมิน",
+      email: "admin@x.com",
+      phone: "081-999-9999",
+      roleId: 1,
+    };
+    ctx.users.findOne.mockResolvedValue({ id: 1, roleId: 1, positionId: null });
+    ctx.users.find.mockImplementation(
+      (opts?: { where?: { role?: { name?: string } } }) =>
+        Promise.resolve(opts?.where?.role?.name === "admin" ? [ADMIN_CONTACT] : [CUSTOMER]),
+    );
+    ctx.permissions.hasPermission.mockResolvedValue(true);
+
+    const admin = await ctx.service.list(1);
+    expect(admin.data[0]).toMatchObject({
+      appId: 7,
+      companyId: 5,
+      contacts: [
+        {
+          userId: 2,
+          name: "ลูกค้า",
+          email: "customer@x.com",
+          phone: "081-234-5678",
+        },
+      ],
+    });
+
+    // ลูกค้า/โปรแกรมเมอร์ได้แถวเหมือนกัน แต่ได้รายชื่อแอดมิน (ไม่ใช่ข้อมูลลูกค้าคนอื่น)
+    ctx.permissions.hasPermission.mockResolvedValue(false);
+    const staff = await ctx.service.list(2);
+    expect(staff.data[0].contacts).toEqual([
+      { userId: 9, name: "แอดมิน", email: "admin@x.com", phone: "081-999-9999" },
+    ]);
+  });
+});
+
+/** กด "แจ้งเตือน..." จากสัญญา — in-app row + mail, ผู้รับถูกกำหนดฝั่งเซิร์ฟเวอร์ */
+describe("NotificationsService.notifyContactMessage", () => {
+  const INPUT = {
+    fromUserId: 1,
+    message: "  ขอต่ออายุสัญญาหน่อยครับ  ",
+    appId: 7,
+    companyId: 5,
+    appName: "POS",
+    companyName: "ครัวบ้านสวน",
+  };
+
+  it("admin → active customers of the company (in-app + email), never the actor", async () => {
+    const ctx = makeService();
+    ctx.users.findOne.mockResolvedValue({
+      id: 1,
+      name: "แอดมิน",
+      roleId: 1,
+      positionId: null,
+      companyId: null,
+    });
+    ctx.users.find.mockResolvedValue([
+      { id: 2, name: "ลูกค้า", email: "customer@x.com" },
+      { id: 1, name: "แอดมิน", email: "admin@x.com" },
+    ]);
+    ctx.permissions.hasPermission.mockResolvedValue(true);
+
+    await expect(ctx.service.notifyContactMessage(INPUT)).resolves.toEqual({ sent: 1 });
+    expect(writtenRows(ctx.notifications)).toEqual([
+      { userId: 2, type: "contact_message" },
+    ]);
+    const row = ctx.notifications.save.mock.calls[0][0] as Record<string, unknown>;
+    expect(row.context).toBe("ขอต่ออายุสัญญาหน่อยครับ");
+    expect(row.link).toBe("/systems?app=7&company=5");
+    expect(row.appId).toBe(7);
+    expect(row.companyId).toBe(5);
+    expect(row.actorId).toBe(1);
+    expect(ctx.mail.sendContactMessage).toHaveBeenCalledTimes(1);
+    expect(ctx.mail.sendContactMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "customer@x.com", fromName: "แอดมิน", message: "ขอต่ออายุสัญญาหน่อยครับ" }),
+    );
+  });
+
+  it("customer → primary admin only, and a cross-company contract is refused", async () => {
+    const ctx = makeService();
+    ctx.users.findOne.mockImplementation((opts?: { where?: { id?: number; role?: { name?: string } } }) => {
+      if (opts?.where?.role?.name === "admin") {
+        return Promise.resolve({ id: 1, name: "แอดมิน", email: "admin@x.com", roleId: 1 });
+      }
+      return Promise.resolve({ id: 2, name: "ลูกค้า", roleId: 3, companyId: 5 });
+    });
+    ctx.permissions.hasPermission.mockResolvedValue(false);
+
+    const asCustomer = { ...INPUT, fromUserId: 2 };
+    await expect(ctx.service.notifyContactMessage(asCustomer)).resolves.toEqual({ sent: 1 });
+    expect(writtenRows(ctx.notifications)).toEqual([{ userId: 1, type: "contact_message" }]);
+    expect(ctx.mail.sendContactMessage).toHaveBeenCalledTimes(1);
+
+    await expect(ctx.service.notifyContactMessage({ ...asCustomer, companyId: 99 })).rejects.toThrow();
+  });
+
+  it("rejects an empty or too-long message before writing anything", async () => {
+    const ctx = makeService();
+    await expect(ctx.service.notifyContactMessage({ ...INPUT, message: "   " })).rejects.toThrow();
+    await expect(ctx.service.notifyContactMessage({ ...INPUT, message: "x".repeat(201) })).rejects.toThrow();
+    expect(ctx.notifications.save).not.toHaveBeenCalled();
   });
 });

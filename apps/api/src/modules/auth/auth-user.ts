@@ -19,6 +19,8 @@ export interface AuthUser {
    * **อย่าเพิ่ม guard กลับโดยไม่ถามก่อน**
    */
   companyId: number | null;
+  /** เบอร์ติดต่อ (nullable — แถวเก่ายังไม่มีเบอร์) */
+  phone?: string | null;
 }
 
 export function actorInfo(user: AuthUser) {

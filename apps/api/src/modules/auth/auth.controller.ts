@@ -97,7 +97,7 @@ export class AuthController {
    */
   @Patch("profile")
   updateProfile(@CurrentUser() user: User, @Body() dto: UpdateProfileDto) {
-    return this.auth.updateProfile(user.id, dto.name);
+    return this.auth.updateProfile(user.id, dto.name, dto.phone);
   }
 
   /**

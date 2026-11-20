@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import {
   Badge,
@@ -239,6 +239,12 @@ export default function SystemsPage() {
    * จึง derive ออกจาก `apps` ทุกครั้งที่โหลด — ดู `detailRow` ด้านล่าง
    */
   const [detailKey, setDetailKey] = useState<{ appId: number; companyId: number } | null>(null);
+  /**
+   * กัน deep-link จากแจ้งเตือน (`/systems?app=..&company=..`) ให้เปิดป๊อปอัพ
+   * **ครั้งเดียวต่อการ mount** — ถ้าไม่มี ref การปิดป๊อปอัพแล้ว `loadApps()`
+   * รอบต่อไป (หรือ re-render) จะตั้ง `detailKey` ใหม่ → เด้งเปิดทันที
+   */
+  const deepLinkAppliedRef = useRef(false);
 
   const canUpdate = can("system.update");
   const canDelete = can("system.delete");
@@ -267,6 +273,27 @@ export default function SystemsPage() {
       // แอปที่ยังไม่มีข้อมูล**ไม่มีแถว**ในหน้านี้ — ไปเพิ่ม/แก้ชื่อได้ที่แท็บแอป
       const list = result.data.filter((a) => a.companies.length > 0);
       setApps(list);
+
+      /**
+       * กดแจ้งเตือนสัญญามาที่นี่ → เปิดป๊อปอัพของ**คู่นั้น**ทันที (ครั้งเดียว) ·
+       * ใช้ `window.location.search` แทน `useSearchParams` เพื่อไม่ต้องห่อ
+       * Suspense รอบทั้งหน้า · ค่าผิด/คู่ที่ถูกลบไปแล้ว = ไม่เปิด แต่ยังล้าง URL
+       * ทิ้งอยู่ดี (กันไม่ให้รีเฟรชแล้วเด้งซ้ำ)
+       */
+      if (!deepLinkAppliedRef.current && typeof window !== "undefined") {
+        const params = new URLSearchParams(window.location.search);
+        const appId = Number(params.get("app"));
+        const companyId = Number(params.get("company"));
+        if (appId > 0 && companyId > 0 && Number.isInteger(appId) && Number.isInteger(companyId)) {
+          deepLinkAppliedRef.current = true;
+          const match = list.some(
+            (a) => a.id === appId && a.companies.some((c) => c.id === companyId),
+          );
+          if (match) setDetailKey({ appId, companyId });
+          window.history.replaceState(null, "", window.location.pathname);
+        }
+      }
+
       // "ใช้ไป" รายรอบต้องรู้ `recordId` ของช่วงล่าสุดก่อน → ยิงตามหลังทันที
       // (ปุ่มลองใหม่/หลังต่ออายุ-ซื้อ-ลบ ก็มาจากตรงนี้ เพราะทุกทางเรียก `loadApps`)
       void loadUsage(latestRecordIds(list));
@@ -1043,6 +1070,7 @@ export default function SystemsPage() {
             </Button>
           </DialogActions>
         </Dialog>
+
       </DashboardLayout>
     </RequirePermission>
   );

@@ -42,6 +42,20 @@ export interface AppExpiryMailParams {
   url: string;
 }
 
+/** What a manually sent "แจ้งเตือน..." from the contract popup needs. */
+export interface ContactMessageMailParams {
+  to: string;
+  name: string;
+  /** The person who pressed send (shown as the sender of the message). */
+  fromName: string;
+  appName: string;
+  companyName: string;
+  /** The short text typed/picked in the dialog (already trimmed, ≤200 chars). */
+  message: string;
+  /** Absolute URL of the contract (/systems?app=..&company=..). */
+  url: string;
+}
+
 /**
  * The app's single e-mail sender: the "forgot password" link (AuthModule) and
  * the milestone status updates to the customer (NotificationsModule).
@@ -199,6 +213,37 @@ export class MailService {
     });
   }
 
+  /**
+   * "มีข้อความจาก..." — คู่กับแถวในกล่องเข้า (`contact_message`) ที่สร้างโดย
+   * `NotificationsService.notifyContactMessage` · ภาษาไทยเหมือนเมลอื่น ๆ และ
+   * fire-and-forget เหมือนกัน (SMTP พังไม่ทำให้การกดส่งแจ้งเตือนค้าง)
+   */
+  async sendContactMessage(params: ContactMessageMailParams): Promise<void> {
+    const scope = params.companyName ? ` (บริษัท ${params.companyName})` : "";
+    const subject = `ข้อความจาก ${params.fromName} — ${params.appName}${scope}`;
+    const text = [
+      `สวัสดี ${params.name},`,
+      "",
+      `คุณได้รับข้อความจาก ${params.fromName} เรื่องสัญญา "${params.appName}"${scope}`,
+      "",
+      params.message,
+      "",
+      "ดูรายละเอียดสัญญาได้ที่:",
+      params.url,
+      "",
+      "อีเมลนี้ส่งจากระบบ Kanban Issue Tracker — หากต้องการตอบกลับ กรุณาตอบที่อีเมลของผู้ส่ง",
+    ].join("\n");
+
+    await this.send({
+      to: params.to,
+      subject,
+      text,
+      html: this.contactMessageHtml(params, scope),
+      context: "contact message mail",
+      devNote: `contact message mail for ${params.to}: ${subject}`,
+    });
+  }
+
   /** One door to the transport — no SMTP and send failures both end in the log. */
   private async send(opts: {
     to: string;
@@ -263,6 +308,16 @@ export class MailService {
       ...(params.contact ? [`<p>${escapeHtml(params.contact)}</p>`] : []),
       `<p><a href="${escapeHtml(params.url)}">${escapeHtml(params.url)}</a></p>`,
       `<p>อีเมลนี้ส่งอัตโนมัติจากระบบ Kanban Issue Tracker</p>`,
+    ].join("");
+  }
+
+  private contactMessageHtml(params: ContactMessageMailParams, scope: string): string {
+    return [
+      `<p>สวัสดี ${escapeHtml(params.name)},</p>`,
+      `<p>คุณได้รับข้อความจาก <strong>${escapeHtml(params.fromName)}</strong> เรื่องสัญญา <strong>${escapeHtml(params.appName)}</strong>${escapeHtml(scope)}</p>`,
+      `<blockquote>${escapeHtml(params.message)}</blockquote>`,
+      `<p><a href="${escapeHtml(params.url)}">ดูรายละเอียดสัญญา</a></p>`,
+      `<p>อีเมลนี้ส่งจากระบบ Kanban Issue Tracker</p>`,
     ].join("");
   }
 

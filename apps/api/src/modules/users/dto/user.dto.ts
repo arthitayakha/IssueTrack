@@ -39,6 +39,12 @@ export class CreateUserDto {
   @MaxLength(100)
   name!: string;
 
+  /** เบอร์ติดต่อ — ไม่ส่ง/ส่ง `""` = ไม่เก็บ (เก็บเป็น NULL) */
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  phone?: string | null;
+
   /** `null` = ไม่มีบทบาท — `@IsOptional()` ข้ามทั้ง `undefined` และ `null` */
   @IsOptional()
   @IsInt()
@@ -64,6 +70,12 @@ export class UpdateUserDto {
   @IsNotEmpty()
   @MaxLength(100)
   name?: string;
+
+  /** เบอร์ติดต่อ — ส่ง `""`/`null` = ล้างออก */
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  phone?: string | null;
 
   /**
    * ⚠️ ฟอร์มแก้ไขส่ง `password: ""` เมื่อ**ไม่ตั้งใจเปลี่ยนรหัสผ่าน** —

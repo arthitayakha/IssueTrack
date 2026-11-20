@@ -200,6 +200,7 @@ export class MaUsageService {
       ]);
       await this.notifications.notifyMaDepleted({
         companyId,
+        appId: issue.appId,
         appName: app?.name ?? "",
         companyName: company?.name ?? "",
         maHours: link.maHours,

@@ -363,14 +363,18 @@ export default function SystemDetailDialog({
               )}
             </Box>
 
-            {/* ---- ปุ่มท้ายการ์ด: เท่ากันทั้ง 2 แท็บ (ซ่อนระหว่างดูรายการ) ---- */}
+            {/* ---- ปุ่มท้ายการ์ด: มีแค่ "ต่ออายุ" (ซ่อนระหว่างดูรายการ) ----
+                ปุ่ม ติดต่อลูกค้า / แจ้งลูกค้า ถูกถอดออกตามคำสั่ง — ช่องทาง
+                ติดตามอยู่ที่ศูนย์ช่วยเหลือ + แถวแจ้งเตือนในกล่องเข้าแล้ว ---- */}
             {!deductionsTarget && canRenew && (
               <>
                 {/* `my: 1` (จาก 1.5) — เผื่อที่ให้กล่องเนื้อหาด้านบนเลื่อนได้เต็มที่ */}
                 <Divider sx={{ my: 1 }} />
-                <Button variant="outlined" fullWidth onClick={onRenew}>
-                  {t("renewAction")}
-                </Button>
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                  <Button variant="outlined" fullWidth onClick={onRenew}>
+                    {t("renewAction")}
+                  </Button>
+                </Box>
               </>
             )}
           </Box>

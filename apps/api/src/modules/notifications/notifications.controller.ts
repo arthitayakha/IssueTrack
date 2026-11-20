@@ -1,7 +1,9 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
+  Post,
   Param,
   ParseIntPipe,
   Query,
@@ -11,7 +13,9 @@ import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { AuthUser } from "../auth/auth-user";
+import { Permissions } from "../auth/permissions.decorator";
 import { NotificationsService } from "../notifications/notifications.service";
+import { ContactMessageDto } from "../notifications/dto/contact-message.dto";
 
 /** Each user only ever sees and mutates their own notifications — no extra permission needed. */
 @Controller("notifications")
@@ -28,6 +32,39 @@ export class NotificationsController {
   @Get("count")
   count(@CurrentUser() user: AuthUser) {
     return this.notifications.count(Number(user.id));
+  }
+
+  /**
+   * ลูกค้าทั้งหมด (active) — ให้แอดมินกด "ติดต่อลูกค้า" บน navbar (ไม่มีบริษัท
+   * เป็นบริบทตรงนั้น) · กันด้วย `user.view`
+   */
+  @Get("customer-contacts")
+  @Permissions("user.view")
+  customerContacts() {
+    return this.notifications.allCustomerContacts();
+  }
+
+  /**
+   * ผู้ติดต่อของแอดมิน (ชื่อ/อีเมล/เบอร์) — ให้ลูกค้า/สตาฟฟ์กด "ติดต่อแอดมิน"
+   * บนหน้า `/systems` (กล่องเข้าได้รายชื่อนี้แนบมาในแถวอยู่แล้ว ไม่ต้องยิงซ้ำ)
+   * **ไม่ใส่ `@Permissions`** — ลูกค้าต้องเรียกได้ · ยังอยู่ใต้ `JwtAuthGuard`
+   * ของ controller (คนที่ล็อกอินอยู่เท่านั้น)
+   */
+  @Get("admin-contacts")
+  adminContacts() {
+    return this.notifications.adminContacts();
+  }
+
+  /**
+   * ผู้ติดต่อของบริษัท (ชื่อ/อีเมล/เบอร์) — ใช้ตอนกดปุ่ม "ติดต่อลูกค้า" ใน
+   * ป๊อปอัพสัญญาบน `/systems` (กล่องเข้าได้ข้อมูลนี้แนบมาในแถวอยู่แล้ว) ·
+   * กันด้วย `user.view` เพราะเป็นข้อมูลส่วนตัวของลูกค้า
+   */
+  @Get("contacts")
+  @Permissions("user.view")
+  contacts(@Query("companyId") companyId?: string) {
+    const id = companyId ? parseInt(companyId, 10) : NaN;
+    return this.notifications.contactsForCompany(Number.isInteger(id) && id > 0 ? id : 0);
   }
 
   /** The single inbox — every row is unread, so there is no `tab` filter any more. */
@@ -52,6 +89,25 @@ export class NotificationsController {
     return this.notifications.list(Number(user.id), {
       limit: size,
       offset: (pageNum - 1) * size,
+    });
+  }
+
+  /**
+   * กด "แจ้งเตือน..." จากป๊อปอัพสัญญา — สร้างแถวในกล่องเข้า + ส่งอีเมลให้ฝ่ายตรงข้าม
+   * (ในแอป + อีเมล) · ผู้รับถูกกำหนดที่ service เสมอ กันส่งข้อความข้ามบริษัท
+   */
+  @Post("contact")
+  sendContact(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ContactMessageDto,
+  ) {
+    return this.notifications.notifyContactMessage({
+      fromUserId: Number(user.id),
+      message: dto.message,
+      appId: dto.appId,
+      companyId: dto.companyId,
+      appName: dto.appName,
+      companyName: dto.companyName,
     });
   }
 

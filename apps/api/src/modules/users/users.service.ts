@@ -68,6 +68,7 @@ export class UsersService {
       id: String(user.id),
       email: user.email,
       name: user.name,
+      phone: user.phone ?? null,
       roleId: user.roleId,
       roleName: user.role?.name ?? null,
       positionId: user.positionId,
@@ -117,6 +118,7 @@ export class UsersService {
     roleId?: number | null;
     positionId?: number | null;
     companyId?: number | null;
+    phone?: string | null;
   }) {
     const passwordHash = await bcrypt.hash(data.password, 12);
     const roleId = data.roleId ?? null;
@@ -134,6 +136,7 @@ export class UsersService {
         email: data.email,
         name: data.name,
         passwordHash,
+        phone: data.phone?.trim() || null,
         roleId,
         positionId: data.positionId ?? null,
         companyId,
@@ -154,6 +157,7 @@ export class UsersService {
       password?: string;
       positionId?: number | null;
       companyId?: number | null;
+      phone?: string | null;
     },
   ) {
     const user = await this.users.findOne({ where: { id } });
@@ -161,6 +165,7 @@ export class UsersService {
 
     if (data.email) user.email = data.email;
     if (data.name) user.name = data.name;
+    if (data.phone !== undefined) user.phone = data.phone?.trim() || null;
     if (data.roleId !== undefined) user.roleId = data.roleId;
     if (data.password) {
       user.passwordHash = await bcrypt.hash(data.password, 12);
@@ -240,6 +245,7 @@ export class UsersService {
       id: String(user.id),
       email: user.email,
       name: user.name,
+      phone: user.phone ?? null,
       roleId: user.roleId,
       roleName,
       positionId: user.positionId,

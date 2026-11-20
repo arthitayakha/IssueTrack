@@ -226,6 +226,7 @@ interface User {
   id: string;
   email: string;
   name: string;
+  phone: string | null;
   roleId: number | null;
   roleName: string | null;
   positionId: number | null;
@@ -290,6 +291,7 @@ export default function UsersPage() {
   const [form, setForm] = useState({
     email: "",
     name: "",
+    phone: "",
     roleId: null as number | null,
     positionId: null as number | null,
     companyId: null as number | null,
@@ -546,7 +548,15 @@ export default function UsersPage() {
 
   function openAdd() {
     setEditingUser(null);
-    setForm({ email: "", name: "", roleId: null, positionId: null, companyId: null, password: "" });
+    setForm({
+      email: "",
+      name: "",
+      phone: "",
+      roleId: null,
+      positionId: null,
+      companyId: null,
+      password: "",
+    });
     setCompanyError(null);
     setDialogOpen(true);
   }
@@ -556,6 +566,7 @@ export default function UsersPage() {
     setForm({
       email: user.email,
       name: user.name,
+      phone: user.phone ?? "",
       roleId: user.roleId,
       positionId: user.positionId,
       companyId: user.companyId,
@@ -1061,6 +1072,7 @@ export default function UsersPage() {
                 <DataTableRow>
                   <DataTableCell>{t("columnName")}</DataTableCell>
                   <DataTableCell>{t("columnEmail")}</DataTableCell>
+                  <DataTableCell>{t("columnPhone")}</DataTableCell>
                   <DataTableCell>{t("columnRole")}</DataTableCell>
                   <DataTableCell>{t("columnPosition")}</DataTableCell>
                   <DataTableCell>{t("columnCompany")}</DataTableCell>
@@ -1073,6 +1085,7 @@ export default function UsersPage() {
                   <DataTableRow key={user.id}>
                     <DataTableCell>{user.name}</DataTableCell>
                     <DataTableCell>{user.email}</DataTableCell>
+                    <DataTableCell>{user.phone ?? "—"}</DataTableCell>
                     <DataTableCell>
                       <Typography>{roleLabel(user.roleName)}</Typography>
                     </DataTableCell>
@@ -1300,6 +1313,13 @@ export default function UsersPage() {
                 value={form.email}
                 onChange={(e) => setForm({ ...form, email: e.target.value })}
                 fullWidth
+              />
+              <TextField
+                label={t("columnPhone")}
+                value={form.phone}
+                onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                fullWidth
+                inputProps={{ maxLength: 30 }}
               />
               <FormControl fullWidth>
                 <InputLabel>{t("columnRole")}</InputLabel>

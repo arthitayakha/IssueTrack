@@ -114,6 +114,7 @@ export class AppsService {
    * สำเร็จแล้วดูเหมือนพัง
    */
   private async notifyContractEvent(
+    appId: number,
     companyId: number,
     appName: string,
     action: "app_renewed" | "app_hours_purchased",
@@ -123,6 +124,7 @@ export class AppsService {
       const company = await this.companies.findOne({ where: { id: companyId } });
       await this.notifications.notifyContractChange({
         companyId,
+        appId,
         appName,
         companyName: company?.name ?? "",
         action,
@@ -532,7 +534,13 @@ export class AppsService {
         expiryNotified: "none",
       }),
     );
-    void this.notifyContractEvent(source.companyId, app.name, "app_renewed", `MA ${maHours} ชม.`);
+    void this.notifyContractEvent(
+      app.id,
+      source.companyId,
+      app.name,
+      "app_renewed",
+      `MA ${maHours} ชม.`,
+    );
     return this.appPayload(app);
   }
 
@@ -593,6 +601,7 @@ export class AppsService {
       }),
     );
     void this.notifyContractEvent(
+      app.id,
       source.companyId,
       app.name,
       "app_hours_purchased",

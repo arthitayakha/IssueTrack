@@ -87,10 +87,14 @@ export class AuthService {
   }
 
   /** Self-service profile update — no `user.update` permission needed. */
-  async updateProfile(userId: number, name: string) {
+  async updateProfile(userId: number, name: string, phone?: string | null) {
     const trimmed = name.trim();
     if (!trimmed) throw new BadRequestException("Name is required");
-    await this.users.update({ id: userId }, { name: trimmed });
+    const trimmedPhone = phone === undefined || phone === null ? undefined : phone.trim();
+    await this.users.update(
+      { id: userId },
+      { name: trimmed, ...(trimmedPhone === undefined ? {} : { phone: trimmedPhone || null }) },
+    );
     const user = await this.users.findOne({ where: { id: userId } });
     return user ? await this.me(user) : null;
   }
@@ -273,6 +277,7 @@ export class AuthService {
       id: String(user.id),
       email: user.email,
       name: user.name,
+      phone: user.phone ?? null,
       roleId: user.roleId,
       positionId: user.positionId,
       positionName,

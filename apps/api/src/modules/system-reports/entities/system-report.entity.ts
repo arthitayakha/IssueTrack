@@ -1,0 +1,47 @@
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  JoinColumn,
+  ManyToOne,
+  OneToMany,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
+} from "typeorm";
+import { User } from "../../auth/entities/user.entity";
+import { SystemReportAttachment } from "./system-report-attachment.entity";
+
+/** รายงานบั๊กของระบบเองจากศูนย์ช่วยเหลือ (คนละอย่างกับงานบนบอร์ด) */
+@Entity("system_reports")
+export class SystemReport {
+  @PrimaryGeneratedColumn()
+  id!: number;
+
+  @Column({ name: "reporter_id", type: "int" })
+  reporterId!: number;
+
+  @ManyToOne(() => User, { onDelete: "CASCADE" })
+  @JoinColumn({ name: "reporter_id" })
+  reporter?: User;
+
+  @Column({ type: "varchar", length: 200 })
+  title!: string;
+
+  @Column({ type: "text" })
+  description!: string;
+
+  @Column({ name: "page_url", type: "varchar", length: 500, nullable: true })
+  pageUrl!: string | null;
+
+  @Column({ type: "varchar", length: 20, default: "open" })
+  status!: string;
+
+  @CreateDateColumn({ name: "created_at" })
+  createdAt!: Date;
+
+  @UpdateDateColumn({ name: "updated_at" })
+  updatedAt!: Date;
+
+  @OneToMany(() => SystemReportAttachment, (a) => a.report, { cascade: true })
+  attachments?: SystemReportAttachment[];
+}

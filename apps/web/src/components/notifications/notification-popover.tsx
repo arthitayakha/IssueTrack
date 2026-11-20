@@ -16,6 +16,7 @@ import {
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import { useRouter } from "@/i18n/navigation";
 import { timeAgo } from "@/lib/time-ago";
+import { resolveLink } from "@/lib/notification-link";
 import type { AppNotification, NotificationPage } from "@/lib/notifications-api";
 
 /** The list's lifecycle as tracked by the navbar (idle until the bell opens). */
@@ -35,25 +36,6 @@ interface NotificationPopoverProps {
   onClose: () => void;
   onMarkRead: (id: number) => void;
   onMarkAllRead: () => void;
-}
-
-/**
- * Where a row opens: issue events deep-link straight to that card's detail
- * dialog (`/boards?issue=N`) — including old rows stored as "/issues", since
- * the API now sends `issueId` alongside the link. A deleted card sits in the
- * recycle bin, so it only opens the board (nothing to fetch).
- */
-const FALLBACK_LINK = "/boards";
-
-function resolveLink(item: AppNotification): string {
-  if (item.action === "deleted") return FALLBACK_LINK;
-  if (item.issueId) return `${FALLBACK_LINK}?issue=${item.issueId}`;
-  const link = item.link;
-  if (!link) return FALLBACK_LINK;
-  if (link === "/issues" || link.startsWith("/issues?") || link.startsWith("/issues#")) {
-    return FALLBACK_LINK;
-  }
-  return link;
 }
 
 const AVATAR_COLORS = [
@@ -110,17 +92,20 @@ const NotificationRow = memo(function NotificationRow({
   return (
     <Box>
       {divider && <Divider />}
-      <ListItemButton
-        onClick={handleClick}
-        sx={{
-          alignItems: "flex-start",
-          gap: 1.5,
-          px: 2,
-          py: 1.5,
-          "&:hover": { bgcolor: "action.hover" },
-          "&.Mui-selected, &.Mui-selected:hover": { bgcolor: "action.hover" },
-        }}
-      >
+      <Box sx={{ display: "flex", alignItems: "stretch", "&:hover": { bgcolor: "action.hover" } }}>
+        <ListItemButton
+          onClick={handleClick}
+          sx={{
+            alignItems: "flex-start",
+            gap: 1.5,
+            px: 2,
+            py: 1.5,
+            flex: 1,
+            minWidth: 0,
+            // hover ถูกย้ายไปที่ Box รอบนอก (ปุ่มติดต่ออยู่ในแถวเดียวกัน)
+            "&:hover, &.Mui-selected, &.Mui-selected:hover": { bgcolor: "transparent" },
+          }}
+        >
         <Avatar
           sx={{
             width: 36,
@@ -197,7 +182,8 @@ const NotificationRow = memo(function NotificationRow({
                 ยังคงบอกผ่านลำดับเรียง (สูงขึ้นก่อน) ฝั่ง server เท่านั้น */}
           </Box>
         </Box>
-      </ListItemButton>
+        </ListItemButton>
+      </Box>
     </Box>
   );
 });
@@ -249,15 +235,19 @@ export default function NotificationPopover({
     ma_depleted: t("actions.ma_depleted"),
     app_renewed: t("actions.app_renewed"),
     app_hours_purchased: t("actions.app_hours_purchased"),
+    contact_message: t("actions.contact_message"),
+    system_report_created: t("actions.system_report_created"),
   };
 
   /**
-   * Row click behind a ref: `openRow` keeps ONE identity forever even though
-   * `onMarkRead` / `onClose` arrive as fresh closures on every navbar render —
-   * otherwise the memoized rows would re-render on each of them.
+   * Handler อยู่หลัง ref: `openRow` คง identity เดียวตลอดแม้ `onMarkRead` /
+   * `onClose` จะเป็น closure ใหม่ทุกครั้งที่ navbar render (ไม่งั้น row ที่ memo
+   * ไว้จะ re-render หมดทุกแถว)
    */
   const rowHandlersRef = useRef({ onMarkRead, onClose, router });
   rowHandlersRef.current = { onMarkRead, onClose, router };
+
+  /** กดแถว → อ่านแล้วลบแถว + ปิดกระดิ่ง + ไปตามลิงก์ของแถว (ทุกแถว behave เหมือนกัน) */
   const openRow = useCallback((item: AppNotification) => {
     const handlers = rowHandlersRef.current;
     handlers.onMarkRead(item.id);
@@ -286,6 +276,7 @@ export default function NotificationPopover({
   }, [open, hasMore, loadingMore, visibleItems.length, onLoadMore]);
 
   return (
+    <>
     <Popover
       open={open}
       anchorEl={anchorEl}
@@ -450,6 +441,8 @@ export default function NotificationPopover({
               // การ์ดค้าง (sweep 09:00) ก็ไม่มีคนกระทำ — เดิมหลุดไปโหมด "มีคนกระทำ"
               // แล้วเจอ fallback ตายตัว "System" หัวบรรทัดจึงอ่านว่า "System ค้างนาน …"
               item.action === "stale";
+            // รายงานบั๊กจากศูนย์ช่วยเหลือ **ต้อง** โชว์โหมด "มีคนกระทำ" เพื่อให้
+            // แอดมินเห็นชื่อผู้แจ้งในหัวข้อ (เป็น actor ของแถวนี้)
             // stale มีประโยคของตัวเองบรรทัดเดียวครบ:
             // **งาน ทดสอบ** ค้างที่สถานะ รอดำเนินการ · 7 วัน (context ไม่ซ้ำที่บรรทัดล่าง)
             const isStaleRow = item.action === "stale";
@@ -479,5 +472,6 @@ export default function NotificationPopover({
         )}
       </Box>
     </Popover>
+    </>
   );
 }

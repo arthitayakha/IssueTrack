@@ -13,6 +13,7 @@ import {
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
+import SupportAgentIcon from "@mui/icons-material/SupportAgent";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import { useAuthStore } from "@/lib/auth-store";
 import { useOwnAvatar } from "@/lib/avatar";
@@ -23,9 +24,14 @@ import ProfileDialog from "./profile-dialog";
 import NotificationPopover, {
   type NotificationListStatus,
 } from "@/components/notifications/notification-popover";
+import ContactCustomerDialog, {
+  type ContactTarget,
+} from "@/components/notifications/contact-customer-dialog";
+import HelpCenterDialog from "../help-center-dialog";
 import {
   clearNotifications,
   deleteNotification,
+  fetchAdminContacts,
   fetchNotificationCount,
   fetchNotifications,
   type NotificationPage,
@@ -76,6 +82,7 @@ export default function Navbar({
   showMenuButton?: boolean;
 }) {
   const t = useTranslations("Nav");
+  const tn = useTranslations("Notifications");
   const router = useRouter();
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
@@ -111,6 +118,21 @@ export default function Navbar({
   const [bellAnchorEl, setBellAnchorEl] = useState<HTMLElement | null>(null);
   // account popup — opened from the navbar avatar or the bell's gear
   const [profileOpen, setProfileOpen] = useState(false);
+  // contact popup — the 🎧 button on this navbar (not inside the bell inbox)
+  const [contactTarget, setContactTarget] = useState<ContactTarget | null>(null);
+  // help center dialog — the SupportAgentIcon button on this navbar
+  const [helpCenterOpen, setHelpCenterOpen] = useState(false);
+
+  /** ลูกค้า/สตาฟฟ์กด "ติดต่อแอดมิน" ในศูนย์ช่วยเหลือ → โชว์แอดมินที่ active */
+  const openContact = useCallback(() => {
+    const target: ContactTarget = { appName: "", companyName: "", contacts: [] };
+    setContactTarget(target);
+    void fetchAdminContacts()
+      .then((contacts) => setContactTarget({ ...target, contacts }))
+      .catch(() => {
+        /* fail-open: ป๊อปอัพโชว์ข้อความ "ยังไม่มีข้อมูลติดต่อ" แทน */
+      });
+  }, []);
 
   // polling and scroll-loading both need a fresh view of what is on screen
   const inboxRef = useRef(inbox);
@@ -308,6 +330,26 @@ export default function Navbar({
             onClose={() => setBellAnchorEl(null)}
             onMarkRead={handleMarkRead}
             onMarkAllRead={handleMarkAllRead}
+          />
+          {/* ปุ่มศูนย์ช่วยเหลือ — เปิดป๊อปอัพ 2 หัวข้อ */}
+          <IconButton
+            onClick={() => setHelpCenterOpen(true)}
+            aria-label={t("helpCenter")}
+            title={t("helpCenter")}
+            size="small"
+            sx={{ color: "primary.main" }}
+          >
+            <SupportAgentIcon fontSize="small" color="primary" />
+          </IconButton>
+          <ContactCustomerDialog
+            open={Boolean(contactTarget)}
+            target={contactTarget}
+            onClose={() => setContactTarget(null)}
+          />
+          <HelpCenterDialog
+            open={helpCenterOpen}
+            onClose={() => setHelpCenterOpen(false)}
+            onOpenContact={openContact}
           />
           <LanguageSwitcher />
           {/* Account actions — no dropdown: the avatar opens the profile popup */}
