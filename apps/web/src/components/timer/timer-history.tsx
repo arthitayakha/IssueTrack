@@ -9,10 +9,10 @@ function formatTime(iso: string): string {
   return d.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatDuration(seconds: number): string {
+function formatDuration(seconds: number, t: (key: string) => string): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
-  return `${m}นาที ${s}วิ`;
+  return `${m}${t("minuteUnit")} ${s}${t("secondUnit")}`;
 }
 
 interface TimerHistoryProps {
@@ -51,7 +51,7 @@ export default function TimerHistory({ sessions }: TimerHistoryProps) {
           <span>
             {formatTime(s.startedAt)} - {s.endedAt ? formatTime(s.endedAt) : "..."}
           </span>
-          <span>{s.endedAt ? formatDuration(s.duration) : "-"}</span>
+          <span>{s.endedAt ? formatDuration(s.duration, t) : "-"}</span>
         </Box>
       ))}
     </Box>

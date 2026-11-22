@@ -265,7 +265,7 @@ function SortableStatusRow({
       </Box>
 
       <Chip
-        label={status.isActive ? "เปิดใช้งาน" : "ปิดใช้งาน"}
+        label={status.isActive ? t("active") : t("inactive")}
         color={status.isActive ? "success" : "error"}
         size="small"
         variant="outlined"

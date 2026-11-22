@@ -345,6 +345,8 @@
       "recoverSuccess": "ย้ายกลับแล้ว — ไปที่ {status}",
       "recoverFailed": "ย้ายกลับไม่สำเร็จ",
       "attachments": "ไฟล์แนบ",
+      "attachmentDownload": "ดาวน์โหลด",
+      "attachmentNoPreview": "ไม่รองรับ preview สำหรับไฟล์ประเภทนี้",
       "createdAt": "สร้างเมื่อ",
       "updatedAt": "อัปเดตล่าสุด",
       "unassigned": "รอมอบหมาย",
@@ -373,6 +375,53 @@
         "duePlaceholder": "เลือกวันที่…",
         "dueTarget": "ต้องถึงสถานะ {status} ก่อน {due}",
         "overdue": "ล่าช้า"
+      }
+    },
+    "staleSearch": "ค้าง",
+    "dropHere": "วางที่นี่",
+    "name": "ชื่อ",
+    "comments": "ความคิดเห็น",
+    "color": "สี",
+    "trackedTime": "เวลาที่จับได้",
+    "remove": "ลบ",
+    "labelName": "ชื่อป้าย",
+    "editLabel": "แก้ไขป้าย",
+    "confirmCancel": "ยืนยันการยกเลิก",
+    "loadFailed": "โหลดข้อมูลไม่สำเร็จ",
+    "restoreFailed": "กู้คืนไม่สำเร็จ",
+    "commentSubmitFailed": "ส่งความคิดเห็นไม่สำเร็จ",
+    "commentEditFailed": "แก้ไขความคิดเห็นไม่สำเร็จ",
+    "commentDeleteFailed": "ลบความคิดเห็นไม่สำเร็จ",
+    "labelCreateFailed": "สร้างป้ายไม่สำเร็จ",
+    "saveFailed": "บันทึกไม่สำเร็จ",
+    "labelEditFailed": "แก้ไขป้ายไม่สำเร็จ",
+    "uploadFailed": "อัปโหลดไฟล์ไม่สำเร็จ",
+    "fileDeleteFailed": "ลบไฟล์ไม่สำเร็จ",
+    "genericError": "เกิดข้อผิดพลาด",
+    "commentPlaceholder": "เขียนความคิดเห็น...",
+    "noCommentPermission": "ไม่มีสิทธิ์ดูความคิดเห็น",
+    "noComments": "ยังไม่มีความคิดเห็น",
+    "unknownName": "ไม่ทราบชื่อ",
+    "noHistoryPermission": "ไม่มีสิทธิ์ดูประวัติ",
+    "deleteComment": "ลบความคิดเห็น",
+    "deleteCommentConfirm": "ต้องการลบความคิดเห็นนี้ใช่หรือไม่?",
+    "activity": {
+      "system": "ระบบ",
+      "created": "{actor} สร้างงานนี้",
+      "moved": "{actor} ลาก: {from} → {to}",
+      "assigned": "{actor} มอบหมายให้ {to}",
+      "edited": "{actor} แก้ไข: {fields}",
+      "deleted": "{actor} ลบงานนี้",
+      "commentCreated": "{actor} แสดงความคิดเห็น",
+      "commentUpdated": "{actor} แก้ไขความคิดเห็น",
+      "commentDeleted": "{actor} ลบความคิดเห็น",
+      "field": {
+        "title": "หัวข้อ",
+        "description": "คำอธิบาย",
+        "priority": "ความสำคัญ",
+        "category": "หมวดหมู่",
+        "label": "ป้าย",
+        "taskType": "ประเภทงาน"
       }
     }
   },
@@ -1230,7 +1279,9 @@
   },
   "timer": {
     "elapsed": "เวลาที่ผ่านไป",
-    "history": "ประวัติการจับเวลา"
+    "history": "ประวัติการจับเวลา",
+    "minuteUnit": "นาที",
+    "secondUnit": "วิ"
   },
   "Automation": {
     "title": "กฎอัตโนมัติ",

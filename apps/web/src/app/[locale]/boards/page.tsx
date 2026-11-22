@@ -456,45 +456,6 @@ function ActualTimeCell({ issue }: { issue: BoardIssue }) {
   );
 }
 
-const FIELD_LABELS: Record<string, string> = {
-  title: "หัวข้อ",
-  description: "คำอธิบาย",
-  priority: "ความสำคัญ",
-  priorityId: "ความสำคัญ",
-  category: "หมวดหมู่",
-  label: "ป้าย",
-  labels: "ป้าย",
-  taskType: "ประเภทงาน",
-};
-
-function formatActivityAction(log: ActivityLog): string {
-  try {
-    const detail = log.detail ? JSON.parse(log.detail) : {};
-    switch (log.action) {
-      case "card.created":
-        return `${log.actorName ?? "ระบบ"} สร้างงานนี้`;
-      case "card.moved":
-        return `${log.actorName ?? "ระบบ"} ลาก: ${detail.from ?? "—"} → ${detail.to ?? "—"}`;
-      case "card.assigned":
-        return `${log.actorName ?? "ระบบ"} มอบหมายให้ ${detail.to ?? "—"}`;
-      case "card.edited":
-        return `${log.actorName ?? "ระบบ"} แก้ไข: ${(detail.fields ?? []).map((f: string) => FIELD_LABELS[f] ?? f).join(", ")}`;
-      case "card.deleted":
-        return `${log.actorName ?? "ระบบ"} ลบงานนี้`;
-      case "comment.created":
-        return `${log.actorName ?? "ระบบ"} แสดงความคิดเห็น`;
-      case "comment.updated":
-        return `${log.actorName ?? "ระบบ"} แก้ไขความคิดเห็น`;
-      case "comment.deleted":
-        return `${log.actorName ?? "ระบบ"} ลบความคิดเห็น`;
-      default:
-        return log.action;
-    }
-  } catch {
-    return log.action;
-  }
-}
-
 function labelColorValue(color: string | null | undefined, theme: Theme): string {
   const map = theme.custom.labelColors as Record<string, string>;
   return map[color ?? "default"] ?? color ?? theme.palette.grey[400];
@@ -601,9 +562,13 @@ function staleDaysFor(
 }
 
 /** Search tokens for the red "ค้าง N วัน" badge the card actually renders. */
-function staleSearchTokens(issue: BoardIssue, staleRules: StaleRule[]): string[] {
+function staleSearchTokens(
+  issue: BoardIssue,
+  staleRules: StaleRule[],
+  t: (key: string, values?: Record<string, string | number>) => string,
+): string[] {
   const days = staleDaysFor(issue, staleRules);
-  return days == null ? [] : ["ค้าง", `ค้าง ${days} วัน`];
+  return days == null ? [] : [t("staleSearch"), t("staleBadge", { days })];
 }
 
 /**
@@ -1164,6 +1129,7 @@ const KanbanColumn = memo(function KanbanColumn({
   });
 
   const theme = useTheme();
+  const t = useTranslations("Boards");
 
   const color = resolveStatusColor(theme, status.color, status.name);
   // Shared comparator — see `sortByEnteredAt`: mirror the API ordering exactly
@@ -1298,7 +1264,7 @@ const KanbanColumn = memo(function KanbanColumn({
                 color={isDropTarget ? "primary.main" : "text.disabled"}
                 fontWeight={isDropTarget ? 600 : 400}
               >
-                {isDropTarget ? "วางที่นี่" : "ไม่มีการ์ด"}
+                {isDropTarget ? t("dropHere") : t("noCards")}
               </Typography>
             </Box>
           )}
@@ -1321,6 +1287,7 @@ function AddColumnInline({
   onAdd: (name: string, description: string) => void;
   onCancel: () => void;
 }) {
+  const t = useTranslations("Boards");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
 
@@ -1344,7 +1311,7 @@ function AddColumnInline({
       <TextField
         fullWidth
         size="small"
-        label="ชื่อ"
+        label={t("name")}
         value={name}
         onChange={(e) => setName(e.target.value)}
         required
@@ -1353,7 +1320,7 @@ function AddColumnInline({
       <TextField
         fullWidth
         size="small"
-        label="คำอธิบาย"
+        label={t("issueDescription")}
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         multiline
@@ -1362,10 +1329,10 @@ function AddColumnInline({
       />
       <Box sx={{ display: "flex", gap: 1 }}>
         <Button size="small" variant="contained" onClick={handleAdd} disabled={!name.trim()}>
-          เพิ่มคอลัมน์
+          {t("addColumn")}
         </Button>
         <Button size="small" onClick={onCancel}>
-          ยกเลิก
+          {t("cancel")}
         </Button>
       </Box>
     </Box>
@@ -1402,9 +1369,9 @@ function RecycleBinDialog({
     setLoading(true);
     fetchTrashedIssues()
       .then(setItems)
-      .catch((e) => fail(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ")))
+      .catch((e) => fail(getErrorMessage(e, t("loadFailed"))))
       .finally(() => setLoading(false));
-  }, [open, fail]);
+  }, [open, fail, t]);
 
   // Same "find by anything" search as the board — plus the trash-only fields.
   const filteredItems = useMemo(
@@ -1419,7 +1386,7 @@ function RecycleBinDialog({
       setItems((prev) => prev.filter((i) => i.id !== id));
       onRestored();
     } catch (e) {
-      fail(getErrorMessage(e, "กู้คืนไม่สำเร็จ"));
+      fail(getErrorMessage(e, t("restoreFailed")));
     } finally {
       setRestoringId(null);
     }
@@ -1532,6 +1499,7 @@ function IssueDialog({
   labels: Label[];
   priorities: IssuePriority[];
 }) {
+  const t = useTranslations("Boards");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [sId, setSId] = useState<number | null>(null);
@@ -1555,19 +1523,19 @@ function IssueDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>{issue ? "แก้ไขงาน" : "สร้างงานใหม่"}</DialogTitle>
+      <DialogTitle>{issue ? t("editIssue") : t("createIssue")}</DialogTitle>
       <DialogContent>
         <TextField
           autoFocus
           margin="dense"
-          label="หัวข้อ"
+          label={t("issueTitle")}
           fullWidth
           value={title}
           onChange={(e) => setTitle(e.target.value)}
         />
         <TextField
           margin="dense"
-          label="คำอธิบาย"
+          label={t("issueDescription")}
           fullWidth
           multiline
           rows={3}
@@ -1575,10 +1543,10 @@ function IssueDialog({
           onChange={(e) => setDescription(e.target.value)}
         />
         <FormControl fullWidth margin="dense">
-          <InputLabel>ป้ายกำกับ</InputLabel>
+          <InputLabel>{t("detail.labels")}</InputLabel>
           <Select
             value={labelId}
-            label="ป้ายกำกับ"
+            label={t("detail.labels")}
             onChange={(e) => setLabelId(e.target.value === "" ? "" : Number(e.target.value))}
           >
             <MenuItem value="">—</MenuItem>
@@ -1588,10 +1556,10 @@ function IssueDialog({
           </Select>
         </FormControl>
         <FormControl fullWidth margin="dense">
-          <InputLabel>ความสำคัญ</InputLabel>
+          <InputLabel>{t("priority")}</InputLabel>
           <Select
             value={priorityId ?? ""}
-            label="ความสำคัญ"
+            label={t("priority")}
             onChange={(e) => setPriorityId(e.target.value === "" ? null : Number(e.target.value))}
           >
             <MenuItem value="">—</MenuItem>
@@ -1602,9 +1570,9 @@ function IssueDialog({
         </FormControl>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose}>ยกเลิก</Button>
+        <Button onClick={onClose}>{t("cancel")}</Button>
         <Button onClick={handleSave} variant="contained" disabled={!title.trim()}>
-          บันทึก
+          {t("save")}
         </Button>
       </DialogActions>
     </Dialog>
@@ -1769,6 +1737,53 @@ function IssueDetailDialog({
   const currentUserId = currentUser?.id ?? null;
   const t = useTranslations("Boards");
 
+  const formatAction = (log: ActivityLog): string => {
+    try {
+      const detail = log.detail ? JSON.parse(log.detail) : {};
+      const actor = log.actorName ?? t("activity.system");
+      switch (log.action) {
+        case "card.created":
+          return t("activity.created", { actor });
+        case "card.moved":
+          return t("activity.moved", {
+            actor,
+            from: detail.from ?? "—",
+            to: detail.to ?? "—",
+          });
+        case "card.assigned":
+          return t("activity.assigned", { actor, to: detail.to ?? "—" });
+        case "card.edited": {
+          const fieldKeys: Record<string, string> = {
+            title: "activity.field.title",
+            description: "activity.field.description",
+            priority: "activity.field.priority",
+            priorityId: "activity.field.priority",
+            category: "activity.field.category",
+            label: "activity.field.label",
+            labels: "activity.field.label",
+            taskType: "activity.field.taskType",
+          };
+          const fields = (detail.fields ?? [])
+            .map((f: string) => (fieldKeys[f] ? t(fieldKeys[f]) : f))
+            .join(", ");
+          return t("activity.edited", { actor, fields });
+        }
+        case "card.deleted":
+          return t("activity.deleted", { actor });
+        case "comment.created":
+          return t("activity.commentCreated", { actor });
+        case "comment.updated":
+          return t("activity.commentUpdated", { actor });
+        case "comment.deleted":
+          return t("activity.commentDeleted", { actor });
+        default:
+          return log.action;
+      }
+    } catch {
+      return log.action;
+    }
+  };
+
   // ── time section: running session + manual entry ──
   const canSeeTime = can("time.system.view");
   const canSeeActual = can("time.actual.view");
@@ -1907,11 +1922,11 @@ function IssueDetailDialog({
         setUsers(u.status === "fulfilled" ? u.value : []);
         const failed = results.find((r) => r.status === "rejected");
         if (failed && failed.status === "rejected") {
-          fail(getErrorMessage(failed.reason, "โหลดข้อมูลไม่สำเร็จ"));
+          fail(getErrorMessage(failed.reason, t("loadFailed")));
         }
       })
       .finally(() => setLoading(false));
-  }, [issue, open, canViewComments, canViewHistory, canViewAttachments, canSetPriority, canAssign, fail]);
+  }, [issue, open, canViewComments, canViewHistory, canViewAttachments, canSetPriority, canAssign, fail, t]);
 
   const handlePost = async () => {
     if (readOnly) return;
@@ -1924,7 +1939,7 @@ function IssueDetailDialog({
       setDraft("");
       onRefresh();
     } catch (e) {
-      fail(getErrorMessage(e, "ส่งความคิดเห็นไม่สำเร็จ"));
+      fail(getErrorMessage(e, t("commentSubmitFailed")));
     } finally {
       setPosting(false);
     }
@@ -1945,7 +1960,7 @@ function IssueDetailDialog({
       setComments((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
       setEditingComment(null);
     } catch (e) {
-      fail(getErrorMessage(e, "แก้ไขความคิดเห็นไม่สำเร็จ"));
+      fail(getErrorMessage(e, t("commentEditFailed")));
     } finally {
       setSavingComment(false);
     }
@@ -1960,7 +1975,7 @@ function IssueDetailDialog({
       setDeletingComment(null);
       onRefresh();
     } catch (e) {
-      fail(getErrorMessage(e, "ลบความคิดเห็นไม่สำเร็จ"));
+      fail(getErrorMessage(e, t("commentDeleteFailed")));
     } finally {
       setDeleteLoading(false);
     }
@@ -2004,7 +2019,7 @@ function IssueDetailDialog({
       setCreatingLabel(false);
       setDraftLabelIds((prev) => [...prev, label.id]);
     } catch (e) {
-      fail(getErrorMessage(e, "สร้ายป้ายไม่สำเร็จ"));
+      fail(getErrorMessage(e, t("labelCreateFailed")));
     } finally {
       setSaving(false);
     }
@@ -2094,7 +2109,7 @@ function IssueDetailDialog({
       resetDrafts(merged);
       onClose();
     } catch (e) {
-      fail(getErrorMessage(e, "บันทึกไม่สำเร็จ"));
+      fail(getErrorMessage(e, t("saveFailed")));
     } finally {
       setSaving(false);
     }
@@ -2106,7 +2121,7 @@ function IssueDetailDialog({
       await updateLabel(id, data);
       onRefresh();
     } catch (e) {
-      fail(getErrorMessage(e, "แก้ไขป้ายไม่สำเร็จ"));
+      fail(getErrorMessage(e, t("labelEditFailed")));
     }
   };
 
@@ -2119,7 +2134,7 @@ function IssueDetailDialog({
       setAttachments((prev) => [...prev, uploaded]);
       onRefresh();
     } catch (err) {
-      fail(getErrorMessage(err, "อัปโหลดไฟล์ไม่สำเร็จ"));
+      fail(getErrorMessage(err, t("uploadFailed")));
     } finally {
       setAttachmentUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -2133,7 +2148,7 @@ function IssueDetailDialog({
       setAttachments((prev) => prev.filter((a) => a.id !== id));
       onRefresh();
     } catch (err) {
-      fail(getErrorMessage(err, "ลบไฟล์ไม่สำเร็จ"));
+      fail(getErrorMessage(err, t("fileDeleteFailed")));
     }
   };
 
@@ -3121,8 +3136,8 @@ function IssueDetailDialog({
           {/* Switching tabs must NOT collapse an inline editor — the typed
               draft stays until the footer Save/Cancel (or the field's own ✕). */}
           <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="fullWidth" sx={{ px: 2, minHeight: 44, borderBottom: "1px solid", borderColor: "divider" }}>
-            <Tab value="comments" label="ความคิดเห็น" sx={{ minHeight: 44, fontSize: "0.85rem", textTransform: "none", fontWeight: 600 }} />
-            <Tab value="history" label="ประวัติ" sx={{ minHeight: 44, fontSize: "0.85rem", textTransform: "none", fontWeight: 600 }} />
+            <Tab value="comments" label={t("comments")} sx={{ minHeight: 44, fontSize: "0.85rem", textTransform: "none", fontWeight: 600 }} />
+            <Tab value="history" label={t("history")} sx={{ minHeight: 44, fontSize: "0.85rem", textTransform: "none", fontWeight: 600 }} />
           </Tabs>
           {tab === "comments" && canPostComment && !readOnly && (
             <Box sx={{ p: 2, display: "flex", gap: 1.5, alignItems: "flex-start", borderBottom: "1px solid", borderColor: "divider" }}>
@@ -3144,7 +3159,7 @@ function IssueDetailDialog({
                 <TextField
                   fullWidth
                   size="small"
-                  placeholder="เขียนความคิดเห็น..."
+                  placeholder={t("commentPlaceholder")}
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => {
@@ -3157,7 +3172,7 @@ function IssueDetailDialog({
                   maxRows={3}
                   sx={{ "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
                 />
-                <Tooltip title="ส่ง">
+                <Tooltip title={t("submit")}>
                   <span>
                     <IconButton
                       color="primary"
@@ -3179,9 +3194,9 @@ function IssueDetailDialog({
               </Box>
             ) : tab === "comments" ? (
               !canViewComments ? (
-                <Typography variant="body2" color="text.secondary">ไม่มีสิทธิ์ดูความคิดเห็น</Typography>
+                <Typography variant="body2" color="text.secondary">{t("noCommentPermission")}</Typography>
               ) : comments.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">ยังไม่มีความคิดเห็น</Typography>
+                <Typography variant="body2" color="text.secondary">{t("noComments")}</Typography>
               ) : (
                 comments.map((c) => {
                   const isOwner = currentUserId !== null && c.authorId === Number(currentUserId);
@@ -3207,7 +3222,7 @@ function IssueDetailDialog({
                       <Box sx={{ flex: 1, minWidth: 0 }}>
                         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                           <Typography variant="body2" fontWeight={700}>
-                            {c.authorName ?? "ไม่ทราบชื่อ"}
+                            {c.authorName ?? t("unknownName")}
                             {c.authorRole ? (
                               <Box component="span" sx={{ fontWeight: 400 }}>({c.authorRole})</Box>
                             ) : null}
@@ -3218,14 +3233,14 @@ function IssueDetailDialog({
                           <Box sx={{ flex: 1 }} />
                           {/* ขณะแก้ไขแถวนี้ → ซ่อนปุ่มเดิมของแถวนั้นกันสับสน */}
                           {canEdit && !isEditing && (
-                            <Tooltip title="แก้ไข">
+                            <Tooltip title={t("edit")}>
                               <IconButton size="small" sx={{ color: "text.secondary" }} onClick={() => openEditComment(c)}>
                                 <EditIcon sx={{ fontSize: 18 }} />
                               </IconButton>
                             </Tooltip>
                           )}
                           {canDelete && !isEditing && (
-                            <Tooltip title="ลบ">
+                            <Tooltip title={t("remove")}>
                               <IconButton size="small" color="error" onClick={() => setDeletingComment(c)}>
                                 <DeleteIcon sx={{ fontSize: 18 }} />
                               </IconButton>
@@ -3289,9 +3304,9 @@ function IssueDetailDialog({
               )
             ) : tab === "history" ? (
               !canViewHistory ? (
-                <Typography variant="body2" color="text.secondary">ไม่มีสิทธิ์ดูประวัติ</Typography>
+                <Typography variant="body2" color="text.secondary">{t("noHistoryPermission")}</Typography>
               ) : logs.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">ยังไม่มีประวัติ</Typography>
+                <Typography variant="body2" color="text.secondary">{t("noActivity")}</Typography>
               ) : (
                 logs.map((log) => (
                   <Box key={log.id} sx={{ display: "flex", gap: 1.5 }}>
@@ -3309,7 +3324,7 @@ function IssueDetailDialog({
                       {log.actorName ? log.actorName.charAt(0).toUpperCase() : <HistoryIcon sx={{ fontSize: 18 }} />}
                     </Avatar>
                     <Box sx={{ minWidth: 0 }}>
-                      <Typography variant="body2">{formatActivityAction(log)}</Typography>
+                      <Typography variant="body2">{formatAction(log)}</Typography>
                       <Typography variant="caption" color="text.secondary">
                         {formatDateTime(log.createdAt)}
                       </Typography>
@@ -3324,20 +3339,20 @@ function IssueDetailDialog({
             onClose={() => !deleteLoading && setDeletingComment(null)}
             maxWidth="xs"
           >
-            <DialogTitle>ลบความคิดเห็น</DialogTitle>
+            <DialogTitle>{t("deleteComment")}</DialogTitle>
             <DialogContent>
               {deleteLoading ? (
                 <CircularProgress size={24} />
               ) : (
-                <Typography variant="body2">ต้องการลบความคิดเห็นนี้ใช่หรือไม่?</Typography>
+                <Typography variant="body2">{t("deleteCommentConfirm")}</Typography>
               )}
             </DialogContent>
             <DialogActions>
               <Button onClick={() => setDeletingComment(null)} disabled={deleteLoading}>
-                ยกเลิก
+                {t("cancel")}
               </Button>
               <Button variant="contained" color="error" onClick={handleDeleteComment} disabled={deleteLoading}>
-                ลบ
+                {t("remove")}
               </Button>
             </DialogActions>
           </Dialog>
@@ -3417,6 +3432,7 @@ function LabelEditDialog({
   onClose: () => void;
   onSave: (id: number, data: { name: string; color: string }) => void;
 }) {
+  const t = useTranslations("Boards");
   const [name, setName] = useState("");
   const [color, setColor] = useState("default");
   const theme = useTheme();
@@ -3430,11 +3446,11 @@ function LabelEditDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
-      <DialogTitle>แก้ไขป้าย</DialogTitle>
+      <DialogTitle>{t("editLabel")}</DialogTitle>
       <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 1.5, pt: 1 }}>
-        <TextField fullWidth label="ชื่อป้าย" value={name} onChange={(e) => setName(e.target.value)} />
+        <TextField fullWidth label={t("labelName")} value={name} onChange={(e) => setName(e.target.value)} />
         <Box>
-          <Typography variant="caption" color="text.secondary">สี</Typography>
+          <Typography variant="caption" color="text.secondary">{t("color")}</Typography>
           <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap", mt: 0.5 }}>
             {labelColorKeys(theme).map((c) => (
               <Tooltip key={c} title={c}>
@@ -3461,13 +3477,13 @@ function LabelEditDialog({
         </Box>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose}>ยกเลิก</Button>
+        <Button onClick={onClose}>{t("cancel")}</Button>
         <Button
           variant="contained"
           disabled={!name.trim()}
           onClick={() => label && onSave(label.id, { name: name.trim(), color })}
         >
-          บันทึก
+          {t("save")}
         </Button>
       </DialogActions>
     </Dialog>
@@ -3953,7 +3969,7 @@ function KanbanView({
             : [];
         if (boardRequestSeqRef.current !== seq) return;
         const allIssues = [...first.data, ...rest.flatMap((r) => r.data)].filter((i) =>
-          matchesIssueSearch(i, debouncedSearch, staleSearchTokens(i, staleRules)),
+          matchesIssueSearch(i, debouncedSearch, staleSearchTokens(i, staleRules, t)),
         );
         const grouped: Record<number, BoardIssue[]> = {};
         for (const s of localStatuses) grouped[s.id] = [];
@@ -3981,7 +3997,7 @@ function KanbanView({
         });
       } catch (e) {
         if (boardRequestSeqRef.current !== seq) return;
-        fail(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ"));
+        fail(getErrorMessage(e, t("loadFailed")));
         setColumns((prev) => {
           const next = { ...prev };
           for (const s of localStatuses) {
@@ -4007,6 +4023,7 @@ function KanbanView({
       selectedReporterIds,
       staleRules,
       fail,
+      t,
     ],
   );
 
@@ -4299,7 +4316,7 @@ function KanbanView({
           reordered.map((s, idx) => ({ id: s.id, sortOrder: idx + 1 }))
         );
       } catch (e) {
-        fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+        fail(getErrorMessage(e, t("genericError")));
         onRefresh();
       }
       return;
@@ -4380,7 +4397,7 @@ function KanbanView({
             ? t("invalidTransition")
             : null;
       if (refusal) notify(refusal, "warning");
-      else fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      else fail(getErrorMessage(e, t("genericError")));
       // the write was refused: the card is still where it started, so the
       // preview copy in the target column has to go (onRefresh reloads the
       // table/folder sources, not the per-column state)
@@ -4416,7 +4433,7 @@ function KanbanView({
       setEditIssue(null);
       reloadColumns();
     } catch (e) {
-      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, t("genericError")));
     }
   };
 
@@ -4428,7 +4445,7 @@ function KanbanView({
       setDetailIssue(null);
       reloadColumns();
     } catch (e) {
-      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, t("genericError")));
     }
   };
 
@@ -4438,7 +4455,7 @@ function KanbanView({
       setAddColumnOpen(false);
       onRefresh();
     } catch (e) {
-      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, t("genericError")));
     }
   };
 
@@ -4448,10 +4465,10 @@ function KanbanView({
         await unlockIssue(issueId);
         reloadColumns();
       } catch (e) {
-        fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+        fail(getErrorMessage(e, t("genericError")));
       }
     },
-    [reloadColumns, fail],
+    [reloadColumns, fail, t],
   );
 
   // Stable identities for the memoized `KanbanColumn` → `TrelloCard` →
@@ -4623,7 +4640,7 @@ function KanbanView({
                 onClick={() => setAddColumnOpen(true)}
                 sx={{ minWidth: 200, borderRadius: 2, border: "1px dashed", borderColor: "divider" }}
               >
-                เพิ่มคอลัมน์
+                {t("addColumn")}
               </Button>
             )}
           </Box>
@@ -4651,7 +4668,7 @@ function KanbanView({
         priorities={priorities}
       />
       <Dialog open={!!issueToDelete} onClose={() => setIssueToDelete(null)}>
-        <DialogTitle>ยืนยันการยกเลิก</DialogTitle>
+        <DialogTitle>{t("confirmCancel")}</DialogTitle>
         <DialogContent>
           <Typography>
             {t("deleteIssueConfirmTrash", { title: issueToDelete?.title ?? "" })}
@@ -4784,10 +4801,10 @@ function TableView({
       if (selectedReporterIds.length > 0) {
         if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
       }
-      if (query && !matchesIssueSearch(issue, query, staleSearchTokens(issue, staleRules))) return false;
+      if (query && !matchesIssueSearch(issue, query, staleSearchTokens(issue, staleRules, t))) return false;
       return true;
     });
-  }, [issues, statuses, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, companyReporterIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters, staleRules]);
+  }, [issues, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, companyReporterIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters, staleRules, t]);
   /**
    * Row order — the SAME comparator as the Kanban columns (`sortByEnteredAt`),
    * so the table reads in the same order the board's columns do. Purely
@@ -4815,7 +4832,7 @@ function TableView({
       setEditIssue(null);
       onRefresh();
     } catch (e) {
-      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, t("genericError")));
     }
   };
 
@@ -4827,7 +4844,7 @@ function TableView({
       setDetailIssue(null);
       onRefresh();
     } catch (e) {
-      fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      fail(getErrorMessage(e, t("genericError")));
     }
   };
 
@@ -4871,22 +4888,22 @@ function TableView({
       <DataTable>
         <DataTableHead>
           <DataTableRow>
-            <DataTableCell>ID</DataTableCell>
-            <DataTableCell>หัวข้อ</DataTableCell>
-            <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>แอป</DataTableCell>
-            <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>หมวดหมู่</DataTableCell>
-            <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>ความสำคัญ</DataTableCell>
-            <DataTableCell>สถานะ</DataTableCell>
-            <DataTableCell>ผู้รับผิดชอบ</DataTableCell>
+            <DataTableCell>{t("id")}</DataTableCell>
+            <DataTableCell>{t("issueTitle")}</DataTableCell>
+            <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>{t("app")}</DataTableCell>
+            <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>{t("category")}</DataTableCell>
+            <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>{t("priority")}</DataTableCell>
+            <DataTableCell>{t("status")}</DataTableCell>
+            <DataTableCell>{t("programmer")}</DataTableCell>
             {canSeeReporter && (
-              <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>ผู้แจ้ง</DataTableCell>
+              <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>{t("detail.reporter")}</DataTableCell>
             )}
-            <DataTableCell>สร้างเมื่อ</DataTableCell>
-            {canSeeTrackedTime && <DataTableCell>เวลาที่จับได้</DataTableCell>}
-            {canSeeActualTime && <DataTableCell>เวลาแก้ไขจริง</DataTableCell>}
+            <DataTableCell>{t("created")}</DataTableCell>
+            {canSeeTrackedTime && <DataTableCell>{t("trackedTime")}</DataTableCell>}
+            {canSeeActualTime && <DataTableCell>{t("detail.time.actualLabel")}</DataTableCell>}
             {(canManage || canViewOwnHistory) && (
               <DataTableCell align="right" sx={{ width: "1%", whiteSpace: "nowrap" }}>
-                จัดการ
+                {t("actions")}
               </DataTableCell>
             )}
           </DataTableRow>
@@ -4932,7 +4949,7 @@ function TableView({
                       }}
                     />
                   </DataTableCell>
-                  <DataTableCell>{issue.programmerName ?? "รอมอบหมาย"}</DataTableCell>
+                  <DataTableCell>{issue.programmerName ?? t("detail.unassigned")}</DataTableCell>
                   {canSeeReporter && (
                     <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>{issue.customerName ?? "—"}</DataTableCell>
                   )}
@@ -5083,7 +5100,7 @@ function TableView({
         priorities={priorities}
       />
       <Dialog open={!!issueToDelete} onClose={() => setIssueToDelete(null)}>
-        <DialogTitle>ยืนยันการยกเลิก</DialogTitle>
+        <DialogTitle>{t("confirmCancel")}</DialogTitle>
         <DialogContent>
           <Typography>
             {t("deleteIssueConfirmTrash", { title: issueToDelete?.title ?? "" })}
@@ -5403,7 +5420,7 @@ function FolderView({
       if (selectedReporterIds.length > 0) {
         if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
       }
-      if (query && !matchesIssueSearch(issue, query, staleSearchTokens(issue, staleRules))) return false;
+      if (query && !matchesIssueSearch(issue, query, staleSearchTokens(issue, staleRules, t))) return false;
       return true;
     });
   }, [
@@ -5419,6 +5436,7 @@ function FolderView({
     searchQuery,
     hasActiveFilters,
     staleRules,
+    t,
   ]);
 
   /* Cards inside the current folder path (app → category → priority → status). */
@@ -5598,7 +5616,7 @@ function FolderView({
             ? t("invalidTransition")
             : null;
       if (refusal) notify(refusal, "warning");
-      else fail(getErrorMessage(e, "เกิดข้อผิดพลาด"));
+      else fail(getErrorMessage(e, t("genericError")));
       onRefresh();
     } finally {
       setMovingId(null);
@@ -6341,14 +6359,14 @@ function BoardsPageInner() {
       }
       const firstError = results.find((r) => r.status === "rejected");
       if (firstError && firstError.status === "rejected") {
-        fail(getErrorMessage(firstError.reason, "โหลดข้อมูลไม่สำเร็จ"));
+        fail(getErrorMessage(firstError.reason, t("loadFailed")));
       }
     } catch (e) {
-      fail(getErrorMessage(e, "โหลดข้อมูลไม่สำเร็จ"));
+      fail(getErrorMessage(e, t("loadFailed")));
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [roleName, refreshTimers, fail]);
+  }, [roleName, refreshTimers, fail, t]);
 
   useEffect(() => {
     loadData();

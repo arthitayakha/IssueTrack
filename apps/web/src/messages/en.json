@@ -345,6 +345,8 @@
       "recoverSuccess": "Moved back — to {status}",
       "recoverFailed": "Could not move the issue back",
       "attachments": "Attachments",
+      "attachmentDownload": "Download",
+      "attachmentNoPreview": "Preview is not available for this file type",
       "createdAt": "Created",
       "updatedAt": "Updated",
       "unassigned": "Unassigned",
@@ -373,6 +375,53 @@
         "duePlaceholder": "Pick a date…",
         "dueTarget": "Must reach {status} by {due}",
         "overdue": "past due"
+      }
+    },
+    "staleSearch": "stuck",
+    "dropHere": "Drop here",
+    "name": "Name",
+    "comments": "Comments",
+    "color": "Colour",
+    "trackedTime": "Tracked time",
+    "remove": "Delete",
+    "labelName": "Label name",
+    "editLabel": "Edit label",
+    "confirmCancel": "Confirm cancellation",
+    "loadFailed": "Failed to load data",
+    "restoreFailed": "Failed to restore",
+    "commentSubmitFailed": "Failed to send the comment",
+    "commentEditFailed": "Failed to edit the comment",
+    "commentDeleteFailed": "Failed to delete the comment",
+    "labelCreateFailed": "Failed to create the label",
+    "saveFailed": "Failed to save",
+    "labelEditFailed": "Failed to edit the label",
+    "uploadFailed": "Failed to upload the file",
+    "fileDeleteFailed": "Failed to delete the file",
+    "genericError": "Something went wrong",
+    "commentPlaceholder": "Write a comment...",
+    "noCommentPermission": "You do not have permission to view comments",
+    "noComments": "No comments yet",
+    "unknownName": "Unknown",
+    "noHistoryPermission": "You do not have permission to view history",
+    "deleteComment": "Delete comment",
+    "deleteCommentConfirm": "Are you sure you want to delete this comment?",
+    "activity": {
+      "system": "System",
+      "created": "{actor} created this issue",
+      "moved": "{actor} moved: {from} → {to}",
+      "assigned": "{actor} assigned to {to}",
+      "edited": "{actor} edited: {fields}",
+      "deleted": "{actor} deleted this issue",
+      "commentCreated": "{actor} commented",
+      "commentUpdated": "{actor} edited a comment",
+      "commentDeleted": "{actor} deleted a comment",
+      "field": {
+        "title": "Title",
+        "description": "Description",
+        "priority": "Priority",
+        "category": "Category",
+        "label": "Label",
+        "taskType": "Task type"
       }
     }
   },
@@ -1224,7 +1273,9 @@
   },
   "timer": {
     "elapsed": "Elapsed time",
-    "history": "Timer history"
+    "history": "Timer history",
+    "minuteUnit": "m",
+    "secondUnit": "s"
   },
   "Automation": {
     "title": "Automation",

@@ -48,10 +48,14 @@ function getErrorMessage(e: unknown, fallback: string): string | null {
   return errorMessage(e, fallback);
 }
 
+// The DB stores this category name in Thai — keep the constant for matching,
+// but render a localized label so English users do not see Thai in the picker.
 const OTHER_CATEGORY = "อื่น ๆ";
 
 export default function ReportIssuePage() {
   const t = useTranslations("Boards");
+  const displayCategoryName = (name: string) =>
+    name === OTHER_CATEGORY ? t("other") : name;
   const theme = useTheme();
   const router = useRouter();
   const token = useAuthStore((s) => s.token);
@@ -114,7 +118,8 @@ export default function ReportIssuePage() {
   }, [categories]);
 
   const filteredCategories = allCategories.filter((c) =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()),
+    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    displayCategoryName(c.name).toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
   const selectedCategory = allCategories.find((c) => c.id === categoryId) ?? null;
@@ -441,7 +446,7 @@ export default function ReportIssuePage() {
                       size="small"
                       fullWidth
                       placeholder={t("categoryPlaceholder")}
-                      value={selectedCategory?.name ?? ""}
+                      value={selectedCategory ? displayCategoryName(selectedCategory.name) : ""}
                       onClick={() => setCatDropOpen(!catDropOpen)}
                       InputProps={{
                         readOnly: true,
@@ -532,7 +537,7 @@ export default function ReportIssuePage() {
                                 }}
                               >
                                 <Typography variant="body2" sx={{ flex: 1 }}>
-                                  {cat.name}
+                                  {displayCategoryName(cat.name)}
                                 </Typography>
                                 {categoryId === cat.id && (
                                   <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />

@@ -12,6 +12,7 @@ import {
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import DownloadIcon from "@mui/icons-material/Download";
+import { useTranslations } from "next-intl";
 import { openAttachment, getToken, type Attachment } from "@/lib/board-api";
 import { apiFetchResponse } from "@/lib/api";
 
@@ -24,6 +25,7 @@ export default function AttachmentPreviewDialog({
   open: boolean;
   onClose: () => void;
 }) {
+  const t = useTranslations("Boards");
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +95,7 @@ export default function AttachmentPreviewDialog({
             startIcon={<DownloadIcon />}
             onClick={() => openAttachment(attachment.id)}
           >
-            ดาวน์โหลด
+            {t("detail.attachmentDownload")}
           </Button>
         )}
         <IconButton size="small" onClick={onClose}>
@@ -119,7 +121,7 @@ export default function AttachmentPreviewDialog({
           />
         )}
         {!loading && !error && objectUrl && !isImage && !isPdf && (
-          <Typography color="text.secondary">ไม่รองรับ preview สำหรับไฟล์ประเภทนี้</Typography>
+          <Typography color="text.secondary">{t("detail.attachmentNoPreview")}</Typography>
         )}
       </Box>
     </Dialog>
