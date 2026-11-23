@@ -96,6 +96,11 @@ export class AttachmentsService {
     if (!attachment) {
       throw new NotFoundException(`Attachment ${id} not found`);
     }
+    // ไฟล์แนบของรายงานบั๊กอยู่ในตารางเดียวกันแต่ไม่มี issue — ห้ามเข้าถึงผ่าน
+    // endpoint ของงาน (`GET /attachments/:id`, `/download`, `DELETE /attachments/:id`)
+    if (attachment.issueId == null) {
+      throw new NotFoundException(`Attachment ${id} not found`);
+    }
     if (user) {
       await loadVisibleIssue(this.issues, this.permissions, attachment.issueId, user);
     }

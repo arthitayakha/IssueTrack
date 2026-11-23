@@ -18,6 +18,12 @@ import { useRouter } from "@/i18n/navigation";
 import { timeAgo } from "@/lib/time-ago";
 import { resolveLink } from "@/lib/notification-link";
 import type { AppNotification, NotificationPage } from "@/lib/notifications-api";
+import {
+  getActionLabels,
+  getNotificationVariant,
+  notificationSubject,
+  type NotificationVariant,
+} from "@/lib/notification-format";
 
 /** The list's lifecycle as tracked by the navbar (idle until the bell opens). */
 export type NotificationListStatus = "idle" | "loading" | "ready" | "error";
@@ -30,7 +36,10 @@ interface NotificationPopoverProps {
   /** First-open state: `loading` shows a spinner, `error` offers a retry. */
   status: NotificationListStatus;
   loadingMore: boolean;
+  /** A page kept coming back empty — stop the sentinel and offer a manual retry. */
+  loadMoreError: boolean;
   onLoadMore: () => void;
+  onRetryLoadMore: () => void;
   /** Retry after a failed first load. */
   onRetry: () => void;
   onClose: () => void;
@@ -57,7 +66,7 @@ function getInitials(name: string): string {
 }
 
 /** Which of the three built-in sentences a row's title reads like. */
-type RowVariant = "stale" | "system" | "actor";
+type RowVariant = NotificationVariant;
 
 interface NotificationRowProps {
   item: AppNotification;
@@ -117,7 +126,7 @@ const NotificationRow = memo(function NotificationRow({
             flexShrink: 0,
           }}
         >
-          {getInitials(variant === "actor" ? item.actorName ?? "System" : item.target)}
+          {getInitials(notificationSubject(item, variant))}
         </Avatar>
 
         <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -133,21 +142,21 @@ const NotificationRow = memo(function NotificationRow({
             {variant === "stale" ? (
               <>
                 <Box component="span" sx={{ fontWeight: 700 }}>
-                  {item.target}
+                  {notificationSubject(item, variant)}
                 </Box>{" "}
                 {label} {item.context}
               </>
             ) : variant === "system" ? (
               <>
                 <Box component="span" sx={{ fontWeight: 700 }}>
-                  {item.target}
+                  {notificationSubject(item, variant)}
                 </Box>{" "}
                 {label}
               </>
             ) : (
               <>
                 <Box component="span" sx={{ fontWeight: 700, ...strike }}>
-                  {item.actorName ?? "System"}
+                  {notificationSubject(item, variant)}
                 </Box>{" "}
                 {label}{" "}
                 <Box component="span" sx={{ fontWeight: 700, ...strike }}>
@@ -195,7 +204,9 @@ export default function NotificationPopover({
   data,
   status,
   loadingMore,
+  loadMoreError,
   onLoadMore,
+  onRetryLoadMore,
   onRetry,
   onClose,
   onMarkRead,
@@ -212,32 +223,8 @@ export default function NotificationPopover({
   const emptyTitle = t("emptyInbox.title");
   const emptyDescription = t("emptyInbox.description");
 
-  const actionLabels: Record<string, string> = {
-    created: t("actions.created"),
-    assigned: t("actions.assigned"),
-    unassigned: t("actions.unassigned"),
-    commented: t("actions.commented"),
-    moved: t("actions.moved"),
-    // milestone columns speak for themselves instead of the plain "moved"
-    needs_assignment: t("actions.needs_assignment"),
-    status_pending: t("actions.status_pending"),
-    in_progress: t("actions.in_progress"),
-    completed: t("actions.completed"),
-    edited: t("actions.edited"),
-    deleted: t("actions.deleted"),
-    restored: t("actions.restored"),
-    rule_created: t("actions.rule_created"),
-    rule_updated: t("actions.rule_updated"),
-    rule_deleted: t("actions.rule_deleted"),
-    stale: t("actions.stale"),
-    app_expiring: t("actions.app_expiring"),
-    app_expired: t("actions.app_expired"),
-    ma_depleted: t("actions.ma_depleted"),
-    app_renewed: t("actions.app_renewed"),
-    app_hours_purchased: t("actions.app_hours_purchased"),
-    contact_message: t("actions.contact_message"),
-    system_report_created: t("actions.system_report_created"),
-  };
+  // One map for the inbox AND the live toast — wordings cannot drift apart.
+  const actionLabels = getActionLabels(t);
 
   /**
    * Handler อยู่หลัง ref: `openRow` คง identity เดียวตลอดแม้ `onMarkRead` /
@@ -260,7 +247,7 @@ export default function NotificationPopover({
   // so watch a sentinel at the end of the list instead.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    if (!open || !hasMore || loadingMore) return;
+    if (!open || !hasMore || loadingMore || loadMoreError) return;
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
     const observer = new IntersectionObserver(
@@ -273,7 +260,7 @@ export default function NotificationPopover({
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [open, hasMore, loadingMore, visibleItems.length, onLoadMore]);
+  }, [open, hasMore, loadingMore, loadMoreError, visibleItems.length, onLoadMore]);
 
   return (
     <>
@@ -428,31 +415,15 @@ export default function NotificationPopover({
           </Box>
         ) : (
           visibleItems.map((item, index) => {
-            // แถวที่ระบบเป็นคนส่ง (ไม่มีคนกระทำ) — หัวข้อคือ "ชื่อแอป + บริษัท"
-            // ขึ้นต้นด้วยสิ่งนั้นแทน "System" แล้วตามด้วย label:
-            // **POS ครัวบ้านสวย** ใกล้หมดอายุ / **POS ครัวบ้านสวย** MA หมดแล้ว
-            const isSystemRow =
-              item.action === "app_expiring" ||
-              item.action === "app_expired" ||
-              item.action === "ma_depleted" ||
-              // ใบยืนยันต่ออายุ/ซื้อชม. ก็ไม่มีคนกระทำ (ระบบเป็นคนส่ง)
-              item.action === "app_renewed" ||
-              item.action === "app_hours_purchased" ||
-              // การ์ดค้าง (sweep 09:00) ก็ไม่มีคนกระทำ — เดิมหลุดไปโหมด "มีคนกระทำ"
-              // แล้วเจอ fallback ตายตัว "System" หัวบรรทัดจึงอ่านว่า "System ค้างนาน …"
-              item.action === "stale";
-            // รายงานบั๊กจากศูนย์ช่วยเหลือ **ต้อง** โชว์โหมด "มีคนกระทำ" เพื่อให้
-            // แอดมินเห็นชื่อผู้แจ้งในหัวข้อ (เป็น actor ของแถวนี้)
-            // stale มีประโยคของตัวเองบรรทัดเดียวครบ:
-            // **งาน ทดสอบ** ค้างที่สถานะ รอดำเนินการ · 7 วัน (context ไม่ซ้ำที่บรรทัดล่าง)
-            const isStaleRow = item.action === "stale";
+            // variant แชร์กับ toast — อยู่ใน lib/notification-format.ts จุดเดียว
+            const variant = getNotificationVariant(item);
             // label ถูก derive ที่นี่ (string คงที่) เพื่อให้ row memo เทียบได้ —
             // object `actionLabels` ที่สร้างใหม่ทุก render ห้ามส่งเข้าไปใน row
             return (
               <NotificationRow
                 key={item.id}
                 item={item}
-                variant={isStaleRow ? "stale" : isSystemRow ? "system" : "actor"}
+                variant={variant}
                 label={actionLabels[item.action] ?? item.action}
                 divider={index > 0}
                 onOpen={openRow}
@@ -461,13 +432,24 @@ export default function NotificationPopover({
           })
         )}
         {/* Sentinel: while it stays visible the next page keeps loading */}
-        {hasMore && <Box ref={sentinelRef} aria-hidden sx={{ height: 1 }} />}
+        {hasMore && !loadMoreError && <Box ref={sentinelRef} aria-hidden sx={{ height: 1 }} />}
         {loadingMore && (
           <Box
             aria-label={t("loading")}
             sx={{ display: "flex", justifyContent: "center", py: 1.5 }}
           >
             <CircularProgress size={20} />
+          </Box>
+        )}
+        {/* A stuck page used to leave only a dead blank area — now there is a way out */}
+        {hasMore && loadMoreError && !loadingMore && (
+          <Box sx={{ px: 2, py: 1.5, textAlign: "center" }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+              {t("loadError")}
+            </Typography>
+            <Button size="small" onClick={onRetryLoadMore} sx={{ mt: 0.5 }}>
+              {t("retry")}
+            </Button>
           </Box>
         )}
       </Box>

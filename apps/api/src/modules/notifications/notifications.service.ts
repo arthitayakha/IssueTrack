@@ -9,6 +9,7 @@ import { User } from "../auth/entities/user.entity";
 import { IssuePriority } from "../issue-priorities/entities/issue-priority.entity";
 import { MailService } from "../mail/mail.service";
 import { PermissionsService } from "../permissions/permissions.service";
+import { NotificationStreamService } from "./notification-stream.service";
 
 export type { NotificationPriority };
 
@@ -178,6 +179,7 @@ export class NotificationsService {
     @InjectRepository(IssuePriority)
     private readonly priorities: Repository<IssuePriority>,
     private readonly permissions: PermissionsService,
+    private readonly stream: NotificationStreamService,
   ) {}
 
   /** Deep link straight to the card's detail dialog; the plain board when there is no issue. */
@@ -436,7 +438,7 @@ export class NotificationsService {
   async notify(input: NotifyInput): Promise<void> {
     try {
       if (!input.userId || input.userId === input.actor?.actorId) return;
-      await this.notifications.save(
+      const saved = await this.notifications.save(
         this.notifications.create({
           userId: input.userId,
           issueId: input.issueId ?? null,
@@ -454,8 +456,28 @@ export class NotificationsService {
           priority: input.priority ?? FIXED_PRIORITY[input.action] ?? "medium",
         }),
       );
+      // Real-time toast — fire-and-forget: a slow/half-open browser may never
+      // stall the drag/assign request that produced the row. The row is already
+      // in the DB, so a failed stream only means "no popup", never "lost notice".
+      void this.emitNewNotification(input.userId, saved.id);
     } catch (error) {
       this.logger.warn(`failed to create notification: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Push a just-saved row to any live SSE tabs of its owner. The message uses
+   * the very same `toResponse()` as `GET /notifications`, so the toast and the
+   * inbox row are worded identically (including the actor name, which has to
+   * be joined back in because `save()` returns no relations).
+   */
+  private async emitNewNotification(userId: number, id: number): Promise<void> {
+    try {
+      const row = await this.notifications.findOne({ where: { id }, relations: ["actor"] });
+      if (row) this.stream.emit(userId, this.toResponse(row));
+    } catch (error) {
+      // fail-open like notify(): a broken stream never undoes a saved row
+      this.logger.warn(`failed to stream notification: ${(error as Error).message}`);
     }
   }
 

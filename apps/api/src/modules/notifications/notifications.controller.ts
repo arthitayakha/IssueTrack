@@ -7,21 +7,45 @@ import {
   Param,
   ParseIntPipe,
   Query,
+  Sse,
   UseGuards,
 } from "@nestjs/common";
+import { interval, merge } from "rxjs";
+import { finalize, map } from "rxjs/operators";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { AuthUser } from "../auth/auth-user";
 import { Permissions } from "../auth/permissions.decorator";
 import { NotificationsService } from "../notifications/notifications.service";
+import { NotificationStreamService } from "./notification-stream.service";
 import { ContactMessageDto } from "../notifications/dto/contact-message.dto";
 
 /** Each user only ever sees and mutates their own notifications — no extra permission needed. */
 @Controller("notifications")
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class NotificationsController {
-  constructor(private readonly notifications: NotificationsService) {}
+  constructor(
+    private readonly notifications: NotificationsService,
+    private readonly stream: NotificationStreamService,
+  ) {}
+
+  /**
+   * Real-time feed behind the Facebook-style toast. The global JwtAuthGuard
+   * covers this route too — the browser reads it with `fetch()` + ReadableStream
+   * so the JWT stays in the Authorization header (EventSource cannot set
+   * headers). Nest unsubscribes when the request closes, which runs `finalize`
+   * and drops this tab from the fan-out set.
+   */
+  @Sse("stream")
+  streamEvents(@CurrentUser() user: AuthUser) {
+    const userId = Number(user.id);
+    const subject = this.stream.subscribe(userId);
+    const cleanup = () => this.stream.unsubscribe(userId, subject);
+    // keep idle sockets alive through proxies that would otherwise buffer them
+    const heartbeat$ = interval(25_000).pipe(map(() => ({ type: "ping", data: "" })));
+    return merge(subject.asObservable(), heartbeat$).pipe(finalize(cleanup));
+  }
 
   /**
    * The badge number alone — polled by the navbar every 30s. The full list

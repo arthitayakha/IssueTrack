@@ -12,21 +12,22 @@ import type { DashboardCountRow } from "@kanban/shared";
  *
  * The ring sits to the LEFT of its legend wherever the card is wide enough,
  * so the card stays short instead of growing with every legend row; the legend
- * is capped at the ring's height and scrolls inside itself once it has more
- * rows than fit. The dashboard grid is one column below `md` and three from
- * `md`, so the row layout is on at `sm` (full-width card), off at `md` (each
- * card shrinks to ~270px — ring + legend side by side would leave no room for
- * names) and back on at `lg`. A dimension with no slice at all keeps the
- * stacked layout: there is nothing to sit beside.
+ * lives in a FIXED-height frame (identical across cards) and scrolls inside it
+ * with the scrollbar hidden once it has more rows than fit. The dashboard grid
+ * is one column below `md` and three from `md`, so the row
+ * layout is on at `sm` (full-width card), off at `md` (each card shrinks to
+ * ~270px — ring + legend side by side would leave no room for names) and back
+ * on at `lg`. A dimension with no slice at all keeps the stacked layout: there
+ * is nothing to sit beside.
  *
  * Colors come from `colorOf` when the caller has real ones (the status ring
  * uses each board column's own color, so the dashboard matches the board);
  * otherwise they cycle through the theme palette. The legend sits inside its
- * own bordered frame (`border` + `borderRadius: 2`, the reports empty-state
- * look) so the chart and the data read as two separate blocks, and lists name
- * + count for **every** row — a zero-count row keeps its place, because an
- * empty column is still board information — and every non-empty row is a
- * real `<button>`, so a slice and its legend row do exactly the same thing:
+ * own softly rounded frame so the chart and the data read as two separate
+ * blocks, and lists name + count for **every** row — a zero-count row keeps its
+ * place, because an empty column is still board information — and every
+ * non-empty row is a real `<button>`, so a slice and its legend row do exactly
+ * the same thing:
  * drill one level deeper (app → categories), open the issue list behind that
  * slice, or set the page's status cross-filter.
  *
@@ -164,12 +165,13 @@ export default function DonutChart({
               minWidth: 0,
               width: "100%",
               minHeight: 0,
-              // never taller than the ring — extra rows scroll inside instead
-              // of stretching the card
-              maxHeight: 140,
+              // a FIXED height keeps the two legend frames identical and
+              // short — four rows fit, the rest still scroll with no scrollbar
+              height: 136,
               border: 1,
               borderColor: "divider",
-              borderRadius: 2,
+              borderRadius: "12px",
+              bgcolor: "background.paper",
               overflow: "hidden",
               display: "flex",
               flexDirection: "column",
@@ -180,12 +182,18 @@ export default function DonutChart({
                 display: "grid",
                 gap: 0.4,
                 gridTemplateColumns: "1fr",
+                // keep the first row pinned to the top: `center` would cut the
+                // first row in half once the content overflows the frame (and
+                // the clipped part can't be scrolled back into view)
                 alignContent: "start",
                 flex: 1,
                 minHeight: 0,
                 overflowY: "auto",
                 px: 1,
                 py: 0.5,
+                // hide the scrollbar but keep wheel/touch scrolling
+                scrollbarWidth: "none",
+                "&::-webkit-scrollbar": { display: "none" },
               }}
             >
               {colored.map(({ row, color }) => {
@@ -206,14 +214,23 @@ export default function DonutChart({
                       width: "100%",
                       mx: -0.75,
                       px: 0.75,
-                      py: 0.4,
+                      py: 0.55,
                       border: "none",
-                      borderRadius: 1,
+                      borderRadius: 1.5,
                       bgcolor: selected ? "action.selected" : "transparent",
                       color: "inherit",
                       textAlign: "left",
                       cursor: empty ? "default" : "pointer",
                       opacity: faded ? 0.6 : 1,
+                      transition: "background-color 140ms ease",
+                      // suppress the browser's default orange focus ring on
+                      // mouse click, but keep a themed one for keyboard use
+                      outline: "none",
+                      "&:focus-visible": {
+                        outline: "2px solid",
+                        outlineColor: "primary.main",
+                        outlineOffset: "-2px",
+                      },
                       "&:not(:disabled):hover": {
                         bgcolor: selected ? "action.selected" : "action.hover",
                       },
@@ -236,7 +253,7 @@ export default function DonutChart({
                         minWidth: 0,
                         fontSize: 13.5,
                         fontWeight: selected ? 700 : 400,
-                        color: empty ? "text.disabled" : "text.secondary",
+                        color: empty ? "text.disabled" : "text.primary",
                         whiteSpace: "nowrap",
                         overflow: "hidden",
                         textOverflow: "ellipsis",
@@ -245,7 +262,14 @@ export default function DonutChart({
                       {row.name ?? "—"}
                     </Typography>
                     <Typography
-                      sx={{ color: "text.disabled", fontSize: 12, minWidth: 34, textAlign: "right" }}
+                      sx={{
+                        color: empty ? "text.disabled" : "text.primary",
+                        fontSize: 12.5,
+                        fontWeight: 700,
+                        fontVariantNumeric: "tabular-nums",
+                        minWidth: 30,
+                        textAlign: "right",
+                      }}
                     >
                       {row.count}
                     </Typography>

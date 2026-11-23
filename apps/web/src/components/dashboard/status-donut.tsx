@@ -1,16 +1,14 @@
 "use client";
 
-import { useState } from "react";
 import { Box, Button, Card, Typography } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import { useTranslations } from "next-intl";
 import DonutChart from "./donut-chart";
-import IssuesDrillDialog from "./issues-drill-dialog";
 import { resolveStatusColor } from "@/lib/status-color";
 import { useRouter } from "@/i18n/navigation";
 import { usePermissions } from "@/lib/permissions";
-import { reportsHref } from "@/lib/dashboard-nav";
-import type { DashboardCountRow, DashboardScope } from "@kanban/shared";
+import { drillHref } from "@/lib/dashboard-nav";
+import type { DashboardCountRow } from "@kanban/shared";
 
 /**
  * The status ring — one of the dashboard's three top-row cards (beside usage
@@ -26,17 +24,17 @@ import type { DashboardCountRow, DashboardScope } from "@kanban/shared";
  *
  * The whole filter state lives in this card rather than in a page-level chip:
  * the subtitle switches to "กำลังกรอง: X — คลิกอีกครั้งเพื่อล้าง" and a small
- * "ดู N งาน" button jumps to /reports filtered to that status (the drill
- * dialog only stays for seats without `report.view`, who would be bounced
- * off the reports page). The footer total is always the page-wide total —
- * this card never claims to be filtered.
+ * "ดู N งาน" button navigates to /reports filtered to that status — or to
+ * /boards?view=table with the same filter for seats without `report.view`,
+ * who would be bounced off the reports page. No popup: both destinations are
+ * real pages with the filter already applied. The footer total is always the
+ * page-wide total — this card never claims to be filtered.
  */
 export default function StatusDonut({
   rows,
   total,
   selectedId,
   onSelect,
-  scope,
   companyIds,
 }: {
   /** Every board column, zero-filled, in board order — never narrowed by `statusId`. */
@@ -49,16 +47,13 @@ export default function StatusDonut({
   selectedId: number | null;
   /** Toggle — picking the selected status again clears the cross-filter. */
   onSelect: (row: DashboardCountRow) => void;
-  scope: DashboardScope;
-  /** The page's company filter — carried into /reports and the drill list. */
+  /** The page's company filter — carried into the drill destination. */
   companyIds?: number[];
 }) {
   const theme = useTheme();
   const t = useTranslations("Dashboard");
   const router = useRouter();
   const { can } = usePermissions();
-  /** The list opened by "ดู N งาน" — null while the dialog is closed. */
-  const [listFor, setListFor] = useState<DashboardCountRow | null>(null);
 
   const selected =
     selectedId == null ? null : (rows.find((r) => r.id === selectedId) ?? null);
@@ -68,6 +63,9 @@ export default function StatusDonut({
       <Card
         elevation={0}
         sx={{
+          // let the grid stretch this card to the same height as its two
+          // siblings; the fixed header/subtitle/button slot below are what
+          // keep a status click from reflowing its contents
           height: "100%",
           display: "flex",
           flexDirection: "column",
@@ -83,40 +81,59 @@ export default function StatusDonut({
         <Box
           sx={{
             display: "flex",
-            alignItems: { xs: "flex-start", sm: "center" },
+            alignItems: "center",
             justifyContent: "space-between",
             gap: 1.5,
             mb: 1,
-            flexWrap: "wrap",
+            flexWrap: "nowrap",
+            // keep the header the same height in both states — otherwise
+            // selecting a status grows it and nudges the ring/legend/footer
+            minHeight: 48,
           }}
         >
-          <Box sx={{ minWidth: 0 }}>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
             <Typography sx={{ fontSize: 16, fontWeight: 700 }}>{t("status.title")}</Typography>
-            <Typography sx={{ fontSize: "12.5px", color: "text.disabled", mt: "2px" }}>
+            <Typography
+              sx={{
+                fontSize: "12.5px",
+                lineHeight: "19px",
+                height: "19px",
+                color: "text.disabled",
+                mt: "2px",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
               {selected
                 ? t("status.filtered", { name: selected.name ?? "—" })
                 : t("status.hint")}
             </Typography>
           </Box>
-          {selected && selected.count > 0 && (
+          {/* reserve the button's slot even when nothing is selected, so the
+              card never reflows on click (visibility keeps the layout) */}
+          <Box
+            sx={{
+              flexShrink: 0,
+              visibility: selected && selected.count > 0 ? "visible" : "hidden",
+            }}
+          >
             <Button
               size="small"
               variant="outlined"
               onClick={() => {
-                // to /reports with this status (+ the page's company filter as
-                // context); the dialog only stays for seats without
-                // report.view, who cannot open the reports page
-                if (can("report.view") && selected.id != null) {
-                  router.push(reportsHref({ status: selected.id, company: companyIds }));
-                  return;
-                }
-                setListFor(selected);
+                if (selected?.id == null) return;
+                // /reports for seats with the permission, otherwise the
+                // board's table view — never a popup (see drillHref)
+                router.push(
+                  drillHref(can("report.view"), { status: selected.id, company: companyIds }),
+                );
               }}
               sx={{ textTransform: "none", fontWeight: 600, flexShrink: 0 }}
             >
-              {t("filter.viewAll", { count: selected.count })}
+              {t("filter.viewAll", { count: selected?.count ?? 0 })}
             </Button>
-          )}
+          </Box>
         </Box>
 
         <DonutChart
@@ -140,20 +157,6 @@ export default function StatusDonut({
           </Typography>
         </Box>
       </Card>
-
-      {listFor && listFor.id != null && (
-        <IssuesDrillDialog
-          title={t("trend.issuesTitle", {
-            label: listFor.name ?? "—",
-            count: listFor.count,
-          })}
-          count={listFor.count}
-          source={{ kind: "dimension", dim: "status", id: listFor.id }}
-          scope={scope}
-          companyIds={companyIds}
-          onClose={() => setListFor(null)}
-        />
-      )}
     </>
   );
 }

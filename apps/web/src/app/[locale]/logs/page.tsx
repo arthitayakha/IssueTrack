@@ -349,8 +349,8 @@ export default function LogsPage() {
   return (
     <RequirePermission permission="log.view">
       <DashboardLayout>
-        {/* แถวเดียวกับ toolbar ของ /reports — ค้นหาชิดซ้าย ปุ่มที่เหลือชิดขวา
-            (เดิมเป็น control เปล่า ๆ 6 ชิ้นเรียงกัน ไม่มี label ดูเท่ากันหมด) */}
+        {/* แถวเดียวกับ toolbar ของหน้าบอร์ด — ค้นหา + ปฏิทิน + ประเภทอยู่ด้านซ้าย
+            (ตัวกรองกับคำค้นตอบคำถามเดียวกัน: จะเห็นรายการไหน) ส่วนปุ่มล้าง/ส่งออกชิดขวา */}
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2, flexWrap: "wrap" }}>
           <TextField
             size="small"
@@ -373,9 +373,8 @@ export default function LogsPage() {
             }}
           />
 
-          <Box sx={{ flex: 1, minWidth: 8 }} />
-
-          {/* ช่วงวันที่แบบ preset — แทน DatePicker 2 ช่อง (shared กับ /reports) */}
+          {/* ช่วงวันที่แบบ preset — แทน DatePicker 2 ช่อง (shared กับ /reports)
+              อยู่ข้างช่องค้นหาเหมือนแถบเครื่องมือหน้าบอร์ด */}
           <DateRangeIconButton
             value={range}
             onChange={(next) => {
@@ -388,9 +387,12 @@ export default function LogsPage() {
           />
 
           {/* ตัวกรองเดียว: ประเภท — dropdown แบบเดียวกับตัวเลือก view ของ /reports
-              (ไม่มี_chip จำนวน ไม่มี popover ผู้กระทำแล้ว) */}
+              (ไม่มี_chip จำนวน ไม่มี popover ผู้กระทำแล้ว); displayEmpty จำเป็นมาก —
+              MUI ไม่เรียก renderValue เมื่อค่าเป็น "" ถ้าไม่ใส่ → กล่องจะว่างเปล่า
+              แม้ renderValue จะคืน "ทุกประเภท" ก็ตาม */}
           <Select<ActivityLogType | "">
             size="small"
+            displayEmpty
             value={typeFilter}
             onChange={(e) => {
               setTypeFilter(e.target.value as ActivityLogType | "");
@@ -415,16 +417,6 @@ export default function LogsPage() {
             {TYPES.filter((value): value is ActivityLogType => value !== "").map((value) => (
               <MenuItem key={value} value={value} sx={TYPE_ITEM_SX}>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
-                  <Box
-                    component="span"
-                    sx={{
-                      width: 8,
-                      height: 8,
-                      flexShrink: 0,
-                      borderRadius: "50%",
-                      bgcolor: `${TYPE_COLOR[value]}.main`,
-                    }}
-                  />
                   <Typography sx={TYPE_ROW_TEXT_SX}>{t(`type.${value}`)}</Typography>
                   {typeFilter === value && (
                     <CheckIcon sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }} />
@@ -433,6 +425,9 @@ export default function LogsPage() {
               </MenuItem>
             ))}
           </Select>
+
+          {/* ปุ่มล้างตัวกรอง + ส่งออกชิดขวา */}
+          <Box sx={{ flex: 1, minWidth: 8 }} />
 
           {hasFilters && (
             <Button size="small" onClick={resetFilters} sx={{ textTransform: "none", fontWeight: 600 }}>

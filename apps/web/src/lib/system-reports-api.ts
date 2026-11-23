@@ -3,7 +3,21 @@
 import { apiFetch, apiFetchResponse } from "./api";
 import { useAuthStore } from "./auth-store";
 
+/** `closed` stays in the type for legacy rows — the detail dialog only offers 3. */
 export type SystemReportStatus = "open" | "in_progress" | "resolved" | "closed";
+/** The three statuses an admin can pick in the detail dialog. */
+export const VISIBLE_SYSTEM_REPORT_STATUSES: Exclude<SystemReportStatus, "closed">[] = [
+  "open",
+  "in_progress",
+  "resolved",
+];
+export type SystemReportProblemType = "bug" | "improvement" | "other";
+export const PROBLEM_TYPES: SystemReportProblemType[] = ["bug", "improvement", "other"];
+export const PROBLEM_TYPE_KEYS: Record<SystemReportProblemType, string> = {
+  bug: "problemTypeBug",
+  improvement: "problemTypeImprovement",
+  other: "problemTypeOther",
+};
 
 export interface SystemReportAttachment {
   id: number;
@@ -18,6 +32,7 @@ export interface SystemReport {
   title: string;
   description: string;
   pageUrl: string | null;
+  problemType: SystemReportProblemType;
   status: SystemReportStatus;
   reporterId: number;
   reporterName: string | null;
@@ -36,19 +51,24 @@ function getToken(): string | null {
 export async function createSystemReport(input: {
   title: string;
   description: string;
+  problemType: SystemReportProblemType;
   pageUrl?: string;
   files: File[];
 }): Promise<SystemReport> {
   const body = new FormData();
   body.append("title", input.title);
   body.append("description", input.description);
+  body.append("problemType", input.problemType);
   if (input.pageUrl?.trim()) body.append("pageUrl", input.pageUrl.trim());
   for (const file of input.files) body.append("files", file);
   return apiFetch<SystemReport>("/system-reports", { method: "POST", body }, getToken());
 }
 
-export async function fetchSystemReports(): Promise<SystemReport[]> {
-  return apiFetch<SystemReport[]>("/system-reports", {}, getToken());
+export async function fetchSystemReports(
+  problemType?: SystemReportProblemType,
+): Promise<SystemReport[]> {
+  const query = problemType ? `?problemType=${encodeURIComponent(problemType)}` : "";
+  return apiFetch<SystemReport[]>(`/system-reports${query}`, {}, getToken());
 }
 
 export async function fetchSystemReport(id: number): Promise<SystemReport> {

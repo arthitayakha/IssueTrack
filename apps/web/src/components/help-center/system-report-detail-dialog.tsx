@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import {
+  Avatar,
   Box,
   Button,
   Chip,
@@ -11,10 +12,12 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  IconButton,
   MenuItem,
   Select,
   Typography,
 } from "@mui/material";
+import CloseIcon from "@mui/icons-material/Close";
 import { useNotification } from "@/components/notification";
 import {
   appDialogContentSizing,
@@ -23,14 +26,16 @@ import {
 } from "@/components/common/dialog-style";
 import { errorMessage } from "@/lib/api";
 import { usePermissions } from "@/lib/permissions";
+import { timeAgo } from "@/lib/time-ago";
 import {
   fetchSystemReportAttachment,
   updateSystemReportStatus,
+  VISIBLE_SYSTEM_REPORT_STATUSES,
   type SystemReport,
   type SystemReportStatus,
 } from "@/lib/system-reports-api";
 
-const STATUSES: SystemReportStatus[] = ["open", "in_progress", "resolved", "closed"];
+// `closed` remains in the type/labels for legacy rows but is no longer offered.
 const STATUS_KEYS: Record<SystemReportStatus, string> = {
   open: "statusOpen",
   in_progress: "statusInProgress",
@@ -49,16 +54,21 @@ export default function SystemReportDetailDialog({
   onUpdated: (report: SystemReport) => void;
 }) {
   const t = useTranslations("SystemReports");
+  const locale = useLocale();
   const { notify } = useNotification();
   const { can } = usePermissions();
   const [status, setStatus] = useState<SystemReportStatus>("open");
   const [saving, setSaving] = useState(false);
+  /** A legacy `closed` row opens on the last live status; saving converts it. */
+  const baselineStatus: SystemReportStatus =
+    report?.status === "closed" ? "resolved" : (report?.status ?? "open");
 
   useEffect(() => {
-    if (report) setStatus(report.status);
-  }, [report]);
+    if (report) setStatus(baselineStatus);
+  }, [report, baselineStatus]);
 
   if (!report) return null;
+  const dirty = status !== baselineStatus;
 
   async function download(attachmentId: number, fileName: string) {
     try {
@@ -88,6 +98,12 @@ export default function SystemReportDetailDialog({
     }
   }
 
+  const infoTiles: { label: string; value: string }[] = [
+    { label: t("reporterEmail"), value: report.reporterEmail ?? "" },
+    { label: t("reporterPhone"), value: report.reporterPhone ?? "" },
+    ...(report.pageUrl ? [{ label: t("fieldPage"), value: report.pageUrl }] : []),
+  ];
+
   return (
     <Dialog
       open
@@ -102,34 +118,118 @@ export default function SystemReportDetailDialog({
             `linear-gradient(135deg, ${theme.palette.primary.main}14, ${theme.palette.info.main}08)`,
           borderBottom: 1,
           borderColor: "divider",
-          fontWeight: 700,
+          px: 2.5,
+          py: 1.75,
         }}
       >
-        {t("detailTitle")}
+        <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 1 }}>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="subtitle1" fontWeight={700} lineHeight={1.3}>
+              {t("detailTitle")}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              #{report.id} · {t("colCreated")} {timeAgo(report.createdAt, locale)}
+            </Typography>
+          </Box>
+          <IconButton size="small" onClick={onClose} aria-label={t("close")} sx={{ mt: -0.5, mr: -0.5 }}>
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </Box>
       </DialogTitle>
-      <DialogContent dividers sx={appDialogContentSizing}>
-        <Typography variant="subtitle1" fontWeight={700}>
-          {report.title}
-        </Typography>
-        <Typography variant="body2" sx={{ mt: 0.5 }}>
-          {t("colReporter")}: <b>{report.reporterName ?? `#${report.reporterId}`}</b>
-        </Typography>
-        <Typography variant="caption" color="text.secondary" component="div">
-          {t("reporterEmail")}: {report.reporterEmail || "—"} ·{" "}
-          {t("reporterPhone")}: {report.reporterPhone || "—"}
-        </Typography>
-        {report.pageUrl && (
-          <Typography variant="body2" sx={{ mt: 1.5 }}>
-            {t("fieldPage")}: {report.pageUrl}
+      <DialogContent dividers sx={{ ...appDialogContentSizing, p: 2 }}>
+        {/* identity */}
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+          <Avatar sx={{ width: 44, height: 44, fontWeight: 700, flexShrink: 0 }}>
+            {(report.reporterName ?? "#").trim().charAt(0).toUpperCase()}
+          </Avatar>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="h6" fontWeight={700} sx={{ lineHeight: 1.3, overflowWrap: "anywhere" }}>
+              {report.title}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {t("colReporter")}: <b>{report.reporterName ?? `#${report.reporterId}`}</b>
+            </Typography>
+          </Box>
+        </Box>
+
+        {/* contact tiles */}
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: { xs: "1fr", sm: "repeat(3, minmax(0, 1fr))" },
+            gap: 1,
+            mt: 1.5,
+          }}
+        >
+          {infoTiles.map(({ label, value }) => (
+            <Box
+              key={label}
+              sx={{ border: 1, borderColor: "divider", borderRadius: 2, px: 1.5, py: 1, minWidth: 0 }}
+            >
+              <Typography variant="caption" color="text.secondary" display="block">
+                {label}
+              </Typography>
+              <Typography variant="body2" noWrap title={value}>
+                {value || "—"}
+              </Typography>
+            </Box>
+          ))}
+          {can("system_report.update") && (
+            <Box
+              sx={{ border: 1, borderColor: "divider", borderRadius: 2, px: 1.5, py: 1, minWidth: 0 }}
+            >
+              <Typography variant="caption" color="text.secondary" display="block">
+                {t("colStatus")}
+              </Typography>
+              <Select
+                size="small"
+                value={status}
+                onChange={(e) => setStatus(e.target.value as SystemReportStatus)}
+                sx={{
+                  mt: 0.25,
+                  width: "100%",
+                  "& .MuiSelect-select": {
+                    py: 0.25,
+                    fontSize: 14,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  },
+                }}
+              >
+                {VISIBLE_SYSTEM_REPORT_STATUSES.map((s) => (
+                  <MenuItem key={s} value={s}>
+                    {t(STATUS_KEYS[s])}
+                  </MenuItem>
+                ))}
+              </Select>
+            </Box>
+          )}
+        </Box>
+
+        {/* description */}
+        <Box sx={{ mt: 1.75 }}>
+          <Typography variant="caption" color="text.secondary" display="block">
+            {t("fieldDescription")}
           </Typography>
-        )}
-        <Typography variant="body2" sx={{ mt: 2, whiteSpace: "pre-wrap" }}>
-          {report.description}
-        </Typography>
+          <Box
+            sx={{
+              mt: 0.5,
+              px: 1.5,
+              py: 1.25,
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 2,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            <Typography variant="body2">{report.description}</Typography>
+          </Box>
+        </Box>
 
         {report.attachments.length > 0 && (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="caption" color="text.secondary">
+          <Box sx={{ mt: 1.5 }}>
+            <Typography variant="caption" color="text.secondary" display="block">
               {t("colAttachments")}
             </Typography>
             <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 0.75 }}>
@@ -145,29 +245,12 @@ export default function SystemReportDetailDialog({
             </Box>
           </Box>
         )}
-
-        {can("system_report.update") && (
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 3 }}>
-            <Typography variant="body2">{t("changeStatus")}:</Typography>
-            <Select
-              size="small"
-              value={status}
-              onChange={(e) => setStatus(e.target.value as SystemReportStatus)}
-            >
-              {STATUSES.map((s) => (
-                <MenuItem key={s} value={s}>
-                  {t(STATUS_KEYS[s])}
-                </MenuItem>
-              ))}
-            </Select>
-          </Box>
-        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>{t("close")}</Button>
         {can("system_report.update") && (
-          <Button variant="contained" onClick={() => void save()} disabled={saving}>
-            {saving ? <CircularProgress size={18} /> : t("submit")}
+          <Button variant="contained" onClick={() => void save()} disabled={saving || !dirty}>
+            {saving ? <CircularProgress size={18} /> : t("save")}
           </Button>
         )}
       </DialogActions>

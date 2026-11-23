@@ -232,6 +232,23 @@ export async function fetchIssues(
     assigneeIds?: string[];
     reporterIds?: string[];
     /**
+     * Dashboard drill-down filters for the NULL slices — the board has no
+     * checkbox for these, but GET /issues accepts the flags. The board seeds
+     * them from the URL when a chart opened the table view.
+     */
+    noApp?: boolean;
+    noCategory?: boolean;
+    noPriority?: boolean;
+    /**
+     * Dashboard drill-down trend window. `series=completed` binds the window
+     * to the moment a card entered เสร็จสิ้น, otherwise to its creation — the
+     * API exposes both pairs of params (createdFrom/To, completedFrom/To).
+     */
+    createdFrom?: string;
+    createdTo?: string;
+    completedFrom?: string;
+    completedTo?: string;
+    /**
      * The board's hide policy — only the Kanban column fetch sets it. The
      * server then cuts the cards an active `issue.hide_from_board` rule
      * covers out of the response (count and search included); the table
@@ -280,6 +297,13 @@ export async function fetchIssues(
   if (filters?.reporterIds && filters.reporterIds.length > 0) {
     params.set("reporterIds", filters.reporterIds.join(","));
   }
+  if (filters?.noApp) params.set("noApp", "1");
+  if (filters?.noCategory) params.set("noCategory", "1");
+  if (filters?.noPriority) params.set("noPriority", "1");
+  if (filters?.createdFrom) params.set("createdFrom", filters.createdFrom);
+  if (filters?.createdTo) params.set("createdTo", filters.createdTo);
+  if (filters?.completedFrom) params.set("completedFrom", filters.completedFrom);
+  if (filters?.completedTo) params.set("completedTo", filters.completedTo);
   if (filters?.hideStaleDone) {
     params.set("hideStaleDone", "1");
   }

@@ -80,10 +80,11 @@ function makeService() {
   // issue_priorities lookup — null by default = "card has no priority" (medium)
   const priorities = repo();
   const permissions = { hasPermission: jest.fn().mockResolvedValue(true) };
+  const stream = { subscribe: jest.fn(), unsubscribe: jest.fn(), emit: jest.fn() };
   const service = new NotificationsService(
-    ...([notifications, users, mail, priorities, permissions] as unknown as ServiceArgs),
+    ...([notifications, users, mail, priorities, permissions, stream] as unknown as ServiceArgs),
   );
-  return { service, notifications, users, mail, priorities, permissions };
+  return { service, notifications, users, mail, priorities, permissions, stream };
 }
 
 const ISSUE = {
@@ -961,5 +962,67 @@ describe("NotificationsService.notifyContactMessage", () => {
     await expect(ctx.service.notifyContactMessage({ ...INPUT, message: "   " })).rejects.toThrow();
     await expect(ctx.service.notifyContactMessage({ ...INPUT, message: "x".repeat(201) })).rejects.toThrow();
     expect(ctx.notifications.save).not.toHaveBeenCalled();
+  });
+});
+
+describe("NotificationsService.notify — real-time stream fan-out", () => {
+  const ROW = {
+    id: 77,
+    userId: 42,
+    actorId: 9,
+    actor: { id: 9, name: "สมชาย" },
+    type: "assigned",
+    title: "ทดสอบระบบ",
+    context: null,
+    link: "/boards?issue=5",
+    issueId: 5,
+    appId: null,
+    companyId: null,
+    priority: "medium",
+    createdAt: new Date("2026-11-23T10:00:00Z"),
+  };
+
+  it("emits the same toResponse shape the inbox uses, to the row's owner", async () => {
+    const ctx = makeService();
+    ctx.notifications.save.mockResolvedValueOnce({ ...ROW, id: 77 });
+    ctx.notifications.findOne.mockResolvedValueOnce(ROW);
+
+    await ctx.service.notify({
+      userId: 42,
+      action: "assigned",
+      title: "ทดสอบระบบ",
+      actor: { actorId: 9 },
+    });
+    // fire-and-forget: let the requery microtask settle
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(ctx.notifications.findOne).toHaveBeenCalledWith({
+      where: { id: 77 },
+      relations: ["actor"],
+    });
+    expect(ctx.stream.emit).toHaveBeenCalledTimes(1);
+    const [userId, payload] = ctx.stream.emit.mock.calls[0] as [number, Record<string, unknown>];
+    expect(userId).toBe(42);
+    expect(payload).toMatchObject({
+      id: 77,
+      action: "assigned",
+      actorName: "สมชาย",
+      target: "ทดสอบระบบ",
+      issueId: 5,
+      priority: "medium",
+    });
+  });
+
+  it("skips a recipient that matches the actor (no self-toast)", async () => {
+    const ctx = makeService();
+    await ctx.service.notify({
+      userId: 9,
+      action: "assigned",
+      title: "ทดสอบระบบ",
+      actor: { actorId: 9 },
+    });
+    expect(ctx.notifications.save).not.toHaveBeenCalled();
+    expect(ctx.stream.emit).not.toHaveBeenCalled();
   });
 });

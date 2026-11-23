@@ -175,6 +175,7 @@ import { resolveStatusColor } from "@/lib/status-color";
 import { Pagination } from "@/components/pagination";
 import AttachmentPreviewDialog from "@/components/attachment-preview-dialog";
 import { FilterPanel, type FilterOption, type FilterSectionData } from "@/components/filter-panel";
+import { DateRangeIconButton, type DateRangeValue } from "@/components/date-range-select";
 import { useNotification } from "@/components/notification";
 
 function getErrorMessage(e: unknown, fallback: string): string | null {
@@ -182,6 +183,89 @@ function getErrorMessage(e: unknown, fallback: string): string | null {
   // `errorMessage` never leaks the browser's raw `Failed to fetch` — after
   // apiFetch's silent retries are exhausted the caller's own fallback is used
   return errorMessage(e, fallback);
+}
+
+/**
+ * The extra filters a dashboard drill sends to the board (see `boardsHref()`
+ * in `lib/dashboard-nav.ts`). GET /issues already accepts all of them — the
+ * board's checkbox state covers the rest, so these only need to ride along to
+ * both fetch sites (the main table/folder list and the Kanban columns).
+ */
+interface DrillIssueFilters {
+  noApp: boolean;
+  noCategory: boolean;
+  noPriority: boolean;
+  createdFrom: string;
+  createdTo: string;
+  completedFrom: string;
+  completedTo: string;
+}
+
+const EMPTY_DRILL_FILTERS: DrillIssueFilters = {
+  noApp: false,
+  noCategory: false,
+  noPriority: false,
+  createdFrom: "",
+  createdTo: "",
+  completedFrom: "",
+  completedTo: "",
+};
+
+/** Everything a drill link can seed — one parse, once on mount. */
+interface BoardUrlFilters {
+  view: "board" | "table" | "folder" | null;
+  statusIds: number[];
+  priorityIds: number[];
+  categoryIds: number[];
+  appIds: number[];
+  companyIds: number[];
+  assigneeIds: string[];
+  reporterIds: string[];
+  search: string;
+  drill: DrillIssueFilters;
+}
+
+function parsePositiveIds(raw: string | null): number[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
+function parseIdsAsStrings(raw: string | null): string[] {
+  if (!raw) return [];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function readBoardUrlFilters(params: URLSearchParams): BoardUrlFilters {
+  const flag = (key: string) => params.get(key) === "1" || params.get(key) === "true";
+  const view = params.get("view");
+  const from = params.get("from") ?? "";
+  const to = params.get("to") ?? "";
+  // a completed bar measures when cards entered เสร็จสิ้น, not when they were
+  // born — the API has a separate param pair for that (see reports-api)
+  const completed = params.get("series") === "completed";
+  return {
+    view: view === "board" || view === "table" || view === "folder" ? view : null,
+    statusIds: parsePositiveIds(params.get("status")),
+    priorityIds: parsePositiveIds(params.get("priority")),
+    categoryIds: parsePositiveIds(params.get("category")),
+    appIds: parsePositiveIds(params.get("app")),
+    companyIds: parsePositiveIds(params.get("company")),
+    assigneeIds: parseIdsAsStrings(params.get("assignee")),
+    reporterIds: parseIdsAsStrings(params.get("reporter")),
+    search: params.get("q") ?? "",
+    drill: {
+      noApp: flag("noApp"),
+      noCategory: flag("noCategory"),
+      noPriority: flag("noPriority"),
+      createdFrom: completed ? "" : from,
+      createdTo: completed ? "" : to,
+      completedFrom: completed ? from : "",
+      completedTo: completed ? to : "",
+    },
+  };
 }
 
 /*
@@ -2652,15 +2736,15 @@ function IssueDetailDialog({
                             </Box>
                           ) : (
                             <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
-                              <LockIcon sx={{ fontSize: 14, color: "text.disabled" }} />
-                              <Typography variant="body2" sx={{ fontFamily: "monospace", fontWeight: 600 }}>
-                                {(current?.actualFixDuration ?? 0) > 0
-                                  ? formatClock(current?.actualFixDuration ?? 0)
-                                  : "—"}
-                              </Typography>
-                              <Typography variant="caption" color="text.secondary">
-                                {t("detail.time.actualReadonlyHint")}
-                              </Typography>
+                              {(current?.actualFixDuration ?? 0) > 0 ? (
+                                <Typography variant="body2" sx={{ fontFamily: "monospace", fontWeight: 600 }}>
+                                  {formatClock(current?.actualFixDuration ?? 0)}
+                                </Typography>
+                              ) : (
+                                <Typography variant="body2" sx={{ fontFamily: "monospace", fontWeight: 600 }}>
+                                  —
+                                </Typography>
+                              )}
                             </Box>
                           )}
                         </>
@@ -3783,6 +3867,8 @@ function KanbanView({
   taskTypeGateIds,
   staleRules,
   cardOrder,
+  drillFilters,
+  dateRange,
 }: {
   statuses: IssueStatus[];
   labels: Label[];
@@ -3822,6 +3908,10 @@ function KanbanView({
    * (`sortOrder`) and `KanbanColumn`'s comparator, which must mirror it.
    */
   cardOrder: "desc" | "asc";
+  /** NULL / trend-window filters a dashboard drill seeded from the URL. */
+  drillFilters: DrillIssueFilters;
+  /** The toolbar's date range — filters cards by their creation date. */
+  dateRange: DateRangeValue;
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
@@ -3877,20 +3967,25 @@ function KanbanView({
   useEffect(() => {
     columnsRef.current = columns;
   }, [columns]);
+  /**
+   * `staleRules` lands with the move-policy fetch, after the first board load
+   * already asked the API to hide stale cards. Re-running `loadBoard` when it
+   * landed duplicated `GET /issues`; read it through a ref so the in-memory
+   * search tokens stay current without another request.
+   */
+  const staleRulesRef = useRef(staleRules);
+  useEffect(() => {
+    staleRulesRef.current = staleRules;
+  }, [staleRules]);
 
   const debouncedSearch = useDebouncedValue(searchQuery);
 
   /**
-   * Columns the board renders — the status FILTER narrows to the selected
-   * statuses only; that is its meaning for every status alike.
+   * The board renders ALL statuses at all times. The status filter narrows the
+   * CARDS — exactly like every other filter — instead of collapsing the board
+   * to a single column. Table/folder already behave this way.
    */
-  const visibleStatuses = useMemo(
-    () =>
-      selectedStatusIds.length === 0
-        ? localStatuses
-        : localStatuses.filter((s) => selectedStatusIds.includes(s.id)),
-    [localStatuses, selectedStatusIds],
-  );
+  const visibleStatuses = localStatuses;
 
   /**
    * The board's entry column — `localStatuses` keeps the API's position order,
@@ -3906,10 +4001,6 @@ function KanbanView({
    * Everything below still talks to `columns` exactly as before — the drag
    * preview / drop / cancel paths are untouched.
    */
-  const visibleStatusIds = useMemo(
-    () => visibleStatuses.map((s) => s.id),
-    [visibleStatuses],
-  );
 
   const loadBoard = useCallback(
     async (silent = false) => {
@@ -3935,7 +4026,10 @@ function KanbanView({
           fetchIssues(
             pageNum,
             100,
-            visibleStatusIds,
+            // Fetch every status: the board always renders all columns, and
+            // the status filter narrows the cards in memory below (same rule
+            // the table/folder use) instead of collapsing the board.
+            [],
             // Search is applied in memory below — the API's raw-timestamp
             // match can't find the Thai-formatted dates ("14 ต.ค. 69") the
             // cards actually show. All three views share one matcher now.
@@ -3950,6 +4044,11 @@ function KanbanView({
               companyIds: selectedCompanyIds,
               assigneeIds: selectedAssigneeIds,
               reporterIds: selectedReporterIds,
+              // dashboard drill filters (NULL slices + trend date window)
+              ...drillFilters,
+              // the toolbar's date range wins over a drill's window when set
+              createdFrom: dateRange.from || drillFilters.createdFrom || undefined,
+              createdTo: dateRange.to || drillFilters.createdTo || undefined,
               // the board hides stale cards AT THE API — column counts, pages
               // and search all drop them together (the table never sends this)
               hideStaleDone: true,
@@ -3968,9 +4067,19 @@ function KanbanView({
               )
             : [];
         if (boardRequestSeqRef.current !== seq) return;
-        const allIssues = [...first.data, ...rest.flatMap((r) => r.data)].filter((i) =>
-          matchesIssueSearch(i, debouncedSearch, staleSearchTokens(i, staleRules, t)),
-        );
+        const allIssues = [...first.data, ...rest.flatMap((r) => r.data)].filter((i) => {
+          if (
+            selectedStatusIds.length > 0 &&
+            (i.statusId === null || !selectedStatusIds.includes(i.statusId))
+          ) {
+            return false;
+          }
+          return matchesIssueSearch(
+            i,
+            debouncedSearch,
+            staleSearchTokens(i, staleRulesRef.current, t),
+          );
+        });
         const grouped: Record<number, BoardIssue[]> = {};
         for (const s of localStatuses) grouped[s.id] = [];
         for (const issue of allIssues) {
@@ -4011,7 +4120,7 @@ function KanbanView({
     },
     [
       localStatuses,
-      visibleStatusIds,
+      selectedStatusIds,
       debouncedSearch,
       roleName,
       cardOrder,
@@ -4021,16 +4130,17 @@ function KanbanView({
       selectedCompanyIds,
       selectedAssigneeIds,
       selectedReporterIds,
-      staleRules,
+      drillFilters,
+      dateRange,
       fail,
       t,
     ],
   );
 
   useEffect(() => {
-    if (visibleStatusIds.length === 0) return;
+    if (localStatuses.length === 0) return;
     void loadBoard();
-  }, [loadBoard, visibleStatusIds]);
+  }, [loadBoard, localStatuses]);
 
   const issueMap = useMemo(() => {
     const map = new Map<number, BoardIssue>();
@@ -6101,10 +6211,21 @@ function FolderView({
 
 function BoardsPageInner() {
   const t = useTranslations("Boards");
+  const ft = useTranslations("Filters");
   const { can, roleName } = usePermissions();
   const theme = useTheme();
   const router = useRouter();
   const searchParams = useSearchParams();
+  /**
+   * A dashboard drill link (`boardsHref()`) carries its filters in the URL.
+   * Parsed once and used as the INITIAL state below — later UI changes stay
+   * local and never rewrite the address bar (same contract as `?issue=`).
+   */
+  const seededRef = useRef<BoardUrlFilters | null>(null);
+  if (seededRef.current === null) {
+    seededRef.current = readBoardUrlFilters(new URLSearchParams(searchParams.toString()));
+  }
+  const seeded = seededRef.current;
   const currentUserId = useAuthStore((s) => s.user?.id) ?? null;
   const isCustomer = roleName === "customer";
   // Default view = the Kanban board for staff, the table for customers.
@@ -6113,7 +6234,7 @@ function BoardsPageInner() {
   // `roleName` resolves after the first render (usePermissions falls back to
   // "customer" while logged out). Customers are forced to the table here —
   // one place, regardless of what was chosen.
-  const [chosenView, setChosenView] = useState<"board" | "table" | "folder" | null>(null);
+  const [chosenView, setChosenView] = useState<"board" | "table" | "folder" | null>(seeded.view);
   const view: "board" | "table" | "folder" = isCustomer ? "table" : (chosenView ?? "board");
   const isBoardView = view === "board";
   const isTableView = view === "table";
@@ -6185,14 +6306,18 @@ function BoardsPageInner() {
   const [apps, setApps] = useState<App[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [users, setUsers] = useState<BoardMember[]>([]);
-  const [selectedStatusIds, setSelectedStatusIds] = useState<number[]>([]);
-  const [selectedPriorityIds, setSelectedPriorityIds] = useState<number[]>([]);
-  const [selectedCategoryIds, setSelectedCategoryIds] = useState<number[]>([]);
-  const [selectedAppIds, setSelectedAppIds] = useState<number[]>([]);
-  const [selectedCompanyIds, setSelectedCompanyIds] = useState<number[]>([]);
-  const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<string[]>([]);
-  const [selectedReporterIds, setSelectedReporterIds] = useState<string[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedStatusIds, setSelectedStatusIds] = useState<number[]>(seeded.statusIds);
+  const [selectedPriorityIds, setSelectedPriorityIds] = useState<number[]>(seeded.priorityIds);
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<number[]>(seeded.categoryIds);
+  const [selectedAppIds, setSelectedAppIds] = useState<number[]>(seeded.appIds);
+  const [selectedCompanyIds, setSelectedCompanyIds] = useState<number[]>(seeded.companyIds);
+  const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<string[]>(seeded.assigneeIds);
+  const [selectedReporterIds, setSelectedReporterIds] = useState<string[]>(seeded.reporterIds);
+  const [searchQuery, setSearchQuery] = useState(seeded.search);
+  /** NULL-slice + trend-window filters carried over from a dashboard drill. */
+  const [drillFilters, setDrillFilters] = useState<DrillIssueFilters>(seeded.drill);
+  /** Toolbar date range — filters cards by the date printed on each card. */
+  const [dateRange, setDateRange] = useState<DateRangeValue>({ from: "", to: "" });
   const [recycleBinOpen, setRecycleBinOpen] = useState(false);
   const [trashedIssues, setTrashedIssues] = useState<TrashedIssue[]>([]);
   const [trashDetailIssue, setTrashDetailIssue] = useState<TrashedIssue | null>(null);
@@ -6317,13 +6442,24 @@ function BoardsPageInner() {
     setSelectedAssigneeIds([]);
     setSelectedReporterIds([]);
     setSearchQuery("");
+    setDrillFilters(EMPTY_DRILL_FILTERS);
+    setDateRange({ from: "", to: "" });
+    void loadData(false, { from: "", to: "" });
   };
 
-  const loadData = useCallback(async (showLoading = true) => {
+  const loadData = useCallback(async (showLoading = true, rangeOverride?: DateRangeValue) => {
     if (showLoading) setLoading(true);
+    // The date-picker handler passes the new range explicitly so the fetch
+    // never runs one render behind the state it just set.
+    const range = rangeOverride ?? dateRange;
     try {
       const results = await Promise.allSettled([
-        fetchIssues(1, 100, [], "", roleName === "programmer"),
+        fetchIssues(1, 100, [], "", roleName === "programmer", {
+          ...drillFilters,
+          // an explicit toolbar range wins over a drill's trend window
+          createdFrom: range.from || drillFilters.createdFrom || undefined,
+          createdTo: range.to || drillFilters.createdTo || undefined,
+        }),
         fetchLabels(),
         fetchStatuses(),
         fetchPriorities(),
@@ -6366,11 +6502,25 @@ function BoardsPageInner() {
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [roleName, refreshTimers, fail, t]);
+  }, [roleName, refreshTimers, fail, t, drillFilters, dateRange]);
 
+  /**
+   * One automatic load per mount. StrictMode re-runs the mount effect and any
+   * late permission/i18n resolution re-creates `loadData` — both used to fire
+   * another full `GET /issues` batch, so the Network tab showed the same row
+   * 4–8 times on a single page open. Manual refresh / restore paths call
+   * `loadData` directly and are deliberately unaffected by this guard.
+   */
+  const loadDataRef = useRef(loadData);
   useEffect(() => {
-    loadData();
+    loadDataRef.current = loadData;
   }, [loadData]);
+  const didInitialLoadRef = useRef(false);
+  useEffect(() => {
+    if (didInitialLoadRef.current) return;
+    didInitialLoadRef.current = true;
+    void loadDataRef.current();
+  }, []);
 
   // Notification deep link: fetch that one card and open its detail dialog.
   // A card that is gone (trashed meanwhile, wrong permissions) just leaves the
@@ -6500,6 +6650,50 @@ function BoardsPageInner() {
         });
       }
     }
+
+    // Dashboard drill filters have no checkbox in the filter popover — show
+    // them as removable chips on the same row so the narrowed list is explainable.
+    if (drillFilters.createdFrom || drillFilters.createdTo) {
+      chips.push({
+        key: "drill-created",
+        label: ft("drillWindow", {
+          from: drillFilters.createdFrom || "…",
+          to: drillFilters.createdTo || "…",
+        }),
+        onDelete: () => setDrillFilters((p) => ({ ...p, createdFrom: "", createdTo: "" })),
+      });
+    }
+    if (drillFilters.completedFrom || drillFilters.completedTo) {
+      chips.push({
+        key: "drill-completed",
+        label: ft("drillCompleted", {
+          from: drillFilters.completedFrom || "…",
+          to: drillFilters.completedTo || "…",
+        }),
+        onDelete: () => setDrillFilters((p) => ({ ...p, completedFrom: "", completedTo: "" })),
+      });
+    }
+    if (drillFilters.noApp) {
+      chips.push({
+        key: "drill-no-app",
+        label: ft("drillNoApp"),
+        onDelete: () => setDrillFilters((p) => ({ ...p, noApp: false })),
+      });
+    }
+    if (drillFilters.noCategory) {
+      chips.push({
+        key: "drill-no-category",
+        label: ft("drillNoCategory"),
+        onDelete: () => setDrillFilters((p) => ({ ...p, noCategory: false })),
+      });
+    }
+    if (drillFilters.noPriority) {
+      chips.push({
+        key: "drill-no-priority",
+        label: ft("drillNoPriority"),
+        onDelete: () => setDrillFilters((p) => ({ ...p, noPriority: false })),
+      });
+    }
     return chips;
   }, [
     statuses,
@@ -6515,6 +6709,8 @@ function BoardsPageInner() {
     selectedCategoryIds,
     selectedAssigneeIds,
     selectedReporterIds,
+    drillFilters,
+    ft,
     theme,
   ]);
 
@@ -6641,6 +6837,57 @@ function BoardsPageInner() {
           // filters to nothing and only a refresh clears it.
           inputProps={{ autoComplete: "off", name: "board-search" }}
         />
+        {/* The shared calendar/range popover used by reports + dashboard —
+            here it filters cards by their creation date (the date on a card). */}
+        <DateRangeIconButton
+          value={dateRange}
+          onChange={(next) => {
+            setDateRange(next);
+            void loadData(false, next);
+          }}
+        />
+        {/* Filter sits next to search: both answer "which cards do I see?"
+            (left = query, right = view/utility). Anchored here so the popover
+            opens from the left instead of the screen edge. */}
+        <Tooltip title={t("filter.label")}>
+          <Badge
+            badgeContent={filterCount}
+            max={99}
+            overlap="circular"
+            sx={{
+              "& .MuiBadge-badge": {
+                minWidth: 16,
+                height: 16,
+                px: 0.4,
+                fontSize: 10,
+                fontWeight: 700,
+                lineHeight: 1,
+                bgcolor: "primary.contrastText",
+                color: "primary.main",
+                top: 4,
+                right: 4,
+              },
+            }}
+          >
+            <IconButton
+              size="small"
+              onClick={(event) => setFilterAnchor(event.currentTarget)}
+              aria-haspopup="dialog"
+              aria-expanded={Boolean(filterAnchor)}
+              sx={{
+                width: 36,
+                height: 36,
+                color: filterCount > 0 ? "primary.contrastText" : "text.secondary",
+                bgcolor: filterCount > 0 ? "primary.main" : "transparent",
+                "&:hover": {
+                  bgcolor: filterCount > 0 ? "primary.dark" : "action.hover",
+                },
+              }}
+            >
+              <FilterListIcon sx={{ fontSize: 20 }} />
+            </IconButton>
+          </Badge>
+        </Tooltip>
         <Box
           className="board-toolbar-icons"
           sx={{
@@ -6717,82 +6964,12 @@ function BoardsPageInner() {
               </IconButton>
             </Tooltip>
           )}
-          <Tooltip title={t("filter.label")}>
-            <Badge
-              badgeContent={filterCount}
-              max={99}
-              overlap="circular"
-              sx={{
-                "& .MuiBadge-badge": {
-                  minWidth: 16,
-                  height: 16,
-                  px: 0.4,
-                  fontSize: 10,
-                  fontWeight: 700,
-                  lineHeight: 1,
-                  bgcolor: "primary.contrastText",
-                  color: "primary.main",
-                  top: 4,
-                  right: 4,
-                },
-              }}
-            >
-              <IconButton
-                size="small"
-                onClick={(event) => setFilterAnchor(event.currentTarget)}
-                aria-haspopup="dialog"
-                aria-expanded={Boolean(filterAnchor)}
-                sx={{
-                  width: 36,
-                  height: 36,
-                  color: filterCount > 0 ? "primary.contrastText" : "text.secondary",
-                  bgcolor: filterCount > 0 ? "primary.main" : "transparent",
-                  "&:hover": {
-                    bgcolor: filterCount > 0 ? "primary.dark" : "action.hover",
-                  },
-                }}
-              >
-                <FilterListIcon sx={{ fontSize: 20 }} />
-              </IconButton>
-            </Badge>
-          </Tooltip>
         </Box>
       </Box>
 
-      {filterCount > 0 && (
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
-          {activeFilterChips.map((chip) => (
-            <Chip
-              key={chip.key}
-              size="small"
-              variant="outlined"
-              label={chip.label}
-              icon={chip.icon}
-              avatar={chip.avatar}
-              onDelete={chip.onDelete}
-              deleteIcon={<CloseIcon sx={{ fontSize: 14 }} />}
-              sx={{
-                borderColor: chip.color ?? "divider",
-                fontWeight: 600,
-                "&:hover": { bgcolor: "action.hover" },
-              }}
-            />
-          ))}
-          <Button
-            size="small"
-            onClick={handleClearAllFilters}
-            startIcon={<DeleteOutlineIcon fontSize="small" />}
-            sx={{
-              ml: 0.5,
-              textTransform: "none",
-              fontWeight: 600,
-              color: "text.secondary",
-            }}
-          >
-            {t("filter.clearAll")}
-          </Button>
-        </Box>
-      )}
+      {/* No selected-filter chip row here: the filter button's badge carries the
+          active count and the popover keeps per-filter chips + "ล้างทั้งหมด".
+          A second row under the toolbar only pushed the board down. */}
     </Box>
   );
 
@@ -6859,6 +7036,8 @@ function BoardsPageInner() {
                 taskTypeGateIds={taskTypeGateIds}
                 staleRules={staleRules}
                 cardOrder={cardOrder}
+                drillFilters={drillFilters}
+                dateRange={dateRange}
                 toolbar={toolbar}
               />
             ) : (
@@ -6951,8 +7130,14 @@ function BoardsPageInner() {
             open={!!deepLinkIssue}
             onClose={() => {
               setDeepLinkIssue(null);
-              // drop ?issue= so refreshing the page doesn't reopen the dialog
-              if (issueParam) router.replace("/boards");
+              // drop only ?issue= so refreshing the page doesn't reopen the
+              // dialog — a drill link's other filters must survive the close
+              if (issueParam) {
+                const next = new URLSearchParams(searchParams.toString());
+                next.delete("issue");
+                const qs = next.toString();
+                router.replace(`/boards${qs ? `?${qs}` : ""}`);
+              }
             }}
             statuses={statuses}
             labels={labels}

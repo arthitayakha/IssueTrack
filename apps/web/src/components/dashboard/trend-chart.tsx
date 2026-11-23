@@ -22,7 +22,8 @@ import type {
 import { DateRangeIconButton } from "@/components/date-range-select";
 import { formatBucketLabel } from "./trend-labels";
 import { useRouter } from "@/i18n/navigation";
-import { bucketToRange, reportsHref } from "@/lib/dashboard-nav";
+import { usePermissions } from "@/lib/permissions";
+import { bucketToRange, drillHref } from "@/lib/dashboard-nav";
 
 /**
  * Trend chart: two bars per bucket (day / week / month / year) —
@@ -44,11 +45,12 @@ import { bucketToRange, reportsHref } from "@/lib/dashboard-nav";
  *     never span a different period than the query did.
  *
  * Clicking EITHER bar navigates to /reports filtered to that bucket's
- * `from`/`to` (plus the active status and company filters). The created bar
- * leaves `series` empty = the ordinary created-date list; the completed bar
- * sends `series=completed` so /reports filters by when cards entered
- * เสร็จสิ้น — the two bars therefore open two DIFFERENT lists that each add
- * up to the number on the bar.
+ * `from`/`to` (plus the active status and company filters) — or to
+ * /boards?view=table with the same window for seats without `report.view`.
+ * The created bar leaves `series` empty = the ordinary created-date list;
+ * the completed bar sends `series=completed` so the destination filters by
+ * when cards entered เสร็จสิ้น — the two bars therefore open two DIFFERENT
+ * lists that each add up to the number on the bar.
  */
 
 const PERIODS: DashboardPeriod[] = ["day", "week", "month", "year"];
@@ -235,6 +237,7 @@ export default function TrendChart({
   const t = useTranslations("Dashboard");
   const locale = useLocale();
   const router = useRouter();
+  const { can } = usePermissions();
 
   /**
    * Our own tooltip — Recharts' <Tooltip> is deliberately NOT used: it owns
@@ -275,16 +278,17 @@ export default function TrendChart({
     { key: "completed", label: t("trend.seriesCompleted"), color: theme.custom.chartColors.completed },
   ];
   /**
-   * EITHER bar navigates to /reports with this bucket's range. The created
-   * bar needs no `series`; the completed bar sends `series=completed` so the
-   * report cuts by "moved into เสร็จสิ้น" instead of "created at" — two
-   * different lists that each add up to the number on the bar.
+   * EITHER bar navigates with this bucket's range. The created bar needs no
+   * `series`; the completed bar sends `series=completed` so the destination
+   * cuts by "moved into เสร็จสิ้น" instead of "created at" — two different
+   * lists that each add up to the number on the bar. Seats without
+   * `report.view` land on the board's table view with the same window.
    */
   const openBucket = (payload: Partial<Bucket> | undefined, seriesKey: DashboardTrendSeries) => {
     if (!payload?.bucket) return;
     const { from, to } = bucketToRange(payload.bucket, period);
     router.push(
-      reportsHref({
+      drillHref(can("report.view"), {
         from,
         to,
         series: seriesKey === "completed" ? "completed" : null,

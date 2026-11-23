@@ -9,7 +9,7 @@ import {
   UpdateDateColumn,
 } from "typeorm";
 import { User } from "../../auth/entities/user.entity";
-import { SystemReportAttachment } from "./system-report-attachment.entity";
+import { Attachment } from "../../attachments/entities/attachment.entity";
 
 /** รายงานบั๊กของระบบเองจากศูนย์ช่วยเหลือ (คนละอย่างกับงานบนบอร์ด) */
 @Entity("system_reports")
@@ -33,6 +33,10 @@ export class SystemReport {
   @Column({ name: "page_url", type: "varchar", length: 500, nullable: true })
   pageUrl!: string | null;
 
+  /** ประเภทปัญหา (bug / improvement / other) — migration 1841 */
+  @Column({ name: "problem_type", type: "varchar", length: 30, default: "other" })
+  problemType!: string;
+
   @Column({ type: "varchar", length: 20, default: "open" })
   status!: string;
 
@@ -42,6 +46,7 @@ export class SystemReport {
   @UpdateDateColumn({ name: "updated_at" })
   updatedAt!: Date;
 
-  @OneToMany(() => SystemReportAttachment, (a) => a.report, { cascade: true })
-  attachments?: SystemReportAttachment[];
+  /** ไฟล์แนบอยู่ในตาราง `attachments` ร่วมกับของงาน (แยกด้วย `system_report_id`) */
+  @OneToMany(() => Attachment, (a) => a.systemReport, { cascade: true })
+  attachments?: Attachment[];
 }

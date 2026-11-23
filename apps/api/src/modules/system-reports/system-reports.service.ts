@@ -13,8 +13,13 @@ import type { AuthUser } from "../auth/auth-user";
 import { PermissionsService } from "../permissions/permissions.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { SystemReport } from "./entities/system-report.entity";
-import { SystemReportAttachment } from "./entities/system-report-attachment.entity";
-import type { CreateSystemReportDto, SystemReportStatus } from "./dto/system-report.dto";
+import { Attachment } from "../attachments/entities/attachment.entity";
+import type {
+  CreateSystemReportDto,
+  SystemReportProblemType,
+  SystemReportStatus,
+} from "./dto/system-report.dto";
+import { SYSTEM_REPORT_PROBLEM_TYPES } from "./dto/system-report.dto";
 
 function resolveFilePath(storedPath: string): string {
   const primary = join(UPLOADS_DIR, storedPath);
@@ -27,8 +32,8 @@ export class SystemReportsService {
   constructor(
     @InjectRepository(SystemReport)
     private readonly reports: Repository<SystemReport>,
-    @InjectRepository(SystemReportAttachment)
-    private readonly attachments: Repository<SystemReportAttachment>,
+    @InjectRepository(Attachment)
+    private readonly attachments: Repository<Attachment>,
     private readonly permissions: PermissionsService,
     private readonly notifications: NotificationsService,
   ) {}
@@ -61,6 +66,7 @@ export class SystemReportsService {
       title: report.title,
       description: report.description,
       pageUrl: report.pageUrl,
+      problemType: report.problemType ?? "other",
       status: report.status,
       reporterName: report.reporter?.name ?? null,
       reporterEmail: report.reporter?.email ?? null,
@@ -90,6 +96,7 @@ export class SystemReportsService {
         title: dto.title.trim(),
         description: dto.description.trim(),
         pageUrl: dto.pageUrl?.trim() || null,
+        problemType: dto.problemType ?? "other",
         status: "open",
       }),
     );
@@ -97,7 +104,7 @@ export class SystemReportsService {
     if (files.length > 0) {
       const rows = files.map((file) =>
         this.attachments.create({
-          reportId: report.id,
+          systemReportId: report.id,
           fileName: file.originalname,
           // เก็บพาธแบบเดียวกับ attachments ของงาน เพื่อให้ resolveFilePath ใช้ร่วมกันได้
           filePath: join("IssueTrack", "backend", "uploads", file.filename),
@@ -124,11 +131,18 @@ export class SystemReportsService {
     return this.toResponse(await this.findReport(report.id));
   }
 
-  /** แอดมินเห็นทั้งหมด คนอื่นเห็นเฉพาะของตัวเอง */
-  async list(user: AuthUser) {
+  /** แอดมินเห็นทั้งหมด คนอื่นเห็นเฉพาะของตัวเอง · กรอง problemType ได้ (ไม่ระบุ = ทั้งหมด) */
+  async list(user: AuthUser, problemType?: string) {
     const all = await this.canSeeAll(user);
+    const type =
+      problemType && (SYSTEM_REPORT_PROBLEM_TYPES as readonly string[]).includes(problemType)
+        ? (problemType as SystemReportProblemType)
+        : undefined;
     const rows = await this.reports.find({
-      where: all ? {} : { reporterId: Number(user.id) },
+      where: {
+        ...(all ? {} : { reporterId: Number(user.id) }),
+        ...(type ? { problemType: type } : {}),
+      },
       relations: ["attachments", "reporter"],
       order: { createdAt: "DESC", id: "DESC" },
       take: 200,
@@ -153,7 +167,9 @@ export class SystemReportsService {
   async download(reportId: number, attachmentId: number, res: Response, user: AuthUser) {
     const report = await this.findReport(reportId);
     await this.assertCanView(report, user);
-    const attachment = await this.attachments.findOne({ where: { id: attachmentId, reportId } });
+    const attachment = await this.attachments.findOne({
+      where: { id: attachmentId, systemReportId: reportId },
+    });
     if (!attachment) throw new NotFoundException(`Attachment ${attachmentId} not found`);
 
     const fullPath = resolveFilePath(attachment.filePath);

@@ -6,6 +6,7 @@ import {
   Param,
   ParseIntPipe,
   Patch,
+  Query,
   Post,
   Res,
   UploadedFiles,
@@ -67,8 +68,8 @@ export class SystemReportsController {
 
   /** แอดมินเห็นทั้งหมด ที่เหลือเห็นเฉพาะของตัวเอง (กรองใน service) */
   @Get()
-  list(@CurrentUser() user: AuthUser) {
-    return this.service.list(user);
+  list(@CurrentUser() user: AuthUser, @Query("problemType") problemType?: string) {
+    return this.service.list(user, problemType);
   }
 
   @Get(":id")

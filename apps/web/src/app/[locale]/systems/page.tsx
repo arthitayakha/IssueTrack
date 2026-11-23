@@ -728,8 +728,8 @@ export default function SystemsPage() {
     <RequirePermission permission="system.view">
       <DashboardLayout>
         <Box>
-          {/* แถว toolbar รูปแบบเดียวกับหน้าบอร์ด: ช่องค้นหาชิดซ้าย (กว้างสุด 480) —
-              ปุ่มตัวกรอง + ปุ่มเพิ่มข้อมูล ชิดขวา (ml: auto) */}
+          {/* แถว toolbar รูปแบบเดียวกับหน้าบอร์ด: ช่องค้นหาชิดซ้าย (กว้างสุด 480)
+              แล้วตัวกรองอยู่ข้างช่องค้นหา — ปุ่มเพิ่มข้อมูลชิดขวา (ml: auto) */}
           <Box
             sx={{
               display: "flex",
@@ -763,50 +763,52 @@ export default function SystemsPage() {
               }}
             />
 
-            {/* ปุ่มฝั่งขวาชิดขวา (ml: auto) — ตัวกรองอยู่ขวาเหมือนหน้าบอร์ด */}
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
-              {/* ปุ่ม trigger แบบเดียวกับบอร์ด — ปกติโปร่งใส เติมสีเมื่อมี filter ค้าง */}
-              <Tooltip title={tf("title")}>
-                <Badge
-                  badgeContent={totalSelected}
-                  max={99}
-                  overlap="circular"
+            {/* ตัวกรองอยู่ข้างช่องค้นหา — รวมคำถาม "จะเห็นแถวไหน" ไว้ด้านซ้าย
+                เหมือนหน้าบอร์ด (ฝั่งขวาเหลือแค่ปุ่มเพิ่มข้อมูล); ปุ่ม trigger แบบเดียวกับบอร์ด —
+                ปกติโปร่งใส เติมสีเมื่อมี filter ค้าง */}
+            <Tooltip title={tf("title")}>
+              <Badge
+                badgeContent={totalSelected}
+                max={99}
+                overlap="circular"
+                sx={{
+                  "& .MuiBadge-badge": {
+                    minWidth: 16,
+                    height: 16,
+                    px: 0.4,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    lineHeight: 1,
+                    bgcolor: "primary.contrastText",
+                    color: "primary.main",
+                    top: 4,
+                    right: 4,
+                  },
+                }}
+              >
+                <IconButton
+                  size="small"
+                  onClick={(event) => setFilterAnchor(event.currentTarget)}
+                  aria-haspopup="dialog"
+                  aria-expanded={Boolean(filterAnchor)}
+                  aria-label={tf("title")}
                   sx={{
-                    "& .MuiBadge-badge": {
-                      minWidth: 16,
-                      height: 16,
-                      px: 0.4,
-                      fontSize: 10,
-                      fontWeight: 700,
-                      lineHeight: 1,
-                      bgcolor: "primary.contrastText",
-                      color: "primary.main",
-                      top: 4,
-                      right: 4,
+                    width: 36,
+                    height: 36,
+                    color: totalSelected > 0 ? "primary.contrastText" : "text.secondary",
+                    bgcolor: totalSelected > 0 ? "primary.main" : "transparent",
+                    "&:hover": {
+                      bgcolor: totalSelected > 0 ? "primary.dark" : "action.hover",
                     },
                   }}
                 >
-                  <IconButton
-                    size="small"
-                    onClick={(event) => setFilterAnchor(event.currentTarget)}
-                    aria-haspopup="dialog"
-                    aria-expanded={Boolean(filterAnchor)}
-                    aria-label={tf("title")}
-                    sx={{
-                      width: 36,
-                      height: 36,
-                      color: totalSelected > 0 ? "primary.contrastText" : "text.secondary",
-                      bgcolor: totalSelected > 0 ? "primary.main" : "transparent",
-                      "&:hover": {
-                        bgcolor: totalSelected > 0 ? "primary.dark" : "action.hover",
-                      },
-                    }}
-                  >
-                    <FilterListIcon sx={{ fontSize: 20 }} />
-                  </IconButton>
-                </Badge>
-              </Tooltip>
+                  <FilterListIcon sx={{ fontSize: 20 }} />
+                </IconButton>
+              </Badge>
+            </Tooltip>
 
+            {/* ปุ่มเพิ่มข้อมูลชิดขวา (ml: auto) */}
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
               {can("system.create") && (
                 <Button variant="contained" startIcon={<AddIcon />} onClick={openAddApp}>
                   {t("addData")}

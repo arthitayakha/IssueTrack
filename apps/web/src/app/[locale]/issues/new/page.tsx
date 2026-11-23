@@ -21,7 +21,6 @@ import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CheckIcon from "@mui/icons-material/Check";
 import CloseIcon from "@mui/icons-material/Close";
 import CloudUploadIcon from "@mui/icons-material/CloudUpload";
-import PostAddIcon from "@mui/icons-material/PostAdd";
 import SearchIcon from "@mui/icons-material/Search";
 import SendIcon from "@mui/icons-material/Send";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
@@ -236,22 +235,8 @@ export default function ReportIssuePage() {
               boxShadow: theme.custom.cardShadow,
             }}
           >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, p: 2.5, pb: 2 }}>
-              <Box
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 44,
-                  height: 44,
-                  borderRadius: 2,
-                  bgcolor: "sky.light",
-                  flexShrink: 0,
-                }}
-              >
-                <PostAddIcon sx={{ fontSize: 26, color: "primary.main" }} />
-              </Box>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Box sx={{ p: 2.5, pb: 2 }}>
+              <Box sx={{ minWidth: 0 }}>
                 <Typography variant="h6" fontWeight={700} sx={{ lineHeight: 1.3 }}>
                   {t("reportIssueTitle")}
                 </Typography>

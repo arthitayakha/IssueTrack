@@ -18,7 +18,7 @@ import type {
  * a lazy chunk that loads only when the user clicks Export PDF.
  */
 
-const FONT_FAMILY = "Sarabun";
+export const FONT_FAMILY = "Sarabun";
 const FONT_FILES = {
   regular: "/fonts/Sarabun-Regular.ttf",
   bold: "/fonts/Sarabun-Bold.ttf",
@@ -299,7 +299,7 @@ type PdfMakeModule = typeof import("pdfmake");
  * default and a namespace that already carries the methods.
  */
 let pdfMakePromise: Promise<PdfMakeModule> | null = null;
-async function getPdfMake(): Promise<PdfMakeModule> {
+export async function getPdfMake(): Promise<PdfMakeModule> {
   pdfMakePromise ??= (async () => {
     const mod = (await import("pdfmake")) as PdfMakeModule & {
       default?: PdfMakeModule;
@@ -330,7 +330,7 @@ async function fetchFont(url: string): Promise<string> {
 
 /** Register Sarabun once per session (retries after a failed first attempt). */
 let fontsPromise: Promise<void> | null = null;
-function ensureFonts(pdfMake: PdfMakeModule): Promise<void> {
+export function ensureFonts(pdfMake: PdfMakeModule): Promise<void> {
   fontsPromise ??= (async () => {
     const [regular, bold] = await Promise.all([
       fetchFont(FONT_FILES.regular),

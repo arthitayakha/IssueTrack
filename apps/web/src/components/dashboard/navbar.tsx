@@ -24,18 +24,19 @@ import ProfileDialog from "./profile-dialog";
 import NotificationPopover, {
   type NotificationListStatus,
 } from "@/components/notifications/notification-popover";
-import ContactCustomerDialog, {
-  type ContactTarget,
-} from "@/components/notifications/contact-customer-dialog";
 import HelpCenterDialog from "../help-center-dialog";
 import {
   clearNotifications,
   deleteNotification,
-  fetchAdminContacts,
   fetchNotificationCount,
   fetchNotifications,
   type NotificationPage,
 } from "@/lib/notifications-api";
+import {
+  broadcastNotificationRead,
+  subscribeToNotificationReads,
+  subscribeToNotifications,
+} from "@/lib/notification-stream";
 
 export const DRAWER_WIDTH = 240;
 
@@ -115,39 +116,37 @@ export default function Navbar({
   const [listStatus, setListStatus] = useState<ListStatus>("idle");
   const [unreadCount, setUnreadCount] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  /** A load-more that keeps returning nothing shows a manual retry instead of freezing. */
+  const [loadMoreBlocked, setLoadMoreBlocked] = useState(false);
   const [bellAnchorEl, setBellAnchorEl] = useState<HTMLElement | null>(null);
   // account popup — opened from the navbar avatar or the bell's gear
   const [profileOpen, setProfileOpen] = useState(false);
-  // contact popup — the 🎧 button on this navbar (not inside the bell inbox)
-  const [contactTarget, setContactTarget] = useState<ContactTarget | null>(null);
   // help center dialog — the SupportAgentIcon button on this navbar
   const [helpCenterOpen, setHelpCenterOpen] = useState(false);
-
-  /** ลูกค้า/สตาฟฟ์กด "ติดต่อแอดมิน" ในศูนย์ช่วยเหลือ → โชว์แอดมินที่ active */
-  const openContact = useCallback(() => {
-    const target: ContactTarget = { appName: "", companyName: "", contacts: [] };
-    setContactTarget(target);
-    void fetchAdminContacts()
-      .then((contacts) => setContactTarget({ ...target, contacts }))
-      .catch(() => {
-        /* fail-open: ป๊อปอัพโชว์ข้อความ "ยังไม่มีข้อมูลติดต่อ" แทน */
-      });
-  }, []);
 
   // polling and scroll-loading both need a fresh view of what is on screen
   const inboxRef = useRef(inbox);
   inboxRef.current = inbox;
   const loadingMoreRef = useRef(false);
   /**
-   * `items.length` of the last load-more that returned **nothing new** (rows
-   * shifted under a new arrival). Retrying the same page would loop forever —
-   * while the length matches this, the scroll-load waits for the list itself
-   * to change (a read, or the next refresh, which resets it).
+   * Number of whole PAGE_SIZE pages already requested from page 1 — the ONLY
+   * source for the next offset. Deriving it from `items.length` is what broke
+   * scroll-loading: reading a row deletes it locally and an SSE row is
+   * prepended, so the count no longer matches the server's page boundaries.
    */
-  const stalledAtRef = useRef(-1);
-  const listSeqRef = useRef(0); // out-of-order guard for list responses
+  const loadedPagesRef = useRef(1);
+  /** Load-more has its own guard — the 10s refresh must not drop its response. */
+  const moreSeqRef = useRef(0);
+  /** Consecutive empty load-mores. One triggers a prefix resync, two offer retry. */
+  const emptyLoadsRef = useRef(0);
+  const listSeqRef = useRef(0); // out-of-order guard for list refreshes
   const statusRef = useRef(listStatus);
   statusRef.current = listStatus;
+  // Live SSE rows and the 10s poll both land in the same inbox — never count
+  // or prepend an id twice.
+  const seenRef = useRef<Set<number>>(new Set());
+  // ids already read — a late/duplicate SSE frame must never resurrect a row
+  const readRef = useRef<Set<number>>(new Set());
 
   /** Badge refresh — cheap COUNT only, never the rows. */
   const refreshCount = useCallback(async () => {
@@ -173,17 +172,27 @@ export default function Navbar({
       // (which yanks the scroll position mid-read) — leave the rows alone; the
       // badge has its own COUNT on the same tick, and nothing else is stale.
       if (inboxRef.current.items.length > MAX_ROWS) return;
-      // Page-aligned refresh: limit = a whole multiple of PAGE_SIZE covering
-      // every row already on screen, so (1) the list never shrinks while the
-      // user is reading it, and (2) every loaded batch stays a whole number of
-      // pages — the next load-more can then ask for the page right after the
-      // rows on screen instead of re-fetching pages it already has (the bug
-      // behind "scroll ถึงท้ายแล้วไม่มีอะไรขึ้น ต้องรอรอบถัดไป").
-      const pages = Math.max(1, Math.ceil(inboxRef.current.items.length / PAGE_SIZE));
+      // Page-aligned refresh: the window never shrinks, because it is sized by
+      // the pages actually requested (not by `items.length`, which drifts when
+      // a row is read or an SSE row is prepended).
+      const pages = Math.max(
+        1,
+        loadedPagesRef.current,
+        Math.ceil(inboxRef.current.items.length / PAGE_SIZE),
+      );
       const res = await fetchNotifications(1, pages * PAGE_SIZE);
       if (seq !== listSeqRef.current) return;
-      stalledAtRef.current = -1; // a fresh prefix un-stalls any stalled load-more
-      setInbox({ items: res.data, page: res.page, total: res.total });
+      loadedPagesRef.current = pages;
+      emptyLoadsRef.current = 0;
+      setLoadMoreBlocked(false);
+      for (const n of res.data) seenRef.current.add(n.id);
+      // a row the user just read can still be on the server while DELETE is in
+      // flight — never let a refresh or a late SSE frame resurrect it
+      setInbox({
+        items: res.data.filter((n) => !readRef.current.has(n.id)),
+        page: res.page,
+        total: res.total,
+      });
       // the badge must reflect the server count, not just the loaded rows
       setUnreadCount(res.unreadCount);
       setListStatus("ready");
@@ -194,7 +203,8 @@ export default function Navbar({
     }
   }, []);
 
-  // poll every 10s: badge COUNT + the inbox rows, whether the bell is open or not
+  // poll every 10s: badge COUNT + the inbox rows — a safety net under the
+  // real-time stream (covers a missed frame or a reconnect gap)
   useEffect(() => {
     void refreshCount();
     void refreshList();
@@ -204,6 +214,40 @@ export default function Navbar({
     }, 10_000);
     return () => clearInterval(timer);
   }, [refreshCount, refreshList]);
+
+  // A live row lands in the bell and bumps the badge immediately, instead of
+  // waiting for the next poll. The toast itself is owned by NotificationProvider.
+  useEffect(
+    () =>
+      subscribeToNotifications((item) => {
+        if (seenRef.current.has(item.id) || readRef.current.has(item.id)) return;
+        seenRef.current.add(item.id);
+        setInbox((prev) => ({
+          ...prev,
+          items: prev.items.some((n) => n.id === item.id) ? prev.items : [item, ...prev.items],
+          total: Math.max(prev.total + 1, prev.items.length + 1),
+        }));
+        setUnreadCount((count) => count + 1);
+      }),
+    [],
+  );
+
+  // Toast clicks (root provider) and other open tabs share this hint, so the
+  // badge and the rows agree without waiting ~10s for the next poll.
+  useEffect(
+    () =>
+      subscribeToNotificationReads((id) => {
+        if (readRef.current.has(id)) return;
+        readRef.current.add(id);
+        setInbox((prev) => ({
+          ...prev,
+          items: prev.items.filter((n) => n.id !== id),
+          total: Math.max(0, prev.total - 1),
+        }));
+        setUnreadCount((count) => Math.max(0, count - 1));
+      }),
+    [],
+  );
 
   const handleOpenBell = useCallback(
     (event: MouseEvent<HTMLElement>) => {
@@ -218,47 +262,81 @@ export default function Navbar({
     if (loadingMoreRef.current) return;
     const current = inboxRef.current;
     if (current.items.length >= current.total) return;
-    // The next batch = the first page boundary AT/AFTER the rows on screen,
-    // derived from `items.length` — never from a stored `page`. A refresh uses
-    // a bigger (page-aligned) limit, so `page + 1` from its response would ask
-    // for rows already on screen: the dedupe dropped them all, nothing
-    // appeared, and the user had to wait for yet another round trip.
-    const nextPage = Math.floor(current.items.length / PAGE_SIZE) + 1;
-    // an empty page at this exact length already failed once — wait for a change
-    if (stalledAtRef.current === current.items.length) return;
+    // The next offset comes from the pages actually requested — never from
+    // `items.length`, which drifts when a row is read (deleted) or an SSE row
+    // is prepended. That drift was why scrolling stopped after one batch.
+    const nextPage = loadedPagesRef.current + 1;
     loadingMoreRef.current = true;
     setLoadingMore(true);
-    const seq = listSeqRef.current;
+    // Own sequence guard: the 10s refresh increments listSeqRef and must not
+    // be able to throw this response away mid-flight.
+    const seq = (moreSeqRef.current += 1);
     try {
       const res = await fetchNotifications(nextPage, PAGE_SIZE);
-      if (seq !== listSeqRef.current) return; // a refresh replaced the list meanwhile
+      if (seq !== moreSeqRef.current) return;
+      for (const n of res.data) seenRef.current.add(n.id);
+      loadedPagesRef.current = nextPage;
       const seen = new Set(inboxRef.current.items.map((n) => n.id));
-      const fresh = res.data.filter((n) => !seen.has(n.id));
-      stalledAtRef.current = fresh.length > 0 ? -1 : inboxRef.current.items.length;
-      setInbox((prev) => {
-        // never show a row twice
-        const seenNow = new Set(prev.items.map((n) => n.id));
-        const add = fresh.filter((n) => !seenNow.has(n.id));
-        return { items: [...prev.items, ...add], page: nextPage, total: res.total };
-      });
-      setUnreadCount(res.unreadCount);
+      const fresh = res.data.filter((n) => !seen.has(n.id) && !readRef.current.has(n.id));
+      if (fresh.length > 0) {
+        emptyLoadsRef.current = 0;
+        setLoadMoreBlocked(false);
+        setInbox((prev) => {
+          const seenNow = new Set(prev.items.map((n) => n.id));
+          const add = fresh.filter((n) => !seenNow.has(n.id) && !readRef.current.has(n.id));
+          return { items: [...prev.items, ...add], page: nextPage, total: res.total };
+        });
+        setUnreadCount(res.unreadCount);
+      } else if (emptyLoadsRef.current === 0) {
+        // Rows were read since the previous page, so offsets shifted and every
+        // row of this slice is already on screen. Re-read the whole prefix once
+        // — the row that slid across a boundary then isn't skipped forever.
+        emptyLoadsRef.current = 1;
+        const pages = Math.min(loadedPagesRef.current, Math.ceil(MAX_ROWS / PAGE_SIZE));
+        const synced = await fetchNotifications(1, pages * PAGE_SIZE);
+        if (seq !== moreSeqRef.current) return;
+        loadedPagesRef.current = pages;
+        const before = new Set(inboxRef.current.items.map((n) => n.id));
+        const added = synced.data.filter((n) => !before.has(n.id));
+        for (const n of synced.data) seenRef.current.add(n.id);
+        setInbox({
+          items: synced.data.filter((n) => !readRef.current.has(n.id)),
+          page: 1,
+          total: synced.total,
+        });
+        setUnreadCount(synced.unreadCount);
+        if (added.length > 0) {
+          emptyLoadsRef.current = 0;
+          setLoadMoreBlocked(false);
+        } else {
+          setLoadMoreBlocked(true);
+        }
+      } else {
+        // still nothing new — stop the sentinel and let the user retry
+        setLoadMoreBlocked(true);
+      }
     } catch {
-      // the next poll retries
+      if (seq !== moreSeqRef.current) return;
+      setLoadMoreBlocked(true);
     } finally {
       loadingMoreRef.current = false;
       setLoadingMore(false);
     }
   }, []);
 
+  /** Manual escape hatch when a page keeps coming back empty. */
+  const handleRetryLoadMore = useCallback(() => {
+    emptyLoadsRef.current = 0;
+    setLoadMoreBlocked(false);
+    void handleLoadMore();
+  }, [handleLoadMore]);
+
   // reading = deleting — drop the row and the badge now; on failure the list
   // and the count both resync from the server (the row was never deleted)
   function handleMarkRead(id: number) {
-    setInbox((prev) => ({
-      ...prev,
-      items: prev.items.filter((n) => n.id !== id),
-      total: Math.max(0, prev.total - 1),
-    }));
-    setUnreadCount((count) => Math.max(0, count - 1));
+    // one path for the bell row and the toast: the shared read listener drops
+    // the row + badge here and in every other open tab
+    broadcastNotificationRead(id);
     deleteNotification(id).catch(() => {
       void refreshCount();
       if (statusRef.current === "ready") void refreshList();
@@ -268,6 +346,9 @@ export default function Navbar({
   function handleMarkAllRead() {
     setInbox(EMPTY_PAGE);
     setUnreadCount(0);
+    loadedPagesRef.current = 1;
+    emptyLoadsRef.current = 0;
+    setLoadMoreBlocked(false);
     clearNotifications().catch(() => {
       void refreshCount();
       if (statusRef.current === "ready") void refreshList();
@@ -325,31 +406,26 @@ export default function Navbar({
             data={inbox}
             status={listStatus}
             loadingMore={loadingMore}
+            loadMoreError={loadMoreBlocked}
             onLoadMore={handleLoadMore}
+            onRetryLoadMore={handleRetryLoadMore}
             onRetry={() => void refreshList()}
             onClose={() => setBellAnchorEl(null)}
             onMarkRead={handleMarkRead}
             onMarkAllRead={handleMarkAllRead}
           />
-          {/* ปุ่มศูนย์ช่วยเหลือ — เปิดป๊อปอัพ 2 หัวข้อ */}
+          {/* ปุ่มศูนย์ช่วยเหลือ — dialog เดียว tab แจ้งปัญหา / ติดต่อแอดมิน */}
           <IconButton
             onClick={() => setHelpCenterOpen(true)}
             aria-label={t("helpCenter")}
             title={t("helpCenter")}
             size="small"
-            sx={{ color: "primary.main" }}
           >
-            <SupportAgentIcon fontSize="small" color="primary" />
+            <SupportAgentIcon fontSize="small" />
           </IconButton>
-          <ContactCustomerDialog
-            open={Boolean(contactTarget)}
-            target={contactTarget}
-            onClose={() => setContactTarget(null)}
-          />
           <HelpCenterDialog
             open={helpCenterOpen}
             onClose={() => setHelpCenterOpen(false)}
-            onOpenContact={openContact}
           />
           <LanguageSwitcher />
           {/* Account actions — no dropdown: the avatar opens the profile popup */}

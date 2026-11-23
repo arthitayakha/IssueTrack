@@ -21,7 +21,7 @@ import WorkloadCard from "@/components/dashboard/workload-card";
 import UsageCard from "@/components/dashboard/usage-card";
 import PriorityBars from "@/components/dashboard/priority-bars";
 import { useRouter } from "@/i18n/navigation";
-import { reportsHref } from "@/lib/dashboard-nav";
+import { drillHref } from "@/lib/dashboard-nav";
 import { usePermissions } from "@/lib/permissions";
 import { fetchDashboardSummary } from "@/lib/dashboard-api";
 import { fetchCompanies, type Company } from "@/lib/apps-api";
@@ -379,29 +379,24 @@ export default function HomePage() {
                   total={data.total}
                   selectedId={statusId}
                   onSelect={handleStatusSelect}
-                  scope={data.scope}
                   companyIds={data.companyIds}
                 />
                 <UsageCard
                   apps={data.apps}
                   categories={data.categories}
-                  scope={data.scope}
                   statusId={statusId}
                   companyIds={data.companyIds}
                 />
                 <PriorityBars
                   rows={data.priorities}
-                  onSelect={
-                    canReport
-                      ? (row) =>
-                          router.push(
-                            reportsHref({
-                              ...(row.id == null ? { noPriority: 1 } : { priority: row.id }),
-                              status: statusId,
-                              company: companyIds,
-                            }),
-                          )
-                      : undefined
+                  onSelect={(row) =>
+                    router.push(
+                      drillHref(canReport, {
+                        ...(row.id == null ? { noPriority: 1 } : { priority: row.id }),
+                        status: statusId,
+                        company: companyIds,
+                      }),
+                    )
                   }
                 />
               </Box>
@@ -428,17 +423,14 @@ export default function HomePage() {
                 {showWorkload && (
                   <WorkloadCard
                     rows={data.workload}
-                    onSelect={
-                      canReport
-                        ? (row) =>
-                            router.push(
-                              reportsHref({
-                                assignee: row.userId,
-                                status: reportStatusIds,
-                                company: companyIds,
-                              }),
-                            )
-                        : undefined
+                    onSelect={(row) =>
+                      router.push(
+                        drillHref(canReport, {
+                          assignee: row.userId,
+                          status: reportStatusIds,
+                          company: companyIds,
+                        }),
+                      )
                     }
                   />
                 )}

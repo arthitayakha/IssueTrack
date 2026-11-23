@@ -229,13 +229,15 @@ export interface ReportsToolbarProps {
 }
 
 /**
- * Row 1: **search on the left (same box as the board's toolbar), then every
- * other control pushed right with `ml: auto` — view, the date-range calendar
- * icon, the filter popover button, columns and export**. Checkbox
- * sections live inside the filter panel, mirroring the board's filter popover;
- * the calendar icon opens a preset menu (same entries the old Select listed),
- * and choosing "กำหนดเอง" in it opens a range popover (two MUI date pickers)
- * anchored under the icon. Search is debounced into the URL.
+ * Row 1: **search on the left (same box as the board's toolbar), followed
+ * immediately by the date-range calendar icon and the filter popover button —
+ * all three answer "which rows do I see?" and sit together like the board's
+ * toolbar. The remaining controls (view, columns, export) are pushed right
+ * with `ml: auto`**. Checkbox sections live inside the filter panel, mirroring
+ * the board's filter popover; the calendar icon opens a preset menu (same
+ * entries the old Select listed), and choosing "กำหนดเอง" in it opens a range
+ * popover (two MUI date pickers) anchored under the icon. Search is debounced
+ * into the URL.
  */
 export function ReportsToolbar({
   view,
@@ -330,7 +332,46 @@ export function ReportsToolbar({
           }}
         />
 
-        {/* ทุกปุ่มที่เหลือชิดขวา (ml: auto) — รวมปุ่มตัวกรอง เหมือนหน้าบอร์ด */}
+        {/* ช่วงวันที่กรอง "วันที่ของงาน" — ไม่มีความหมายกับ view ตามบริษัท
+            (แถวคือสัญญา แอป×บริษัท) จึงซ่อนออกไป ไม่ใช่ปล่อยให้ไม่ทำงาน
+            อยู่ข้างช่องค้นหาเหมือนแถบเครื่องมือหน้าบอร์ด */}
+        {view !== "company" && (
+          <DateRangeIconButton
+            value={{ from: filters.from, to: filters.to }}
+            onChange={(range) => onFiltersChange({ ...filters, from: range.from, to: range.to })}
+            presets={rangePresets}
+            size="medium"
+            ariaLabel={t("toolbar.range")}
+          />
+        )}
+
+        {/* ฟิวเตอร์อยู่ข้างช่องค้นหา — รวมคำถาม "จะเห็นแถวไหน" ไว้ด้านซ้าย
+            เหมือนหน้าบอร์ด (ฝั่งขวาเหลือแค่ มุมมอง/คอลัมน์/ส่งออก) */}
+        <Tooltip title={t("toolbar.filtersBtn")}>
+          <IconButton
+            size="medium"
+            color={activeCount > 0 ? "primary" : "default"}
+            onClick={(e) => setFilterAnchor(e.currentTarget)}
+            aria-label={t("toolbar.filtersBtn")}
+            aria-expanded={Boolean(filterAnchor)}
+          >
+            <Badge badgeContent={activeCount} color="primary">
+              <FilterListIcon fontSize="small" />
+            </Badge>
+          </IconButton>
+        </Tooltip>
+
+        <ReportsFilterPanel
+          open={Boolean(filterAnchor)}
+          anchorEl={filterAnchor}
+          onClose={() => setFilterAnchor(null)}
+          view={view}
+          filters={filters}
+          onFiltersChange={onFiltersChange}
+          options={options}
+        />
+
+        {/* ทุกปุ่มที่เหลือชิดขวา — มุมมอง / คอลัมน์ / ส่งออก */}
         <Box sx={{ flex: 1, minWidth: 8 }} />
 
         <Select<ReportView>
@@ -355,42 +396,6 @@ export function ReportsToolbar({
             </MenuItem>
           ))}
         </Select>
-
-        {/* ช่วงวันที่กรอง "วันที่ของงาน" — ไม่มีความหมายกับ view ตามบริษัท
-            (แถวคือสัญญา แอป×บริษัท) จึงซ่อนออกไป ไม่ใช่ปล่อยให้ไม่ทำงาน */}
-        {view !== "company" && (
-          <DateRangeIconButton
-            value={{ from: filters.from, to: filters.to }}
-            onChange={(range) => onFiltersChange({ ...filters, from: range.from, to: range.to })}
-            presets={rangePresets}
-            size="medium"
-            ariaLabel={t("toolbar.range")}
-          />
-        )}
-
-        <Tooltip title={t("toolbar.filtersBtn")}>
-          <IconButton
-            size="medium"
-            color={activeCount > 0 ? "primary" : "default"}
-            onClick={(e) => setFilterAnchor(e.currentTarget)}
-            aria-label={t("toolbar.filtersBtn")}
-            aria-expanded={Boolean(filterAnchor)}
-          >
-            <Badge badgeContent={activeCount} color="primary">
-              <FilterListIcon fontSize="small" />
-            </Badge>
-          </IconButton>
-        </Tooltip>
-
-        <ReportsFilterPanel
-          open={Boolean(filterAnchor)}
-          anchorEl={filterAnchor}
-          onClose={() => setFilterAnchor(null)}
-          view={view}
-          filters={filters}
-          onFiltersChange={onFiltersChange}
-          options={options}
-        />
 
         <Tooltip title={t("toolbar.columns")}>
           <IconButton

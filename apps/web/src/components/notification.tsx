@@ -1,7 +1,18 @@
 "use client";
 
-import { createContext, useCallback, useContext, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Snackbar, Alert, AlertColor, Button } from "@mui/material";
+import { useRouter } from "@/i18n/navigation";
+import IncomingToast from "@/components/notifications/incoming-toast";
+import { useAuthStore } from "@/lib/auth-store";
+import { resolveLink } from "@/lib/notification-link";
+import { deleteNotification, type AppNotification } from "@/lib/notifications-api";
+import {
+  broadcastNotificationRead,
+  startNotificationStream,
+  stopNotificationStream,
+  subscribeToNotifications,
+} from "@/lib/notification-stream";
 
 /**
  * ปุ่มใน toast — ใช้กับ **"ยกเลิกรายการ" หลังต่ออายุ/ซื้อชั่วโมง** (กดได้ 1 ครั้ง
@@ -30,10 +41,17 @@ export function useNotification() {
 }
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const token = useAuthStore((state) => state.token);
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [severity, setSeverity] = useState<AlertColor>("success");
   const [action, setAction] = useState<NotifyAction | null>(null);
+
+  // Real-time inbox toast — a separate queue, at the opposite corner, so the
+  // 25 existing notify() call sites keep their bottom-right Snackbar untouched.
+  const [toasts, setToasts] = useState<AppNotification[]>([]);
+  const seenRef = useRef<Set<number>>(new Set());
 
   const notify = useCallback((msg: string, sev: AlertColor = "success", act?: NotifyAction) => {
     setMessage(msg);
@@ -42,6 +60,47 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     setAction(act ?? null);
     setOpen(true);
   }, []);
+
+  /** × / timer → dismiss only. The row is still unread in the bell. */
+  const dismissToast = useCallback(() => {
+    setToasts((prev) => prev.slice(1));
+  }, []);
+
+  /** Click the card → read (delete) + navigate, exactly like a bell row. */
+  const openToast = useCallback(
+    (item: AppNotification) => {
+      setToasts((prev) => prev.filter((n) => n.id !== item.id));
+      broadcastNotificationRead(item.id);
+      void deleteNotification(item.id).catch(() => {
+        /* the 10s poll resyncs the badge/list if this delete ever fails */
+      });
+      router.push(resolveLink(item));
+    },
+    [router],
+  );
+
+  useEffect(
+    () =>
+      subscribeToNotifications((item) => {
+        if (seenRef.current.has(item.id)) return;
+        seenRef.current.add(item.id);
+        // keep at most 3 in the queue; the toast component shows only the head
+        setToasts((prev) => (prev.some((n) => n.id === item.id) ? prev : [...prev.slice(-2), item]));
+      }),
+    [],
+  );
+
+  // The provider lives in the root layout, so the stream survives navigation
+  // (the Navbar itself remounts between pages). Token changes = login/logout.
+  useEffect(() => {
+    if (token) {
+      startNotificationStream();
+    } else {
+      stopNotificationStream();
+      setToasts([]);
+      seenRef.current.clear();
+    }
+  }, [token]);
 
   const handleClose = () => {
     setOpen(false);
@@ -58,6 +117,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   return (
     <NotificationContext.Provider value={{ notify }}>
       {children}
+      <IncomingToast item={toasts[0] ?? null} onOpen={openToast} onDismiss={dismissToast} />
       <Snackbar
         open={open}
         autoHideDuration={hideDuration}

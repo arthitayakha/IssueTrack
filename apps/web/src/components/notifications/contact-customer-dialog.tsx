@@ -1,24 +1,18 @@
 "use client";
 
-import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { alpha } from "@mui/material/styles";
 import { useTheme } from "@mui/material/styles";
 import {
   Box,
   Button,
-  Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   IconButton,
-  Tooltip,
   Typography,
 } from "@mui/material";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
-import EmailOutlinedIcon from "@mui/icons-material/EmailOutlined";
-import PhoneOutlinedIcon from "@mui/icons-material/PhoneOutlined";
 import SupportAgentIcon from "@mui/icons-material/SupportAgent";
 import CloseIcon from "@mui/icons-material/Close";
 import type { ContractContact } from "@/lib/notifications-api";
@@ -27,6 +21,7 @@ import {
   appDialogPaperSx,
   appDialogSx,
 } from "@/components/common/dialog-style";
+import AdminContactCards from "@/components/help-center/admin-contact-cards";
 
 export interface ContactTarget {
   appName: string;
@@ -38,10 +33,9 @@ export interface ContactTarget {
 }
 
 /**
- * **ป๊อปอัพ "ติดต่อแอดมิน"** — ลูกค้า/สตาฟฟ์กดจากศูนย์ช่วยเหลือ → โชว์รายชื่อ/
- * อีเมล/เบอร์ของแอดมิน (ดึงผ่าน `GET /notifications/admin-contacts`)
- *
- * ไม่มีช่องทางติดต่อ → โชว์ข้อความแจ้งแทนการปล่อยช่องว่าง
+ * **ป๊อปอัพ "ติดต่อแอดมิน"** — ใช้จากหน้าอื่นที่ไม่ใช่ศูนย์ช่วยเหลือ
+ * (เช่น ปุ่มติดต่อบนสัญญาใน `/systems`) · ศูนย์ช่วยเหลือแสดงการ์ดเหล่านี้
+ * แบบฝังอยู่ในแท็บแล้ว ไม่ต้องเปิดป๊อปอัพซ้อน
  */
 export default function ContactCustomerDialog({
   open,
@@ -54,18 +48,6 @@ export default function ContactCustomerDialog({
 }) {
   const t = useTranslations("Notifications");
   const theme = useTheme();
-  const [copied, setCopied] = useState<string | null>(null);
-
-  function copy(value: string, key: string) {
-    void navigator.clipboard?.writeText(value).then(
-      () => {
-        setCopied(key);
-      },
-      () => {
-        /* clipboard ถูกปฏิเสธ (http/permission) — ยังกด mailto:/tel: ได้อยู่ */
-      },
-    );
-  }
 
   return (
     <Dialog
@@ -114,97 +96,9 @@ export default function ContactCustomerDialog({
         </IconButton>
       </DialogTitle>
       <DialogContent dividers sx={appDialogContentSizing}>
-        {!target || target.contacts.length === 0 ? (
-          <Typography variant="body2" color="text.secondary">
-            {t("contactAdminEmpty")}
-          </Typography>
-        ) : (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-            {target.contacts.map((contact) => {
-              const hasEmail = Boolean(contact.email);
-              const hasPhone = Boolean(contact.phone);
-              return (
-                <Box
-                  key={contact.userId}
-                  sx={{
-                    border: 1,
-                    borderColor: "divider",
-                    borderRadius: 1.5,
-                    p: 1.5,
-                  }}
-                >
-                  <Typography variant="body2" fontWeight={700} sx={{ mb: 1 }}>
-                    {contact.name}
-                  </Typography>
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.75 }}>
-                    <EmailOutlinedIcon sx={{ fontSize: 18, color: "text.secondary" }} />
-                    <Typography
-                      variant="body2"
-                      color="text.primary"
-                      sx={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}
-                    >
-                      {contact.email || "—"}
-                    </Typography>
-                    {hasEmail && (
-                      <>
-                        <Tooltip title={t("contactOpenEmail")}>
-                          <IconButton
-                            size="small"
-                            component="a"
-                            href={`mailto:${contact.email}`}
-                            aria-label={t("contactOpenEmail")}
-                          >
-                            <EmailOutlinedIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                        <Tooltip title={copied === `e${contact.userId}` ? t("contactCopied") : t("contactCopy")}>
-                          <IconButton
-                            size="small"
-                            onClick={() => copy(contact.email!, `e${contact.userId}`)}
-                            aria-label={t("contactCopy")}
-                          >
-                            <ContentCopyIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      </>
-                    )}
-                  </Box>
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                    <PhoneOutlinedIcon sx={{ fontSize: 18, color: "text.secondary" }} />
-                    <Typography variant="body2" color="text.primary" sx={{ flex: 1, minWidth: 0 }}>
-                      {contact.phone || "—"}
-                    </Typography>
-                    {hasPhone && (
-                      <Tooltip title={t("contactCall")}>
-                        <IconButton
-                          size="small"
-                          component="a"
-                          href={`tel:${contact.phone}`}
-                          aria-label={t("contactCall")}
-                        >
-                          <PhoneOutlinedIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                    )}
-                  </Box>
-                </Box>
-              );
-            })}
-            <Typography variant="caption" color="text.secondary">
-              {t("contactAdminHint")}
-            </Typography>
-          </Box>
-        )}
+        <AdminContactCards contacts={target?.contacts ?? []} />
       </DialogContent>
       <DialogActions>
-        {target && target.contacts.length > 0 && (
-          <Chip
-            size="small"
-            variant="outlined"
-            label={`${target.contacts.length} ${t("contactCount")}`}
-            sx={{ mr: "auto" }}
-          />
-        )}
         <Button onClick={onClose}>{t("contactClose")}</Button>
       </DialogActions>
     </Dialog>
