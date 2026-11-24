@@ -33,6 +33,12 @@ export interface ReportIssueFilters {
   completedTo?: string;
   search?: string;
   assigneeIds?: number[];
+  /**
+   * "ยังไม่มอบหมาย" (`programmer_id IS NULL`) — the unassigned group in the
+   * assignee view has no id to filter by, so its detail fetch carries a flag
+   * instead. Same OR-part-of-its-dimension contract as `noApp`/`noPriority`.
+   */
+  noAssignee?: boolean;
   reporterIds?: number[];
   categoryIds?: number[];
   statuses?: number[];
@@ -239,7 +245,14 @@ export class ReportsService {
       qb.andWhere("(issue.programmer_id = :uid OR issue.customer_id = :uid)", { uid });
     }
     if (f.assigneeIds?.length) {
-      qb.andWhere("issue.programmer_id IN (:...assigneeIds)", { assigneeIds: f.assigneeIds });
+      qb.andWhere(
+        f.noAssignee
+          ? "(issue.programmer_id IS NULL OR issue.programmer_id IN (:...assigneeIds))"
+          : "issue.programmer_id IN (:...assigneeIds)",
+        { assigneeIds: f.assigneeIds },
+      );
+    } else if (f.noAssignee) {
+      qb.andWhere("issue.programmer_id IS NULL");
     }
     if (f.reporterIds?.length) {
       qb.andWhere("issue.customer_id IN (:...reporterIds)", { reporterIds: f.reporterIds });

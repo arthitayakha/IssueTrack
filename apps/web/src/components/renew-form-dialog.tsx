@@ -69,11 +69,17 @@ const NO_ERRORS: FieldErrors = { startedAt: null, expiresAt: null, maHours: null
  * รอบที่ 1 ของคู่ = `recordId` น้อยสุด ซึ่งตรงกับเลข "รอบที่ N" ในแท็บประวัติ):
  * ถ้าช่วงแรกยังมี MA เหลือ (`คงเหลือ = maHours − ใช้ไป > 0`) จำนวนนั้นถูก**บอก
  * เป็นตัวเลขในฟอร์ม** แล้วบวกเข้ากับที่ผู้ใช้กรอกตอนบันทึก (`carry`) ·
- * **รอบ 2 เป็นต้นไปไม่ทบ** ไม่ว่าจะเหลือเท่าไร (ข้อสรุปจากผู้ใช้) และ
- * **ไม่ผูกกับวันหมดอายุอีกต่อไป** — เดิมบังคับให้ช่วงเก่าเป็น `expired` ก่อน
- * ซึ่งทำให้การต่ออายุ**วันหมดอายุพอดี** (สถานะยัง `critical`, `carry = 0`)
- * ทบเงียบ ๆ ทั้งที่ช่วงแรกยังไม่ได้ใช้ · fail-open ทุกกรณี: ยังโหลด/ดึง "ใช้ไป"
- * ไม่สำเร็จ / ยังไม่เคยกรอก MA → ไม่ทบ พร้อมบอกเหตุผลใต้ช่อง MA เสมอ
+ * **รอบ 2 เป็นต้นไปไม่ทบ** ไม่ว่าจะเหลือเท่าไร (ข้อสรุปจากผู้ใช้)
+ *
+ * **และต้องต่อ "ภายใน 1 ปีหลังวันหมดอายุของช่วงเก่า"** (ข้อสรุปจากพี่):
+ * วันเริ่มช่วงใหม่ (`startedAt`) ต้องไม่เกิน `expiresAt + 1 ปี` — ถ้าปล่อยให้
+ * ขาดไป 1 ปีแล้วค่อยมาทำสัญญาใหม่ สิทธิ์ทบหมดไป (MA ที่เหลือของช่วงเก่าไม่ถูก
+ * ย้ายมา) · การต่อ**วันหมดอายุพอดี**ยังทบได้ (0 วัน) และครบ 1 ปีพอดีก็ยังได้
+ * (inclusive) — ต่างจาก gate เก่าที่บังคับ `expired` ก่อนแล้วทำให้ทบเงียบ ๆ
+ * ตรงวันนั้น · ไม่มี `expiresAt` → fail-open (ไม่มีวันเทียบ จึงไม่ตัดสิทธิ์)
+ *
+ * fail-open ทุกกรณี: ไม่ใช่รอบแรก / ยังโหลดหรือดึง "ใช้ไป" ไม่สำเร็จ /
+ * ยังไม่เคยกรอก MA / เกิน window 1 ปี → ไม่ทบ พร้อมบอกเหตุผลใต้ช่อง MA เสมอ
  *
  * **สูตรบันทึก — "ฟอร์ม = ตาราง" เป๊ะ** (เปลี่ยนเป็น **รายรอบ** ตามข้อสรุปจากผู้ใช้):
  *
@@ -166,21 +172,34 @@ export default function RenewFormDialog({
   }, [record]);
 
   /**
+   * **ช่วงใหม่เริ่มช้าเกิน 1 ปีหลังวันหมดอายุเก่าหรือเปล่า** (ตัดสิทธิ์ทบ —
+   * ข้อสรุปจากพี่): `startedAt > expiresAt(แถวก่อน) + 1 ปี` → ไม่ทบ · เปรียบเทียบ
+   * ระดับวัน (`isAfter(..., "day")`) ดังนั้นต่อวันครบ 1 ปีพอดี**ยังได้**
+   * (inclusive) · ไม่มีวันหมดอายุ / ยังเลือกวันไม่ได้ → fail-open (ตัดสิทธิ์ไม่ได้
+   * → ยังทบเหมือนเดิม) · dayjs `.add(1, "year")` ปัด 29 ก.พ. → 28 ก.พ. ต้องตรง
+   * กับ `addYearsIso()` ฝั่งเซิร์ฟเวอร์ที่ใช้ validate payload เดียวกัน
+   */
+  const renewalTooLate = useMemo(() => {
+    if (!record?.link.expiresAt || !startedAt) return false;
+    return dayjs(startedAt).isAfter(dayjs(record.link.expiresAt).add(1, "year"), "day");
+  }, [record, startedAt]);
+
+  /**
    * **ชั่วโมงคงเหลือที่จะทบ** — มีก็ต่อเมื่อ **เป็นรอบแรกของคู่ และ MA ยังไม่หมด**
-   * (`maHours − **ใช้ไปของรอบนั้น** > 0` — `used` เป็น**รายรอบ** ไม่ใช่ยอดรวมคู่) — **ไม่สนว่าช่วงเก่าจะหมดอายุหรือยัง**: การต่ออายุปิด
-   * ช่วงเก่าเสมอ ชั่วโมงที่เหลือจึงถูกใช้ในช่วงนั้นไม่ได้อีก (เดิมบังคับ `expired`
-   * ก่อน → ต่ออายุวันหมดอายุพอดีทบเงียบ ๆ) · ทุกเงื่อนไข fail-open: ไม่ใช่รอบแรก /
-   * ยังโหลดหรือดึง "ใช้ไป" ไม่สำเร็จ / ยังไม่กรอก MA → 0 (ไม่ทบ) · ค่าเป็นจำนวนเต็ม
-   * เพราะเซิร์ฟเวอร์ reject ทศนิยม (`requireHours`) จึงปัดเศษของ "คงเหลือ" ทิ้ง
+   * (`maHours − **ใช้ไปของรอบนั้น** > 0` — `used` เป็น**รายรอบ** ไม่ใช่ยอดรวมคู่)
+   * **และต่อภายใน 1 ปีหลังวันหมดอายุเก่า** (`renewalTooLate = false`) · ทุกเงื่อนไข
+   * fail-open: ไม่ใช่รอบแรก / ยังโหลดหรือดึง "ใช้ไป" ไม่สำเร็จ / ยังไม่กรอก MA /
+   * เกิน window → 0 (ไม่ทบ) · ค่าเป็นจำนวนเต็มเพราะเซิร์ฟเวอร์ reject ทศนิยม
+   * (`requireHours`) จึงปัดเศษของ "คงเหลือ" ทิ้ง
    */
   const carry = useMemo(() => {
-    if (!record || !isFirstPeriod || usageStatus !== "ready") return 0;
+    if (!record || !isFirstPeriod || usageStatus !== "ready" || renewalTooLate) return 0;
     const link = record.link;
     if (link.maHours == null) return 0;
     const left = link.maHours - (used ?? 0);
     if (!(left > 0)) return 0;
     return Math.round(left);
-  }, [record, used, usageStatus, isFirstPeriod]);
+  }, [record, used, usageStatus, isFirstPeriod, renewalTooLate]);
 
   /**
    * **ค่า MA ที่จะบันทึกจริง** — ใช้ทั้งตอนส่ง API และตอนโชว์ "ทบรวม" ใต้ช่อง
@@ -364,8 +383,8 @@ export default function RenewFormDialog({
               />
               {/* บรรทัดบอกใต้ช่อง — ต้อง**ไม่เงียบ**เรื่องการทบ เพราะ "ทำไมไม่เพิ่ม"
                   คือคำถามแรกของผู้ใช้ทุกครั้ง: โหลดอยู่ / ดึงไม่สำเร็จ / รอบแรกแต่
-                  ใช้หมด / รอบ 2 เป็นต้นไป (ไม่ทบตามกติกา) / มีให้ทบ (พร้อมตัวเลข
-                  ที่จะได้รวม) */}
+                  ใช้หมด / รอบ 2 เป็นต้นไป (ไม่ทบตามกติกา) / **ต่อช้าเกิน 1 ปี**
+                  (สิทธิ์ทบหมด) / มีให้ทบ (พร้อมตัวเลขที่จะได้รวม) */}
               <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25, mt: 0.75 }}>
                 {usageStatus === "loading" && (
                   <Typography variant="caption" color="text.secondary">
@@ -383,6 +402,12 @@ export default function RenewFormDialog({
                     {t("renewNoCarryLater")}
                   </Typography>
                 )}
+                {/* ต่อช้าเกิน 1 ปีหลังวันหมดอายุ — ตัดสิทธิ์ทบ (ข้อสรุปจากพี่) */}
+                {usageStatus === "ready" && isFirstPeriod && renewalTooLate && (
+                  <Typography variant="caption" color="warning.main">
+                    {t("renewNoCarryTooLate")}
+                  </Typography>
+                )}
                 {usageStatus === "ready" && isFirstPeriod && carry > 0 && (
                   <Typography variant="caption" color="primary.main">
                     {t("renewCarryOver", { n: carryShown, total: totalAfter })}
@@ -390,6 +415,7 @@ export default function RenewFormDialog({
                 )}
                 {usageStatus === "ready" &&
                   isFirstPeriod &&
+                  !renewalTooLate &&
                   carry === 0 &&
                   record?.link.maHours != null && (
                     <Typography variant="caption" color="text.secondary">

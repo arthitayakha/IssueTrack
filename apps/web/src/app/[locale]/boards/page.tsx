@@ -108,6 +108,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import InboxOutlinedIcon from "@mui/icons-material/InboxOutlined";
 import SendIcon from "@mui/icons-material/Send";
 
 import LinkIcon from "@mui/icons-material/Link";
@@ -121,7 +122,7 @@ import { useRouter } from "@/i18n/navigation";
 import { usePermissions } from "@/lib/permissions";
 import { useAuthStore } from "@/lib/auth-store";
 import { isApiError, errorMessage, apiFetchResponse } from "@/lib/api";
-import type { IssueTaskType } from "@kanban/shared";
+import { DONE_STATUS_ID, type IssueTaskType } from "@kanban/shared";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
@@ -195,6 +196,8 @@ interface DrillIssueFilters {
   noApp: boolean;
   noCategory: boolean;
   noPriority: boolean;
+  /** Dashboard trend's pending bar — not currently done (no status included). */
+  notDone: boolean;
   createdFrom: string;
   createdTo: string;
   completedFrom: string;
@@ -205,6 +208,7 @@ const EMPTY_DRILL_FILTERS: DrillIssueFilters = {
   noApp: false,
   noCategory: false,
   noPriority: false,
+  notDone: false,
   createdFrom: "",
   createdTo: "",
   completedFrom: "",
@@ -243,12 +247,15 @@ function readBoardUrlFilters(params: URLSearchParams): BoardUrlFilters {
   const view = params.get("view");
   const from = params.get("from") ?? "";
   const to = params.get("to") ?? "";
-  // a completed bar measures when cards entered เสร็จสิ้น, not when they were
-  // born — the API has a separate param pair for that (see reports-api)
-  const completed = params.get("series") === "completed";
+  // Both trend bars cohort by CREATION date; only the current-status clause
+  // differs (`status=4` for done, `notDone=1` for pending). See dashboard-nav.
+  const series = params.get("series");
+  const barDone = series === "done";
+  const barPending = series === "pending";
+  const statusIds = parsePositiveIds(params.get("status"));
   return {
     view: view === "board" || view === "table" || view === "folder" ? view : null,
-    statusIds: parsePositiveIds(params.get("status")),
+    statusIds: barDone ? [...new Set([...statusIds, DONE_STATUS_ID])] : statusIds,
     priorityIds: parsePositiveIds(params.get("priority")),
     categoryIds: parsePositiveIds(params.get("category")),
     appIds: parsePositiveIds(params.get("app")),
@@ -260,10 +267,11 @@ function readBoardUrlFilters(params: URLSearchParams): BoardUrlFilters {
       noApp: flag("noApp"),
       noCategory: flag("noCategory"),
       noPriority: flag("noPriority"),
-      createdFrom: completed ? "" : from,
-      createdTo: completed ? "" : to,
-      completedFrom: completed ? from : "",
-      completedTo: completed ? to : "",
+      notDone: barPending,
+      createdFrom: from,
+      createdTo: to,
+      completedFrom: "",
+      completedTo: "",
     },
   };
 }
@@ -774,6 +782,9 @@ const TrelloCardContent = memo(function TrelloCardContent({
   const priorityColor = issue.priorityName
     ? PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"
     : "default";
+  /** พื้นหลัง pill ความสำคัญแบบทบสีจาก theme (ไม่ hardcode hex) */
+  const priorityTone =
+    priorityColor === "default" ? null : theme.palette[priorityColor];
   const avatarChar = issue.programmerName
     ? issue.programmerName.charAt(0).toUpperCase()
     : null;
@@ -782,7 +793,6 @@ const TrelloCardContent = memo(function TrelloCardContent({
   const totalSeconds = totalTimeSeconds(issue, runningSince, nowMs);
   // bottom bar: lock + tracked time — hidden when the card has neither
   const timeVisible = showTime && (isRunning || totalSeconds > 0);
-  const showBottomBar = Boolean(issue.isLocked || timeVisible);
   // Trello-style label strips on top of the card (they replaced the chips).
   // Only the first 4 render; a 5th+ becomes ONE "+N" stub so the card still
   // says there is more (hover lists every hidden name) instead of dropping
@@ -793,60 +803,38 @@ const TrelloCardContent = memo(function TrelloCardContent({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
-      {/* label colour strips — Trello style, they replace the old label chips.
-          The row also carries the stale notice: plain red text, NO background
-          (a filled band read as a second card edge), pushed to the RIGHT of
-          the stubs with `ml: "auto"` so the labels keep the left edge. It
-          renders when EITHER half exists — a stale card with no labels still
-          says "ค้าง N วัน" (alone, on the right), a labelled card that is not
-          stale shows only its stubs, exactly as before. */}
-      {(staleDays != null || labelBars.length > 0) && (
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mb: 0.75 }}>
+      {/* แถวป้าย: แถบสีล้วน + "ค้าง N วัน" เป็นตัวอักษรแดงไม่มีพื้นหลังชิดขวา */}
+      {(labelBars.length > 0 || staleDays != null) && (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mb: 0.75, minWidth: 0 }}>
           {labelBars.map((lbl) => (
-            <Box
-              key={lbl.id}
-              title={lbl.name}
-              sx={{
-                // small fixed stub — not a full-width bar
-                width: 28,
-                flex: "0 0 auto",
-                height: 8,
-                borderRadius: "4px",
-                bgcolor: labelColorValue(lbl.color, theme),
-              }}
-            />
+            <Tooltip key={lbl.id} title={lbl.name}>
+              <Box
+                sx={{
+                  width: 28,
+                  height: 8,
+                  flexShrink: 0,
+                  borderRadius: "4px",
+                  bgcolor: labelColorValue(lbl.color, theme),
+                }}
+              />
+            </Tooltip>
           ))}
           {hiddenLabels.length > 0 && (
-            <Box
-              title={hiddenLabels.map((l) => l.name).join(", ")}
-              sx={{
-                flex: "0 0 auto",
-                minWidth: 28,
-                height: 14,
-                px: 0.4,
-                borderRadius: "4px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                bgcolor: "action.selected",
-                color: "text.secondary",
-                fontSize: "0.575rem",
-                fontWeight: 700,
-                lineHeight: 1,
-              }}
-            >
-              +{hiddenLabels.length}
-            </Box>
+            <Tooltip title={hiddenLabels.map((l) => l.name).join(", ")}>
+              <Box
+                sx={{ width: 28, height: 8, flexShrink: 0, borderRadius: "4px", bgcolor: "text.disabled" }}
+              />
+            </Tooltip>
           )}
           {staleDays != null && (
             <Typography
               sx={{
                 ml: "auto",
+                flexShrink: 0,
                 color: "error.main",
                 fontSize: "0.7rem",
                 fontWeight: 700,
                 lineHeight: 1,
-                flexShrink: 0,
               }}
             >
               {t("staleBadge", { days: staleDays })}
@@ -854,67 +842,84 @@ const TrelloCardContent = memo(function TrelloCardContent({
           )}
         </Box>
       )}
-      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.25 }}>
-        <Typography variant="subtitle2" fontWeight={700} sx={{ lineHeight: 1.4, flex: 1, minWidth: 0, mr: 0.5 }}>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mb: 0.75 }}>
+        <Typography
+          variant="subtitle2"
+          fontWeight={700}
+          sx={{ lineHeight: 1.45, fontSize: "0.86rem", flex: 1, minWidth: 0 }}
+        >
           {issue.title}
         </Typography>
         {issue.appName && (
-          <Chip
-            label={issue.appName}
-            size="small"
+          <Box
             sx={{
-              height: 18,
-              fontSize: "0.65rem",
-              fontWeight: 600,
               flexShrink: 0,
-              ml: 0.5,
-              bgcolor: "action.selected",
+              px: 0.9,
+              py: 0.2,
+              borderRadius: 1,
+              bgcolor: alpha(theme.palette.navy.main, 0.06),
               color: "text.secondary",
+              fontSize: "0.65rem",
+              fontWeight: 700,
+              letterSpacing: 0.3,
+              lineHeight: 1.5,
             }}
-          />
+          >
+            {issue.appName}
+          </Box>
         )}
         {actions}
       </Box>
       {issue.priorityName && (
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mt: 0.25, flexWrap: "wrap" }}>
-          <Chip
-            label={priorityLabel(t, issue.priorityName)}
-            size="small"
-            variant="outlined"
-            color={priorityColor}
-            sx={{ height: 18, fontSize: "0.65rem", fontWeight: 600 }}
-          />
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+          <Box
+            sx={{
+              px: 1,
+              py: 0.25,
+              borderRadius: 1,
+              bgcolor: priorityTone ? alpha(priorityTone.main, 0.12) : "action.selected",
+              color: priorityTone ? priorityTone.dark : "text.secondary",
+              fontSize: "0.68rem",
+              fontWeight: 700,
+              lineHeight: 1.5,
+            }}
+          >
+            {priorityLabel(t, issue.priorityName)}
+          </Box>
         </Box>
       )}
+      {/* footer — กลับไปใช้โครงแบบเดิม: วันที่ + คอมเมนต์/ไฟล์แนบ + avatar
+          อยู่แถวเดียวกัน (ไม่ให้ไอคอนตกแถว) ส่วนล็อก/เวลาอยู่แถวล่างหลังเส้นประ */}
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mt: 0.75, gap: 0.5 }}>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.35 }}>
-          <CalendarTodayIcon sx={{ fontSize: 14, color: "text.secondary" }} />
-          <Typography variant="caption" color="text.secondary">
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.35, minWidth: 0 }}>
+          <CalendarTodayIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+          <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.68rem", whiteSpace: "nowrap" }}>
             {formatDate(issue.createdAt)}
           </Typography>
         </Box>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.6, flexShrink: 0 }}>
           {issue.commentCount > 0 && (
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
               <ChatBubbleOutlineIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-              <Typography variant="caption" color="text.secondary">{issue.commentCount}</Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.68rem" }}>{issue.commentCount}</Typography>
             </Box>
           )}
           {issue.attachmentCount > 0 && (
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.2 }}>
               <AttachFileIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-              <Typography variant="caption" color="text.secondary">{issue.attachmentCount}</Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.68rem" }}>{issue.attachmentCount}</Typography>
             </Box>
           )}
           {avatarChar ? (
             <Avatar
               sx={{
-                width: 22,
-                height: 22,
+                width: 24,
+                height: 24,
                 fontSize: "0.7rem",
                 fontWeight: 700,
                 bgcolor: "primary.main",
                 color: "primary.contrastText",
+                boxShadow: `0 0 0 2px ${theme.palette.background.paper}, 0 0 0 3px ${alpha(theme.palette.sky.main, 0.9)}`,
               }}
             >
               {avatarChar}
@@ -922,8 +927,8 @@ const TrelloCardContent = memo(function TrelloCardContent({
           ) : (
             <Avatar
               sx={{
-                width: 22,
-                height: 22,
+                width: 24,
+                height: 24,
                 fontSize: "0.7rem",
                 bgcolor: theme.palette.grey[300],
                 color: theme.palette.grey[600],
@@ -934,56 +939,49 @@ const TrelloCardContent = memo(function TrelloCardContent({
           )}
         </Box>
       </Box>
-      {/* bottom bar — lock + tracked time on the left, deadline on the right.
-          Hidden entirely when the card has none of the three. */}
-      {showBottomBar && (
+      {(issue.isLocked || timeVisible) && (
         <>
-          <Divider sx={{ borderStyle: "dashed", mt: 0.75, mb: 0.5 }} />
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 0.5,
-              minHeight: 22,
-            }}
-          >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
-              {issue.isLocked &&
-                (canUnlockIssue ? (
-                  <Tooltip title={t("unlock")}>
-                    <IconButton
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onUnlock?.(issue);
-                      }}
-                      sx={{ p: 0.25, cursor: "pointer" }}
-                    >
-                      <LockIcon sx={{ fontSize: 15, color: "warning.main" }} />
-                    </IconButton>
-                  </Tooltip>
-                ) : (
-                  <LockIcon sx={{ fontSize: 15, color: "text.disabled" }} />
-                ))}
-              {timeVisible && (
-                <Box sx={{ display: "flex", alignItems: "center", gap: 0.4 }}>
-                  <AccessTimeIcon
-                    sx={{
-                      fontSize: 14,
-                      color: "warning.main",
-                      animation: isRunning ? `${timerPulse} 1.5s ease-in-out infinite` : "none",
+          <Divider sx={{ borderStyle: "dashed", mt: 0.75, mb: 0.5, borderColor: "divider" }} />
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minHeight: 22 }}>
+            {issue.isLocked &&
+              (canUnlockIssue ? (
+                <Tooltip title={t("unlock")}>
+                  <IconButton
+                    size="small"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onUnlock?.(issue);
                     }}
-                  />
-                  <Typography
-                    variant="caption"
-                    sx={{ fontFamily: "monospace", fontWeight: 700, fontSize: "0.7rem" }}
+                    sx={{ p: 0.15, cursor: "pointer" }}
                   >
-                    {formatClock(totalSeconds)}
-                  </Typography>
-                </Box>
-              )}
-            </Box>
+                    <LockIcon sx={{ fontSize: 14, color: "warning.dark" }} />
+                  </IconButton>
+                </Tooltip>
+              ) : (
+                <LockIcon sx={{ fontSize: 14, color: "text.disabled" }} />
+              ))}
+            {timeVisible && (
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.4 }}>
+                <AccessTimeIcon
+                  sx={{
+                    fontSize: 14,
+                    color: "warning.main",
+                    animation: isRunning ? `${timerPulse} 1.5s ease-in-out infinite` : "none",
+                  }}
+                />
+                <Typography
+                  variant="caption"
+                  sx={{
+                    fontFamily: "monospace",
+                    fontWeight: 700,
+                    fontSize: "0.7rem",
+                    color: "text.primary",
+                  }}
+                >
+                  {formatClock(totalSeconds)}
+                </Typography>
+              </Box>
+            )}
           </Box>
         </>
       )}
@@ -1031,6 +1029,7 @@ const TrelloCard = memo(function TrelloCard({
   } = useSortable({ id: `issue-${issue.id}`, data: { type: "issue" }, disabled: issue.isLocked });
 
   const t = useTranslations("Boards");
+  const theme = useTheme();
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -1078,19 +1077,23 @@ const TrelloCard = memo(function TrelloCard({
       onClick={() => {
         if (!issue.isLocked) onOpen?.(issue);
       }}
-      elevation={1}
+      elevation={0}
       sx={{
         p: 1.5,
-        mb: 1,
+        mb: 1.25,
         cursor: issue.isLocked ? "not-allowed" : "grab",
-        "&:hover": { boxShadow: "0 4px 12px rgba(0,0,0,0.12)" },
         bgcolor: "background.paper",
-        borderRadius: 1.5,
-        // the card's own border turns red while it sits past a stale rule —
-        // no overlay, no extra box; back to "none" the moment it moves
-        border: staleDays != null ? "2px solid" : "none",
-        borderColor: "error.main",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+        borderRadius: "12px",
+        // ดีไซน์ใหม่: การ์ดลอยด้วยเงานุ่ม (สีมาจาก theme เสมอ)
+        boxShadow: `0 1px 3px ${alpha(theme.palette.navy.main, 0.1)}, 0 1px 2px ${alpha(theme.palette.navy.main, 0.05)}`,
+        "&:hover": {
+          boxShadow: `0 8px 22px ${alpha(theme.palette.navy.main, 0.16)}`,
+          transform: "translateY(-2px)",
+        },
+        // การ์ดค้าง = แถบแดงด้านซ้าย (แทน border แดงรอบใบที่ดูรุนแรงเกินไป)
+        // ใช้ borderLeftColor โปร่งใสตอนไม่ค้าง เพื่อไม่ให้ขนาดการ์ดกระโดด
+        borderLeft: "3px solid",
+        borderLeftColor: staleDays != null ? "error.main" : "transparent",
         transition: "box-shadow 0.2s ease, transform 0.2s ease",
       }}
     >
@@ -1263,37 +1266,51 @@ const KanbanColumn = memo(function KanbanColumn({
     <Box
       id={`status-col-${status.id}`}
       sx={{
-        flex: "0 0 272px",
-        width: 272,
-        minWidth: 272,
-        maxWidth: 272,
+        flex: "0 0 288px",
+        width: 288,
+        minWidth: 288,
+        maxWidth: 288,
         bgcolor: isDropTarget ? "primary.50" : "grey.50",
-        borderRadius: 2,
-        p: 1.5,
+        borderRadius: "16px",
+        p: 1.75,
         display: "flex",
         flexDirection: "column",
         // Fill the row (its height is definite now) — the header stays pinned
         // on top and only the card list below scrolls.
         maxHeight: "100%",
         border: isDropTarget ? "2px solid" : "1px solid",
-        borderColor: isDropTarget ? "primary.main" : theme.palette.divider,
+        borderColor: isDropTarget ? "primary.main" : "divider",
+        boxShadow: `0 1px 3px ${alpha(theme.palette.navy.main, 0.04)}`,
         transition: "background-color 0.15s ease, border-color 0.15s ease",
         position: "relative",
       }}
     >
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1, flexWrap: "nowrap" }}>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-          <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: color }} />
-          <Typography variant="caption" fontWeight={700} sx={{ textTransform: "uppercase", letterSpacing: 0.5 }}>
-            {status.customName ?? status.name}
-          </Typography>
-        </Box>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-          <Typography variant="caption" color="text.secondary" fontWeight={600}>
-            {total}
-          </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", mb: 1.5, px: 0.25, flexWrap: "nowrap" }}>
+        <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: color, flexShrink: 0 }} />
+        <Typography
+          variant="subtitle2"
+          fontWeight={700}
+          sx={{ ml: 1, fontSize: "0.8125rem", color: "text.primary", lineHeight: 1.4 }}
+        >
+          {status.customName ?? status.name}
+        </Typography>
+        <Box
+          sx={{
+            ml: 1,
+            px: 1,
+            py: 0.15,
+            borderRadius: 1,
+            bgcolor: "action.selected",
+            color: "text.secondary",
+            fontSize: "0.7rem",
+            fontWeight: 700,
+            lineHeight: 1.6,
+          }}
+        >
+          {total}
         </Box>
       </Box>
+
       <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
         <Box
           ref={setDroppableNodeRef}
@@ -1334,19 +1351,24 @@ const KanbanColumn = memo(function KanbanColumn({
           {items.length === 0 && !loading && (
             <Box
               sx={{
-                py: 3,
+                py: 4.5,
                 textAlign: "center",
                 border: isDropTarget ? "2px dashed" : "1px dashed",
                 borderColor: isDropTarget ? "primary.main" : "divider",
-                borderRadius: 1.5,
+                borderRadius: "12px",
+                bgcolor: "transparent",
                 transition: "border-color 0.15s ease",
                 pointerEvents: "none",
               }}
             >
+              <InboxOutlinedIcon
+                sx={{ fontSize: 30, color: isDropTarget ? "primary.main" : "text.disabled", opacity: 0.55, mb: 0.5 }}
+              />
               <Typography
                 variant="caption"
                 color={isDropTarget ? "primary.main" : "text.disabled"}
                 fontWeight={isDropTarget ? 600 : 400}
+                sx={{ display: "block" }}
               >
                 {isDropTarget ? t("dropHere") : t("noCards")}
               </Typography>
@@ -6661,6 +6683,13 @@ function BoardsPageInner() {
           to: drillFilters.createdTo || "…",
         }),
         onDelete: () => setDrillFilters((p) => ({ ...p, createdFrom: "", createdTo: "" })),
+      });
+    }
+    if (drillFilters.notDone) {
+      chips.push({
+        key: "drill-not-done",
+        label: ft("drillNotDone"),
+        onDelete: () => setDrillFilters((p) => ({ ...p, notDone: false })),
       });
     }
     if (drillFilters.completedFrom || drillFilters.completedTo) {

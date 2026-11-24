@@ -1,7 +1,8 @@
 /**
- * "Entered เสร็จสิ้น" — the single definition of a completion event, shared by
- * the dashboard's second bar and the report's completed-date filter
- * (`?series=completed` on a bar click → `completedFrom`/`completedTo`).
+ * "Entered เสร็จสิ้น" — the single definition of a completion event, used by
+ * the report's completed-date filter (`completedFrom`/`completedTo`). Kept for
+ * old links: the dashboard's trend bars now split a creation cohort by CURRENT
+ * status instead of counting move events, so they no longer send this filter.
  *
  * The source is an `activity_logs` row with action `card.moved`: the only
  * writer is `IssuesService.move()`, which stamps `toStatusId` into `detail`.

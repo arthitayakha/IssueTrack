@@ -26,7 +26,7 @@ import {
   DEFAULT_SORT,
   downloadCsv,
   fetchAllReportRows,
-  fetchPersonTasks,
+  fetchAssigneeTasks,
   fetchReportRows,
   loadFilterOptions,
   EMPTY_FILTER_OPTIONS,
@@ -37,6 +37,7 @@ import {
   TASK_TYPE_VALUES,
 } from "@/lib/reports-api";
 import type {
+  AssigneeGroup,
   CompanyRow,
   ContractKind,
   FilterOptions,
@@ -192,15 +193,21 @@ function parsePage(raw: string): number {
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
 }
 
+/** The summary row's expansion key — the NULL-assignee row has no personId. */
+function rowGroup(r: SummaryRow): AssigneeGroup | null {
+  return r.isTotal ? null : (r.personId ?? (r.labelKey === "unassigned" ? "unassigned" : null));
+}
+
 function paramsToFilters(raw: string): ReportFilters {
   const p = new URLSearchParams(raw);
   const series = p.get("series");
   return {
     from: p.get("from") ?? "",
     to: p.get("to") ?? "",
-    // a dashboard bar can point here with `?series=completed` — keep it in
-    // the URL so the list/grouped rows cut by completion time, not birth time
-    series: series === "completed" || series === "created" ? series : "",
+    // a dashboard bar points here with `?series=pending|done` — keep it in
+    // the URL so the list adds the matching current-status clause; both bars
+    // still filter by CREATION date (unlike the old event-based split).
+    series: series === "pending" || series === "done" ? series : "",
     search: p.get("q") ?? "",
     assigneeIds: parseIds(p.get("assignee")),
     reporterIds: parseIds(p.get("reporter")),
@@ -403,26 +410,27 @@ function ReportsScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- filters/sort derive from rawKey; refetch per param change is intended
   }, [view, filters, sort, page, reloadKey, updateParams, t]);
 
-  /* ---------------- expandable person detail ---------------- */
+  /* ---------------- expandable assignee detail ---------------- */
 
-  const [expandedPersonId, setExpandedPersonId] = useState<number | null>(null);
+  /** `null` = collapsed · a number = that person · "unassigned" = the NULL group. */
+  const [expandedPerson, setExpandedPerson] = useState<AssigneeGroup | null>(null);
   const [personTasks, setPersonTasks] = useState<IssueRow[] | null>(null);
   const [personTasksLoading, setPersonTasksLoading] = useState(false);
 
   // collapsing on view/filter change keeps the detail honest
   useEffect(() => {
-    setExpandedPersonId(null);
+    setExpandedPerson(null);
     setPersonTasks(null);
   }, [view, filterKey]);
 
   useEffect(() => {
-    if (expandedPersonId == null) {
+    if (expandedPerson == null) {
       setPersonTasks(null);
       return;
     }
     let cancelled = false;
     setPersonTasksLoading(true);
-    fetchPersonTasks(expandedPersonId, filters)
+    fetchAssigneeTasks(expandedPerson, filters)
       .then((r) => {
         if (!cancelled) setPersonTasks(r);
       })
@@ -436,10 +444,10 @@ function ReportsScreen() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- filterKey carries the filter values; page/sort changes must not refetch the detail
-  }, [expandedPersonId, filterKey, reloadKey]);
+  }, [expandedPerson, filterKey, reloadKey]);
 
-  const handleTogglePerson = useCallback((personId: number) => {
-    setExpandedPersonId((cur) => (cur === personId ? null : personId));
+  const handleTogglePerson = useCallback((group: AssigneeGroup) => {
+    setExpandedPerson((cur) => (cur === group ? null : group));
   }, []);
 
   /* ---------------- expandable "รายการที่ตัด" (view ตามบริษัท) ---------------- */
@@ -649,16 +657,18 @@ function ReportsScreen() {
 
   /**
    * Assignee CSV = one flat sheet: the visible detail columns ride after the
-   * summary ones, and each person's tasks follow their summary row (name in
+   * summary ones, and each group's tasks follow their summary row (name in
    * `person`). Same fetch — and same 50-task cap — as the row on screen, one
-   * person at a time so the export doesn't fan out into dozens of requests.
+   * group at a time so the export doesn't fan out into dozens of requests.
+   * The `ยังไม่มอบหมาย` row rides along with the person rows.
    */
   const fetchDetailForExport = useCallback(
-    async (all: ReportRows[]): Promise<Map<number, IssueRow[]>> => {
-      const byPerson = new Map<number, IssueRow[]>();
+    async (all: ReportRows[]): Promise<Map<AssigneeGroup, IssueRow[]>> => {
+      const byPerson = new Map<AssigneeGroup, IssueRow[]>();
       for (const r of all as SummaryRow[]) {
-        if (r.isTotal || r.personId == null) continue; // unassigned/total rows can't expand
-        byPerson.set(r.personId, await fetchPersonTasks(r.personId, filters));
+        const group = rowGroup(r);
+        if (group == null) continue; // total row has no detail
+        byPerson.set(group, await fetchAssigneeTasks(group, filters));
       }
       return byPerson;
     },
@@ -963,8 +973,9 @@ function ReportsScreen() {
 
   /**
    * The export body — one flat sheet shared by CSV **and** PDF, so the two
-   * files can never drift. In the assignee view each person's task rows ride
-   * under their summary row (name in `person`), and the detail columns the
+   * files can never drift. In the assignee view each group's task rows ride
+   * under their summary row (name in `person`) — including `ยังไม่มอบหมาย` —
+   * and the detail columns the
    * user showed come along as extra columns at the end — except the shared
    * ชั่วโมงจริง/ชั่วโมงกรอก, which fill from the task itself so a column never
    * appears twice. `summaryRows` records which indices are the aggregates
@@ -999,9 +1010,10 @@ function ReportsScreen() {
         summaryRows.push(data.length);
         data.push([...sumRow, ...extra.map(() => "")]);
         const r = all[i] as SummaryRow;
-        if (r.isTotal || r.personId == null) return; // unassigned/total rows have no detail
+        const group = rowGroup(r);
+        if (group == null) return; // the total row has no detail
         const label = r.labelKey ? t(`columns.${r.labelKey}`) : (r.label ?? "");
-        const tasks = tasksByPerson.get(r.personId) ?? [];
+        const tasks = tasksByPerson.get(group) ?? [];
         tasks.forEach((task, ti) => {
           const row = summary.keys.map((k, ki) => {
             if (ki === personIdx) return label;
@@ -1191,7 +1203,7 @@ function ReportsScreen() {
               columns={columns}
               detailHidden={detailHidden}
               detailColumns={detailColumns}
-              expandedPersonId={expandedPersonId}
+              expandedPerson={expandedPerson}
               personTasks={personTasks}
               personTasksLoading={personTasksLoading}
               onTogglePerson={handleTogglePerson}

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Box, Grow, IconButton, Typography } from "@mui/material";
-import { useTheme } from "@mui/material/styles";
+import { alpha, useTheme } from "@mui/material/styles";
 import CloseIcon from "@mui/icons-material/Close";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import type { AppNotification } from "@/lib/notifications-api";
@@ -22,7 +22,7 @@ interface IncomingToastProps {
   /** Click the card → read + navigate. */
   onOpen: (item: AppNotification) => void;
   /** Click × or let the timer run out → dismiss only; the row stays in the bell. */
-  onDismiss: () => void;
+  onDismiss: (id: number) => void;
 }
 
 export default function IncomingToast({ item, onOpen, onDismiss }: IncomingToastProps) {
@@ -33,7 +33,7 @@ export default function IncomingToast({ item, onOpen, onDismiss }: IncomingToast
 
   useEffect(() => {
     if (!item || paused) return;
-    const timer = setTimeout(onDismiss, TOAST_DURATION_MS);
+    const timer = setTimeout(() => onDismiss(item.id), TOAST_DURATION_MS);
     return () => clearTimeout(timer);
   }, [item, paused, onDismiss]);
 
@@ -46,6 +46,10 @@ export default function IncomingToast({ item, onOpen, onDismiss }: IncomingToast
   const label = labels[item.action] ?? item.action;
   const strike = item.action === "deleted" ? { textDecoration: "line-through" as const } : {};
 
+  /** ขาวโปร่งแสงเล็กน้อย — ใช้ค่าเดียวกันตอน hover ห้ามใช้ `action.hover`
+   *  (โปร่งใสเทา) มิฉะนั้นพื้นการ์ดจะดู "จาง" ทันทีที่วางเม้าส์ */
+  const glassBg = alpha(theme.palette.background.paper, 0.92);
+
   return (
     <Grow in timeout={250}>
       <Box
@@ -55,32 +59,26 @@ export default function IncomingToast({ item, onOpen, onDismiss }: IncomingToast
         onMouseLeave={() => setPaused(false)}
         onClick={() => onOpen(item)}
         sx={{
-          position: "fixed",
-          top: { xs: 68, sm: 76 },
-          right: { xs: 12, sm: 24 },
-          zIndex: 1400,
-          width: 360,
-          maxWidth: "calc(100vw - 24px)",
           display: "flex",
           alignItems: "flex-start",
           gap: 1.25,
           p: 1.5,
           cursor: "pointer",
-          bgcolor: "background.paper",
+          bgcolor: glassBg,
+          backdropFilter: "blur(10px)",
+          WebkitBackdropFilter: "blur(10px)",
           color: "text.primary",
           borderRadius: 2,
           border: "1px solid",
-          borderColor: "divider",
+          borderColor: alpha(theme.palette.divider, 0.85),
           // Neutral primary accent — deliberately NOT the priority colour;
           // the earlier ruling removed priority chips from the inbox too.
           borderLeft: "3px solid",
           borderLeftColor: "primary.main",
           boxShadow: theme.custom.cardShadow,
           transition: "transform 180ms ease, box-shadow 180ms ease",
-          // ⚠️ ต้องเป็นขาวทึบเสมอ — ห้ามใช้ `action.hover` (โปร่งใส rgba)
-          // เพราะมันจะแทนที่พื้นหลังทำให้การ์ดดู "จาง" ตอนวางเม้าส์
           "&:hover": {
-            bgcolor: "background.paper",
+            bgcolor: glassBg,
             boxShadow: theme.shadows[8],
             transform: "translateY(-2px)",
           },
@@ -129,7 +127,7 @@ export default function IncomingToast({ item, onOpen, onDismiss }: IncomingToast
           aria-label={t("dismiss")}
           onClick={(event) => {
             event.stopPropagation();
-            onDismiss();
+            onDismiss(item.id);
           }}
           sx={{ p: 0.25, color: "text.secondary", flexShrink: 0 }}
         >

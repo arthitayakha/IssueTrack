@@ -27,15 +27,20 @@ import { bucketToRange, drillHref } from "@/lib/dashboard-nav";
 
 /**
  * Trend chart: two bars per bucket (day / week / month / year) —
- *   - **สร้างเข้ามา** = cards born inside the bucket (the old series);
- *   - **เสร็จสิ้น** = cards moved INTO the done status inside the bucket
- *     (an event count off `activity_logs`, so a card that leaves and comes
- *     back counts twice — see `trendCounts`).
+ *   - **รอดำเนินการ** = cards CREATED inside the bucket that are still NOT in
+ *     the done column right now (every other status, including no status);
+ *   - **เสร็จสิ้น** = cards created in that same bucket that ARE in the done
+ *     column right now.
+ *
+ * Both bars are one cohort split by CURRENT status, so `pending + done =
+ * total`. It is a snapshot, not an event log: finishing last month then
+ * dragging back counts as pending today. The tooltip prints only the series
+ * under the pointer, not the whole split.
  *
  * The server returns only non-empty buckets (`date_trunc` in Bangkok time)
- * and one row carries BOTH counts; zero-filling the gaps is presentation, so
- * it happens here — never an aggregation. The two bars wear theme colours
- * only (indigo = created, cyan = completed) — no highlight for the peak.
+ * and one row carries all three counts; zero-filling the gaps is presentation,
+ * so it happens here — never an aggregation. The two bars wear theme colours
+ * only (indigo = pending, cyan = done).
  *
  * Two controls sit in the header:
  *   - the period toggle = the bucket size;
@@ -47,10 +52,9 @@ import { bucketToRange, drillHref } from "@/lib/dashboard-nav";
  * Clicking EITHER bar navigates to /reports filtered to that bucket's
  * `from`/`to` (plus the active status and company filters) — or to
  * /boards?view=table with the same window for seats without `report.view`.
- * The created bar leaves `series` empty = the ordinary created-date list;
- * the completed bar sends `series=completed` so the destination filters by
- * when cards entered เสร็จสิ้น — the two bars therefore open two DIFFERENT
- * lists that each add up to the number on the bar.
+ * Both bars send `series=pending|done` so the destination adds the matching
+ * current-status clause (`status=4` / `notDone=1`) and the list adds up to the
+ * number on the bar.
  */
 
 const PERIODS: DashboardPeriod[] = ["day", "week", "month", "year"];
@@ -111,10 +115,12 @@ function addPeriod(d: Date, period: DashboardPeriod, n: number): Date {
 
 interface Bucket {
   bucket: string;
-  /** Cards born in the bucket. */
-  created: number;
-  /** Cards that entered เสร็จสิ้น in the bucket (an event count). */
-  completed: number;
+  /** Cards born in the bucket that are still not done. */
+  pending: number;
+  /** Cards born in the bucket that are in the done column now. */
+  done: number;
+  /** The whole cohort — pending + done. */
+  total: number;
   /** Start-of-bucket Date for label formatting. */
   date: Date;
 }
@@ -132,7 +138,9 @@ function zeroFilled(
   period: DashboardPeriod,
   range: DashboardRange,
 ): Bucket[] {
-  const counts = new Map(rows.map((r) => [r.bucket, { created: r.created, completed: r.completed }]));
+  const counts = new Map(
+    rows.map((r) => [r.bucket, { pending: r.pending, done: r.done, total: r.total }]),
+  );
   const hasFrom = Boolean(range.from);
   const hasTo = Boolean(range.to);
   const custom = hasFrom || hasTo;
@@ -145,7 +153,13 @@ function zeroFilled(
   const bucketOf = (key: string, date: Date): Bucket => {
     const seen = counts.get(key);
     counts.delete(key);
-    return { bucket: key, created: seen?.created ?? 0, completed: seen?.completed ?? 0, date };
+    return {
+      bucket: key,
+      pending: seen?.pending ?? 0,
+      done: seen?.done ?? 0,
+      total: seen?.total ?? 0,
+      date,
+    };
   };
 
   const out: Bucket[] = [];
@@ -164,7 +178,7 @@ function zeroFilled(
     const lo = out[0]?.bucket ?? "";
     const hi = out[out.length - 1]?.bucket ?? "";
     for (const [bucket, seen] of counts) {
-      if ((seen.created > 0 || seen.completed > 0) && bucket >= lo && bucket <= hi) {
+      if ((seen.pending > 0 || seen.done > 0) && bucket >= lo && bucket <= hi) {
         out.push(bucketOf(bucket, new Date(`${bucket}T00:00:00`)));
       }
     }
@@ -175,7 +189,7 @@ function zeroFilled(
     }
     // any bucket the server saw but this clock did not (timezone edge) keeps its data
     for (const [bucket, seen] of counts) {
-      if (seen.created > 0 || seen.completed > 0) {
+      if (seen.pending > 0 || seen.done > 0) {
         out.push(bucketOf(bucket, new Date(`${bucket}T00:00:00`)));
       }
     }
@@ -248,7 +262,8 @@ export default function TrendChart({
     x: number;
     y: number;
     label: string;
-    series: DashboardTrendSeries;
+    /** Which bar is under the pointer — the tooltip prints this series only. */
+    seriesKey: DashboardTrendSeries;
     value: number;
   };
   const [hover, setHover] = useState<TrendHover | null>(null);
@@ -257,11 +272,11 @@ export default function TrendChart({
   const pointerRef = useRef({ x: 0, y: 0 });
 
   const data = useMemo(() => zeroFilled(rows, period, range), [rows, period, range]);
-  const hasAny = data.some((b) => b.created > 0 || b.completed > 0);
+  const hasAny = data.some((b) => b.pending > 0 || b.done > 0);
   const hasRange = Boolean(range.from || range.to);
   /** The ticks follow the data — see yAxisTicks(). */
   const yAxis = useMemo(
-    () => yAxisTicks(data.reduce((max, b) => Math.max(max, b.created, b.completed), 0)),
+    () => yAxisTicks(data.reduce((max, b) => Math.max(max, b.pending, b.done), 0)),
     [data],
   );
 
@@ -274,15 +289,15 @@ export default function TrendChart({
    * = the one on the right), same order as the `<Bar>`s below.
    */
   const series: { key: DashboardTrendSeries; label: string; color: string }[] = [
-    { key: "created", label: t("trend.seriesCreated"), color: theme.custom.chartColors.created },
-    { key: "completed", label: t("trend.seriesCompleted"), color: theme.custom.chartColors.completed },
+    { key: "pending", label: t("trend.seriesPending"), color: theme.custom.chartColors.created },
+    { key: "done", label: t("trend.seriesDone"), color: theme.custom.chartColors.completed },
   ];
   /**
-   * EITHER bar navigates with this bucket's range. The created bar needs no
-   * `series`; the completed bar sends `series=completed` so the destination
-   * cuts by "moved into เสร็จสิ้น" instead of "created at" — two different
-   * lists that each add up to the number on the bar. Seats without
-   * `report.view` land on the board's table view with the same window.
+   * EITHER bar navigates with this bucket's created-date range. The bar's
+   * `series` rides along so the destination adds the matching current-status
+   * clause (`status=4` / `notDone=1`) — the list then adds up to the bar.
+   * Seats without `report.view` land on the board's table view with the same
+   * filters.
    */
   const openBucket = (payload: Partial<Bucket> | undefined, seriesKey: DashboardTrendSeries) => {
     if (!payload?.bucket) return;
@@ -291,12 +306,15 @@ export default function TrendChart({
       drillHref(can("report.view"), {
         from,
         to,
-        series: seriesKey === "completed" ? "completed" : null,
+        series: seriesKey,
         status: statusId,
         company: companyIds,
       }),
     );
   };
+
+  /** The bar under the pointer — the tooltip's dot and word come from here. */
+  const hoveredSeries = hover ? series.find((s) => s.key === hover.seriesKey) : undefined;
 
   return (
     <>
@@ -459,7 +477,7 @@ export default function TrendChart({
                   tickLine={false}
                 />
                 <Bar
-                  dataKey="created"
+                  dataKey="pending"
                   name={series[0].label}
                   fill={series[0].color}
                   barSize={14}
@@ -471,17 +489,17 @@ export default function TrendChart({
                     setHover({
                       ...pointerRef.current,
                       label: labelOf(payload.bucket),
-                      series: "created",
-                      value: Number(payload.created ?? 0),
+                      seriesKey: "pending",
+                      value: Number(payload.pending ?? 0),
                     });
                   }}
                   onClick={(clicked) => {
                     const payload = clicked?.payload as Partial<Bucket> | undefined;
-                    openBucket(payload, "created");
+                    openBucket(payload, "pending");
                   }}
                 />
                 <Bar
-                  dataKey="completed"
+                  dataKey="done"
                   name={series[1].label}
                   fill={series[1].color}
                   barSize={14}
@@ -493,13 +511,13 @@ export default function TrendChart({
                     setHover({
                       ...pointerRef.current,
                       label: labelOf(payload.bucket),
-                      series: "completed",
-                      value: Number(payload.completed ?? 0),
+                      seriesKey: "done",
+                      value: Number(payload.done ?? 0),
                     });
                   }}
                   onClick={(clicked) => {
                     const payload = clicked?.payload as Partial<Bucket> | undefined;
-                    openBucket(payload, "completed");
+                    openBucket(payload, "done");
                   }}
                 />
               </BarChart>
@@ -535,18 +553,20 @@ export default function TrendChart({
                 <Typography sx={{ color: "inherit", fontWeight: 700, mb: 0.5 }}>
                   {hover.label}
                 </Typography>
+                {/* Only the bar under the pointer — the other series and the
+                    combined total are deliberately not printed here. */}
                 <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
                   <Box
                     sx={{
                       width: 8,
                       height: 8,
                       borderRadius: "50%",
-                      bgcolor: hover.series === "completed" ? series[1].color : series[0].color,
+                      bgcolor: hoveredSeries?.color,
                       flexShrink: 0,
                     }}
                   />
                   <Typography sx={{ color: "inherit", fontSize: 12.5 }}>
-                    {hover.series === "completed" ? series[1].label : series[0].label} : {hover.value}
+                    {hoveredSeries?.label} : {hover.value}
                   </Typography>
                 </Box>
               </Box>

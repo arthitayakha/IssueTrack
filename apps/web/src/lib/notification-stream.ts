@@ -5,7 +5,8 @@ import { useAuthStore } from "./auth-store";
 import type { AppNotification } from "./notifications-api";
 
 type NewListener = (item: AppNotification) => void;
-type ReadListener = (id: number) => void;
+/** `"all"` = the bell's "mark all as read" came from another tab/device. */
+type ReadListener = (id: number | "all") => void;
 
 const newListeners = new Set<NewListener>();
 const readListeners = new Set<ReadListener>();
@@ -69,14 +70,39 @@ function scheduleReconnect(): void {
   reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
 }
 
-function dispatch(raw: string): void {
-  let item: AppNotification;
+function dispatch(raw: string, type: string): void {
+  let payload: unknown;
   try {
-    item = JSON.parse(raw) as AppNotification;
+    payload = JSON.parse(raw);
   } catch {
     return; // a malformed frame must never tear down the stream
   }
-  if (!item || typeof item.id !== "number") return;
+
+  // Reading is an UPDATE now — other tabs still need to drop the row instantly
+  // instead of waiting ~10s for the next COUNT/list poll.
+  if (type === "read" || type === "read-all") {
+    if (type === "read-all") {
+      for (const listener of readListeners) listener("all");
+      return;
+    }
+    const id = (payload as { id?: unknown } | null)?.id;
+    if (typeof id !== "number") return;
+    for (const listener of readListeners) listener(id);
+    return;
+  }
+
+  const item = payload as AppNotification;
+  // defence in depth: an unrecognised frame (or an SSE message that lost its
+  // `event:` line) must never become a blank "System" toast — a real row always
+  // carries an `action` and a `target` (the issue title).
+  if (
+    !item ||
+    typeof item.id !== "number" ||
+    typeof item.action !== "string" ||
+    typeof item.target !== "string"
+  ) {
+    return;
+  }
   for (const listener of newListeners) listener(item);
 }
 
@@ -121,12 +147,21 @@ async function connect(): Promise<void> {
       while (end !== -1) {
         const frame = buffer.slice(0, end);
         buffer = buffer.slice(end + 2);
-        const data = frame
-          .split("\n")
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).trimStart())
-          .join("\n");
-        if (data) dispatch(data);
+        let frameType = "";
+        const dataLines: string[] = [];
+        for (const line of frame.split("\n")) {
+          // Nest's SseStream serialises `type` as an `event:` line (see
+          // @nestjs/core/router/sse-stream.js) — but a proxy may emit `type:`,
+          // so accept both. Missing this made a `read` frame look like a new
+          // notification and popped a blank "System" toast.
+          if (line.startsWith("event:") || line.startsWith("type:")) {
+            frameType = line.slice(line.indexOf(":") + 1).trim();
+          } else if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).trimStart());
+          }
+        }
+        const data = dataLines.join("\n");
+        if (data) dispatch(data, frameType);
         end = buffer.indexOf("\n\n");
       }
     }

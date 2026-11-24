@@ -62,6 +62,10 @@ export interface AppNotification {
   createdAt: string;
   /** ระดับของแถว — chip สี + ลำดับเรียง + หน้าต่างเตือน (เซิร์ฟเวอร์ส่งมาเสมอ) */
   priority: NotificationPriority;
+  /** อ่านแล้ว — แถวที่อ่านแล้วจะไม่ถูกส่งกลับจาก `GET /notifications` */
+  isRead: boolean;
+  /** เวลาที่กดอ่าน (เก็บไว้ใน DB แม้แถวหายจากกระดิ่ง) */
+  readAt: string | null;
 }
 
 /** One page of the single inbox — every stored row is unread. */
@@ -76,8 +80,10 @@ export interface NotificationListResponse {
   page: number;
   limit: number;
   total: number;
-  /** Whole-account total — reading a row deletes it, so this is the badge. */
+  /** ยอดแถวยังไม่อ่าน (badge) — แถวที่อ่านแล้วอยู่ใน DB แต่ไม่ถูกส่งมาใน `data` */
   unreadCount: number;
+  /** ยอดแถวยังไม่อ่าน — ตัวเดียวกับ `unreadCount`/badge (ไม่รวมแถวที่อ่านแล้ว) */
+  sum: number;
 }
 
 function getToken(): string | null {
@@ -102,6 +108,23 @@ export async function fetchNotifications(
 ): Promise<NotificationListResponse> {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
   return apiFetch<NotificationListResponse>(`/notifications?${params.toString()}`, {}, getToken());
+}
+
+/**
+ * ประวัติที่อ่านแล้ว — แถวที่กดอ่านแล้วไม่หายจาก DB แต่ไม่โชว์ในกล่องเข้า
+ * (endpoint นี้เป็นทางเดียวที่จะดึงแถวนั้นกลับมาได้) · response shape เดียวกับ
+ * `fetchNotifications` · ยังไม่มี UI เรียกใช้
+ */
+export async function fetchReadNotifications(
+  page = 1,
+  limit = 20,
+): Promise<NotificationListResponse> {
+  const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+  return apiFetch<NotificationListResponse>(
+    `/notifications/read?${params.toString()}`,
+    {},
+    getToken(),
+  );
 }
 
 /** ลูกค้าทั้งหมด (active) — ใช้ตอนกด "ติดต่อลูกค้า" บน navbar ของแอดมิน */
@@ -147,7 +170,30 @@ export async function sendContactMessage(input: {
   );
 }
 
-/** Reading a notification deletes it — it never comes back. */
+/**
+ * กดอ่าน = UPDATE ใน DB (แถวหายจากกระดิ่งแต่ยังเก็บอยู่) — ไม่ใช่ DELETE
+ * คนละคนกับแถวจะได้ `null` กลับมา
+ */
+export async function markNotificationRead(
+  id: number,
+): Promise<{ read: boolean; id: number } | null> {
+  return apiFetch<{ read: boolean; id: number } | null>(
+    `/notifications/${id}/read`,
+    { method: "PATCH" },
+    getToken(),
+  );
+}
+
+/** ปุ่ม "ทำเครื่องหมายว่าอ่านแล้ว" — mark ทุกแถวที่ยังไม่อ่าน (ไม่ลบข้อมูล) */
+export async function markAllNotificationsRead(): Promise<{ read: number }> {
+  return apiFetch<{ read: number }>(
+    "/notifications/read-all",
+    { method: "PATCH" },
+    getToken(),
+  );
+}
+
+/** ลบถาวร — ใช้ทำความสะอาดเท่านั้น (ปกติการกดอ่านใช้ `markNotificationRead`) */
 export async function deleteNotification(
   id: number,
 ): Promise<{ deleted: boolean } | null> {

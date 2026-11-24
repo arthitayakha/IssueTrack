@@ -39,6 +39,14 @@ interface DeductionRow {
   at: Date | null;
 }
 
+/** แถวงานที่แจ้งมาแต่**ไม่หัก MA** — ผูกเข้ารอบด้วยวันที่แจ้ง (`created_at`) */
+interface ReportedRow {
+  id: number;
+  appId: number;
+  companyId: number;
+  createdAt: Date | string | null;
+}
+
 /** ผลลัพธ์ของการผูกชั่วโมงเข้ารอบ — รวมทุกช่องเพื่อให้ `Σรอบ + ไม่ระบุ = ทั้งคู่` */
 interface Attribution {
   byPeriod: Map<number, { seconds: number; ids: number[] }>;
@@ -54,6 +62,21 @@ export interface PeriodIssueRow {
   taskType: string | null;
   hours: number;
   deductedAt: Date | null;
+  statusName: string | null;
+  assigneeName: string | null;
+}
+
+/**
+ * แถวงานที่ **แจ้งมาในช่วงสัญญา แต่ไม่คิด MA** (`task_type <> 'ma'` หรือ NULL)
+ * — ใช้แสดงในช่อง "งานที่แจ้ง" แยกต่างหากจาก "รายการที่ตัด" (ที่เป็น MA ล้วน)
+ */
+export interface ReportedIssueRow {
+  id: number;
+  issueNumber: string | null;
+  title: string;
+  taskType: string | null;
+  /** `issues.created_at` — วันที่แจ้ง (ไม่ใช่วันที่กรอกชั่วโมง) */
+  reportedAt: Date | string | null;
   statusName: string | null;
   assigneeName: string | null;
 }
@@ -78,6 +101,10 @@ export interface PeriodUsageResult {
   /** จำนวนรายการในรอบนี้ */
   count: number;
   issues: PeriodIssueRow[];
+  /** จำนวนงานที่แจ้งในรอบนี้ (ไม่คิด MA) — คนละชุดกับ `count` */
+  reportedCount: number;
+  /** รายการงานที่แจ้งในรอบนี้ (ไม่คิด MA) */
+  reportedIssues: ReportedIssueRow[];
 }
 
 /** `GET /apps/usage-counts?recordIds=` — นับหลายรอบพร้อมกันแบบไม่โหลดรายการ */
@@ -92,6 +119,8 @@ export interface UsageCountResult {
    * · `none` = ยังไม่ระบุ type (`task_type IS NULL` หรือค่าที่ไม่รู้จัก)
    */
   byType: TaskTypeCounts;
+  /** จำนวนงานที่แจ้งในรอบนี้ (ไม่คิด MA) — คนละชุดกับ `count` */
+  reportedCount: number;
 }
 
 /**
@@ -328,6 +357,76 @@ export class MaUsageService {
   }
 
   /**
+   * **งานที่แจ้งมาแต่ไม่คิด MA** — `task_type <> 'ma'` หรือยังไม่ระบุ · ใช้เส้นคู่
+   * เดียวกับสูตรหัก MA (`issue.customer_id` → `users.company_id`, ทิ้งงานถังขยะ)
+   * แต่**ไม่ filter สถานะและไม่ต้องกรอกชั่วโมง** → บั๊กที่แจ้งแล้วปิด/ยังไม่ปิด
+   * ถูกเก็บครบ · เป็นคนละชุดกับ `deductionRows()` เด็ดขาด (ห้ามไปแก้ตัวเลข
+   * "ใช้ไป/คงเหลือ" หรือ invariant เดิม)
+   */
+  private async reportedRows(appIds: number[]): Promise<ReportedRow[]> {
+    if (appIds.length === 0) return [];
+    const raw = await this.issues
+      .createQueryBuilder("issue")
+      .leftJoin("issue.customer", "reporter")
+      .select("issue.created_at", "created_at")
+      .addSelect("issue.id", "id")
+      .addSelect("issue.app_id", "app_id")
+      .addSelect("reporter.company_id", "company_id")
+      .where("issue.app_id IN (:...appIds)", { appIds })
+      .andWhere("issue.deleted_at IS NULL")
+      .andWhere("reporter.company_id IS NOT NULL")
+      .andWhere("(issue.task_type IS NULL OR issue.task_type <> 'ma')")
+      .getRawMany<{
+        id: string;
+        app_id: string;
+        company_id: string;
+        created_at: Date | string | null;
+      }>();
+    return raw.map((row) => ({
+      id: Number(row.id),
+      appId: Number(row.app_id),
+      companyId: Number(row.company_id),
+      createdAt: row.created_at,
+    }));
+  }
+
+  /**
+   * ผูกงานที่แจ้งเข้ารอบด้วย **วันที่แจ้ง** (`issues.created_at`) — ใช้กติกา
+   * `pickPeriodId()` ตัวเดียวกับ MA: แถวที่ "มีผลอยู่ ณ ตอนแจ้ง" = แถวของคู่ที่
+   * `created_at <= วันที่แจ้ง` แล้วเอาใหม่สุด → **บั๊กที่แจ้งหลังสัญญาหมดอายุ
+   * และยังไม่ต่อ ยังอยู่รายการเดิม** (ยังไม่มีแถวใหม่ให้ผูก) · ไม่มีแถวมาก่อน
+   * วันนั้น = ไม่ผูก (fail-open ไม่เดา)
+   */
+  private attributeReported(rows: ReportedRow[], periodRows: PeriodRow[]): Map<number, number[]> {
+    const out = new Map<number, number[]>();
+    for (const row of rows) {
+      const periodId = pickPeriodId(periodRows, row.createdAt);
+      if (periodId == null) continue;
+      out.set(periodId, [...(out.get(periodId) ?? []), row.id]);
+    }
+    return out;
+  }
+
+  /** โหลดรายการงานที่แจ้งจริง (เริ่มจากวันที่แจ้งใหม่สุด) */
+  private async loadReportedIssues(ids: number[]): Promise<ReportedIssueRow[]> {
+    if (ids.length === 0) return [];
+    const issues = await this.issues.find({
+      where: { id: In(ids) },
+      relations: ["status", "programmer"],
+      order: { createdAt: "DESC", id: "DESC" },
+    });
+    return issues.map((issue) => ({
+      id: issue.id,
+      issueNumber: issue.issueNumber ?? null,
+      title: issue.title,
+      taskType: issue.taskType ?? null,
+      reportedAt: issue.createdAt ?? null,
+      statusName: issue.status?.name ?? null,
+      assigneeName: issue.programmer?.name ?? null,
+    }));
+  }
+
+  /**
    * **รายการที่ถูกตัดจากช่วง MA นี้** — ของ `recordId` ที่ระบุ (ต้องเป็นของ `appId`
    * ด้วย มิฉะนั้น 404) · คืนทั้งตัวเลขสรุปและรายการจริงให้ป๊อปอัพ `/systems`
    * กับ drill-down ของรายงาน `/reports` ใช้ร่วมกัน
@@ -364,6 +463,15 @@ export class MaUsageService {
     );
     const bucket = byPeriod.get(link.id) ?? { seconds: 0, ids: [] };
 
+    /** งานที่แจ้ง (ไม่คิด MA) — คำนวณแยกจาก `rows`/`bucket` เสมอ */
+    const reportedIds =
+      this.attributeReported(
+        (await this.reportedRows([link.appId])).filter(
+          (row) => row.companyId === link.companyId,
+        ),
+        this.toPeriodRows(pairRows),
+      ).get(link.id) ?? [];
+
     return {
       recordId: link.id,
       appId: link.appId,
@@ -378,6 +486,8 @@ export class MaUsageService {
       unattributedHours: round1(unattributedSeconds / 3600),
       count: bucket.ids.length,
       issues: await this.loadIssues(bucket.ids),
+      reportedCount: reportedIds.length,
+      reportedIssues: await this.loadReportedIssues(reportedIds),
     };
   }
 
@@ -438,7 +548,8 @@ export class MaUsageService {
    * แถวต่างบริษัทถูก**ตัดทิ้งก่อน** (ผลลัพธ์ = ไม่คืนแถว ไม่ใช่คืน 0 จึงยังตรง
    * กับกติกา "ไม่รู้ = โชว์ `—`" เดิมทุกประการ)
    *
-   * ทุกแถวได้ `byType` (ระดับคู่ — ค่าเดียวกันทุกรอบของคู่เดียวกัน) ด้วย ·
+   * ทุกแถวได้ `byType` (ระดับคู่ — ค่าเดียวกันทุกรอบของคู่เดียวกัน) กับ
+   * `reportedCount` (งานที่แจ้ง**ไม่คิด MA** — ผูกตามวันที่แจ้ง) ด้วย ·
    * ไม่กระทบ `count` / `periodUsedHours` ซึ่งยังเป็นสูตร MA เดิมทุกประการ
    */
   async usageCounts(recordIds: number[], contract?: ViewerScope): Promise<UsageCountResult[]> {
@@ -478,6 +589,19 @@ export class MaUsageService {
     // `pairTypeCounts` (round 2) เพื่อไม่ให้กระทบเทสต์เดิมที่ assert ผล callแรก
     const deductionRows = await this.deductionRows(appIds);
     const typeCounts = await this.pairTypeCounts(appIds);
+    // query ที่ 3 — งานที่แจ้ง (ไม่คิด MA) ใช้เติมช่อง "งานที่แจ้ง" คนละชุดกับ `count`
+    const reportedRows = await this.reportedRows(appIds);
+    const reportedByPair = new Map<string, Map<number, number[]>>();
+    for (const [key, rows] of periodRowsByPair) {
+      const [appId, companyId] = key.split(":").map(Number);
+      reportedByPair.set(
+        key,
+        this.attributeReported(
+          reportedRows.filter((row) => row.appId === appId && row.companyId === companyId),
+          rows,
+        ),
+      );
+    }
 
     return links.map((link) => {
       const key = pairKey(link.appId, link.companyId);
@@ -493,6 +617,7 @@ export class MaUsageService {
         // คู่ไม่มีงาน → zeros (รู้จริงว่า 0) · คู่มีงานแต่ไม่มี MA เลยก็ได้ zeros
         // ที่มีช่องอื่นเป็น 0 จริง — ต่างจาก id ที่ไม่มีแถวจริงซึ่งถูกตัดออกไปแล้ว
         byType: typeCounts.get(key) ?? zeroTypeCounts(),
+        reportedCount: reportedByPair.get(key)?.get(link.id)?.length ?? 0,
       };
     });
   }

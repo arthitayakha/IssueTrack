@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Patch,
   Post,
   Param,
   ParseIntPipe,
@@ -91,29 +92,40 @@ export class NotificationsController {
     return this.notifications.contactsForCompany(Number.isInteger(id) && id > 0 ? id : 0);
   }
 
-  /** The single inbox — every row is unread, so there is no `tab` filter any more. */
+  /**
+   * clamp **เท่ากับที่ service ทำ** (`Math.min(Math.max(…, 1), 200)`) ก่อน
+   * คำนวณ offset — เดิม offset ใช้ `size` ดิบ: `?limit=500&page=2` → offset
+   * 500 แต่ service คืน 200 แถว = เพจเพี้ยน (ข้าม/ซ้ำแถว)
+   */
+  private pageArgs(limit?: string, page?: string) {
+    const parsedLimit = limit ? parseInt(limit, 10) : NaN;
+    const parsedPage = page ? parseInt(page, 10) : NaN;
+    const size = Math.min(
+      Math.max(Number.isInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : 5, 1),
+      200,
+    );
+    const pageNum = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+    return { limit: size, offset: (pageNum - 1) * size };
+  }
+
+  /** The single unread inbox — a row vanishes from here the moment it is read. */
   @Get()
   list(
     @CurrentUser() user: AuthUser,
     @Query("limit") limit?: string,
     @Query("page") page?: string,
   ) {
-    const parsedLimit = limit ? parseInt(limit, 10) : NaN;
-    const parsedPage = page ? parseInt(page, 10) : NaN;
-    /**
-     * clamp **เท่ากับที่ service ทำ** (`Math.min(Math.max(…, 1), 200)`) ก่อน
-     * คำนวณ offset — เดิม offset ใช้ `size` ดิบ: `?limit=500&page=2` → offset
-     * 500 แต่ service คืน 200 แถว = เพจเพี้ยน (ข้าม/ซ้ำแถว)
-     */
-    const size = Math.min(
-      Math.max(Number.isInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : 5, 1),
-      200,
-    );
-    const pageNum = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
-    return this.notifications.list(Number(user.id), {
-      limit: size,
-      offset: (pageNum - 1) * size,
-    });
+    return this.notifications.list(Number(user.id), this.pageArgs(limit, page));
+  }
+
+  /** The read archive — rows stay in the DB after reading and are retrievable here. */
+  @Get("read")
+  listRead(
+    @CurrentUser() user: AuthUser,
+    @Query("limit") limit?: string,
+    @Query("page") page?: string,
+  ) {
+    return this.notifications.listRead(Number(user.id), this.pageArgs(limit, page));
   }
 
   /**
@@ -135,13 +147,28 @@ export class NotificationsController {
     });
   }
 
-  /** Reading one notification = it is deleted (someone else's id → `null`). */
+  /**
+   * Reading one notification marks it read in the DB — the row disappears
+   * from the bell but is kept as a record (`is_read` / `read_at`).
+   * Someone else's id → `null`, their row stays put.
+   */
+  @Patch(":id/read")
+  markRead(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
+    return this.notifications.markRead(Number(user.id), id);
+  }
+
+  /** The inbox header button — marks every unread row read, keeps every row. */
+  @Patch("read-all")
+  markAllRead(@CurrentUser() user: AuthUser) {
+    return this.notifications.markAllRead(Number(user.id));
+  }
+
+  /** Permanent deletion for cleanup — reading no longer calls these. */
   @Delete(":id")
   remove(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
     return this.notifications.remove(Number(user.id), id);
   }
 
-  /** The inbox header button — clears every unread row of this account. */
   @Delete()
   removeAll(@CurrentUser() user: AuthUser) {
     return this.notifications.removeAll(Number(user.id));

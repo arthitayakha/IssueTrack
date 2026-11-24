@@ -15,6 +15,9 @@ export type DashboardPeriod = "day" | "week" | "month" | "year";
 export const DASHBOARD_SCOPES: readonly DashboardScope[] = ["all", "assigned", "reported", "own"];
 export const DASHBOARD_PERIODS: readonly DashboardPeriod[] = ["day", "week", "month", "year"];
 
+/** The done column's id — mirror of the API's `common/done-moves.ts`. */
+export const DONE_STATUS_ID = 4;
+
 /** A labeled count row (status / priority / app / category dimension). */
 export interface DashboardCountRow {
   id: number | null;
@@ -25,21 +28,23 @@ export interface DashboardCountRow {
 }
 
 /**
- * Which of the trend chart's two series a drill-down list belongs to — the
- * bar shows "created" and "completed" side by side.
+ * Which of the trend chart's two series a drill-down list belongs to. Both
+ * bars cohort cards by their CREATION bucket, then split by CURRENT status:
+ * `pending` = still not done, `done` = currently in the done column.
  */
-export type DashboardTrendSeries = "created" | "completed";
+export type DashboardTrendSeries = "pending" | "done";
 
 /**
  * One trend bucket — `bucket` is `yyyy-mm-dd` (bucket start, Bangkok time).
- * `created` = cards born in the bucket; `completed` = moves into the done
- * status that happened in the bucket (an event count — leaving and
- * re-entering counts twice).
+ * All three counts describe the SAME cohort: cards created inside the bucket.
+ * `pending` + `done` = `total` (cards with no status count as pending); the
+ * split follows the card's status RIGHT NOW, not when it finished.
  */
 export interface DashboardTrendRow {
   bucket: string;
-  created: number;
-  completed: number;
+  pending: number;
+  done: number;
+  total: number;
 }
 
 /**

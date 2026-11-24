@@ -9,11 +9,12 @@ import { todayIso } from "../common/dates";
  * module, safe to run next to a live `npm run dev`.
  *
  * Guards the contract the `/systems` page relies on after migration 1812
- * (surrogate key → **1 คู่ มีได้หลายแถว**):
+ * (surrogate key): **เพิ่มข้อมูลใหม่ = 1 คู่ 1 แถว** · แถวหลายช่วงของคู่เดิมมีได้
+ * เฉพาะจาก "ต่ออายุ"/"ซื้อชั่วโมง" (คนละ route):
  *
- * - `addRecord()` **appends** — adding the same app×company pair a second time
- *   must create a *new* row and leave the old one untouched (the whole point
- *   of "เพิ่มข้อมูลใหม่ โดยให้ข้อมูลเก่าอยู่ของมัน")
+ * - `addRecord()` **1 คู่ 1 แถว** — ทุกช่องบังคับและกันคู่แอป×บริษัทซ้ำ (409)
+ *   ตามคำสั่งผู้ใช้ ("เพิ่มตัวที่มีอยู่แล้วไม่ได้") · รายการใหม่ของคู่เดิมให้ใช้
+ *   `renewRecord()` / `buyHours()` ที่ append แถวใหม่คนละ route
  * - `updateRecord()` touches **exactly one row**, and only when that row
  *   belongs to the app in the path (no cross-app editing) · `removeRecord()`
  *   deletes **every row of the pair** (ตาราง `/systems` คือ 1 แถว = 1 คู่
@@ -238,50 +239,43 @@ const POS: AppRow = { id: 7, name: "POS", isVisible: true };
 const CRM: AppRow = { id: 11, name: "CRM", isVisible: true };
 const CRM_OFF: AppRow = { id: 12, name: "CRM Classic", isVisible: false };
 
-describe("AppsService.addRecord — append, never overwrite", () => {
-  it("creates a new row for a pair that already has one (ช่วงใหม่ไม่เขียนทับช่วงเก่า)", async () => {
+describe("AppsService.addRecord — 1 คู่ 1 แถว, กรอกครบ, กันซ้ำ", () => {
+  const full = {
+    companyId: 2,
+    startedAt: "2026-11-09",
+    expiresAt: "2027-11-08",
+    maHours: 12,
+  };
+
+  it("rejects a duplicate app×company pair with 409 and leaves the old row untouched", async () => {
     const { service, state } = makeService({
       apps: [POS],
-      rows: [row({ id: 11, companyId: 1, maHours: 40, expiresAt: "2026-11-08" })],
+      rows: [row({ id: 11, companyId: 1, maHours: 40, expiresAt: "2027-11-08" })],
     });
 
-    await service.addRecord(7, { companyId: 1, maHours: 60, expiresAt: "2027-11-08" });
+    await expect(
+      service.addRecord(7, { ...full, companyId: 1 }),
+    ).rejects.toThrow(ConflictException);
 
-    expect(state.rows).toHaveLength(2);
-    // the old period is byte-for-byte untouched
-    expect(state.rows[0]).toMatchObject({ id: 11, companyId: 1, maHours: 40, expiresAt: "2026-11-08" });
-    expect(state.rows[1]).toMatchObject({ companyId: 1, maHours: 60, expiresAt: "2027-11-08" });
-    expect(state.rows[1].id).not.toBe(11);
-  });
-
-  it("rejects an app that does not exist", async () => {
-    const { service, state } = makeService({ apps: [POS] });
-
-    await expect(service.addRecord(999, { companyId: 1 })).rejects.toThrow(NotFoundException);
-    expect(state.rows).toHaveLength(0);
-  });
-
-  it("rejects a company that does not exist and writes nothing", async () => {
-    const { service, state } = makeService({ apps: [POS] });
-
-    await expect(service.addRecord(7, { companyId: 999 })).rejects.toThrow(BadRequestException);
-    await expect(service.addRecord(7, {})).rejects.toThrow(BadRequestException);
-    expect(state.rows).toHaveLength(0);
-  });
-
-  it("normalizes the dates and hours before they reach the row", async () => {
-    const { service, state } = makeService({ apps: [POS] });
-
-    await service.addRecord(7, {
-      companyId: 2,
-      startedAt: "",
-      expiresAt: "2027-01-01",
-      maHours: "12",
-    });
-
+    expect(state.rows).toHaveLength(1);
     expect(state.rows[0]).toMatchObject({
-      startedAt: null,
-      expiresAt: "2027-01-01",
+      id: 11,
+      companyId: 1,
+      maHours: 40,
+      expiresAt: "2027-11-08",
+    });
+  });
+
+  it("creates a row when all fields are filled and the pair is new", async () => {
+    const { service, state } = makeService({ apps: [POS] });
+
+    await service.addRecord(7, { ...full, maHours: "12" });
+
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]).toMatchObject({
+      companyId: 2,
+      startedAt: "2026-11-09",
+      expiresAt: "2027-11-08",
       maHours: 12,
       // a fresh row starts with no announcements to its name
       expiryStatus: "none",
@@ -289,19 +283,68 @@ describe("AppsService.addRecord — append, never overwrite", () => {
     });
   });
 
-  it("rejects a bad date and a negative/non-integer hour count", async () => {
+  it("rejects an app that does not exist", async () => {
     const { service, state } = makeService({ apps: [POS] });
 
-    await expect(
-      service.addRecord(7, { companyId: 1, expiresAt: "31/12/2027" }),
-    ).rejects.toThrow(BadRequestException);
-    await expect(service.addRecord(7, { companyId: 1, maHours: -1 })).rejects.toThrow(
+    await expect(service.addRecord(999, full)).rejects.toThrow(NotFoundException);
+    expect(state.rows).toHaveLength(0);
+  });
+
+  it("rejects a company that does not exist and writes nothing", async () => {
+    const { service, state } = makeService({ apps: [POS] });
+
+    await expect(service.addRecord(7, { ...full, companyId: 999 })).rejects.toThrow(
       BadRequestException,
     );
-    await expect(service.addRecord(7, { companyId: 1, maHours: 1.5 })).rejects.toThrow(
+    await expect(service.addRecord(7, {} as typeof full)).rejects.toThrow(
       BadRequestException,
     );
     expect(state.rows).toHaveLength(0);
+  });
+
+  it("requires every field (company, start, expiry, MA hours)", async () => {
+    const { service, state } = makeService({ apps: [POS] });
+
+    await expect(service.addRecord(7, { ...full, companyId: null })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.addRecord(7, { ...full, startedAt: "" })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.addRecord(7, { ...full, expiresAt: undefined })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.addRecord(7, { ...full, maHours: null })).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(state.rows).toHaveLength(0);
+  });
+
+  it("rejects expiry on or before the start date", async () => {
+    const { service, state } = makeService({ apps: [POS] });
+
+    await expect(
+      service.addRecord(7, { ...full, expiresAt: "2026-11-09" }),
+    ).rejects.toThrow(BadRequestException);
+    expect(state.rows).toHaveLength(0);
+  });
+
+  it("accepts 0 hours but rejects a bad date and a negative/non-integer hour count", async () => {
+    const { service, state } = makeService({ apps: [POS] });
+
+    await service.addRecord(7, { ...full, maHours: 0 });
+    expect(state.rows[0].maHours).toBe(0);
+
+    await expect(
+      service.addRecord(7, { ...full, companyId: 1, expiresAt: "31/12/2027" }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      service.addRecord(7, { ...full, companyId: 1, maHours: -1 }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      service.addRecord(7, { ...full, companyId: 1, maHours: 1.5 }),
+    ).rejects.toThrow(BadRequestException);
+    expect(state.rows).toHaveLength(1);
   });
 });
 
@@ -334,6 +377,28 @@ describe("AppsService.updateRecord — one row only", () => {
       expiresAt: "2026-12-31",
       maHours: 10,
     });
+  });
+
+  it("rejects changing the company to a pair that already has a row (409)", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, companyId: 1 }), row({ id: 12, companyId: 2 })],
+    });
+
+    await expect(service.updateRecord(7, 11, { companyId: 2 })).rejects.toThrow(
+      ConflictException,
+    );
+    expect(state.rows[0].companyId).toBe(1);
+  });
+
+  it("allows changing the company to a pair that has no row", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, companyId: 1 })],
+    });
+
+    await service.updateRecord(7, 11, { companyId: 2 });
+    expect(state.rows[0].companyId).toBe(2);
   });
 
   it("clears the MA-depleted latch only when the hours go UP (เปิดรอบแจ้งใหม่)", async () => {
@@ -662,6 +727,70 @@ describe("AppsService.renewRecord — appends the next period, never rewrites", 
       BadRequestException,
     );
     expect(state.rows).toHaveLength(1);
+  });
+
+  it("drops the carry when the new period starts more than 1 year after the old expiry", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, expiresAt: "2025-01-01" })],
+    });
+
+    // ต่อตรงเวลา (3 ม.ค. 2567) และครบ 1 ปีพอดี (1 ม.ค. 2568) → ยังได้ทบ
+    await service.renewRecord(7, 11, {
+      ...period,
+      startedAt: "2025-01-03",
+      expiresAt: "2026-01-03",
+      carriedHours: 15,
+    });
+    await service.renewRecord(7, 11, {
+      ...period,
+      startedAt: "2026-01-01",
+      expiresAt: "2027-01-01",
+      carriedHours: 15,
+    });
+
+    // ขาดไป 1 ปี (5 ม.ค. 2569) → สิทธิ์ทบหมด
+    await expect(
+      service.renewRecord(7, 11, {
+        ...period,
+        startedAt: "2027-01-05",
+        expiresAt: "2028-01-05",
+        carriedHours: 15,
+      }),
+    ).rejects.toThrow(BadRequestException);
+
+    // แต่ต่อช้าโดยไม่ทบยังทำได้ (window นี้คุมแค่ `carriedHours`)
+    await service.renewRecord(7, 11, {
+      ...period,
+      startedAt: "2027-01-05",
+      expiresAt: "2028-01-05",
+    });
+    expect(state.rows).toHaveLength(4);
+  });
+
+  it("uses the form's Feb-29 clamp for the 1-year carry deadline", async () => {
+    const { service } = makeService({
+      apps: [POS],
+      rows: [row({ id: 11, expiresAt: "2024-02-29" })],
+    });
+
+    // dayjs `.add(1, "year")` ปัด 29 ก.พ. → 28 ก.พ. 2568 — ฝั่งเซิร์ฟเวอร์ต้องตรงกัน
+    await expect(
+      service.renewRecord(7, 11, {
+        ...period,
+        startedAt: "2025-02-28",
+        expiresAt: "2026-02-28",
+        carriedHours: 10,
+      }),
+    ).resolves.toBeDefined();
+    await expect(
+      service.renewRecord(7, 11, {
+        ...period,
+        startedAt: "2025-03-01",
+        expiresAt: "2026-03-01",
+        carriedHours: 10,
+      }),
+    ).rejects.toThrow(BadRequestException);
   });
 
   it("sends an in-app renewal confirmation after the write (no e-mail)", async () => {

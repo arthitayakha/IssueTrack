@@ -240,14 +240,18 @@ export async function fetchIssues(
     noCategory?: boolean;
     noPriority?: boolean;
     /**
-     * Dashboard drill-down trend window. `series=completed` binds the window
-     * to the moment a card entered เสร็จสิ้น, otherwise to its creation — the
-     * API exposes both pairs of params (createdFrom/To, completedFrom/To).
+     * Dashboard drill-down trend window — both bars cohort by CREATION date,
+     * so the window always binds `createdFrom/To`.
      */
     createdFrom?: string;
     createdTo?: string;
     completedFrom?: string;
     completedTo?: string;
+    /**
+     * The pending bar's current-status cohort: `status_id <> 4 OR IS NULL`.
+     * The done bar instead sends `statuses=[4]`; both ride with createdFrom/To.
+     */
+    notDone?: boolean;
     /**
      * The board's hide policy — only the Kanban column fetch sets it. The
      * server then cuts the cards an active `issue.hide_from_board` rule
@@ -300,6 +304,7 @@ export async function fetchIssues(
   if (filters?.noApp) params.set("noApp", "1");
   if (filters?.noCategory) params.set("noCategory", "1");
   if (filters?.noPriority) params.set("noPriority", "1");
+  if (filters?.notDone) params.set("notDone", "1");
   if (filters?.createdFrom) params.set("createdFrom", filters.createdFrom);
   if (filters?.createdTo) params.set("createdTo", filters.createdTo);
   if (filters?.completedFrom) params.set("completedFrom", filters.completedFrom);

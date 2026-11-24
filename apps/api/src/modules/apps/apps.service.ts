@@ -13,23 +13,27 @@ import { Company } from "../companies/entities/company.entity";
 import { Issue } from "../issues/entities/issue.entity";
 import { AppExpiryService } from "./app-expiry.service";
 import { MaUsageService } from "./ma-usage.service";
-import { daysBetween, isIsoDate, toIsoDate, todayIso } from "../../common/dates";
+import { addYearsIso, daysBetween, isIsoDate, toIsoDate, todayIso } from "../../common/dates";
 import { paginateTotal, PaginationParams } from "../../common/pagination";
 import { ViewerScope } from "./viewer-scope";
 import { NotificationsService } from "../notifications/notifications.service";
 
 /**
- * 1 รายการข้อมูลที่ฟอร์มส่งมา — **append หรือแก้แถวเดียว** ไม่ใช่ส่ง list
- * ทั้งชุดมาแทนที่ (คู่เดิมมีได้หลายช่วงเวลาหลัง migration 1812)
+ * 1 รายการข้อมูลที่ฟอร์มส่งมา — **เพิ่มแถวเดียวหรือแก้แถวเดียว** ไม่ใช่ส่ง list
+ * ทั้งชุดมาแทนที่
+ *
+ * `POST` ทุกช่อง**บังคับ** (1 คู่ แอป×บริษัท มีได้ 1 แถว — คู่ที่ซ้ำกันให้ใช้
+ * "ต่ออายุ"/"ซื้อชั่วโมง" แทน) · `PATCH` ยังเป็น optional ตามเดิม (ส่งเฉพาะช่อง
+ * ที่จะเปลี่ยน, ไม่ส่ง = คงเดิม)
  */
 export interface AppRecordInput {
   /** บริษัทของรายการนี้ — ตอนเพิ่มต้องระบุ · ตอนแก้ไขส่งมา = เปลี่ยนบริษัท */
   companyId?: number | null;
-  /** `YYYY-MM-DD` — วันที่เริ่มใช้งานของช่วงนี้, `null` = ยังไม่กรอก */
+  /** `YYYY-MM-DD` — วันที่เริ่มใช้งาน (บังคับตอนเพิ่ม, optional ตอนแก้ไข) */
   startedAt?: string | null;
-  /** `YYYY-MM-DD` — วันหมดอายุของช่วงนี้, `null` = ไม่กำหนด */
+  /** `YYYY-MM-DD` — วันหมดอายุ (บังคับตอนเพิ่ม, ต้องมากกว่า `startedAt`) */
   expiresAt?: string | null;
-  /** ชั่วโมง MA ของช่วงนี้, `null` = ยังไม่กำหนด · รับ string ด้วย (ช่องกรอกในฟอร์ม) */
+  /** ชั่วโมง MA (บังคับตอนเพิ่ม, 0 = ตกลงให้ 0 ชม.) · รับ string ด้วย */
   maHours?: number | string | null;
 }
 
@@ -346,8 +350,13 @@ export class AppsService {
   /* ------------------------------------------------------------------ */
 
   /**
-   * เพิ่ม 1 รายการข้อมูลให้แอป — **append เสมอ** คู่เดิมซ้ำได้ (คนละช่วงเวลา
-   * ต่ออายุ MA) จึงไม่มีทางเขียนทับช่วงเก่า
+   * เพิ่ม 1 รายการข้อมูลให้แอป — **1 คู่ (แอป×บริษัท) มีได้ 1 แถว**:
+   * ทุกช่องบังคับ (วันที่ 2 ช่อง + ชั่วโมง MA + บริษัท) และถ้าคู่นี้มีอยู่แล้ว
+   * → **409** (ให้ใช้ปุ่ม "ต่ออายุ"/"ซื้อชั่วโมง" เพื่อเพิ่มรายการให้คู่เดิมแทน)
+   *
+   * กติกาเดิมที่อนุญาตให้ append คู่ซ้ำหลายช่วงถูกยกเลิกตามคำสั่งผู้ใช้
+   * ("เพิ่มตัวที่มีอยู่แล้วไม่ได้") — การต่ออายุ/ซื้อชม. ยัง append แถวใหม่เหมือนเดิม
+   * แต่ผ่าน `renewRecord()` / `buyHours()` คนละ route
    */
   async addRecord(appId: number, data: AppRecordInput) {
     const app = await this.apps.findOne({ where: { id: appId } });
@@ -355,13 +364,23 @@ export class AppsService {
       throw new NotFoundException(`App with id ${appId} not found`);
     }
     const companyId = await this.resolveCompanyId(data.companyId);
+    const startedAt = this.requireDate(data.startedAt, "startedAt");
+    const expiresAt = this.requireDate(data.expiresAt, "expiresAt");
+    const maHours = this.requireHours(data.maHours);
+    if (expiresAt <= startedAt) {
+      throw new BadRequestException("expiresAt must be later than startedAt");
+    }
+    const duplicate = await this.appCompanies.findOne({ where: { appId, companyId } });
+    if (duplicate) {
+      throw new ConflictException(`Data for app ${appId} and company ${companyId} already exists`);
+    }
     await this.appCompanies.save(
       this.appCompanies.create({
         appId,
         companyId,
-        startedAt: this.normalizeDate(data.startedAt, "startedAt"),
-        expiresAt: this.normalizeDate(data.expiresAt, "expiresAt"),
-        maHours: this.normalizeHours(data.maHours),
+        startedAt,
+        expiresAt,
+        maHours,
         expiryStatus: "none",
         expiryNotified: "none",
       }),
@@ -383,7 +402,19 @@ export class AppsService {
       throw new NotFoundException(`Record with id ${recordId} not found`);
     }
     if (data.companyId !== undefined) {
-      row.companyId = await this.resolveCompanyId(data.companyId);
+      const nextCompanyId = await this.resolveCompanyId(data.companyId);
+      // เปลี่ยนคู่ = ย้ายแถวไปคู่ใหม่ — กันไปทับคู่ที่มีอยู่แล้ว (กฎเดียวกับตอนเพิ่ม)
+      if (nextCompanyId !== row.companyId) {
+        const duplicate = await this.appCompanies.findOne({
+          where: { appId, companyId: nextCompanyId },
+        });
+        if (duplicate) {
+          throw new ConflictException(
+            `Data for app ${appId} and company ${nextCompanyId} already exists`,
+          );
+        }
+      }
+      row.companyId = nextCompanyId;
     }
     if (data.startedAt !== undefined) {
       row.startedAt = this.normalizeDate(data.startedAt, "startedAt");
@@ -519,6 +550,21 @@ export class AppsService {
     if (expiresAt <= startedAt) {
       throw new BadRequestException("expiresAt must be later than startedAt");
     }
+    /**
+     * ตัดสิทธิ์ทบเมื่อต่อช้าเกิน 1 ปีหลังวันหมดอายุของแถวก่อน (ข้อสรุปจากพี่) —
+     * ฟอร์มคำนวณ `carry` ด้วย window เดียวกัน (`dayjs(...).add(1, "year")`)
+     * จึงต้องตรงกันเป๊ะ: ต่อวันครบ 1 ปีพอดี**ยังได้** (inclusive), เกิน → 400
+     * · ไม่มี `expiresAt` → fail-open (ไม่มีวันเทียบ) · เฉพาะตอนมี `carriedHours`
+     * (ไม่ทบ = payload ไม่เกี่ยวกับ window นี้ → ต่อช้าได้ปกติ)
+     */
+    if (carriedHours !== null && source.expiresAt) {
+      const deadline = addYearsIso(toIsoDate(source.expiresAt), 1);
+      if (startedAt > deadline) {
+        throw new BadRequestException(
+          "carried hours require a renewal within 1 year of the previous expiry date",
+        );
+      }
+    }
 
     await this.appCompanies.save(
       this.appCompanies.create({
@@ -622,23 +668,23 @@ export class AppsService {
     return hours;
   }
 
-  /** บังคับกรอก — ฟิลด์ของช่วงใหม่ห้ามว่าง (`""` / `null` = 400 ไม่ใช่ `null`) */
+  /** บังคับกรอก — วันที่ห้ามว่าง (`""` / `null` = 400) ใช้ทั้งตอนเพิ่มและต่ออายุ */
   private requireDate(
     value: string | null | undefined,
     field: "startedAt" | "expiresAt",
   ): string {
     const normalized = this.normalizeDate(value, field);
     if (normalized === null) {
-      throw new BadRequestException(`${field} is required for a renewal`);
+      throw new BadRequestException(`${field} is required`);
     }
     return normalized;
   }
 
-  /** บังคับกรอกชั่วโมง — ต่างจากช่องอื่นที่ `null` = "ยังไม่กำหนด" ยอมได้ */
+  /** บังคับกรอกชั่วโมง — `0` ยอมได้ (ตกลงให้ 0 ชม.), `null`/`""` = 400 */
   private requireHours(value: number | string | null | undefined): number {
     const normalized = this.normalizeHours(value);
     if (normalized === null) {
-      throw new BadRequestException("maHours is required for a renewal");
+      throw new BadRequestException("maHours is required");
     }
     return normalized;
   }

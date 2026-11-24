@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -68,6 +69,7 @@ export default function AppFormDialog({
   open,
   record,
   companies,
+  existingApps,
   onClose,
   onSaved,
 }: {
@@ -75,6 +77,11 @@ export default function AppFormDialog({
   /** null = เพิ่มข้อมูลใหม่ · ไม่ null = แก้ไขแถวนั้น */
   record: EditingRecord | null;
   companies: Company[];
+  /**
+   * แอปที่โหลดอยู่ในหน้า `/systems` (พร้อม `companies` = ทุกคู่ที่มีข้อมูล)
+   * ใช้กันคู่แอป×บริษัทซ้ำฝั่ง UI — เซิร์ฟเวอร์ยังเป็นคนตัดสินจริง (409)
+   */
+  existingApps: App[];
   onClose: () => void;
   /** เรียกหลังบันทึกสำเร็จ — ให้ผู้เรียกดึงรายการใหม่เอง */
   onSaved: () => void;
@@ -92,8 +99,16 @@ export default function AppFormDialog({
     expiresAt: "",
     maHours: "",
   });
-  /** inline error under the company dropdown (one is required) */
+  /** inline error under the company dropdown (required — duplicate goes to the banner) */
   const [error, setError] = useState<string | null>(null);
+  /** duplicate app×company pair — prominent Alert at the top of the dialog */
+  const [duplicatePair, setDuplicatePair] = useState(false);
+  /** inline errors for the three remaining required inputs + date order */
+  const [fieldErrors, setFieldErrors] = useState<{
+    maHours?: string;
+    startedAt?: string;
+    expiresAt?: string;
+  }>({});
 
   // รายการชื่อแอปสำหรับ dropdown — ดึง `GET /apps` ตอนเปิดฟอร์มทั้งสองโหมด
   // (`cancelled` กัน setState หลังไดอะล็อกถูกปิดกลางคัน)
@@ -118,7 +133,9 @@ export default function AppFormDialog({
     });
     setSelectedAppId(record?.app.id ?? 0);
     setError(null);
+    setDuplicatePair(false);
     setNameError(null);
+    setFieldErrors({});
   }, [open, record]);
 
   useEffect(() => {
@@ -176,24 +193,53 @@ export default function AppFormDialog({
     : (nameError ??
       (!appsLoading && !record && nameOptions.length === 0 ? t("noAppsHint") : null));
 
+  /** ชื่อบริษัทที่เลือก — ใช้โชว์ในแถบเตือนคู่ซ้ำให้รู้ว่าคู่ไหนซ้ำ */
+  const selectedCompanyName =
+    companies.find((c) => c.id === form.companyId)?.name ?? "";
+
   async function handleSave() {
     if (!target) {
       setNameError(t("appRequired"));
+      setDuplicatePair(false);
       return;
     }
     if (!form.companyId) {
       setError(t("companyRequired"));
+      setDuplicatePair(false);
       return;
     }
+
+    // ทุกช่องบังคับ — วันที่เป็น string YYYY-MM-DD จึงเทียบ lexicographic ได้
+    const nextFieldErrors: { maHours?: string; startedAt?: string; expiresAt?: string } = {};
+    if (form.maHours.trim() === "") nextFieldErrors.maHours = t("maHoursRequired");
+    if (!form.startedAt) nextFieldErrors.startedAt = t("startedAtRequired");
+    if (!form.expiresAt) nextFieldErrors.expiresAt = t("expiresAtRequired");
+    else if (form.startedAt && form.expiresAt <= form.startedAt) {
+      nextFieldErrors.expiresAt = t("dateOrderInvalid");
+    }
+
+    // กันคู่ซ้ำ: เปิดใหม่ / ย้ายแอป / เปลี่ยนบริษัทตอนแก้ไข = จะสร้างคู่ใหม่
+    // (ฝั่งเซิร์ฟเวอร์เช็กอีกชั้นด้วย 409 กันกรณีข้อมูลในหน้าเก่า)
+    const creatingPair =
+      !record || target.id !== record.app.id || form.companyId !== record.link.id;
+    const pairExists =
+      creatingPair &&
+      existingApps.some(
+        (app) => app.id === target.id && app.companies.some((c) => c.id === form.companyId),
+      );
+
     setNameError(null);
     setError(null);
+    setDuplicatePair(pairExists);
+    setFieldErrors(nextFieldErrors);
+    if (pairExists || Object.keys(nextFieldErrors).length > 0) return;
 
     const payload = {
       companyId: form.companyId,
-      startedAt: form.startedAt || null,
-      expiresAt: form.expiresAt || null,
-      // `""` = ยังไม่กำหนด → null (ต่างจาก 0 ที่หมายถึง "ตกลงให้ 0 ชม.")
-      maHours: form.maHours === "" ? null : Number(form.maHours),
+      startedAt: form.startedAt,
+      expiresAt: form.expiresAt,
+      // 0 = ตกลงให้ 0 ชม. (ต่างจาก null ที่ตอนนี้ใช้ได้เฉพาะตอนแก้ไข)
+      maHours: Number(form.maHours),
     };
 
     try {
@@ -212,6 +258,12 @@ export default function AppFormDialog({
       onClose();
       onSaved();
     } catch (err) {
+      // ข้อมูลในหน้าอาจเก่า — 409 จากเซิร์ฟเวอร์คือคู่ซ้ำเหมือนกัน โชว์แถบเตือน
+      // ภาษาไทยชุดเดียวกันแทนข้อความภาษาอังกฤษดิบ ๆ จาก API
+      if (err instanceof ApiError && err.status === 409) {
+        setDuplicatePair(true);
+        return;
+      }
       notify(err instanceof ApiError ? err.message : t("genericError"), "error");
     }
   }
@@ -221,6 +273,23 @@ export default function AppFormDialog({
       <DialogTitle>{record ? t("editData") : t("addData")}</DialogTitle>
       <DialogContent sx={{ overflowY: "auto" }}>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 1 }}>
+          {/* แถบเตือนคู่ซ้ำ — อยู่บนสุดของฟอร์ม ระบุชื่อคู่ + บอกทางไปทำต่อ
+              (เห็นชัดกว่าข้อความแดงใต้ช่องบริษัทเดิม) */}
+          {duplicatePair && (
+            <Alert
+              severity="warning"
+              variant="outlined"
+              onClose={() => setDuplicatePair(false)}
+            >
+              <Typography variant="body2" fontWeight={600}>
+                {t("duplicatePairTitle", {
+                  app: target?.name ?? "",
+                  company: selectedCompanyName,
+                })}
+              </Typography>
+              <Typography variant="body2">{t("duplicatePairHint")}</Typography>
+            </Alert>
+          )}
           {/* ชื่อแอป = dropdown ดึงจาก `GET /apps` — เพิ่มใหม่ = เลือกแอปที่จะใส่ข้อมูล ·
               แก้ไข = เปลี่ยนเป็นแอปอื่นได้ (บันทึกแล้วย้ายแถวนั้นไปแอปใหม่) */}
           <FormControl fullWidth error={!!nameError || appsError}>
@@ -233,6 +302,7 @@ export default function AppFormDialog({
               onChange={(e) => {
                 setSelectedAppId(Number(e.target.value));
                 setNameError(null);
+                setDuplicatePair(false);
               }}
             >
               {/* placeholder ตอนยังไม่เลือก (`value={0}` ต้องมี MenuItem ตรงกัน
@@ -251,7 +321,7 @@ export default function AppFormDialog({
             {nameHelper && <FormHelperText>{nameHelper}</FormHelperText>}
           </FormControl>
           {/* บริษัทเดียว — dropdown เลือก 1 รายการ (ไม่ใช่ Autocomplete เลือกหลาย) */}
-          <FormControl fullWidth error={!!error}>
+          <FormControl fullWidth error={!!error || duplicatePair}>
             <InputLabel id="app-company-label">{t("columnCompany")}</InputLabel>
             <Select
               labelId="app-company-label"
@@ -261,6 +331,7 @@ export default function AppFormDialog({
                 // เปลี่ยนเฉพาะบริษัท — ค่าวันที่/MA ที่พิมพ์ไว้คงตามเดิม
                 setForm({ ...form, companyId: Number(e.target.value) });
                 setError(null);
+                setDuplicatePair(false);
               }}
               disabled={companies.length === 0}
             >
@@ -281,13 +352,19 @@ export default function AppFormDialog({
               <FormHelperText>{error ?? t("noCompaniesHint")}</FormHelperText>
             )}
           </FormControl>
-          {/* ชั่วโมง MA ของช่วงนี้ → วางใต้ dropdown บริษัท */}
+          {/* ชั่วโมง MA ของช่วงนี้ → วางใต้ dropdown บริษัท (บังคับ) */}
           <TextField
             label={t("columnMaHours")}
             type="number"
             value={form.maHours}
-            onChange={(e) => setForm({ ...form, maHours: e.target.value })}
+            onChange={(e) => {
+              setForm({ ...form, maHours: e.target.value });
+              setFieldErrors((prev) => ({ ...prev, maHours: undefined }));
+            }}
             fullWidth
+            required
+            error={!!fieldErrors.maHours}
+            helperText={fieldErrors.maHours}
             inputProps={{ min: 0, step: 1 }}
           />
           {/* วันที่ 2 ช่อง — MUI DatePicker format DD/MM/YYYY (วัน เดือน ปี)
@@ -299,11 +376,19 @@ export default function AppFormDialog({
             <DatePicker
               label={t("columnStartedAt")}
               value={form.startedAt ? dayjs(form.startedAt) : null}
-              onChange={(next) =>
-                setForm({ ...form, startedAt: next ? next.format("YYYY-MM-DD") : "" })
-              }
+              onChange={(next) => {
+                setForm({ ...form, startedAt: next ? next.format("YYYY-MM-DD") : "" });
+                setFieldErrors((prev) => ({ ...prev, startedAt: undefined }));
+              }}
               format="DD/MM/YYYY"
-              slotProps={{ textField: { fullWidth: true } }}
+              slotProps={{
+                textField: {
+                  fullWidth: true,
+                  required: true,
+                  error: !!fieldErrors.startedAt,
+                  helperText: fieldErrors.startedAt,
+                },
+              }}
             />
             {/* ไม่มี `mt` — `gap: 2` ของกล่องแม่เป็นตัวเว้นคนเดียว
                 (`LocalizationProvider` ไม่สร้าง DOM จึงกลายเป็น flex child ตรง ๆ
@@ -312,11 +397,19 @@ export default function AppFormDialog({
               <DatePicker
                 label={t("columnExpiresAt")}
                 value={form.expiresAt ? dayjs(form.expiresAt) : null}
-                onChange={(next) =>
-                  setForm({ ...form, expiresAt: next ? next.format("YYYY-MM-DD") : "" })
-                }
+                onChange={(next) => {
+                  setForm({ ...form, expiresAt: next ? next.format("YYYY-MM-DD") : "" });
+                  setFieldErrors((prev) => ({ ...prev, expiresAt: undefined }));
+                }}
                 format="DD/MM/YYYY"
-                slotProps={{ textField: { fullWidth: true } }}
+                slotProps={{
+                  textField: {
+                    fullWidth: true,
+                    required: true,
+                    error: !!fieldErrors.expiresAt,
+                    helperText: fieldErrors.expiresAt,
+                  },
+                }}
               />
             </Box>
           </LocalizationProvider>

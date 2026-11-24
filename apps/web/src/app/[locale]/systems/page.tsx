@@ -46,6 +46,10 @@ import AppFormDialog, { type EditingRecord } from "@/components/app-form-dialog"
 import RenewFormDialog, { type RenewingRecord } from "@/components/renew-form-dialog";
 import BuyHoursDialog, { type BuyingRecord } from "@/components/buy-hours-dialog";
 import SystemDetailDialog from "@/components/system-detail-dialog";
+import ContactCustomerDialog, {
+  type ContactTarget,
+} from "@/components/notifications/contact-customer-dialog";
+import ManageContactsDialog from "@/components/manage-contacts-dialog";
 import {
   deleteAppPeriod,
   deleteAppRecord,
@@ -66,6 +70,10 @@ import {
   type ExpiryStatus,
 } from "@/lib/app-expiry";
 import { MA_DEDUCTION_PAUSED, pairKey, periodUsedOf } from "@/lib/reports-api";
+import {
+  FALLBACK_HELP_CENTER_CONTACT,
+  fetchHelpCenterContact,
+} from "@/lib/help-center-api";
 
 /**
  * 1 แถวในตาราง = **1 คู่ แอป×บริษัท** — โชว์เฉพาะ **ช่วงเวลาล่าสุด** ของคู่นั้น
@@ -245,6 +253,16 @@ export default function SystemsPage() {
    * รอบต่อไป (หรือ re-render) จะตั้ง `detailKey` ใหม่ → เด้งเปิดทันที
    */
   const deepLinkAppliedRef = useRef(false);
+
+  /**
+   * ป๊อปอัพ "ติดต่อแอดมิน" — ทางออกของลูกค้าหลังกดแจ้งเตือนสัญญาหมดอายุ
+   * (ที่นี่แก้/ต่ออายุ/ซื้อชม. ไม่ได้ → ต้องติดต่อแอดมิน) · โชว์การ์ดโปรแกรมเมอร์
+   * ที่แอดมินเลือก (`GET /help-center/contact`) หรือข้อมูลติดต่อกลางถ้าไม่มีใครเลือก
+   * **เฉพาะ role `customer`** — แอดมิน/สตาฟฟ์ที่เข้าหน้านี้ไม่เห็นปุ่มติดต่อแอดมิน
+   */
+  const [contactTarget, setContactTarget] = useState<ContactTarget | null>(null);
+  /** dialog "จัดการผู้ติดต่อ" — แอดมินเลือกโปรแกรมเมอร์ที่ลูกค้าจะเห็น */
+  const [manageContactsOpen, setManageContactsOpen] = useState(false);
 
   const canUpdate = can("system.update");
   const canDelete = can("system.delete");
@@ -541,6 +559,38 @@ export default function SystemsPage() {
   }, [apps, detailKey]);
 
   /**
+   * เปิดกล่องติดต่อแอดมิน — มีทางเข้าเดียวคือปุ่มท้ายป๊อปอัพสัญญา
+   * (หลังกดแจ้งเตือนสัญญาหมดอายุ) · **เฉพาะ role `customer`** — กันซ้ำกับ
+   * การส่ง prop แบบมีเงื่อนไขด้านล่าง (แอดมิน/สตาฟฟ์ไม่มีทางเปิดกล่องนี้)
+   * · ปิดป๊อปอัพสัญญาก่อนเสมอเพื่อไม่ให้เกิดป๊อปอัพซ้อน · fail-open:
+   * ดึงรายชื่อไม่ได้ = เปิดกล่องแล้วโชว์ข้อความ "ยังไม่มีข้อมูลติดต่อ..."
+   * ที่ `ContactCustomerDialog` มีอยู่แล้ว
+   */
+  function openContactAdmin() {
+    if (roleName !== "customer") return;
+    setDetailKey(null);
+    const label = {
+      appName: detailRow?.app.name ?? "",
+      companyName: detailRow?.link.name ?? "",
+    };
+    void fetchHelpCenterContact()
+      .then((info) =>
+        setContactTarget(
+          info.contacts.length > 0
+            ? { ...label, contacts: info.contacts }
+            : { ...label, contacts: [], central: info },
+        ),
+      )
+      .catch(() =>
+        setContactTarget({
+          ...label,
+          contacts: [],
+          central: FALLBACK_HELP_CENTER_CONTACT,
+        }),
+      );
+  }
+
+  /**
    * รายชื่อบริษัทที่**มีข้อมูลจริง**ในตาราง (distinct จากแถวที่โหลดมา) — ไม่ยิง
    * API เพิ่ม และกันไม่ให้ section "บริษัท" มีตัวเลือกที่กดแล้วได้ตารางว่าง
    */
@@ -809,6 +859,12 @@ export default function SystemsPage() {
 
             {/* ปุ่มเพิ่มข้อมูลชิดขวา (ml: auto) */}
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
+              {/* แอดมินเลือกโปรแกรมเมอร์ที่ลูกค้าจะเห็นในป๊อปอัพสัญญา */}
+              {canUpdate && (
+                <Button variant="outlined" onClick={() => setManageContactsOpen(true)}>
+                  {t("manageContacts")}
+                </Button>
+              )}
               {can("system.create") && (
                 <Button variant="contained" startIcon={<AddIcon />} onClick={openAddApp}>
                   {t("addData")}
@@ -975,6 +1031,7 @@ export default function SystemsPage() {
           open={appDialogOpen}
           record={editingRecord}
           companies={companies}
+          existingApps={apps}
           onClose={() => setAppDialogOpen(false)}
           onSaved={loadApps}
         />
@@ -994,9 +1051,32 @@ export default function SystemsPage() {
               setRenewingRecord({ app: detailRow.app, link: detailRow.link });
             }
           }}
+          canBuyHours={detailRow ? canBuyHours(detailRow) : false}
+          onBuyHours={() => {
+            // เหมือนฟอร์มต่ออายุ — **ไม่ปิด** ป๊อปอัพ detail (ฟอร์ม mount ทีหลัง
+            // จึงอยู่บนสุด) พอบันทึกเสร็จ `loadApps()` ทำให้คงเหลือ > 0 → ปุ่มหายเอง
+            if (detailRow) {
+              openBuyRecord(detailRow);
+            }
+          }}
           canUndo={canUpdate || canDelete}
           onUndo={handleUndoRecord}
+          onContactAdmin={roleName === "customer" ? openContactAdmin : undefined}
           onClose={() => setDetailKey(null)}
+        />
+
+        {/* กล่องติดต่อแอดมิน — เปิดจากปุ่มท้ายป๊อปอัพสัญญาเท่านั้น
+            (ป๊อปอัพสัญญาถูกปิดก่อน จึงไม่มีป๊อปอัพซ้อน) */}
+        <ContactCustomerDialog
+          open={Boolean(contactTarget)}
+          target={contactTarget}
+          onClose={() => setContactTarget(null)}
+        />
+
+        {/* จัดการผู้ติดต่อ — แอดมินเลือกโปรแกรมเมอร์หลายคน + แก้ข้อมูลกลาง */}
+        <ManageContactsDialog
+          open={manageContactsOpen}
+          onClose={() => setManageContactsOpen(false)}
         />
 
         {/* ฟอร์มต่ออายุ — คู่แอป×บริษัทล็อกจากแถวที่กด บันทึกแล้ว append ช่วงใหม่

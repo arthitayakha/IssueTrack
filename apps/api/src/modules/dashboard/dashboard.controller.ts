@@ -37,12 +37,12 @@ function parsePeriod(value?: string): DashboardPeriod {
 }
 
 /**
- * Which trend series a drill-down list belongs to — the chart draws two bars
- * per bucket ("created" + "completed"). Anything else falls back to
- * "created", the shape every caller used before the second bar existed.
+ * Which trend series a drill-down list belongs to — both bars cohort cards by
+ * creation bucket and split by current status ("pending" + "done"). Anything
+ * else falls back to "pending", the larger of the two bars.
  */
 function parseSeries(value?: string): DashboardTrendSeries {
-  return value === "completed" ? "completed" : "created";
+  return value === "done" ? "done" : "pending";
 }
 
 /**
@@ -112,7 +112,7 @@ export class DashboardController {
 
   /**
    * GET /dashboard/trend-issues?bucket=yyyy-mm-dd&period=day|week|month|year
-   *                     &series=created|completed   (which of the two bars)
+   *                     &series=pending|done   (which of the two bars)
    *
    * The issues behind one bar — same scope + the same Bangkok `date_trunc` as
    * the count that bar shows, so the list always matches the number. While the

@@ -1,6 +1,6 @@
 "use client";
 
-import type { IssueTaskType } from "@kanban/shared";
+import { DONE_STATUS_ID, type IssueTaskType } from "@kanban/shared";
 import { apiFetch } from "./api";
 import { getToken } from "./rules-api";
 import { fetchCategories, fetchPriorities, fetchStatuses } from "./board-api";
@@ -50,14 +50,20 @@ export interface ReportFilters {
   from: string;
   to: string;
   /**
-   * A dashboard trend bar's link: `completed` means `from`/`to` bound the
-   * moment a card entered เสร็จสิ้น (sent as `completedFrom/To` to the API),
-   * not its creation date. `created`/"" keeps the ordinary created-date
-   * filter. Carried in the URL so the report link is shareable.
+   * Which dashboard trend bar opened this list: `pending` / `done`. Both bars
+   * cohort by CREATION date and split by CURRENT status, so `from`/`to` always
+   * bind `createdFrom/To`; the bar adds `notDone=1` (pending) or `statuses=[4]`
+   * (done). `""` = no bar, the ordinary unfiltered list.
    */
-  series: "" | "created" | "completed";
+  series: "" | "pending" | "done";
   search: string;
   assigneeIds: number[];
+  /**
+   * "ยังไม่มอบหมาย" (`programmer_id IS NULL`) — **internal only**, set by the
+   * expandable unassigned row's task fetch. No filter-panel UI, not counted in
+   * `activeFilterCount`, never written to the URL by `filtersToPatch`.
+   */
+  noAssignee?: boolean;
   reporterIds: number[];
   categoryIds: number[];
   statusIds: number[];
@@ -559,21 +565,22 @@ function mapIssue(raw: RawIssue): IssueRow {
 
 function filterParams(f: ReportFilters): URLSearchParams {
   const p = new URLSearchParams();
-  // The same `from`/`to` pair means different things depending on which trend
-  // bar was clicked — the completed bar must not fall back to created_at.
-  if (f.series === "completed") {
-    if (f.from) p.set("completedFrom", f.from);
-    if (f.to) p.set("completedTo", f.to);
-  } else {
-    if (f.from) p.set("createdFrom", f.from);
-    if (f.to) p.set("createdTo", f.to);
-  }
+  // Both trend bars cohort by creation date — only the current-status clause
+  // differs, so `from`/`to` always bind the created-date window.
+  if (f.from) p.set("createdFrom", f.from);
+  if (f.to) p.set("createdTo", f.to);
   if (f.search.trim()) p.set("search", f.search.trim());
   if (f.assigneeIds.length) p.set("assigneeIds", f.assigneeIds.join(","));
+  if (f.noAssignee) p.set("noAssignee", "1");
   if (f.reporterIds.length) p.set("reporterIds", f.reporterIds.join(","));
   if (f.categoryIds.length) p.set("categoryIds", f.categoryIds.join(","));
   if (f.noCategory) p.set("noCategory", "1");
-  if (f.statusIds.length) p.set("statuses", f.statusIds.join(","));
+  // The bar's cohort split rides with whatever the user selected by hand;
+  // pending = "not currently done" (orphans included), done = status id 4.
+  const statusIds =
+    f.series === "done" ? [...new Set([...f.statusIds, DONE_STATUS_ID])] : f.statusIds;
+  if (statusIds.length) p.set("statuses", statusIds.join(","));
+  if (f.series === "pending") p.set("notDone", "1");
   if (f.priorityIds.length) p.set("priorityIds", f.priorityIds.join(","));
   if (f.noPriority) p.set("noPriority", "1");
   if (f.appIds.length) p.set("appIds", f.appIds.join(","));
@@ -694,6 +701,27 @@ export async function fetchPersonTasks(
     sort: DEFAULT_SORT.issues,
   });
   return (rows as IssueRow[]).slice(0, 50);
+}
+
+/**
+ * Tasks with **no assignee** — the `ยังไม่มอบหมาย` row's expandable detail.
+ * Same cap and source as `fetchPersonTasks`; only the dimension filter differs
+ * (`noAssignee` → `programmer_id IS NULL`). All other active filters still apply.
+ */
+export async function fetchUnassignedTasks(filters: ReportFilters): Promise<IssueRow[]> {
+  const rows = await fetchAllReportRows("issues", {
+    filters: { ...filters, noAssignee: true },
+    sort: DEFAULT_SORT.issues,
+  });
+  return (rows as IssueRow[]).slice(0, 50);
+}
+
+/** Expandable-group key: a person's id, or the NULL-assignee group. */
+export type AssigneeGroup = number | "unassigned";
+
+/** Task list behind one assignee summary row (person or the unassigned group). */
+export function fetchAssigneeTasks(group: AssigneeGroup, filters: ReportFilters): Promise<IssueRow[]> {
+  return group === "unassigned" ? fetchUnassignedTasks(filters) : fetchPersonTasks(group, filters);
 }
 
 /* ------------------------------------------------------------------ */

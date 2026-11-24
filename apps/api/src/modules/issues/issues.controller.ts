@@ -53,6 +53,12 @@ export class IssuesController {
       page?: string;
       limit?: string;
       statuses?: string;
+      /**
+       * Dashboard trend's pending bar — cards currently NOT in the done column
+       * (`status_id <> 4 OR status_id IS NULL`), combined with `createdFrom/To`.
+       * No flag = no clause, so every existing caller is unchanged.
+       */
+      notDone?: string;
       search?: string;
       mine?: string;
       priorityIds?: string;
@@ -103,6 +109,7 @@ export class IssuesController {
       // ประเภทงาน — whitelist กลาง + bucket NULL (ดู common/task-types.ts)
       taskTypes: parseTaskTypes(query.taskTypes),
       noTaskType: parseNoTaskType(query.noTaskType),
+      notDone: query.notDone === "1" || query.notDone === "true",
       createdFrom: query.createdFrom,
       createdTo: query.createdTo,
       completedFrom: query.completedFrom,

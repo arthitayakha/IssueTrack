@@ -8,14 +8,13 @@ import {
 } from "typeorm";
 import { Issue } from "../../issues/entities/issue.entity";
 import { User } from "../../auth/entities/user.entity";
-import { SystemReport } from "../../system-reports/entities/system-report.entity";
 
 @Entity("attachments")
 export class Attachment {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  /** เจ้าของคืองานบนบอร์ด **หรือ** รายงานบั๊ก (ดู CHECK `attachments_owner_check`) */
+  /** เจ้าของคืองานบนบอร์ด (ที่มา: `issues` — รายงานบั๊กถูกถอดออกแล้ว) */
   @Column({ name: "issue_id", type: "int", nullable: true })
   issueId!: number | null;
 
@@ -25,16 +24,6 @@ export class Attachment {
   })
   @JoinColumn({ name: "issue_id" })
   issue?: Issue | null;
-
-  @Column({ name: "system_report_id", type: "int", nullable: true })
-  systemReportId!: number | null;
-
-  @ManyToOne(() => SystemReport, (report) => report.attachments, {
-    onDelete: "CASCADE",
-    nullable: true,
-  })
-  @JoinColumn({ name: "system_report_id" })
-  systemReport?: SystemReport | null;
 
   @Column({ name: "uploaded_by", type: "int", nullable: true })
   uploadedBy!: number | null;

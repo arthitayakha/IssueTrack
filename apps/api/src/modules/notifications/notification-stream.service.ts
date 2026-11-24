@@ -45,9 +45,22 @@ export class NotificationStreamService {
 
   /** Push one freshly-created row to every open tab of that user. */
   emit(userId: number, payload: unknown): void {
+    this.emitTo(userId, { type: "notification", data: payload });
+  }
+
+  /** A row was marked read — other tabs drop it from their unread list. */
+  emitRead(userId: number, id: number): void {
+    this.emitTo(userId, { type: "read", data: { id } });
+  }
+
+  /** "Mark all as read" — other tabs clear their unread list. */
+  emitReadAll(userId: number): void {
+    this.emitTo(userId, { type: "read-all", data: {} });
+  }
+
+  private emitTo(userId: number, message: NotificationStreamMessage): void {
     const set = this.clients.get(userId);
     if (!set) return;
-    const message: NotificationStreamMessage = { type: "notification", data: payload };
     for (const subject of set) subject.next(message);
   }
 }

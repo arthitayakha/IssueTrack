@@ -25,7 +25,6 @@ import { drillHref } from "@/lib/dashboard-nav";
 import { usePermissions } from "@/lib/permissions";
 import { fetchDashboardSummary } from "@/lib/dashboard-api";
 import { fetchCompanies, type Company } from "@/lib/apps-api";
-import { useAuthStore } from "@/lib/auth-store";
 import { isNetworkError } from "@/lib/api";
 import type {
   DashboardCountRow,
@@ -68,16 +67,17 @@ const COMPANY_ITEM_SX = {
  * a cross-filter: the server narrows EVERY aggregate (ring + total included)
  * to the cards whose reporter belongs to that company, the same rule the
  * board and `/reports` use. It is plain state (reloading the page starts on
- * "all companies" again) and the picker is only rendered when the seat has
- * something to pick (overview readers → every visible company, a customer →
- * their own company only, nobody-without-a-company customers → hidden).
+ * "all companies" again) and it is **hidden from customers altogether** —
+ * their `scope` already limits them to the cards they reported, so a company
+ * selector would either show a meaningless single option or imply they can
+ * see other companies. Overview readers and programmers keep every visible
+ * company as options.
  */
 export default function HomePage() {
   const t = useTranslations("Dashboard");
   const theme = useTheme();
   const { can, roleName } = usePermissions();
   const router = useRouter();
-  const user = useAuthStore((s) => s.user);
 
   const scope: DashboardScope = can("dashboard.overview.view")
     ? "all"
@@ -104,26 +104,22 @@ export default function HomePage() {
   const companyIds = useMemo(() => (companyId == null ? [] : [companyId]), [companyId]);
 
   /**
-   * The picker's options — decided by how much of the system the seat can
-   * already see (display only; the server never trusts this list):
-   *
-   *   - `dashboard.overview.view` → every visible company,
-   *   - a customer → their OWN company only (their scope already limits them
-   *     to their cards, so any other pick would just render zeros; `isVisible`
-   *     is ignored here so master-data hiding never hides their own filter),
-   *   - anyone else (e.g. a programmer) → every visible company,
-   *   - a customer with no company → no options → the picker stays hidden.
+   * Customers see only the cards they reported (server-enforced `scope`), so a
+   * company selector is meaningless for them — hide it entirely rather than
+   * offering one lonely option or implying they can see other companies.
    */
-  const companyOptions = useMemo(() => {
-    const visible = companies.filter((c) => c.isVisible);
-    if (can("dashboard.overview.view")) return visible;
-    if (roleName === "customer") {
-      if (user?.companyId == null) return [];
-      const own = companies.find((c) => c.id === user.companyId);
-      return own ? [own] : [];
-    }
-    return visible;
-  }, [companies, can, roleName, user?.companyId]);
+  const showCompanyPicker = roleName !== "customer";
+
+  /**
+   * The picker's options — display only; the server never trusts this list.
+   * No options for a customer → the `companyOptions.length > 0` guard below
+   * hides the whole picker. Overview readers and programmers alike get every
+   * visible company.
+   */
+  const companyOptions = useMemo(
+    () => (showCompanyPicker ? companies.filter((c) => c.isVisible) : []),
+    [companies, showCompanyPicker],
+  );
 
   /** "ทุกบริษัท" first, then the options — one list drives the whole menu. */
   const companyItems: { key: string; id: number | null; name: string }[] = [
@@ -132,12 +128,17 @@ export default function HomePage() {
   ];
 
   /**
-   * The company list is fetched once; if it fails (or a company disappears)
-   * the selection must not outlive its own option — otherwise the filter
-   * would keep narrowing the page while its picker is gone. Fail-open: drop
-   * the filter and show everything.
+   * The company list is fetched once (customers skip it — no picker to feed);
+   * if it fails (or a company disappears) the selection must not outlive its
+   * own option — otherwise the filter would keep narrowing the page while its
+   * picker is gone. Fail-open: drop the filter and show everything.
    */
   useEffect(() => {
+    if (!showCompanyPicker) {
+      // no options for a customer → mark loaded so a stale companyId is dropped
+      setCompaniesLoaded(true);
+      return;
+    }
     let cancelled = false;
     fetchCompanies()
       .then((res) => {
@@ -152,7 +153,7 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [showCompanyPicker]);
 
   useEffect(() => {
     if (!companiesLoaded || companyId == null) return;

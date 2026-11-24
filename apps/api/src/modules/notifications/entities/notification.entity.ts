@@ -18,9 +18,11 @@ import { User } from "../../auth/entities/user.entity";
 export type NotificationPriority = "high" | "medium" | "low";
 
 /**
- * The bell inbox — every row here is *unread* (reading one deletes it), so the
- * table carries no read/archived state. The actor's name is read off `users`
- * through `actor` instead of being copied into a column.
+ * The bell inbox. The UI only ever shows unread rows (`is_read = false`), but
+ * reading a row is an UPDATE, not a DELETE — the row stays in the table with
+ * `is_read = true` / `read_at` so there is a record of when it was read.
+ * The actor's name is read off `users` through `actor` instead of being copied
+ * into a column.
  */
 @Entity("notifications")
 export class Notification {
@@ -82,6 +84,17 @@ export class Notification {
    */
   @Column({ type: "varchar", length: 10, default: "medium" })
   priority!: NotificationPriority;
+
+  /**
+   * `true` เมื่อเจ้าของอ่านแถวนี้แล้ว — แถวที่อ่านแล้วจะ**ไม่ถูกส่งกลับ**จาก
+   * `GET /notifications` (หน้ากระดิ่งจึงเหมือนเดิม: กดแล้วแถวหาย) แต่ยังเก็บ
+   * อยู่ใน DB เพื่อบอกว่าอ่านตอนไหน (`readAt`)
+   */
+  @Column({ name: "is_read", type: "boolean", default: false })
+  isRead!: boolean;
+
+  @Column({ name: "read_at", type: "timestamptz", nullable: true })
+  readAt!: Date | null;
 
   @CreateDateColumn({ name: "created_at", type: "timestamptz" })
   createdAt!: Date;

@@ -30,6 +30,7 @@ import {
 } from "@/lib/apps-api";
 import type { ReportColumnDef } from "./report-columns";
 import type {
+  AssigneeGroup,
   CompanyRow,
   IssueRow,
   ReportRows,
@@ -122,10 +123,10 @@ export interface ReportsTableProps {
   detailHidden: Set<string>;
   /** Person-detail table's columns in display order (ลำดับ pinned first). */
   detailColumns: ReportColumnDef[];
-  expandedPersonId: number | null;
+  expandedPerson: AssigneeGroup | null;
   personTasks: IssueRow[] | null;
   personTasksLoading: boolean;
-  onTogglePerson: (personId: number) => void;
+  onTogglePerson: (group: AssigneeGroup) => void;
   /**
    * **รายการที่ถูกตัดจากช่วง MA** (view ตามบริษัท ที่แถว = 1 รอบ)
    *
@@ -165,7 +166,7 @@ export function ReportsTable({
   columns,
   detailHidden,
   detailColumns,
-  expandedPersonId,
+  expandedPerson,
   personTasks,
   personTasksLoading,
   onTogglePerson,
@@ -516,12 +517,18 @@ export function ReportsTable({
   }
 
   function detailRow(row: SummaryRow): React.ReactNode {
-    if (expandedPersonId !== row.personId || row.personId == null || row.isTotal) return null;
+    const group: AssigneeGroup | null = row.isTotal
+      ? null
+      : (row.personId ?? (row.labelKey === "unassigned" ? "unassigned" : null));
+    if (group == null || expandedPerson !== group) return null;
+    const isUnassigned = group === "unassigned";
     return (
       <DataTableRow key="detail">
         <DataTableCell colSpan={assigneeSpan} sx={{ py: 2, bgcolor: "background.default" }}>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-            {t("detail.tasksOf", { name: row.label ?? "" })}
+            {isUnassigned
+              ? t("detail.tasksUnassigned")
+              : t("detail.tasksOf", { name: row.label ?? "" })}
           </Typography>
           {personTasksLoading ? (
             <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 0.5 }}>
@@ -532,7 +539,7 @@ export function ReportsTable({
             </Box>
           ) : !personTasks || personTasks.length === 0 ? (
             <Typography variant="caption" color="text.secondary">
-              {t("detail.noTasks")}
+              {isUnassigned ? t("detail.noUnassignedTasks") : t("detail.noTasks")}
             </Typography>
           ) : (
             <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
@@ -1013,12 +1020,15 @@ export function ReportsTable({
 
       case "assignee":
         return (rows as SummaryRow[]).map((r) => {
-          const expandable = r.personId != null && !r.isTotal;
-          const open = expandable && expandedPersonId === r.personId;
+          const group: AssigneeGroup | null = r.isTotal
+            ? null
+            : (r.personId ?? (r.labelKey === "unassigned" ? "unassigned" : null));
+          const expandable = group != null;
+          const open = expandable && expandedPerson === group;
           return (
             <Fragment key={r.isTotal ? "total" : `p-${r.personId ?? "none"}`}>
               <DataTableRow
-                onClick={expandable ? () => onTogglePerson(r.personId as number) : undefined}
+                onClick={group != null ? () => onTogglePerson(group) : undefined}
                 sx={{
                   ...(expandable ? { cursor: "pointer" } : {}),
                   ...(r.isTotal

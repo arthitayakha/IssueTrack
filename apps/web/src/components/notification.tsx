@@ -1,12 +1,12 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { Snackbar, Alert, AlertColor, Button } from "@mui/material";
+import { Box, Snackbar, Alert, AlertColor, Button } from "@mui/material";
 import { useRouter } from "@/i18n/navigation";
 import IncomingToast from "@/components/notifications/incoming-toast";
 import { useAuthStore } from "@/lib/auth-store";
 import { resolveLink } from "@/lib/notification-link";
-import { deleteNotification, type AppNotification } from "@/lib/notifications-api";
+import { markNotificationRead, type AppNotification } from "@/lib/notifications-api";
 import {
   broadcastNotificationRead,
   startNotificationStream,
@@ -61,18 +61,18 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     setOpen(true);
   }, []);
 
-  /** × / timer → dismiss only. The row is still unread in the bell. */
-  const dismissToast = useCallback(() => {
-    setToasts((prev) => prev.slice(1));
+  /** × / timer → dismiss only that card. The row is still unread in the bell. */
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((n) => n.id !== id));
   }, []);
 
-  /** Click the card → read (delete) + navigate, exactly like a bell row. */
+  /** Click the card → mark read (UPDATE, row stays in DB) + navigate. */
   const openToast = useCallback(
     (item: AppNotification) => {
       setToasts((prev) => prev.filter((n) => n.id !== item.id));
       broadcastNotificationRead(item.id);
-      void deleteNotification(item.id).catch(() => {
-        /* the 10s poll resyncs the badge/list if this delete ever fails */
+      void markNotificationRead(item.id).catch(() => {
+        /* the 10s poll resyncs the badge/list if this write ever fails */
       });
       router.push(resolveLink(item));
     },
@@ -84,7 +84,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       subscribeToNotifications((item) => {
         if (seenRef.current.has(item.id)) return;
         seenRef.current.add(item.id);
-        // keep at most 3 in the queue; the toast component shows only the head
+        // keep at most 3 on screen — a 4th pushes the oldest card out
         setToasts((prev) => (prev.some((n) => n.id === item.id) ? prev : [...prev.slice(-2), item]));
       }),
     [],
@@ -117,7 +117,25 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   return (
     <NotificationContext.Provider value={{ notify }}>
       {children}
-      <IncomingToast item={toasts[0] ?? null} onOpen={openToast} onDismiss={dismissToast} />
+      {toasts.length > 0 && (
+        <Box
+          sx={{
+            position: "fixed",
+            top: { xs: 68, sm: 76 },
+            right: { xs: 12, sm: 24 },
+            zIndex: 1400,
+            width: 360,
+            maxWidth: "calc(100vw - 24px)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 1,
+          }}
+        >
+          {toasts.map((item) => (
+            <IncomingToast key={item.id} item={item} onOpen={openToast} onDismiss={dismissToast} />
+          ))}
+        </Box>
+      )}
       <Snackbar
         open={open}
         autoHideDuration={hideDuration}

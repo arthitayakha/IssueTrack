@@ -30,7 +30,6 @@ const LABELLED_ACTIONS = [
   "app_renewed",
   "app_hours_purchased",
   "contact_message",
-  "system_report_created",
 ] as const;
 
 /** Rows with no human actor — the subject is the app/company, not "System". */

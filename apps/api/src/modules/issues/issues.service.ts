@@ -176,6 +176,13 @@ export class IssuesService {
        * `IN (...)` จับค่า NULL ไม่ได้
        */
       noTaskType?: boolean;
+      /**
+       * Dashboard trend's pending bar — `status_id <> 4 OR status_id IS NULL`.
+       * Rides together with `createdFrom/To` so the drill list matches the bar
+       * (which cohorts by creation date and splits by CURRENT status). Absent
+       * → no clause, so every other caller keeps its exact behaviour.
+       */
+      notDone?: boolean;
       createdFrom?: string;
       createdTo?: string;
       /** Completed-bar drill: cards moved into เสร็จสิ้น inside this window. */
@@ -334,6 +341,18 @@ export class IssuesService {
       );
     } else if (filters.noTaskType) {
       qb.andWhere("issue.task_type IS NULL");
+    }
+
+    /**
+     * **Current-status cohort** for the dashboard's pending bar — every status
+     * other than the done column, including cards with no status at all.
+     * Combined with `createdFrom/To` (always sent by the new trend link), this
+     * list adds up to the "รอดำเนินการ" bar; the done bar uses `statuses=[4]`.
+     */
+    if (filters.notDone) {
+      qb.andWhere("(issue.status_id <> :doneStatusId OR issue.status_id IS NULL)", {
+        doneStatusId: DONE_STATUS_ID,
+      });
     }
 
     // report date range — both bounds are yyyy-mm-dd (validated above)

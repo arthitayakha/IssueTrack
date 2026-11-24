@@ -16,26 +16,33 @@ import {
 import SupportAgentIcon from "@mui/icons-material/SupportAgent";
 import CloseIcon from "@mui/icons-material/Close";
 import type { ContractContact } from "@/lib/notifications-api";
+import type { HelpCenterContact } from "@/lib/help-center-api";
 import {
   appDialogContentSizing,
   appDialogPaperSx,
   appDialogSx,
 } from "@/components/common/dialog-style";
 import AdminContactCards from "@/components/help-center/admin-contact-cards";
+import CentralContactInfo from "@/components/help-center/central-contact-info";
 
 export interface ContactTarget {
   appName: string;
   companyName: string;
   contacts: ContractContact[];
+  /**
+   * มีเฉพาะตอนไม่มีโปรแกรมเมอร์ที่แอดมินเลือก — โชว์ข้อมูลติดต่อกลางแทนการ์ด
+   * (fallback ตามที่ตกลง: ไม่ปล่อยกล่องเปล่า)
+   */
+  central?: HelpCenterContact;
   /** มีเฉพาะตอนเปิดจากสัญญา — ใช้โชว์ปุ่ม "แจ้งเตือน..." */
   appId?: number;
   companyId?: number;
 }
 
 /**
- * **ป๊อปอัพ "ติดต่อแอดมิน"** — ใช้จากหน้าอื่นที่ไม่ใช่ศูนย์ช่วยเหลือ
- * (เช่น ปุ่มติดต่อบนสัญญาใน `/systems`) · ศูนย์ช่วยเหลือแสดงการ์ดเหล่านี้
- * แบบฝังอยู่ในแท็บแล้ว ไม่ต้องเปิดป๊อปอัพซ้อน
+ * **ป๊อปอัพ "ติดต่อแอดมิน"** — เปิดจากปุ่มท้ายป๊อปอัพสัญญาบน `/systems`
+ * โชว์การ์ดโปรแกรมเมอร์ที่แอดมินเลือก (หรือข้อมูลติดต่อกลางถ้าไม่มีใครเลือก)
+ * ศูนย์ช่วยเหลือถูกถอดออกแล้วจึงไม่มี surface อื่นที่ใช้กล่องนี้
  */
 export default function ContactCustomerDialog({
   open,
@@ -96,7 +103,11 @@ export default function ContactCustomerDialog({
         </IconButton>
       </DialogTitle>
       <DialogContent dividers sx={appDialogContentSizing}>
-        <AdminContactCards contacts={target?.contacts ?? []} />
+        {target?.central ? (
+          <CentralContactInfo contact={target.central} />
+        ) : (
+          <AdminContactCards contacts={target?.contacts ?? []} />
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>{t("contactClose")}</Button>

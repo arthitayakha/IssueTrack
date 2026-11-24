@@ -28,6 +28,9 @@ function parseFilters(query: Record<string, string | undefined>): ReportIssueFil
     completedTo: isDay(query.completedTo) ? query.completedTo : undefined,
     search: query.search,
     assigneeIds: parseIdList(query.assigneeIds),
+    // "ยังไม่มอบหมาย" — programmer_id IS NULL, used by the assignee row's
+    // expandable detail fetch (same internal flag pattern as noApp/noPriority)
+    noAssignee: query.noAssignee === "1" || query.noAssignee === "true",
     reporterIds: parseIdList(query.reporterIds),
     categoryIds: parseIdList(query.categoryIds),
     statuses: parseIdList(query.statuses),

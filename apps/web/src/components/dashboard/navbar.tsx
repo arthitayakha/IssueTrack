@@ -13,7 +13,6 @@ import {
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
-import SupportAgentIcon from "@mui/icons-material/SupportAgent";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import { useAuthStore } from "@/lib/auth-store";
 import { useOwnAvatar } from "@/lib/avatar";
@@ -24,12 +23,11 @@ import ProfileDialog from "./profile-dialog";
 import NotificationPopover, {
   type NotificationListStatus,
 } from "@/components/notifications/notification-popover";
-import HelpCenterDialog from "../help-center-dialog";
 import {
-  clearNotifications,
-  deleteNotification,
   fetchNotificationCount,
   fetchNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
   type NotificationPage,
 } from "@/lib/notifications-api";
 import {
@@ -110,20 +108,20 @@ export default function Navbar({
     router.replace("/login");
   }
 
-  // one list: the inbox. Every row is unread, and reading one deletes it.
+  // one list: the inbox. The server sends only unread rows; reading one marks
+  // it read in the DB and drops it from this list (the row itself is kept).
   const [inbox, setInbox] = useState<NotificationPage>(EMPTY_PAGE);
   // `idle` until the bell opens the first time — rows are not fetched on load
   const [listStatus, setListStatus] = useState<ListStatus>("idle");
   const [unreadCount, setUnreadCount] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
-  /** A load-more that keeps returning nothing shows a manual retry instead of freezing. */
+  /** A load-more that failed shows a manual retry instead of freezing. */
   const [loadMoreBlocked, setLoadMoreBlocked] = useState(false);
+  /** An empty page means "no more rows" — hide the button without offering retry. */
+  const [loadMoreExhausted, setLoadMoreExhausted] = useState(false);
   const [bellAnchorEl, setBellAnchorEl] = useState<HTMLElement | null>(null);
   // account popup — opened from the navbar avatar or the bell's gear
   const [profileOpen, setProfileOpen] = useState(false);
-  // help center dialog — the SupportAgentIcon button on this navbar
-  const [helpCenterOpen, setHelpCenterOpen] = useState(false);
-
   // polling and scroll-loading both need a fresh view of what is on screen
   const inboxRef = useRef(inbox);
   inboxRef.current = inbox;
@@ -131,14 +129,12 @@ export default function Navbar({
   /**
    * Number of whole PAGE_SIZE pages already requested from page 1 — the ONLY
    * source for the next offset. Deriving it from `items.length` is what broke
-   * scroll-loading: reading a row deletes it locally and an SSE row is
-   * prepended, so the count no longer matches the server's page boundaries.
+   * scroll-loading: reading a row drops it locally and an SSE row is prepended,
+   * so the count no longer matches the server's page boundaries.
    */
   const loadedPagesRef = useRef(1);
   /** Load-more has its own guard — the 10s refresh must not drop its response. */
   const moreSeqRef = useRef(0);
-  /** Consecutive empty load-mores. One triggers a prefix resync, two offer retry. */
-  const emptyLoadsRef = useRef(0);
   const listSeqRef = useRef(0); // out-of-order guard for list refreshes
   const statusRef = useRef(listStatus);
   statusRef.current = listStatus;
@@ -147,6 +143,12 @@ export default function Navbar({
   const seenRef = useRef<Set<number>>(new Set());
   // ids already read — a late/duplicate SSE frame must never resurrect a row
   const readRef = useRef<Set<number>>(new Set());
+  /** Timestamp of the last wheel/touch scroll inside the bell list. */
+  const listScrollRecentRef = useRef(0);
+  const handleScrollActivity = useCallback(() => {
+    // plain write — no setState, so firing on every scroll event is cheap
+    listScrollRecentRef.current = Date.now();
+  }, []);
 
   /** Badge refresh — cheap COUNT only, never the rows. */
   const refreshCount = useCallback(async () => {
@@ -163,35 +165,55 @@ export default function Navbar({
    * sequence ref drops a late response so an old page can never clobber a
    * newer one (the bug behind "badge 43, empty list").
    */
-  const refreshList = useCallback(async () => {
+  const refreshList = useCallback(async (reset = false) => {
     const seq = (listSeqRef.current += 1);
+    if (reset) {
+      // Opening the bell is a fresh session: page 1 only. `statusRef` is set
+      // synchronously so this call shows the spinner instead of stale rows.
+      statusRef.current = "idle";
+      loadedPagesRef.current = 1;
+      listScrollRecentRef.current = 0;
+      setLoadMoreBlocked(false);
+      setLoadMoreExhausted(false);
+    }
     const firstLoad = statusRef.current !== "ready";
     if (firstLoad) setListStatus("loading");
     try {
       // A list past the server's max cannot be refreshed without SHRINKING it
       // (which yanks the scroll position mid-read) — leave the rows alone; the
       // badge has its own COUNT on the same tick, and nothing else is stale.
-      if (inboxRef.current.items.length > MAX_ROWS) return;
-      // Page-aligned refresh: the window never shrinks, because it is sized by
-      // the pages actually requested (not by `items.length`, which drifts when
-      // a row is read or an SSE row is prepended).
-      const pages = Math.max(
-        1,
-        loadedPagesRef.current,
-        Math.ceil(inboxRef.current.items.length / PAGE_SIZE),
-      );
-      const res = await fetchNotifications(1, pages * PAGE_SIZE);
+      if (!reset && inboxRef.current.items.length > MAX_ROWS) return;
+      // The user is scrolling right now — replacing `items` would yank the
+      // list out from under them (and leave a blank area once it shrinks).
+      // Badge is refreshed separately by refreshCount(), so it stays live.
+      if (
+        !reset &&
+        statusRef.current === "ready" &&
+        Date.now() - listScrollRecentRef.current < 5_000
+      ) {
+        return;
+      }
+      // Always ask for exactly PAGE_SIZE rows — a 2-page refresh used to send
+      // `limit=40`, which the UI never asked for. Pages loaded by scrolling are
+      // merged back below instead of being replaced.
+      const res = await fetchNotifications(1, PAGE_SIZE);
       if (seq !== listSeqRef.current) return;
-      loadedPagesRef.current = pages;
-      emptyLoadsRef.current = 0;
+      // a successful first-page fetch clears a previous load-more error
       setLoadMoreBlocked(false);
       for (const n of res.data) seenRef.current.add(n.id);
-      // a row the user just read can still be on the server while DELETE is in
-      // flight — never let a refresh or a late SSE frame resurrect it
-      setInbox({
-        items: res.data.filter((n) => !readRef.current.has(n.id)),
-        page: res.page,
-        total: res.total,
+      // a row the user just read can still be on the server while the mark-read
+      // PATCH is in flight — never let a refresh or a late SSE frame resurrect it.
+      // Keep rows from pages already scroll-loaded: drop only ids present in the
+      // fresh first page, so order/fields come from the server with no duplicates.
+      // On a bell-open reset there is nothing to keep — start from page 1 only.
+      setInbox((prev) => {
+        const fresh = res.data.filter((n) => !readRef.current.has(n.id));
+        if (reset) return { items: fresh, page: res.page, total: res.total };
+        const freshIds = new Set(res.data.map((n) => n.id));
+        const kept = prev.items.filter(
+          (n) => !freshIds.has(n.id) && !readRef.current.has(n.id),
+        );
+        return { items: [...fresh, ...kept], page: res.page, total: res.total };
       });
       // the badge must reflect the server count, not just the loaded rows
       setUnreadCount(res.unreadCount);
@@ -237,6 +259,14 @@ export default function Navbar({
   useEffect(
     () =>
       subscribeToNotificationReads((id) => {
+        if (id === "all") {
+          setInbox(EMPTY_PAGE);
+          setUnreadCount(0);
+          loadedPagesRef.current = 1;
+          setLoadMoreBlocked(false);
+          setLoadMoreExhausted(false);
+          return;
+        }
         if (readRef.current.has(id)) return;
         readRef.current.add(id);
         setInbox((prev) => ({
@@ -252,8 +282,8 @@ export default function Navbar({
   const handleOpenBell = useCallback(
     (event: MouseEvent<HTMLElement>) => {
       setBellAnchorEl(event.currentTarget);
-      // every open refreshes: the first shows the spinner, later ones update silently
-      void refreshList();
+      // every open starts over at page 1 — previously loaded pages are discarded
+      void refreshList(true);
     },
     [refreshList],
   );
@@ -264,7 +294,7 @@ export default function Navbar({
     if (current.items.length >= current.total) return;
     // The next offset comes from the pages actually requested — never from
     // `items.length`, which drifts when a row is read (deleted) or an SSE row
-    // is prepended. That drift was why scrolling stopped after one batch.
+    // is prepended. That drift was why pagination stopped after one batch.
     const nextPage = loadedPagesRef.current + 1;
     loadingMoreRef.current = true;
     setLoadingMore(true);
@@ -276,45 +306,18 @@ export default function Navbar({
       if (seq !== moreSeqRef.current) return;
       for (const n of res.data) seenRef.current.add(n.id);
       loadedPagesRef.current = nextPage;
-      const seen = new Set(inboxRef.current.items.map((n) => n.id));
-      const fresh = res.data.filter((n) => !seen.has(n.id) && !readRef.current.has(n.id));
-      if (fresh.length > 0) {
-        emptyLoadsRef.current = 0;
-        setLoadMoreBlocked(false);
-        setInbox((prev) => {
-          const seenNow = new Set(prev.items.map((n) => n.id));
-          const add = fresh.filter((n) => !seenNow.has(n.id) && !readRef.current.has(n.id));
-          return { items: [...prev.items, ...add], page: nextPage, total: res.total };
-        });
-        setUnreadCount(res.unreadCount);
-      } else if (emptyLoadsRef.current === 0) {
-        // Rows were read since the previous page, so offsets shifted and every
-        // row of this slice is already on screen. Re-read the whole prefix once
-        // — the row that slid across a boundary then isn't skipped forever.
-        emptyLoadsRef.current = 1;
-        const pages = Math.min(loadedPagesRef.current, Math.ceil(MAX_ROWS / PAGE_SIZE));
-        const synced = await fetchNotifications(1, pages * PAGE_SIZE);
-        if (seq !== moreSeqRef.current) return;
-        loadedPagesRef.current = pages;
-        const before = new Set(inboxRef.current.items.map((n) => n.id));
-        const added = synced.data.filter((n) => !before.has(n.id));
-        for (const n of synced.data) seenRef.current.add(n.id);
-        setInbox({
-          items: synced.data.filter((n) => !readRef.current.has(n.id)),
-          page: 1,
-          total: synced.total,
-        });
-        setUnreadCount(synced.unreadCount);
-        if (added.length > 0) {
-          emptyLoadsRef.current = 0;
-          setLoadMoreBlocked(false);
-        } else {
-          setLoadMoreBlocked(true);
-        }
-      } else {
-        // still nothing new — stop the sentinel and let the user retry
-        setLoadMoreBlocked(true);
-      }
+      // Append only — never replace. Dedupe by id so an SSE row, or an offset
+      // shifted by a row that was read, can never show up twice.
+      setInbox((prev) => {
+        const seen = new Set(prev.items.map((n) => n.id));
+        const add = res.data.filter((n) => !seen.has(n.id) && !readRef.current.has(n.id));
+        if (add.length === 0) return prev;
+        return { items: [...prev.items, ...add], page: nextPage, total: res.total };
+      });
+      setUnreadCount(res.unreadCount);
+      // Empty page = nothing left to fetch, so the button disappears. `sum`
+      // is deliberately NOT used here: it counts archived (read) rows too.
+      if (res.data.length === 0) setLoadMoreExhausted(true);
     } catch {
       if (seq !== moreSeqRef.current) return;
       setLoadMoreBlocked(true);
@@ -324,20 +327,19 @@ export default function Navbar({
     }
   }, []);
 
-  /** Manual escape hatch when a page keeps coming back empty. */
+  /** Manual escape hatch when a page request fails. */
   const handleRetryLoadMore = useCallback(() => {
-    emptyLoadsRef.current = 0;
     setLoadMoreBlocked(false);
     void handleLoadMore();
   }, [handleLoadMore]);
 
-  // reading = deleting — drop the row and the badge now; on failure the list
-  // and the count both resync from the server (the row was never deleted)
+  // reading = UPDATE in the DB (is_read/read_at) — the row vanishes from the
+  // bell but stays stored. Drop it locally now; on failure resync from server.
   function handleMarkRead(id: number) {
     // one path for the bell row and the toast: the shared read listener drops
     // the row + badge here and in every other open tab
     broadcastNotificationRead(id);
-    deleteNotification(id).catch(() => {
+    markNotificationRead(id).catch(() => {
       void refreshCount();
       if (statusRef.current === "ready") void refreshList();
     });
@@ -347,9 +349,9 @@ export default function Navbar({
     setInbox(EMPTY_PAGE);
     setUnreadCount(0);
     loadedPagesRef.current = 1;
-    emptyLoadsRef.current = 0;
     setLoadMoreBlocked(false);
-    clearNotifications().catch(() => {
+    setLoadMoreExhausted(false);
+    markAllNotificationsRead().catch(() => {
       void refreshCount();
       if (statusRef.current === "ready") void refreshList();
     });
@@ -407,25 +409,17 @@ export default function Navbar({
             status={listStatus}
             loadingMore={loadingMore}
             loadMoreError={loadMoreBlocked}
+            loadMoreExhausted={loadMoreExhausted}
             onLoadMore={handleLoadMore}
             onRetryLoadMore={handleRetryLoadMore}
             onRetry={() => void refreshList()}
-            onClose={() => setBellAnchorEl(null)}
+            onScrollActivity={handleScrollActivity}
+            onClose={() => {
+              listScrollRecentRef.current = 0;
+              setBellAnchorEl(null);
+            }}
             onMarkRead={handleMarkRead}
             onMarkAllRead={handleMarkAllRead}
-          />
-          {/* ปุ่มศูนย์ช่วยเหลือ — dialog เดียว tab แจ้งปัญหา / ติดต่อแอดมิน */}
-          <IconButton
-            onClick={() => setHelpCenterOpen(true)}
-            aria-label={t("helpCenter")}
-            title={t("helpCenter")}
-            size="small"
-          >
-            <SupportAgentIcon fontSize="small" />
-          </IconButton>
-          <HelpCenterDialog
-            open={helpCenterOpen}
-            onClose={() => setHelpCenterOpen(false)}
           />
           <LanguageSwitcher />
           {/* Account actions — no dropdown: the avatar opens the profile popup */}

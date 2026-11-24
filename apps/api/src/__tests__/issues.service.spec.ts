@@ -1628,3 +1628,39 @@ describe("IssuesService.findAll — completedFrom/To (the trend's completed bar)
     ).toBe(false);
   });
 });
+
+describe("IssuesService.findAll — ?notDone=1 (the trend's pending bar)", () => {
+  const PARAMS = { page: 1, limit: 20 };
+
+  function whereCalls(issues: { createQueryBuilder: jest.Mock }): unknown[][] {
+    const builder = issues.createQueryBuilder.mock.results.at(-1)?.value;
+    return builder?.andWhere?.mock.calls ?? [];
+  }
+
+  it("narrows to every non-done status, including cards with no status", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {
+      notDone: true,
+      createdFrom: "2026-10-19",
+      createdTo: "2026-10-25",
+    });
+
+    const calls = whereCalls(issues);
+    const clause = calls.find(([sql]) => String(sql).includes("issue.status_id <> :doneStatusId"));
+    expect(clause).toBeDefined();
+    expect(String(clause?.[0])).toContain("issue.status_id IS NULL");
+    expect((clause?.[1] as { doneStatusId: number }).doneStatusId).toBe(4);
+    // the same creation window as the bar it came from
+    expect(calls.some(([sql]) => String(sql).includes("issue.created_at >= :createdFrom"))).toBe(true);
+    expect(calls.some(([sql]) => String(sql).includes("issue.created_at <= :createdTo"))).toBe(true);
+  });
+
+  it("emits no clause without the flag — every other caller is unchanged", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, {});
+
+    expect(whereCalls(issues).some(([sql]) => String(sql).includes(":doneStatusId"))).toBe(false);
+  });
+});

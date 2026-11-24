@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef } from "react";
+import { memo, useCallback, useLayoutEffect, useRef } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useTheme } from "@mui/material/styles";
 import {
@@ -31,17 +31,21 @@ export type NotificationListStatus = "idle" | "loading" | "ready" | "error";
 interface NotificationPopoverProps {
   open: boolean;
   anchorEl: HTMLElement | null;
-  /** One page of the single inbox — every row is unread; clicking one deletes it. */
+  /** One page of the single unread inbox — clicking a row marks it read (kept in DB). */
   data: NotificationPage;
   /** First-open state: `loading` shows a spinner, `error` offers a retry. */
   status: NotificationListStatus;
   loadingMore: boolean;
-  /** A page kept coming back empty — stop the sentinel and offer a manual retry. */
+  /** A page request failed — offer a manual retry. */
   loadMoreError: boolean;
+  /** An empty page came back — there is nothing more; hide the button entirely. */
+  loadMoreExhausted: boolean;
   onLoadMore: () => void;
   onRetryLoadMore: () => void;
   /** Retry after a failed first load. */
   onRetry: () => void;
+  /** User scrolled the list — the navbar pauses its 10s row-refresh briefly. */
+  onScrollActivity: () => void;
   onClose: () => void;
   onMarkRead: (id: number) => void;
   onMarkAllRead: () => void;
@@ -205,9 +209,11 @@ export default function NotificationPopover({
   status,
   loadingMore,
   loadMoreError,
+  loadMoreExhausted,
   onLoadMore,
   onRetryLoadMore,
   onRetry,
+  onScrollActivity,
   onClose,
   onMarkRead,
   onMarkAllRead,
@@ -219,6 +225,20 @@ export default function NotificationPopover({
   // one inbox, one list — a row disappears the moment it is read
   const visibleItems = data.items;
   const hasMore = status === "ready" && visibleItems.length < data.total;
+
+  /**
+   * ทุก 10 วิ navbar เขียน `items` ใหม่จาก server — ถ้าครั้งก่อนโหลดแถวมากกว่า
+   * (เช่น เคย scroll โหลด 2 หน้า) แล้วครั้งหลังเหลือน้อยกว่า scrollTop จะค้าง
+   * เกินเนื้อหา → เห็นแต่ช่องว่างด้านล่าง คลามป์หลัง render ทุกครั้งที่จำนวนแถวเปลี่ยน
+   */
+  const listRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const maxScroll = el.scrollHeight - el.clientHeight;
+    if (el.scrollTop > maxScroll) el.scrollTop = Math.max(0, maxScroll);
+  }, [visibleItems.length, open]);
+
   const inboxLabel = t("tabs.inbox");
   const emptyTitle = t("emptyInbox.title");
   const emptyDescription = t("emptyInbox.description");
@@ -241,26 +261,6 @@ export default function NotificationPopover({
     handlers.onClose();
     handlers.router.push(resolveLink(item));
   }, []);
-
-  // Keep pulling pages until the list fills the box or runs out of rows.
-  // A scroll heuristic never fires when a short batch leaves no scrollbar,
-  // so watch a sentinel at the end of the list instead.
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open || !hasMore || loadingMore || loadMoreError) return;
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) onLoadMore();
-      },
-      // เริ่มดึงหน้าถัดไป "ก่อน" ถึงท้าย ~300px — sentinel 1px ที่ปลายล่างสุด
-      // เท่ากับรอจนกว่าจะถึงท้ายแล้วค่อยเริ่มรอ (จังหวะที่เห็นชัดว่า "ต้องรอ")
-      { rootMargin: "300px 0px" },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [open, hasMore, loadingMore, loadMoreError, visibleItems.length, onLoadMore]);
 
   return (
     <>
@@ -375,6 +375,8 @@ export default function NotificationPopover({
 
       {/* List — first open shows a spinner, a failed load offers a retry */}
       <Box
+        ref={listRef}
+        onScroll={onScrollActivity}
         sx={{
           flex: 1,
           overflowY: "auto",
@@ -431,18 +433,24 @@ export default function NotificationPopover({
             );
           })
         )}
-        {/* Sentinel: while it stays visible the next page keeps loading */}
-        {hasMore && !loadMoreError && <Box ref={sentinelRef} aria-hidden sx={{ height: 1 }} />}
-        {loadingMore && (
-          <Box
-            aria-label={t("loading")}
-            sx={{ display: "flex", justifyContent: "center", py: 1.5 }}
-          >
-            <CircularProgress size={20} />
+        {/* Explicit pagination — one page per click; the navbar appends the rows */}
+        {hasMore && !loadMoreError && !loadMoreExhausted && (
+          <Box sx={{ px: 2, py: 1.5, textAlign: "center" }}>
+            <Button
+              fullWidth
+              size="small"
+              variant="outlined"
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              startIcon={loadingMore ? <CircularProgress size={14} color="inherit" /> : undefined}
+              sx={{ borderRadius: 2, textTransform: "none" }}
+            >
+              {loadingMore ? t("loading") : t("loadMore")}
+            </Button>
           </Box>
         )}
-        {/* A stuck page used to leave only a dead blank area — now there is a way out */}
-        {hasMore && loadMoreError && !loadingMore && (
+        {/* A failed page used to leave only a dead blank area — offer a retry */}
+        {hasMore && loadMoreError && !loadingMore && !loadMoreExhausted && (
           <Box sx={{ px: 2, py: 1.5, textAlign: "center" }}>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
               {t("loadError")}

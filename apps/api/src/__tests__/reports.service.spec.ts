@@ -199,6 +199,39 @@ describe("ReportsService — noApp / noCategory (the dashboard's NULL slices)", 
   });
 });
 
+describe("ReportsService — noAssignee (the assignee view's ยังไม่มอบหมาย row)", () => {
+  it("noAssignee alone → programmer_id IS NULL", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", { noAssignee: true });
+
+    const clause = whereCalls().find(([sql]) => String(sql).includes("programmer_id"));
+    expect(clause).toBeDefined();
+    expect(String((clause as [string])[0])).toBe("issue.programmer_id IS NULL");
+  });
+
+  it("noAssignee + assigneeIds → ONE OR clause, never two ANDed clauses", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", { noAssignee: true, assigneeIds: [3, 5] });
+
+    const clauses = whereCalls().filter(([sql]) => String(sql).includes("programmer_id"));
+    expect(clauses).toHaveLength(1);
+    const [sql, params] = clauses[0] as [string, Record<string, unknown>];
+    expect(sql).toBe("(issue.programmer_id IS NULL OR issue.programmer_id IN (:...assigneeIds))");
+    expect(params.assigneeIds).toEqual([3, 5]);
+  });
+
+  it("no flag → the plain IN clause, byte for byte", async () => {
+    const { service, whereCalls } = makeService();
+
+    await service.summary("person", { assigneeIds: [3] });
+
+    const clause = whereCalls().find(([sql]) => String(sql).includes("programmer_id"));
+    expect(String((clause as [string])[0])).toBe("issue.programmer_id IN (:...assigneeIds)");
+  });
+});
+
 describe("ReportsService — completedFrom/To (the trend's completed bar)", () => {
   it("cuts grouped rows by a move into เสร็จสิ้น, not by creation date", async () => {
     const { service, whereCalls } = makeService();

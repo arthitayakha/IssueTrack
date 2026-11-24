@@ -45,3 +45,17 @@ export function daysBetween(from: string, to: string): number {
     (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000,
   );
 }
+
+/**
+ * `YYYY-MM-DD` + N ปี — ปัดวันที่ 29 ก.พ. ไป 28 ก.พ. เหมือน dayjs `.add(N, "year")`
+ * ที่ฟอร์มต่ออายุ (`renew-form-dialog.tsx`) ใช้ตัด window การทบชั่วโมง ให้ฝั่ง
+ * เซิร์ฟเวอร์ตรงกับฟอร์มเป๊ะ (ต่อวันครบ 1 ปีพอดี = ยังได้ทบ / เกิน = ไม่ได้)
+ */
+export function addYearsIso(value: string, years: number): string {
+  const [year, month, day] = value.split("-").map(Number);
+  const nextYear = year + years;
+  // วันที่ 0 ของเดือนถัดไป = วันสุดท้ายของเดือนนี้ (month เป็น 1-based, Date เติม 0-based)
+  const lastDay = new Date(Date.UTC(nextYear, month, 0)).getUTCDate();
+  const nextDay = Math.min(day, lastDay);
+  return `${String(nextYear).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(nextDay).padStart(2, "0")}`;
+}

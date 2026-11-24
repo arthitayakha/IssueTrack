@@ -21,6 +21,7 @@ interface Stub {
   save: jest.Mock;
   create: jest.Mock;
   count: jest.Mock;
+  update: jest.Mock;
   createQueryBuilder: jest.Mock;
 }
 
@@ -54,6 +55,7 @@ function repo(overrides: Partial<Stub> = {}): Stub {
     save: jest.fn(async (value: Record<string, unknown>) => value),
     create: jest.fn((value: unknown) => value),
     count: jest.fn().mockResolvedValue(0),
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
     createQueryBuilder: jest.fn(() => queryBuilder()),
     ...overrides,
   };
@@ -80,7 +82,13 @@ function makeService() {
   // issue_priorities lookup — null by default = "card has no priority" (medium)
   const priorities = repo();
   const permissions = { hasPermission: jest.fn().mockResolvedValue(true) };
-  const stream = { subscribe: jest.fn(), unsubscribe: jest.fn(), emit: jest.fn() };
+  const stream = {
+    subscribe: jest.fn(),
+    unsubscribe: jest.fn(),
+    emit: jest.fn(),
+    emitRead: jest.fn(),
+    emitReadAll: jest.fn(),
+  };
   const service = new NotificationsService(
     ...([notifications, users, mail, priorities, permissions, stream] as unknown as ServiceArgs),
   );
@@ -376,13 +384,15 @@ describe("NotificationsService.notifyAssignmentChange — assignment changes", (
 });
 
 describe("NotificationsService.count — the badge number only", () => {
-  it("answers { count } for the caller's own rows and reads no rows", async () => {
+  it("answers { count } for the caller's UNREAD rows and reads no rows", async () => {
     const { service, notifications } = makeService();
     notifications.count.mockResolvedValue(43);
 
     await expect(service.count(1)).resolves.toEqual({ count: 43 });
-    // a plain COUNT over this user's rows — no list query, no actor join
-    expect(notifications.count).toHaveBeenCalledWith({ where: { userId: 1 } });
+    // read rows stay in the DB but must not inflate the badge
+    expect(notifications.count).toHaveBeenCalledWith({
+      where: { userId: 1, isRead: false },
+    });
     expect(notifications.find).not.toHaveBeenCalled();
   });
 
@@ -391,7 +401,58 @@ describe("NotificationsService.count — the badge number only", () => {
     notifications.count.mockResolvedValue(0);
 
     await expect(service.count(99)).resolves.toEqual({ count: 0 });
-    expect(notifications.count).toHaveBeenCalledWith({ where: { userId: 99 } });
+    expect(notifications.count).toHaveBeenCalledWith({
+      where: { userId: 99, isRead: false },
+    });
+  });
+});
+
+describe("NotificationsService.markRead / markAllRead — read state without deleting", () => {
+  it("marks one row read with a timestamp, scoped to the owner, and tells other tabs", async () => {
+    const { service, notifications, stream } = makeService();
+
+    await expect(service.markRead(7, 11)).resolves.toEqual({ read: true, id: 11 });
+
+    expect(notifications.update).toHaveBeenCalledTimes(1);
+    const [criteria, patch] = notifications.update.mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+    expect(criteria).toMatchObject({ id: 11, userId: 7, isRead: false });
+    expect(patch).toMatchObject({ isRead: true });
+    expect(patch.readAt).toBeInstanceOf(Date);
+    expect(stream.emitRead).toHaveBeenCalledWith(7, 11);
+  });
+
+  it("returns null for a non-owner's id without writing or emitting", async () => {
+    const { service, notifications, stream } = makeService();
+    notifications.update.mockResolvedValueOnce({ affected: 0 });
+
+    await expect(service.markRead(8, 11)).resolves.toBeNull();
+    expect(stream.emitRead).not.toHaveBeenCalled();
+  });
+
+  it("marks every unread row of the caller read in one UPDATE", async () => {
+    const { service, notifications, stream } = makeService();
+    notifications.update.mockResolvedValueOnce({ affected: 4 });
+
+    await expect(service.markAllRead(7)).resolves.toEqual({ read: 4 });
+
+    const [criteria, patch] = notifications.update.mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+    expect(criteria).toMatchObject({ userId: 7, isRead: false });
+    expect(patch).toMatchObject({ isRead: true });
+    expect(stream.emitReadAll).toHaveBeenCalledWith(7);
+  });
+
+  it("stays silent when there was nothing unread", async () => {
+    const { service, notifications, stream } = makeService();
+    notifications.update.mockResolvedValueOnce({ affected: 0 });
+
+    await expect(service.markAllRead(7)).resolves.toEqual({ read: 0 });
+    expect(stream.emitReadAll).not.toHaveBeenCalled();
   });
 });
 
@@ -738,47 +799,102 @@ describe("NotificationsService — contract audience, contact hint and mail poli
 });
 
 /**
- * ลำดับกล่องเข้า — สูง → กลาง → ต่ำ แล้วใหม่สุดก่อน · ทำไมไม่ใช้ `find()`:
- * `priority` เป็น varchar ซึ่ง alphabetical ให้ `high < low < medium` (ผิดทิศ!)
- * จึงต้อง CASE rank และทำที่ server เพราะหน้าจอโหลดทีละ 20 แถว
+ * ลำดับกล่องเข้า — ใหม่สุดขึ้นบนสุดเสมอ (ไม่ใช้ priority เป็นตัวเรียงอีกแล้ว
+ * เพราะแถว `low` ที่เพิ่งเด้งจะถูกดันลงท้ายกระดิ่งจนดูเหมือนหาย) · กรองเฉพาะ
+ * แถวที่ยังไม่อ่าน — แถวที่อ่านแล้วอยู่ใน DB แต่ไม่โชว์ใน列表
  */
-describe("NotificationsService.list — order and response shape", () => {
-  it("orders CASE high → medium → low, then newest first, over the caller's rows", async () => {
+describe("NotificationsService.list — unread filter, order and response shape", () => {
+  it("filters to unread rows and orders newest first over the caller's rows", async () => {
     const { service, notifications } = makeService();
     const createdAt = new Date("2026-11-16T03:00:00.000Z");
-    const qb = queryBuilder([{ id: 11, priority: "high", type: "moved", title: "POS", createdAt }], 1);
+    const qb = queryBuilder([{ id: 11, priority: "low", type: "moved", title: "POS", createdAt }], 1);
     notifications.createQueryBuilder.mockReturnValue(qb);
 
     const res = await service.list(7, { limit: 20 });
 
     expect(qb.leftJoinAndSelect).toHaveBeenCalledWith("n.actor", "actor");
-    expect(qb.where).toHaveBeenCalledWith("n.user_id = :userId", { userId: 7 });
-    // the CASE is the whole point — a plain `ORDER BY priority` sorts low before medium
-    expect(qb.orderBy).toHaveBeenCalledWith(
-      expect.stringContaining("CASE n.priority WHEN 'high' THEN 0"),
-      "ASC",
-    );
-    expect(qb.addOrderBy).toHaveBeenCalledWith("n.created_at", "DESC");
+    expect(qb.where).toHaveBeenCalledWith("n.user_id = :userId AND n.is_read = false", {
+      userId: 7,
+    });
+    // newest first — a low-priority row that just arrived stays at the top
+    expect(qb.orderBy).toHaveBeenCalledWith("n.created_at", "DESC");
     expect(qb.addOrderBy).toHaveBeenCalledWith("n.id", "DESC");
     // `.limit/.offset` on purpose — `.take/.skip` + join flips TypeORM into its
-    // two-query id pagination, whose ORDER BY builder reads "CASE n.priority"
-    // as an alias named "CASE n" and throws (documented in list())
+    // two-query id pagination, a known source of ORDER BY alias errors
     expect(qb.limit).toHaveBeenCalledWith(20);
     expect(qb.offset).toHaveBeenCalledWith(0);
-    // no legacy find()/count() — the ordering only exists in the query builder
+    // no legacy find(), and the unread list needs no extra COUNT — `sum` is
+    // the filtered page total itself
     expect(notifications.find).not.toHaveBeenCalled();
     expect(notifications.count).not.toHaveBeenCalled();
-    // the row keeps every existing field and gains priority
     expect(res.data[0]).toMatchObject({
       id: 11,
       action: "moved",
       target: "POS",
-      priority: "high",
+      priority: "low",
       createdAt,
+      isRead: false,
+      readAt: null,
     });
     expect(res.total).toBe(1);
+    // every number agrees with the bell — no "20 vs 28" confusion
     expect(res.unreadCount).toBe(1);
+    expect(res.sum).toBe(1);
     expect(res.page).toBe(1);
+  });
+
+  it("uses the filtered unread total for sum without a second COUNT", async () => {
+    const { service, notifications } = makeService();
+    notifications.createQueryBuilder.mockReturnValue(queryBuilder([], 1));
+
+    const res = await service.list(7, { limit: 20 });
+
+    // there is no extra count call left that could fail the inbox
+    expect(notifications.count).not.toHaveBeenCalled();
+    expect(res.sum).toBe(1);
+    expect(res.unreadCount).toBe(1);
+  });
+
+  it("listRead returns only read rows, newest read first, and uses a separate unread count", async () => {
+    const { service, notifications } = makeService();
+    const readAt = new Date("2026-11-23T10:00:00.000Z");
+    const qb = queryBuilder(
+      [{ id: 31, isRead: true, readAt, type: "completed", title: "POS", createdAt: readAt }],
+      2,
+    );
+    notifications.createQueryBuilder.mockReturnValue(qb);
+    notifications.count.mockResolvedValue(7);
+
+    const res = await service.listRead(7, { limit: 20 });
+
+    expect(qb.where).toHaveBeenCalledWith("n.user_id = :userId AND n.is_read = true", {
+      userId: 7,
+    });
+    // newest read first; created_at/id keep the order stable on ties
+    expect(qb.orderBy).toHaveBeenCalledWith("n.read_at", "DESC");
+    expect(qb.addOrderBy).toHaveBeenCalledWith("n.created_at", "DESC");
+    expect(qb.addOrderBy).toHaveBeenCalledWith("n.id", "DESC");
+    expect(res.data[0]).toMatchObject({ id: 31, isRead: true, readAt });
+    // `total` is the read-row count here, never the badge
+    expect(res.total).toBe(2);
+    expect(notifications.count).toHaveBeenCalledWith({ where: { userId: 7, isRead: false } });
+    // 7 unread rows → sum and badge both report 7
+    expect(res.sum).toBe(7);
+    expect(res.unreadCount).toBe(7);
+  });
+
+  it("keeps the read archive loadable when the unread COUNT fails", async () => {
+    const { service, notifications } = makeService();
+    const qb = queryBuilder([{ id: 31, isRead: true, type: "completed", title: "POS" }], 2);
+    notifications.createQueryBuilder.mockReturnValue(qb);
+    notifications.count.mockRejectedValueOnce(new Error("db down"));
+
+    const res = await service.listRead(7, { limit: 20 });
+
+    expect(res.data).toHaveLength(1);
+    expect(res.total).toBe(2);
+    expect(res.sum).toBe(0);
+    expect(res.unreadCount).toBe(0);
   });
 });
 

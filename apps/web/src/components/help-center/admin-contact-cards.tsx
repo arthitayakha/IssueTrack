@@ -29,9 +29,9 @@ function initials(name: string): string {
 }
 
 /**
- * การ์ดรายชื่อแอดมิน (ชื่อ/อีเมล/เบอร์ + mailto/tel/ก๊อปปี้)
- * ใช้ร่วมกันระหว่างป๊อปอัพ `ContactCustomerDialog` กับแท็บ "ติดต่อผู้ดูแลระบบ"
- * ในศูนย์ช่วยเหลือ — แก้ที่เดียวตรงกันทั้งสองที่
+ * การ์ดรายชื่อผู้ติดต่อ (ชื่อ/อีเมล/เบอร์ + mailto/tel/ก๊อปปี้)
+ * ใช้ในป๊อปอัพ `ContactCustomerDialog` บน `/systems` — รายชื่อตอนนี้คือ
+ * โปรแกรมเมอร์ที่แอดมินเลือก (ผ่าน `GET /help-center/contact`)
  */
 export default function AdminContactCards({
   contacts,

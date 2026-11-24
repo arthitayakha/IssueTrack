@@ -24,7 +24,6 @@ import { RulesModule } from "./modules/rules/rules.module";
 import { ReportsModule } from "./modules/reports/reports.module";
 import { DashboardModule } from "./modules/dashboard/dashboard.module";
 import { SystemsModule } from "./modules/systems/systems.module";
-import { SystemReportsModule } from "./modules/system-reports/system-reports.module";
 import { HelpCenterSettingsModule } from "./modules/help-center-settings/help-center-settings.module";
 import { JwtAuthGuard } from "./modules/auth/jwt-auth.guard";
 
@@ -64,7 +63,6 @@ import { JwtAuthGuard } from "./modules/auth/jwt-auth.guard";
     ReportsModule,
     DashboardModule,
     SystemsModule,
-    SystemReportsModule,
     HelpCenterSettingsModule,
   ],
   providers: [

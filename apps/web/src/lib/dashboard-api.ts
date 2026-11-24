@@ -56,14 +56,14 @@ export async function fetchDashboardSummary(
  *
  * Same scope + the same Bangkok `date_trunc` as the count on the bar, so the
  * list always matches the number (capped server-side at 200 rows). `series`
- * says WHICH bar: the chart draws two per bucket ("created" + "completed"),
- * and each one buckets its own timestamp. `statusId` and `companyIds` keep it
- * matching while the page is filtered.
+ * says WHICH bar: both bars bucket the card's CREATION date, then split by
+ * CURRENT status ("pending" = not done, "done" = status 4). `statusId` and
+ * `companyIds` keep it matching while the page is filtered.
  */
 export async function fetchTrendIssues(input: {
   bucket: string;
   period: DashboardPeriod;
-  /** Which of the chart's two bars — defaults to "created" server-side. */
+  /** Which of the chart's two bars — defaults to "pending" server-side. */
   series?: DashboardTrendSeries;
   scope: DashboardScope;
   statusId?: number | null;

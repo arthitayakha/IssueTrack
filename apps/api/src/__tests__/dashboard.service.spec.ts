@@ -66,7 +66,7 @@ interface BuilderStub {
 /**
  * Builds the service with stub deps. Query builders are created one per
  * aggregate query (total, statuses, priorities, apps, categories,
- * trend-created, trend-completed, workload — in that order), so `rawQueue` /
+ * trend, workload — in that order), so `rawQueue` /
  * `countQueue` are consumed in creation order. `entityQueue` feeds
  * `getMany()` — only the drill-down (trend-issues) query reads entities
  * instead of aggregates.
@@ -127,22 +127,18 @@ const OWN = "dashboard.own.view";
 const ADMIN_USER: AuthUser = { ...USER, roleId: 1, roleName: "admin" };
 
 /**
- * Raw queue for a scope=all run (workload included → 7 raw queries).
- * `trendCompleted` feeds the second trend query — the completed series —
- * and is separate from `trend` (the created series) because the two are
- * different queries, not two columns of one.
+ * Raw queue for a scope=all run (workload included → 6 raw queries). The
+ * trend is ONE query now: each row carries `total` + `done`, and `pending`
+ * is derived as `total - done` (same cohort split by current status).
  */
-function allScopeQueue(
-  extra: Partial<DashboardSummary> & { trendCompleted?: unknown[] } = {},
-) {
+function allScopeQueue(extra: Partial<DashboardSummary> = {}) {
   return [
-    extra.statuses ?? [],        // statuses
-    extra.priorities ?? [],      // priorities
-    extra.apps ?? [],            // apps
-    extra.categories ?? [],      // categories
-    extra.trend ?? [],           // trend — created series
-    extra.trendCompleted ?? [],  // trend — completed series
-    extra.workload ?? [],        // workload
+    extra.statuses ?? [],     // statuses
+    extra.priorities ?? [],   // priorities
+    extra.apps ?? [],         // apps
+    extra.categories ?? [],   // categories
+    extra.trend ?? [],        // trend — one cohort, split by current status
+    extra.workload ?? [],     // workload
   ];
 }
 
@@ -163,7 +159,7 @@ describe("DashboardService.summary", () => {
 
   it("falls back to own (assigned OR reported) when overview is missing — no 403", async () => {
     const { service, permissions, builders } = makeService(
-      [statusesRaw(), [], [], [], [], []],
+      [statusesRaw(), [], [], [], []],
       [33],
     );
     permissions.getUserPermissions.mockResolvedValue([OWN]);
@@ -180,7 +176,7 @@ describe("DashboardService.summary", () => {
 
   it("serves scope=assigned with a uid filter and no permission lookup", async () => {
     const { service, permissions, builders } = makeService(
-      [statusesRaw(), [], [], [], [], []],
+      [statusesRaw(), [], [], [], []],
       [0],
     );
 
@@ -195,7 +191,7 @@ describe("DashboardService.summary", () => {
 
   it("serves scope=reported with a uid filter and no permission lookup", async () => {
     const { service, permissions, builders } = makeService(
-      [statusesRaw(), [], [], [], [], []],
+      [statusesRaw(), [], [], [], []],
       [5],
     );
 
@@ -211,22 +207,21 @@ describe("DashboardService.summary", () => {
 
   it("returns an empty workload outside scope=all (builders stop at trend)", async () => {
     const { service, builders } = makeService(
-      [statusesRaw(), [], [], [], [], []],
+      [statusesRaw(), [], [], [], []],
       [0],
     );
 
     const result = await service.summary("assigned", "week", USER);
 
     expect(result.workload).toEqual([]);
-    // total + statuses + priorities + apps + categories + trend(created) +
-    // trend(completed) = 7 builders, no 8th (workload short-circuits before
-    // building a query)
-    expect(builders).toHaveLength(7);
+    // total + statuses + priorities + apps + categories + trend = 6 builders,
+    // no 7th (workload short-circuits before building a query)
+    expect(builders).toHaveLength(6);
   });
 
   it("zero-fills statuses so every board column renders even when empty", async () => {
     const { service, statuses } = makeService(
-      [[{ id: "1", count: "5" }], [], [], [], [], []],
+      [[{ id: "1", count: "5" }], [], [], [], []],
       [5],
     );
     statuses.find.mockResolvedValue([
@@ -249,8 +244,7 @@ describe("DashboardService.summary", () => {
         [{ id: null, name: null, count: "34" }],                 // priorities: ไม่ระบุ group
         [{ id: "3", name: "POS", count: "10" }],                  // apps
         [],                                                        // categories
-        [{ bucket: "2026-10-01", count: "3" }],                   // trend — created
-        [],                                                        // trend — completed
+        [{ bucket: "2026-10-01", total: "3", done: "1" }],         // trend — one cohort
         [
           // workload — string counts, a real position and a position-less row
           { userId: "13", name: "prog@example.com", openCount: "16", positionId: "2", positionName: "Backend" },
@@ -265,7 +259,7 @@ describe("DashboardService.summary", () => {
 
     expect(result.priorities).toEqual([{ id: null, name: null, count: 34 }]);
     expect(result.apps).toEqual([{ id: 3, name: "POS", count: 10 }]);
-    expect(result.trend).toEqual([{ bucket: "2026-10-01", created: 3, completed: 0 }]);
+    expect(result.trend).toEqual([{ bucket: "2026-10-01", pending: 2, done: 1, total: 3 }]);
     expect(result.workload).toEqual([
       { userId: 13, name: "prog@example.com", openCount: 16, positionId: 2, positionName: "Backend" },
       { userId: 14, name: "bob@example.com", openCount: 0, positionId: null, positionName: null },
@@ -279,8 +273,7 @@ describe("DashboardService.summary", () => {
         [],                                                        // priorities
         [{ id: null, name: null, count: "62" }, { id: "4", name: "POS", count: "13" }],
         [{ id: null, name: null, count: "5" }, { id: "1", name: "เข้าสู่ระบบไม่ได้", count: "36" }],
-        [],                                                        // trend — created
-        [],                                                        // trend — completed
+        [],                                                        // trend
       ],
       [75],
     );
@@ -309,8 +302,8 @@ describe("DashboardService.summary", () => {
     await service.summary("all", "week", ADMIN_USER);
 
     // builder order: total, statuses, priorities, apps, categories,
-    // trend-created, trend-completed, workload
-    const w = builders[7];
+    // trend, workload
+    const w = builders[6];
     const sql = w.conditions.join(" ");
     // only open cards are counted — finished work must not inflate anyone's load
     expect(sql).toContain("COUNT(*) FILTER (WHERE COALESCE(issue.status_id, 0) <> 4)");
@@ -330,7 +323,7 @@ describe("DashboardService.summary", () => {
 
   it("trend buckets are truncated per period in Bangkok time", async () => {
     const { service, builders } = makeService(
-      [statusesRaw(), [], [], [], [{ bucket: "2026-10-26", count: "2" }], []],
+      [statusesRaw(), [], [], [], [{ bucket: "2026-10-26", total: "2", done: "0" }]],
       [0],
     );
 
@@ -343,76 +336,56 @@ describe("DashboardService.summary", () => {
     expect(trendSql).toContain("Asia/Bangkok");
   });
 
-  it("merges the two trend series into one row per bucket", async () => {
+  it("splits one creation cohort by CURRENT status (pending + done = total)", async () => {
     const { service } = makeService(
       [
         statusesRaw(),
         [],                                                  // priorities
         [],                                                  // apps
         [],                                                  // categories
-        [{ bucket: "2026-10-19", count: "4" }, { bucket: "2026-10-26", count: "1" }], // created
-        [{ bucket: "2026-10-26", count: "7" }],             // completed
+        [
+          { bucket: "2026-10-19", total: "4", done: "0" },
+          { bucket: "2026-10-26", total: "8", done: "3" },
+        ],
       ],
       [0],
     );
 
     const result = await service.summary("assigned", "week", USER);
 
-    // one row carries BOTH counts — a bucket with only one series still shows
-    // up (zero on the other side), sorted by bucket like the chart expects
     expect(result.trend).toEqual([
-      { bucket: "2026-10-19", created: 4, completed: 0 },
-      { bucket: "2026-10-26", created: 1, completed: 7 },
+      { bucket: "2026-10-19", pending: 4, done: 0, total: 4 },
+      { bucket: "2026-10-26", pending: 5, done: 3, total: 8 },
     ]);
   });
 
-  it("reads the completed series off activity_logs — card.moved into เสร็จสิ้น", async () => {
+  it("reads the split off the card's current status — no activity_logs event join", async () => {
     const { service, builders } = makeService(
-      [statusesRaw(), [], [], [], [], [{ bucket: "2026-10-26", count: "3" }]],
+      [statusesRaw(), [], [], [], [{ bucket: "2026-10-26", total: "3", done: "2" }]],
       [0],
     );
 
     const result = await service.summary("assigned", "week", USER);
 
-    expect(result.trend).toEqual([{ bucket: "2026-10-26", created: 0, completed: 3 }]);
+    expect(result.trend).toEqual([{ bucket: "2026-10-26", pending: 1, done: 2, total: 3 }]);
 
-    // builder order: total, statuses, priorities, apps, categories,
-    // trend-created, trend-completed — the second trend query is the one
-    // joined to the audit log
-    expect(builders).toHaveLength(7);
-    const done = builders[6];
-    expect(done.innerJoin).toHaveBeenCalledWith(
-      "activity_logs",
-      "al",
-      "al.entity_id = issue.id",
-    );
-    const sql = done.conditions.join(" ");
-    expect(sql).toContain("al.action = 'card.moved'");
-    // matches on the stable id, falling back to every historical done name —
-    // the names are bound as parameters, never spliced into the SQL string
-    expect(sql).toContain("al.detail::json->>'toStatusId'");
-    expect(sql).toContain("IN (:...doneStatusNames)");
-    expect(done.params).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          doneStatusId: "4",
-          doneStatusNames: expect.arrayContaining(["เสร็จสิ้น"]),
-        }),
-      ]),
-    );
-    // the WINDOW keys off the move's own timestamp, not the card's birth
-    expect(sql).toContain("al.created_at >= :trendFrom");
-    expect(sql).not.toContain("issue.created_at >= :trendFrom");
-
-    // and the created series stays a plain issues query with no log join
-    const born = builders[5];
-    expect(born.innerJoin).not.toHaveBeenCalled();
-    expect(born.conditions.join(" ")).toContain("issue.created_at >= :trendFrom");
+    // builder order: total, statuses, priorities, apps, categories, trend
+    expect(builders).toHaveLength(6);
+    const trend = builders[5];
+    expect(trend.innerJoin).not.toHaveBeenCalled();
+    const select = [...trend.select.mock.calls, ...trend.addSelect.mock.calls]
+      .flat()
+      .map(String)
+      .join(" ");
+    expect(select).toContain("SUM(CASE WHEN issue.status_id = 4 THEN 1 ELSE 0 END)");
+    expect(select).toContain("COUNT(*)::int");
+    // the window still keys off the card's BIRTH date (the cohort)
+    expect(trend.conditions.join(" ")).toContain("issue.created_at >= :trendFrom");
   });
 
   it("applies a custom from/to window to the trend only — Bangkok days", async () => {
     const { service, builders } = makeService(
-      [statusesRaw(), [], [], [], [{ bucket: "2026-09-28", count: "4" }], []],
+      [statusesRaw(), [], [], [], [{ bucket: "2026-09-28", total: "4", done: "0" }]],
       [0],
     );
 
@@ -426,10 +399,8 @@ describe("DashboardService.summary", () => {
     expect(result.to).toBe("2026-09-30");
 
     const trendParams: Record<string, Date> = {};
-    for (const b of [builders[5], builders[6]]) {
-      for (const call of b.andWhere.mock.calls) {
-        Object.assign(trendParams, call[1] ?? {});
-      }
+    for (const call of builders[5].andWhere.mock.calls) {
+      Object.assign(trendParams, call[1] ?? {});
     }
     // `from` = that day's Bangkok midnight; `to` = the day *after* (exclusive)
     expect(trendParams.trendFrom?.toISOString()).toBe(
@@ -448,7 +419,7 @@ describe("DashboardService.summary", () => {
 
   it("falls back to the period window when a bound is malformed", async () => {
     const { service, builders } = makeService(
-      [statusesRaw(), [], [], [], [], []],
+      [statusesRaw(), [], [], [], []],
       [0],
     );
 
@@ -510,48 +481,36 @@ describe("DashboardService.trendIssues", () => {
     ]);
   });
 
-  it("cuts the completed list off the move's timestamp so it matches that bar", async () => {
+  it("matches the done bar — created in the bucket AND in the done column now", async () => {
     const { service, builders } = makeService([], [], [[]]);
 
-    await service.trendIssues(
-      "assigned",
-      "week",
-      "2026-10-26",
-      USER,
-      undefined,
-      undefined,
-      "completed",
-    );
+    await service.trendIssues("assigned", "week", "2026-10-26", USER, undefined, undefined, "done");
 
     expect(builders).toHaveLength(1);
     const b = builders[0];
-    // same log join + match as the count query — the list must add up to the
-    // number on the completed bar, not the created one
-    expect(b.innerJoin).toHaveBeenCalledWith(
-      "activity_logs",
-      "al",
-      "al.entity_id = issue.id",
-    );
+    expect(b.innerJoin).not.toHaveBeenCalled();
     const sql = b.conditions.join(" ");
-    expect(sql).toContain("al.action = 'card.moved'");
-    expect(sql).toContain("al.detail::json->>'toStatusId'");
-    // the bucket expression reads al.created_at (the move), not the card's
-    expect(sql).toContain("al.created_at AT TIME ZONE 'Asia/Bangkok'");
-    expect(sql).not.toContain("issue.created_at AT TIME ZONE");
-    // newest completion first — the mirror of the created list's order
-    expect(b.orderBy).toHaveBeenCalledWith("al.created_at", "DESC");
+    expect(sql).toContain("issue.created_at AT TIME ZONE 'Asia/Bangkok'");
+    expect(sql).toContain("= :bucket");
+    expect(b.andWhere).toHaveBeenCalledWith("issue.status_id = :doneStatusId", {
+      doneStatusId: 4,
+    });
+    expect(b.orderBy).toHaveBeenCalledWith("issue.created_at", "DESC");
     expect(b.limit).toHaveBeenCalledWith(200);
   });
 
-  it("keeps the created list on the card's own timestamp (the default)", async () => {
+  it("matches the pending bar — every non-done status, including no status", async () => {
     const { service, builders } = makeService([], [], [[]]);
 
     await service.trendIssues("assigned", "week", "2026-10-26", USER);
 
-    const sql = builders[0].conditions.join(" ");
-    expect(sql).toContain("issue.created_at AT TIME ZONE 'Asia/Bangkok'");
-    expect(sql).not.toContain("al.created_at");
-    expect(builders[0].innerJoin).not.toHaveBeenCalled();
+    const b = builders[0];
+    expect(b.conditions.join(" ")).toContain("issue.created_at AT TIME ZONE 'Asia/Bangkok'");
+    expect(b.andWhere).toHaveBeenCalledWith(
+      "(issue.status_id <> :doneStatusId OR issue.status_id IS NULL)",
+      { doneStatusId: 4 },
+    );
+    expect(b.innerJoin).not.toHaveBeenCalled();
   });
 
   it("downgrades scope=all to own for a caller without overview — no 403", async () => {
@@ -716,7 +675,7 @@ describe("DashboardService.dimensionIssues", () => {
 describe("DashboardService status cross-filter", () => {
   it("narrows every aggregate EXCEPT the status ring that set it", async () => {
     const { service, builders } = makeService(
-      [statusesRaw(), [], [], [], [], []],
+      [statusesRaw(), [], [], [], []],
       [12],
     );
 
@@ -727,9 +686,9 @@ describe("DashboardService status cross-filter", () => {
     expect(result.total).toBe(12);
 
     // builder order: total, statuses, priorities, apps, categories,
-    // trend-created, trend-completed
+    // trend
     const sqls = builders.map((b) => b.conditions.join(" "));
-    for (const i of [2, 3, 4, 5, 6]) {
+    for (const i of [2, 3, 4, 5]) {
       expect(sqls[i]).toContain("issue.status_id = :statusId");
     }
     // the ring's context pair (total + statuses) deliberately keeps every
@@ -740,7 +699,7 @@ describe("DashboardService status cross-filter", () => {
 
   it("echoes statusId: null and filters nothing when no status is picked", async () => {
     const { service, builders } = makeService(
-      [statusesRaw(), [], [], [], [], []],
+      [statusesRaw(), [], [], [], []],
       [0],
     );
 
@@ -794,7 +753,7 @@ describe("DashboardService company filter", () => {
   }
 
   it("narrows EVERY aggregate — including the status ring and the total", async () => {
-    const { service, builders } = makeService([statusesRaw(), [], [], [], [], []], [7]);
+    const { service, builders } = makeService([statusesRaw(), [], [], [], []], [7]);
 
     const result = await service.summary("assigned", "week", USER, {}, undefined, [6]);
 
@@ -811,7 +770,7 @@ describe("DashboardService company filter", () => {
   });
 
   it("follows the REPORTER's company, not the app's contract row", async () => {
-    const { service, builders } = makeService([statusesRaw(), [], [], [], [], []], [0]);
+    const { service, builders } = makeService([statusesRaw(), [], [], [], []], [0]);
 
     await service.summary("assigned", "week", USER, {}, undefined, [4, 6]);
 
@@ -823,7 +782,7 @@ describe("DashboardService company filter", () => {
   });
 
   it("filters nothing and echoes [] when no company is picked", async () => {
-    const { service, builders } = makeService([statusesRaw(), [], [], [], [], []], [0]);
+    const { service, builders } = makeService([statusesRaw(), [], [], [], []], [0]);
 
     const result = await service.summary("assigned", "week", USER);
 
@@ -840,9 +799,9 @@ describe("DashboardService company filter", () => {
     await service.summary("all", "week", ADMIN_USER, {}, undefined, [6]);
 
     // builder order: total, statuses, priorities, apps, categories,
-    // trend-created, trend-completed, workload
-    expect(builders[7].conditions.join(" ")).toContain(EXISTS_SQL);
-    expect(companyParams(builders[7])).toEqual([6]);
+    // trend, workload
+    expect(builders[6].conditions.join(" ")).toContain(EXISTS_SQL);
+    expect(companyParams(builders[6])).toEqual([6]);
   });
 
   it("carries the filter into a trend bar's list so it still matches the bar", async () => {

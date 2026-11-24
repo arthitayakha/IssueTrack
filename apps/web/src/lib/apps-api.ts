@@ -294,6 +294,18 @@ export interface PeriodIssue {
   assigneeName: string | null;
 }
 
+/** งานที่แจ้งมาในรอบสัญญา แต่ **ไม่คิด MA** (`task_type <> 'ma'` หรือยังไม่ระบุ) */
+export interface ReportedIssue {
+  id: number;
+  issueNumber: string | null;
+  title: string;
+  taskType: string | null;
+  /** วันที่แจ้ง (`issues.created_at`) — ไม่ใช่วันที่กรอกชั่วโมง */
+  reportedAt: string | null;
+  statusName: string | null;
+  assigneeName: string | null;
+}
+
 /**
  * `GET /apps/:id/companies/:recordId/usage` — สรุปของ **1 รอบ**
  *
@@ -317,6 +329,10 @@ export interface PeriodUsage {
   unattributedHours: number;
   count: number;
   issues: PeriodIssue[];
+  /** จำนวนงานที่แจ้งในรอบนี้ (ไม่คิด MA) — คนละชุดกับ `count` */
+  reportedCount: number;
+  /** รายการงานที่แจ้งในรอบนี้ (ไม่คิด MA) */
+  reportedIssues: ReportedIssue[];
 }
 
 /**
@@ -346,6 +362,11 @@ export interface UsageCount {
    * → ฝั่งจอต้องโชว์ `—` ห้ามเดาเป็น 0
    */
   byType?: TaskTypeCounts;
+  /**
+   * จำนวนงานที่แจ้งในรอบนี้ (ไม่คิด MA) — ผูกตามวันที่แจ้ง · `optional` เผื่อ web
+   * deploy เร็วกว่า api → โชว์ `—` ห้ามเดาเป็น 0
+   */
+  reportedCount?: number;
 }
 
 /**

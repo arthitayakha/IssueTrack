@@ -47,9 +47,7 @@ export type NotificationAction =
   | "app_renewed"
   | "app_hours_purchased"
   // กดส่งจากป๊อปอัพสัญญา — ข้อความจากอีกฝ่าย (in-app + อีเมล)
-  | "contact_message"
-  // รายงานบั๊กระบบจากศูนย์ช่วยเหลือ — แจ้งแอดมินให้รีบดู
-  | "system_report_created";
+  | "contact_message";
 
 /**
  * ระดับความสำคัญของ**ชนิดที่ไม่ผูกการ์ด** — hardcode ที่นี่ที่เดียว (ข้อตกลง:
@@ -72,7 +70,6 @@ const FIXED_PRIORITY: Partial<Record<NotificationAction, NotificationPriority>> 
   app_renewed: "low",
   app_hours_purchased: "low",
   contact_message: "medium",
-  system_report_created: "medium",
 };
 
 /**
@@ -960,33 +957,68 @@ export class NotificationsService {
   }
 
   /**
-   * One page of a user's inbox — there are no tabs any more: every stored row
-   * is unread (reading one deletes it), so `unreadCount` is simply the total.
-   * The popover scroll-loads 5 rows at a time (like the board columns) and the
-   * badge keeps counting the whole account, never just the loaded rows.
+   * One page of the user's **unread** inbox — the bell still looks exactly the
+   * same (one list, a row vanishes when read) but reading is now an UPDATE:
+   * `is_read = true` rows stay in the DB and are simply excluded here. The
+   * badge (`unreadCount`) is the same filtered COUNT, never just the loaded rows.
+   * `sum` is that SAME unread total (not the all-rows count) so every number in
+   * the response agrees with the bell.
+   *
+   * Order = **newest first** so the row whose toast just auto-dismissed is at
+   * the top of the bell, instead of being buried by a low `priority` rank.
    */
-  async list(userId: number, options: { limit?: number; offset?: number } = {}) {
+  async list(
+    userId: number,
+    options: { limit?: number; offset?: number; read?: boolean } = {},
+  ) {
+    const read = options.read === true;
     const limit = Math.min(Math.max(options.limit ?? 5, 1), 200);
     const offset = Math.max(options.offset ?? 0, 0);
-    // สูง → กลาง → ต่ำ แล้วค่อยใหม่สุดก่อน — `priority` เป็น varchar ซึ่งเรียง
-    // alphabetical ได้ `high < low < medium` (ผิดทิศ) จึงต้อง CASE กำหนด rank เอง;
-    // ทำที่ server เพราะหน้าจอโหลดทีละ 20 แถว (client sort จะขัด pagination)
-    //
     // ⚠️ ใช้ `.limit/.offset` — **ไม่ใช่ `.take/.skip`**: take/skip + join จะสลับไป
     // ใช้กลยุทธ์ "ดึง id ก่อน 2 รอบ" ของ TypeORM ซึ่งแปลงนิพจน์ ORDER BY ทุกตัว
-    // โดยตัดข้อความก่อนจุดแรกเป็น alias → `CASE n.priority` ถูกอ่านเป็น alias
-    // "CASE n" แล้วโยน "alias was not found" — กับ join ฝั่ง to-one (actor) LIMIT
-    // ตรง ๆ ถูกต้องอยู่แล้ว ไม่มีทางคูงแถว
-    const [data, total] = await this.notifications
+    // โดยตัดข้อความก่อนจุดแรกเป็น alias → ปัญหา "alias was not found" (เคยเกิดตอน
+    // ใช้ CASE n.priority) — กับ join ฝั่ง to-one (actor) LIMIT ตรง ๆ ปลอดภัยอยู่แล้ว
+    const qb = this.notifications
       .createQueryBuilder("n")
       .leftJoinAndSelect("n.actor", "actor")
-      .where("n.user_id = :userId", { userId })
-      .orderBy("CASE n.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END", "ASC")
-      .addOrderBy("n.created_at", "DESC")
-      .addOrderBy("n.id", "DESC")
+      .where(
+        read
+          ? "n.user_id = :userId AND n.is_read = true"
+          : "n.user_id = :userId AND n.is_read = false",
+        { userId },
+      )
       .offset(offset)
-      .limit(limit)
-      .getManyAndCount();
+      .limit(limit);
+
+    if (read) {
+      // อ่านล่าสุดขึ้นบนสุด — tie-break ด้วยวันที่สร้าง/ไอดีให้ลำดับเสถียร
+      qb.orderBy("n.read_at", "DESC")
+        .addOrderBy("n.created_at", "DESC")
+        .addOrderBy("n.id", "DESC");
+    } else {
+      qb.orderBy("n.created_at", "DESC").addOrderBy("n.id", "DESC");
+    }
+
+    const [data, total] = await qb.getManyAndCount();
+
+    /**
+     * `sum` = ยอดแถว**ยังไม่อ่าน** (ตัวเดียวกับ badge) — ไม่ใช่ยอดทุกแถวใน DB
+     * กล่องเข้า (read = false) ได้ `sum = total` จาก filtered COUNT ที่มีอยู่แล้ว
+     * จึงไม่ต้องยิง COUNT ซ้ำ · ส่วน history (read = true) `total` คือยอดแถว
+     * อ่านแล้ว จึงต้อง count แถวยังไม่อ่านแยกต่างหาก
+     *
+     * fail-open: COUNT พัง → ใช้ 0 แล้วโหลด列表ต่อ (endpoint นี้ไม่มี UI ใช้
+     * ตัวเลขอยู่แล้ว) — ไม่ทำให้ทั้ง列表พังเพราะฟิลด์เสริม
+     */
+    let sum = total;
+    if (read) {
+      try {
+        sum = (await this.count(userId)).count;
+      } catch (error) {
+        this.logger.warn(`could not count unread notifications: ${(error as Error).message}`);
+        sum = 0;
+      }
+    }
 
     /**
      * แนบ "ฝ่ายตรงข้าม" ให้ทุกแถว — แอดมิน (`user.view`) ได้ลูกค้าของบริษัทที่
@@ -1038,22 +1070,62 @@ export class NotificationsService {
       page: Math.floor(offset / limit) + 1,
       limit,
       total,
-      unreadCount: total,
+      // `sum` IS the unread total on BOTH lists (the read list's `total` is the
+      // number of read rows, so it cannot double as the badge here)
+      unreadCount: sum,
+      // unread count — identical to the badge, on both endpoints
+      sum,
     };
   }
 
   /**
-   * Just the badge number — one COUNT over the caller's own rows, no rows and
-   * no actor join. The navbar polls this every 30s instead of pulling the
-   * inbox list, which is only fetched when the bell is opened.
+   * The read archive — same response shape and contact enrichment as `list()`,
+   * but `data` holds only `is_read = true` rows, newest read first. The bell UI
+   * does not use it yet; it exists so a read row is actually retrievable.
    */
-  async count(userId: number): Promise<{ count: number }> {
-    return { count: await this.notifications.count({ where: { userId } }) };
+  async listRead(userId: number, options: { limit?: number; offset?: number } = {}) {
+    return this.list(userId, { ...options, read: true });
   }
 
   /**
-   * Reading one = it is gone. A non-owner's id matches nothing, so they get
-   * `null` back and the row stays put (the old mark-read shape).
+   * Just the badge number — one COUNT over the caller's **unread** rows, no
+   * rows and no actor join. The navbar polls this every 10s instead of pulling
+   * the inbox list, which is only fetched when the bell is opened.
+   */
+  async count(userId: number): Promise<{ count: number }> {
+    return { count: await this.notifications.count({ where: { userId, isRead: false } }) };
+  }
+
+  /**
+   * Reading a row = mark it read, NOT delete it. The row vanishes from the bell
+   * (the list filters `is_read = false`) but stays in the DB with `read_at` so
+   * there is a record of who read what and when. A non-owner's id matches
+   * nothing → `null`, leaving their row untouched.
+   */
+  async markRead(userId: number, id: number) {
+    const result = await this.notifications.update(
+      { id, userId, isRead: false },
+      { isRead: true, readAt: new Date() },
+    );
+    if (!result.affected) return null;
+    this.stream.emitRead(userId, id);
+    return { read: true, id };
+  }
+
+  /** The bell's "mark all as read" button — clears the inbox, keeps every row. */
+  async markAllRead(userId: number) {
+    const result = await this.notifications.update(
+      { userId, isRead: false },
+      { isRead: true, readAt: new Date() },
+    );
+    const read = result.affected ?? 0;
+    if (read > 0) this.stream.emitReadAll(userId);
+    return { read };
+  }
+
+  /**
+   * Permanent deletion still exists for cleanup, but reading no longer uses it.
+   * A non-owner's id matches nothing, so they get `null` back.
    */
   async remove(userId: number, id: number) {
     const result = await this.notifications.delete({ id, userId });
@@ -1087,6 +1159,9 @@ export class NotificationsService {
       createdAt: n.createdAt,
       // chip colour + the 7/3/1-day reminder window are both keyed off this
       priority: n.priority ?? "medium",
+      // read state — kept in the DB even though the bell only shows unread rows
+      isRead: n.isRead ?? false,
+      readAt: n.readAt ?? null,
     };
   }
 }
