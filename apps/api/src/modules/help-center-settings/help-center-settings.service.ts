@@ -13,21 +13,14 @@ export interface ProgrammerContact {
   phone: string | null;
 }
 
-const DEFAULT_SETTINGS = {
-  id: 1,
-  supportEmail: "support@issuetrack.com",
-  supportPhone: "02-123-4567",
-  workingHours: "จันทร์ - ศุกร์ 09:00 - 18:00 น.",
-};
-
-/** เพดานกันคนส่ง mapping มาใหญ่เกิน (ตรงกับ `@ArrayMaxSize(50)` ของ DTO) */
+/** เพดานกันคนส่ง mapping มาใหญ่เกิน */
 const MAX_COMPANIES = 50;
 const MAX_CONTACTS_PER_COMPANY = 50;
 
 /**
  * ตรวจและจัดรูป mapping ก่อนเซฟ/ก่อนอ่าน — คืน object ใหม่เสมอ (ไม่แตะ input)
- * key ที่ไม่ใช่ id ตัวเลขบวกหรือ value ที่ไม่ใช่ array ถูกข้าม; array ว่างยังเก็บไว้
- * เพราะหมายความว่า "บริษัทนี้เจตตา不给ใคร sees → ใช้ข้อมูลกลางแทน"
+ * key ที่ไม่ใช่ id ตัวเลขบวกหรือ value ที่ไม่ใช่ array ถูกข้าม; array ว่างก็เก็บไว้
+ * (บริษัทนั้นมี config แต่ไม่มีผู้ติดต่อ → ป๊อปอัพโชว์ข้อความว่าง)
  */
 function normaliseMapping(value: unknown): Record<string, number[]> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -59,44 +52,26 @@ export class HelpCenterSettingsService {
 
   /**
    * รายชื่อที่ลูกค้าเห็นจริง · `companyId` มาจาก JWT (`AuthUser.companyId`)
-   * - มี mapping ของบริษัทนั้น → ใช้ชุดนั้น (แม้ array ว่าง = ไม่มีใคร sees)
-   * - ไม่มี mapping → ใช้ `contactUserIds` เดิมเป็น global fallback
-   * fail-open: ไม่มีแถว (DB ยังไม่รัน migration) → ค่าเริ่มต้นตาม UI อยู่แล้ว
+   * มีเฉพาะ mapping ของบริษัทนั้น — **ไม่มี global fallback / ไม่มีข้อมูลกลาง**
+   * บริษัทที่ยังไม่ได้กำหนด → `contacts: []` → ป๊อปอัพโชว์ข้อความ "ยังไม่มีข้อมูลติดต่อ"
    */
   async get(companyId: number | null = null) {
     const row = await this.repo.findOne({ where: { id: 1 } });
     const mapping = normaliseMapping(row?.contactUsersByCompany);
     const key = companyId == null ? null : String(companyId);
-    const scopedByCompany = key !== null && Object.prototype.hasOwnProperty.call(mapping, key);
-    const contactUserIds = scopedByCompany ? mapping[key!] : (row?.contactUserIds ?? []);
+    const contactIds = key === null ? [] : (mapping[key] ?? []);
     return {
-      ...DEFAULT_SETTINGS,
-      id: row?.id ?? DEFAULT_SETTINGS.id,
-      supportEmail: row?.supportEmail ?? DEFAULT_SETTINGS.supportEmail,
-      supportPhone: row?.supportPhone ?? DEFAULT_SETTINGS.supportPhone,
-      workingHours: row?.workingHours ?? DEFAULT_SETTINGS.workingHours,
-      contactUserIds,
-      scopedByCompany,
-      // รายชื่อโปรแกรมเมอร์ที่เลือก — ด้านหน้าใช้การ์ดเหล่านี้ แทนข้อมูลกลาง
-      contacts: await this.resolveContacts(contactUserIds),
+      id: row?.id ?? 1,
+      contacts: await this.resolveContacts(contactIds),
       updatedAt: row?.updatedAt ?? null,
     };
   }
 
-  /**
-   * config ดิบสำหรับ dialog "จัดการผู้ติดต่อ" (แอดมินเท่านั้น) — `get()` คืนตาม
-   * คนเรียก (แอดมินมักไม่มีบริษัท → ได้แค่ global) จึงต้องมีอันนี้เพื่อแก้ mapping
-   * ของทุกบริษัทได้ในหน้าเดียว
-   */
+  /** config ดิบสำหรับ dialog "จัดการผู้ติดต่อ" (แอดมินเท่านั้น) */
   async config() {
     const row = await this.repo.findOne({ where: { id: 1 } });
     return {
-      ...DEFAULT_SETTINGS,
-      id: row?.id ?? DEFAULT_SETTINGS.id,
-      supportEmail: row?.supportEmail ?? DEFAULT_SETTINGS.supportEmail,
-      supportPhone: row?.supportPhone ?? DEFAULT_SETTINGS.supportPhone,
-      workingHours: row?.workingHours ?? DEFAULT_SETTINGS.workingHours,
-      contactUserIds: row?.contactUserIds ?? [],
+      id: row?.id ?? 1,
       contactUsersByCompany: normaliseMapping(row?.contactUsersByCompany),
       updatedAt: row?.updatedAt ?? null,
     };
@@ -151,12 +126,6 @@ export class HelpCenterSettingsService {
   async update(dto: UpdateHelpCenterSettingsDto) {
     let row = await this.repo.findOne({ where: { id: 1 } });
     if (!row) row = this.repo.create({ id: 1 });
-    if (dto.supportEmail !== undefined) row.supportEmail = dto.supportEmail.trim() || null;
-    if (dto.supportPhone !== undefined) row.supportPhone = dto.supportPhone.trim() || null;
-    if (dto.workingHours !== undefined) row.workingHours = dto.workingHours.trim() || null;
-    if (dto.contactUserIds !== undefined) {
-      row.contactUserIds = [...new Set(dto.contactUserIds)];
-    }
     if (dto.contactUsersByCompany !== undefined) {
       const raw = dto.contactUsersByCompany;
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) {

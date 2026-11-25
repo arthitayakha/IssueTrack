@@ -16,24 +16,17 @@ import {
 import SupportAgentIcon from "@mui/icons-material/SupportAgent";
 import CloseIcon from "@mui/icons-material/Close";
 import type { ContractContact } from "@/lib/notifications-api";
-import type { HelpCenterContact } from "@/lib/help-center-api";
 import {
   appDialogContentSizing,
   appDialogPaperSx,
   appDialogSx,
 } from "@/components/common/dialog-style";
 import AdminContactCards from "@/components/help-center/admin-contact-cards";
-import CentralContactInfo from "@/components/help-center/central-contact-info";
 
 export interface ContactTarget {
   appName: string;
   companyName: string;
   contacts: ContractContact[];
-  /**
-   * มีเฉพาะตอนไม่มีโปรแกรมเมอร์ที่แอดมินเลือก — โชว์ข้อมูลติดต่อกลางแทนการ์ด
-   * (fallback ตามที่ตกลง: ไม่ปล่อยกล่องเปล่า)
-   */
-  central?: HelpCenterContact;
   /** มีเฉพาะตอนเปิดจากสัญญา — ใช้โชว์ปุ่ม "แจ้งเตือน..." */
   appId?: number;
   companyId?: number;
@@ -41,8 +34,9 @@ export interface ContactTarget {
 
 /**
  * **ป๊อปอัพ "ติดต่อแอดมิน"** — เปิดจากปุ่มท้ายป๊อปอัพสัญญาบน `/systems`
- * โชว์การ์ดโปรแกรมเมอร์ที่แอดมินเลือก (หรือข้อมูลติดต่อกลางถ้าไม่มีใครเลือก)
- * ศูนย์ช่วยเหลือถูกถอดออกแล้วจึงไม่มี surface อื่นที่ใช้กล่องนี้
+ * โชว์การ์ดโปรแกรมเมอร์ที่แอดมินเลือกให้บริษัทนั้น (ผ่าน `GET /help-center/contact`)
+ * ไม่มีข้อมูลติดต่อกลางแล้ว — ถ้าไม่มีใครเลือก `AdminContactCards` จะโชว์ข้อความ
+ * `Notifications.contactAdminEmpty` ("ยังไม่มีข้อมูลติดต่อ...") แทนกล่องเปล่า
  */
 export default function ContactCustomerDialog({
   open,
@@ -103,11 +97,7 @@ export default function ContactCustomerDialog({
         </IconButton>
       </DialogTitle>
       <DialogContent dividers sx={appDialogContentSizing}>
-        {target?.central ? (
-          <CentralContactInfo contact={target.central} />
-        ) : (
-          <AdminContactCards contacts={target?.contacts ?? []} />
-        )}
+        <AdminContactCards contacts={target?.contacts ?? []} />
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>{t("contactClose")}</Button>

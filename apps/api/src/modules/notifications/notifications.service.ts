@@ -179,6 +179,17 @@ export class NotificationsService {
     private readonly stream: NotificationStreamService,
   ) {}
 
+  /**
+   * ตั้งโดย `NotificationRepeatsService.onModuleInit()` — แทนที่จะ inject
+   * service นั้นกลับมา (จะเกิด circular DI) ฝั่ง repeats เป็นคนมาลงทะเบียน
+   * callback เอง ถ้าโมดูลนั้นไม่มี (เช่นใน unit test) ที่นี่ก็ไม่ทำอะไร
+   */
+  private repeatRegistrar: ((row: Notification) => void) | null = null;
+
+  setRepeatRegistrar(fn: (row: Notification) => void): void {
+    this.repeatRegistrar = fn;
+  }
+
   /** Deep link straight to the card's detail dialog; the plain board when there is no issue. */
   private issueLink(issueId?: number | null): string {
     return issueId ? `/boards?issue=${issueId}` : "/boards";
@@ -457,6 +468,9 @@ export class NotificationsService {
       // stall the drag/assign request that produced the row. The row is already
       // in the DB, so a failed stream only means "no popup", never "lost notice".
       void this.emitNewNotification(input.userId, saved.id);
+      // เปิดสายเตือนซ้ำตามระดับของแถวนี้ (fire-and-forget — register() มี try/catch
+      // ของตัวเองอยู่แล้ว จึงไม่มีทางทำให้การแจ้งเตือนต้นทางล้มเหลว)
+      this.repeatRegistrar?.(saved);
     } catch (error) {
       this.logger.warn(`failed to create notification: ${(error as Error).message}`);
     }

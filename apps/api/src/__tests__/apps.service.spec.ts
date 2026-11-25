@@ -40,6 +40,8 @@ interface Row {
   carriedHours: number | null;
   /** latch flag "แจ้ง MA หมดแล้ว" รอบนี้ — `null` = ยังไม่เคยแจ้ง (migration 1821) */
   maNotifiedAt: Date | null;
+  /** `app_companies.cancelled_at` (1848) — สัญญาถูกยกเลิก / เปิดกลับได้ */
+  cancelledAt: Date | null;
   expiryStatus: string;
   expiryNotified: string;
 }
@@ -66,6 +68,7 @@ function row(overrides: Partial<Row> = {}): Row {
     kind: "renew",
     carriedHours: null,
     maNotifiedAt: null,
+    cancelledAt: null,
     expiryStatus: "none",
     expiryNotified: "none",
     ...overrides,
@@ -1460,6 +1463,62 @@ describe("AppsService.isPairExpired — ตาข่ายตอนทีมต�
     expect(await service.isPairExpired(null, 1)).toBe(false);
     expect(await service.isPairExpired(7, null)).toBe(false);
     expect(appCompanies.findOne).not.toHaveBeenCalled();
+  });
+});
+
+describe("AppsService.cancelContract / restoreContract — ยกเลิกทั้งคู่, ย้อนได้", () => {
+  it("stamps cancelledAt on EVERY row of the pair, not just the pointed one", async () => {
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [
+        row({ id: 10, appId: 7, companyId: 1 }),
+        row({ id: 11, appId: 7, companyId: 1 }),
+        row({ id: 12, appId: 7, companyId: 2 }),
+        row({ id: 13, appId: 11, companyId: 1 }),
+      ],
+    });
+
+    const payload = await service.cancelContract(7, 10);
+
+    expect(state.rows.slice(0, 2).every((r) => r.cancelledAt instanceof Date)).toBe(true);
+    // คู่อื่น/แอปอื่นไม่ถูกแตะ
+    expect(state.rows[2].cancelledAt).toBeNull();
+    expect(state.rows[3].cancelledAt).toBeNull();
+    expect(payload.companies[0].cancelledAt).toEqual(expect.any(String));
+  });
+
+  it("restore clears every row of the pair and keeps the old latches (no double bell)", async () => {
+    const stamp = new Date("2026-11-20T00:00:00Z");
+    const { service, state } = makeService({
+      apps: [POS],
+      rows: [
+        row({
+          id: 10,
+          appId: 7,
+          companyId: 1,
+          cancelledAt: stamp,
+          expiryNotified: "d30",
+          maNotifiedAt: stamp,
+        }),
+        row({ id: 11, appId: 7, companyId: 1, cancelledAt: stamp }),
+      ],
+    });
+
+    await service.restoreContract(7, 11);
+
+    expect(state.rows.every((r) => r.cancelledAt === null)).toBe(true);
+    expect(state.rows[0].expiryNotified).toBe("d30");
+    expect(state.rows[0].maNotifiedAt).toBe(stamp);
+  });
+
+  it("rejects an unknown app or a record belonging to another app", async () => {
+    const { service } = makeService({
+      apps: [POS],
+      rows: [row({ id: 10, appId: 7, companyId: 1 })],
+    });
+    await expect(service.cancelContract(999, 10)).rejects.toThrow(NotFoundException);
+    await expect(service.cancelContract(11, 10)).rejects.toThrow(NotFoundException);
+    await expect(service.restoreContract(7, 999)).rejects.toThrow(NotFoundException);
   });
 });
 

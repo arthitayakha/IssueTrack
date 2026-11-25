@@ -45,19 +45,20 @@ interface IssueFixture {
   taskType: string | null;
   actualFixDuration: number | null;
   actualFixAt: Date | null;
-  /** งานที่แจ้ง — ใช้ใน `loadReportedIssues` */
-  createdAt?: Date;
   status?: { name: string } | null;
   programmer?: { name: string } | null;
 }
 
-/** งานที่แจ้งมาแต่ไม่คิด MA (บั๊ก / Requirement / ยังไม่ระบุ) */
-interface ReportedFixture {
+/** แถวงานที่จะโชว์ในป๊อปอัพ (ทุกประเภท) — คนละชุดกับ `DeductionFixture` */
+interface ListedFixture {
   id: number;
   appId: number;
   companyId: number;
-  createdAt: string;
+  at: string;
   taskType?: string | null;
+  /** จำลอง SQL filter — ค่าที่ไม่ตรงเงื่อนไขถูกตัดเหมือน `status_id = 4` */
+  statusId?: number;
+  hours?: number;
 }
 
 /** แถว GROUP BY ของ `pairTypeCounts()` — `taskType: null` = ยังไม่ระบุ (`none`) */
@@ -87,10 +88,10 @@ function makeService(
   deductions: DeductionFixture[],
   /** แถวของ `pairTypeCounts()` (นับงานแยก type ระดับคู่) — ไม่ส่ง = คู่ไม่มีงาน */
   typeCounts: TypeCountFixture[] = [],
-  /** งานที่แจ้ง (ไม่คิด MA) — ไม่ส่ง = ไม่มีงานแจ้ง */
-  reported: ReportedFixture[] = [],
+  /** งานที่จะโชว์ในป๊อปอัพ (ทุกประเภท) — ไม่ส่ง = ไม่มีงาน */
+  listed: ListedFixture[] = [],
 ) {
-  /** แถวที่ `loadIssues`/`loadReportedIssues` คืน — ดึงจาก fixture ให้ตรง id เสมอ */
+  /** แถวที่ `loadIssues` คืน — ดึงจาก fixture ให้ตรง id เสมอ */
   const issueRows: IssueFixture[] = [
     ...deductions.map((d) => ({
       id: d.id,
@@ -102,15 +103,15 @@ function makeService(
       status: { name: "กำลังดำเนินการ" },
       programmer: { name: "โปรแกรมเมอร์" },
     })),
-    ...reported.map((r) => ({
-      id: r.id,
-      issueNumber: `#${r.id}`,
-      title: `บั๊ก ${r.id}`,
-      taskType: r.taskType ?? "bug",
-      actualFixDuration: null,
-      actualFixAt: null,
-      createdAt: new Date(r.createdAt),
-      status: { name: "รอรับเรื่อง" },
+    ...listed.map((l) => ({
+      id: l.id,
+      issueNumber: `#${l.id}`,
+      title: `บั๊ก ${l.id}`,
+      // `null` ต้องคงเป็น null (ยังไม่ระบุประเภท) — ใช้ ?? จะกลายเป็น "bug"
+      taskType: l.taskType === undefined ? "bug" : l.taskType,
+      actualFixDuration: l.hours ?? 1,
+      actualFixAt: new Date(l.at),
+      status: { name: "เสร็จสิ้น" },
       programmer: { name: "โปรแกรมเมอร์" },
     })),
   ];
@@ -150,12 +151,11 @@ function makeService(
   };
 
   /**
-   * fake QB — **สอง query ใช้ payload คนละชุด**: `deductionRows` (ชั่วโม์ MA)
-   * เลือก `issue.id` ส่วน `pairTypeCounts` (นับงานแยก type) เลือก `issue.app_id`
-   * → ใช้ `select` ตัวแรกเป็นตัวบอก ไม่พึ่งลำดับเรียก เพราะเทสต์บางตัวเรียก
-   * `periodUsage` ซ้ำหลายครั้งบน service เดียวกัน
+   * fake QB — **สาม query ใช้ payload คนละชุด**: `deductionRows` (MA) เลือก
+   * `issue.id`, `pairTypeCounts` เลือก `issue.app_id`, `listedRows` (โชว์ในป๊อปอัพ)
+   * เลือก `issue.actual_fix_at` → ใช้ `select` ตัวแรกเป็นตัวบอก ไม่พึ่งลำดับเรียก
    */
-  let queryKind: "deduction" | "type" | "reported" = "deduction";
+  let queryKind: "deduction" | "type" | "listed" = "deduction";
   /** `where`/`andWhere` ของ query นับ type เท่านั้น — ใช้ assert ว่าไม่กรอง `task_type` */
   const typeFilters: string[] = [];
 
@@ -171,12 +171,12 @@ function makeService(
     }),
     select: jest.fn((...args: unknown[]): unknown => {
       // `deductionRows` = `issue.id` · `pairTypeCounts` = `issue.app_id`
-      // · `reportedRows` = `issue.created_at` (งานแจ้ง ไม่คิด MA)
+      // · `listedRows` = `issue.actual_fix_at` (ทุกประเภทที่เสร็จ+กรอกเวลา)
       queryKind =
         args[0] === "issue.app_id"
           ? "type"
-          : args[0] === "issue.created_at"
-            ? "reported"
+          : args[0] === "issue.actual_fix_at"
+            ? "listed"
             : "deduction";
       return qb;
     }),
@@ -191,15 +191,15 @@ function makeService(
             task_type: t.taskType,
             n: String(t.n),
           }))
-        : queryKind === "reported"
-          ? reported
-              // จำลอง `(task_type IS NULL OR task_type <> 'ma')` ของ SQL จริง
-              .filter((r) => (r.taskType ?? "bug") !== "ma")
-              .map((r) => ({
-                id: String(r.id),
-                app_id: String(r.appId),
-                company_id: String(r.companyId),
-                created_at: r.createdAt,
+        : queryKind === "listed"
+          ? listed
+              // จำลอง `status_id = 4` + `actual_fix_duration > 0`
+              .filter((l) => (l.statusId ?? 4) === 4 && (l.hours ?? 1) > 0)
+              .map((l) => ({
+                id: String(l.id),
+                app_id: String(l.appId),
+                company_id: String(l.companyId),
+                at: l.at,
               }))
           : deductions.map((d) => ({
             id: String(d.id),
@@ -408,14 +408,16 @@ describe("MaUsageService.usageCounts — นับหลายรอบครั
       count: 1,
       periodUsedHours: 30,
       byType: NO_TYPES,
-      reportedCount: 0,
+      listedCount: 0,
+      afterExpiryCount: 0,
     });
     expect(byId.get(200)).toEqual({
       recordId: 200,
       count: 1,
       periodUsedHours: 10,
       byType: NO_TYPES,
-      reportedCount: 0,
+      listedCount: 0,
+      afterExpiryCount: 0,
     });
     // ไม่มี entry = "ไม่รู้" → ฝั่งเว็บโชว์ `—` (ห้ามโชว์ "0 รายการ" เพราะนั่นคือการโกง)
     expect(byId.has(999)).toBe(false);
@@ -478,71 +480,118 @@ describe("MaUsageService.usageCounts — นับหลายรอบครั
   });
 });
 
-/* ------------------- งานที่แจ้ง (ไม่คิด MA) — คนละชุดกับ `count` ------------------- */
+/* ---------- listedRows — รายการที่โชว์ในป๊อปอัพ (ทุกประเภท คนละชุดกับ MA) ---------- */
 
-describe("MaUsageService — งานที่แจ้ง (ไม่คิด MA) ผูกเข้ารอบด้วยวันที่แจ้ง", () => {
-  const onePeriod = [period({ id: 100, createdAt: "2026-01-01T00:00:00Z" })];
+describe("MaUsageService — ป๊อปอัพโชว์งานทุกประเภท แต่ตัวเลข MA ไม่เปลี่ยน", () => {
+  const periods = [period({ id: 100, createdAt: "2026-01-01T00:00:00Z" })];
   const maWork: DeductionFixture[] = [
     { id: 1, appId: 7, companyId: 3, seconds: 5 * HOUR, at: "2026-03-01T00:00:00Z" },
   ];
-  const bugs: ReportedFixture[] = [
-    { id: 11, appId: 7, companyId: 3, createdAt: "2026-03-01T00:00:00Z" },
-    // แจ้ง**หลังสัญญาหมดอายุ (23 พ.ย. 2569) และยังไม่ต่อ** → ยังอยู่รายการเดิม
-    { id: 12, appId: 7, companyId: 3, createdAt: "2026-12-25T00:00:00Z" },
-    // คู่อื่นห้ามไหลเข้ามา
-    { id: 13, appId: 7, companyId: 9, createdAt: "2026-03-01T00:00:00Z" },
-    // งาน MA ห้ามโผล่ในช่อง "งานที่แจ้ง" (มันอยู่ใน `count` ฝั่งตัดแล้ว)
-    { id: 14, appId: 7, companyId: 3, createdAt: "2026-04-01T00:00:00Z", taskType: "ma" },
+  const listed: ListedFixture[] = [
+    { id: 11, appId: 7, companyId: 3, at: "2026-03-02T00:00:00Z" },
+    { id: 12, appId: 7, companyId: 3, at: "2026-05-24T00:00:00Z", taskType: "requirement" },
+    { id: 13, appId: 7, companyId: 3, at: "2026-05-01T00:00:00Z", taskType: null },
+    // คู่อื่น / ยังไม่เสร็จ / ไม่ได้กรอกเวลา → ต้องถูกตัดทั้งหมด
+    { id: 14, appId: 7, companyId: 9, at: "2026-03-01T00:00:00Z" },
+    { id: 15, appId: 7, companyId: 3, at: "2026-04-01T00:00:00Z", statusId: 3 },
+    { id: 16, appId: 7, companyId: 3, at: "2026-04-02T00:00:00Z", hours: 0 },
   ];
 
-  it("หลังหมดอายุยังไม่ต่อ → บั๊กยังอยู่รายการเดิม ไม่หายไปกับช่อง 'รายการที่ตัด'", async () => {
-    const { service } = makeService(onePeriod, maWork, [], bugs);
+  it("โชว์บั๊ก/Requirement/ไม่ระบุ รวม MA แต่ count/use ของ MA เหมือนเดิม", async () => {
+    const { service } = makeService(periods, maWork, [], listed);
     const result = await service.periodUsage(7, 100);
 
-    expect(result.count).toBe(1); // สูตร MA เดิมไม่เปลี่ยน
+    expect(result.count).toBe(1);
     expect(result.issues.map((i) => i.id)).toEqual([1]);
-    expect(result.reportedCount).toBe(2);
-    expect(result.reportedIssues.map((i) => i.id).sort()).toEqual([11, 12]);
-    expect(result.reportedIssues[0]).toMatchObject({
-      issueNumber: "#11",
-      taskType: "bug",
-      statusName: "รอรับเรื่อง",
-    });
+    expect(result.periodUsedHours).toBe(5);
+    expect(result.pairUsedHours).toBe(5);
+
+    expect(result.listedCount).toBe(3);
+    expect(result.listedIssues.map((i) => i.id).sort()).toEqual([11, 12, 13]);
+    expect(result.listedIssues.find((i) => i.id === 12)?.taskType).toBe("requirement");
+    expect(result.listedIssues.find((i) => i.id === 13)?.taskType).toBeNull();
   });
 
-  it("ต่ออายุแล้ว → บั๊กที่แจ้งหลังแถวใหม่ถูกสร้าง ตกเป็นของรอบใหม่", async () => {
-    const periods = [
-      period({ id: 100, createdAt: "2026-01-01T00:00:00Z" }),
-      period({ id: 200, createdAt: "2026-06-01T00:00:00Z", maHours: 80 }),
-    ];
-    const moreBugs = [
-      ...bugs,
-      { id: 15, appId: 7, companyId: 3, createdAt: "2026-07-01T00:00:00Z" },
-    ];
-    const { service } = makeService(periods, maWork, [], moreBugs);
-
-    const r1 = await service.periodUsage(7, 100);
-    const r2 = await service.periodUsage(7, 200);
-    // 12 แจ้ง 25 ธ.ค. — ตอนนั้นมีแถวใหม่แล้ว (สร้าง มิ.ย.) จึงเป็นของรอบ 2
-    expect(r1.reportedIssues.map((i) => i.id).sort()).toEqual([11]);
-    expect(r2.reportedIssues.map((i) => i.id).sort()).toEqual([12, 15]);
-    // ผลรวมทุกรอบ = จำนวนบั๊กของคู่ (ไม่นับคู่อื่น / งาน MA)
-    expect(r1.reportedCount + r2.reportedCount).toBe(3);
-  });
-
-  it("usageCounts — reportedCount นับต่อรอบ ไม่กระทบ count/periodUsedHours", async () => {
-    const { service } = makeService(onePeriod, maWork, [], bugs);
+  it("usageCounts — listedCount เป็นของรายการ ไม่กระทบ count/periodUsedHours", async () => {
+    const { service } = makeService(periods, maWork, [], listed);
     const [entry] = await service.usageCounts([100]);
 
     expect(entry.count).toBe(1);
     expect(entry.periodUsedHours).toBe(5);
-    expect(entry.reportedCount).toBe(2);
+    expect(entry.listedCount).toBe(3);
   });
 
-  it("ไม่มีงานแจ้งเลย → reportedCount 0 (รู้จริง ไม่ใช่ค่าว่าง)", async () => {
-    const { service } = makeService(onePeriod, maWork);
-    const result = await service.periodUsage(7, 100);
-    expect(result.reportedCount).toBe(0);
-    expect(result.reportedIssues).toEqual([]);
+  it("ผูกเข้ารอบด้วย actual_fix_at เหมือน MA (งานหลังต่ออายุไปรอบใหม่)", async () => {
+    const twoPeriods = [
+      period({ id: 100, createdAt: "2026-01-01T00:00:00Z" }),
+      period({ id: 200, createdAt: "2026-06-01T00:00:00Z", maHours: 80 }),
+    ];
+    const more = [
+      ...listed,
+      { id: 17, appId: 7, companyId: 3, at: "2026-07-01T00:00:00Z" },
+    ];
+    const { service } = makeService(twoPeriods, maWork, [], more);
+
+    const r1 = await service.periodUsage(7, 100);
+    const r2 = await service.periodUsage(7, 200);
+    expect(r1.listedIssues.map((i) => i.id).sort()).toEqual([11, 12, 13]);
+    expect(r2.listedIssues.map((i) => i.id)).toEqual([17]);
+    expect(r1.listedCount + r2.listedCount).toBe(4);
   });
 });
+
+/* ---------- งานหลังหมดอายุ — โชว์เป็น "รายการช่วงหมดอายุ" ไม่ตัด MA ---------- */
+
+describe("MaUsageService — รายการช่วงหมดอายุ (ไม่กระทบ MA)", () => {
+  const expired = period({
+    id: 400,
+    createdAt: "2026-01-01T00:00:00Z",
+    expiresAt: "2026-11-11",
+  });
+  /** 21 = หลังหมดอายุ (บั๊ก) · 22 = ก่อนหมดอายุ (MA) */
+  const listed: ListedFixture[] = [
+    { id: 21, appId: 7, companyId: 3, at: "2026-11-24T10:00:00Z", taskType: "bug" },
+    { id: 22, appId: 7, companyId: 3, at: "2026-11-05T10:00:00Z", taskType: "ma" },
+  ];
+
+  it("แยกงานหลังหมดอายุออกจาก listedIssues — count/ชั่วโมง MA เหมือนเดิม", async () => {
+    const { service } = makeService([expired], [], [], listed);
+    const result = await service.periodUsage(7, 400);
+
+    expect(result.listedCount).toBe(1);
+    expect(result.listedIssues.map((i) => i.id)).toEqual([22]);
+    expect(result.afterExpiryCount).toBe(1);
+    expect(result.afterExpiryIssues.map((i) => i.id)).toEqual([21]);
+    expect(result.afterExpiryIssues[0].afterExpiry).toBe(true);
+    expect(result.listedIssues[0].afterExpiry).toBe(false);
+
+    // สูตร MA ไม่ถูกแตะ — งานบั๊กหลังหมดอายุไม่มีทางเข้า count/periodUsedHours
+    expect(result.count).toBe(0);
+    expect(result.periodUsedHours).toBe(0);
+    expect(result.pairUsedHours).toBe(0);
+
+    const [count] = await service.usageCounts([400]);
+    expect(count.afterExpiryCount).toBe(1);
+    expect(count.count).toBe(0);
+  });
+
+  it("มีรอบใหม่แล้ว → งานช่วงว่างยังอยู่รอบเดิม ไม่ทำเป็นรายการหมดอายุซ้ำ", async () => {
+    const renewed = period({
+      id: 500,
+      createdAt: "2026-11-20T00:00:00Z",
+      expiresAt: "2027-11-20",
+    });
+    const { service } = makeService([expired, renewed], [], [], listed);
+    const [oldCount, newCount] = await service.usageCounts([400, 500]);
+
+    expect(oldCount.afterExpiryCount).toBe(0); // ไม่ใช่รอบล่าสุดของคู่
+    expect(newCount.afterExpiryCount).toBe(0); // ยังไม่หมดอายุ
+
+    const oldUsage = await service.periodUsage(7, 400);
+    const newUsage = await service.periodUsage(7, 500);
+    expect(oldUsage.afterExpiryCount).toBe(0);
+    expect(newUsage.afterExpiryCount).toBe(0);
+    expect(newUsage.listedIssues.map((i) => i.id)).toContain(21);
+  });
+});
+

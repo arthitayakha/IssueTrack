@@ -113,6 +113,16 @@ export class AppCompany {
   @Column({ name: "ma_notified_at", type: "timestamp", nullable: true })
   maNotifiedAt!: Date | null;
 
+  /**
+   * **สัญญาถูกยกเลิกเมื่อไหร่** (migration 1848) — `null` = ยังใช้งานอยู่
+   *
+   * stamp **ทุกแถวของคู่** (1 คู่มีได้หลายช่วง) ตอนแอดมินกด "ยกเลิกสัญญา"
+   * ล้างทุกแถวตอน "เปิดสัญญาอีกครั้ง" → ย้อนกลับได้โดยไม่เสียประวัติ/ชั่วโมง
+   * ทุกแหล่งแจ้งเตือน (expiry / MA / เตือนซ้ำ) ข้ามคู่ที่ไม่ใช่ `null`
+   */
+  @Column({ name: "cancelled_at", type: "timestamptz", nullable: true })
+  cancelledAt!: Date | null;
+
   /** Stored status — refreshed by `AppExpiryService` (read/save/daily cron). */
   @Column({ name: "expiry_status", type: "varchar", length: 16, default: "none" })
   expiryStatus!: AppExpiryStatus;

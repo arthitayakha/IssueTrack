@@ -10,20 +10,19 @@ import { UpdateHelpCenterSettingsDto } from "./dto/help-center-settings.dto";
 /**
  * ช่องทางติดต่อที่ลูกค้าเห็น
  * - `GET contact` เปิดให้คนที่ล็อกอินอยู่ — resolve ตาม `users.company_id` ของคนเรียก
- *   (บริษัทที่มี mapping เองเห็นชุดนั้น, ที่เหลือเห็น global fallback)
+ *   (มี mapping ของบริษัทนั้น → เห็นชุดนั้น, ไม่มี → รายชื่อว่าง → ป๊อปอัพโชว์ข้อความ)
  * - `GET contact/config` / `GET programmers` / `PATCH contact` กันด้วย `system.update`
- *   (แอดมิน editing mapping ของทุกบริษัทได้ใน dialog เดียว)
+ *   (แอดมินกำหนดรายชื่อของทุกบริษัทได้ใน dialog เดียว)
  *
- * หน้าติดต่อใน `/systems`: ถ้ามีโปรแกรมเมอร์ที่แอดมินเลือก → โชว์การ์ดรายคน
- * ถ้าไม่มี → โชว์ข้อมูลติดต่อกลาง (อีเมล/เบอร์/เวลาทำการ) จากแถวเดียวกัน
- * ปุ่ม "ส่งอีเมล" เป็น `mailto:` ฝั่งเว็บ — ไม่มี endpoint ส่งเมลฝั่งเซิร์ฟเวอร์
+ * ไม่มีรายชื่อหลัก/ข้อมูลติดต่อกลางแล้ว — ปุ่ม "ส่งอีเมล" เป็น `mailto:` ฝั่งเว็บ
+ * ไม่มี endpoint ส่งเมลฝั่งเซิร์ฟเวอร์
  */
 @Controller("help-center")
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class HelpCenterSettingsController {
   constructor(private readonly service: HelpCenterSettingsService) {}
 
-  /** รายชื่อที่คนนี้เห็นจริง (บริษัทของเขา → override, ไม่มี → global) */
+  /** รายชื่อที่คนนี้เห็นจริง (ตามบริษัทของเขา — ไม่มี mapping = รายชื่อว่าง) */
   @Get("contact")
   contact(@CurrentUser() user: AuthUser) {
     return this.service.get(user.companyId ?? null);

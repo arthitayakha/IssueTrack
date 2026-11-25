@@ -22,6 +22,7 @@ import {
 import type { IssueTaskType } from "@kanban/shared";
 import {
   buildCompanyRows,
+  withExpiredContractRows,
   buildCsv,
   DEFAULT_SORT,
   downloadCsv,
@@ -364,6 +365,16 @@ function ReportsScreen() {
   }, [reloadKey]);
 
   /**
+   * **จำนวนงานที่ถูกตัด + "ใช้ไป" ของทุกรอบในหน้านี้** — `GET /apps/usage-counts`
+   * ยิง **ครั้งเดียว** ต่อหน้า (ไม่ใช่ต่อแถว) · ต้องประกาศก่อน effect ที่สร้าง
+   * แถว "ตามบริษัท" เพราะแถว "ช่วงหมดอายุ" ใช้ตัวเลขนี้
+   */
+  const [deductionCounts, setDeductionCounts] = useState<{
+    status: "loading" | "ready" | "error";
+    byRecord: Map<number, UsageCount>;
+  }>({ status: "loading", byRecord: new Map() });
+
+  /**
    * view "company" — contract data, **rows built in the browser** from the
    * `GET /apps` payload already loaded (no API call; these rows are not
    * issues). Split from the fetch effect below so that a late-landing
@@ -375,7 +386,15 @@ function ReportsScreen() {
    */
   useEffect(() => {
     if (view !== "company" || !contractsReady) return;
-    const built = buildCompanyRows(options.appContracts, filters, sort);
+    /**
+     * "รายการช่วงหมดอายุ" ถูกต่อเข้า**หลัง** `usage-counts` มาแล้วเท่านั้น —
+     * helper เป็น idempotent จึงเรียกซ้ำได้ทุกครั้งที่ counts เปลี่ยนโดยไม่ทับกัน
+     */
+    const built = withExpiredContractRows(
+      buildCompanyRows(options.appContracts, filters, sort),
+      deductionCounts.byRecord,
+      filters.kinds,
+    );
     const paged = paginate(built, page, REPORT_PAGE_SIZE);
     setRows(paged);
     setRowsView("company");
@@ -383,7 +402,16 @@ function ReportsScreen() {
     setError(null);
     // paginate() clamps out-of-range pages — keep the URL honest
     if (paged.page !== page) updateParams({ page: paged.page });
-  }, [view, contractsReady, options.appContracts, filters, sort, page, updateParams]);
+  }, [
+    view,
+    contractsReady,
+    options.appContracts,
+    filters,
+    sort,
+    page,
+    updateParams,
+    deductionCounts.byRecord,
+  ]);
 
   useEffect(() => {
     if (view === "company") return; // handled by the client-side effect above
@@ -452,22 +480,13 @@ function ReportsScreen() {
 
   /* ---------------- expandable "รายการที่ตัด" (view ตามบริษัท) ---------------- */
 
-  /**
-   * **จำนวนงานที่ถูกตัด + "ใช้ไป" ของทุกรอบในหน้านี้** — `GET /apps/usage-counts`
-   * ยิง **ครั้งเดียว** ต่อหน้า (ไม่ใช่ต่อแถว) · **รายรอบ** เพราะแถวของ view นี้
-   * = 1 รอบอยู่แล้ว → คอลัมน์ "รายการที่ตัด" / "ใช้ไป" / "คงเหลือ" (จอ + CSV + PDF)
-   * อ่านชุดเดียวกันทั้งหมด (เดิม "ใช้ไป/คงเหลือ" แยกไปใช้ map ระดับ**คู่** ทำให้
-   * แถวที่เพิ่งซื้อชั่วโม์โชว์ "ใช้ไป 40 / คงเหลือ 0" ทั้งที่ยังไม่ได้ใช้ — ผู้ใช้ทัก)
-   *
-   * `status` แยก "ยังโหลด" (`…`) / "ดึงไม่ได้` (`—`) / "รู้ค่า" — ห้ามเดาเป็น 0
-   */
-  const [deductionCounts, setDeductionCounts] = useState<{
-    status: "loading" | "ready" | "error";
-    byRecord: Map<number, UsageCount>;
-  }>({ status: "loading", byRecord: new Map() });
-
   /** `recordId` ของแถวกางอยู่ — `null` = ไม่มีแถวกาง */
   const [expandedRecordId, setExpandedRecordId] = useState<number | null>(null);
+  /**
+   * แถวกางอยู่เป็น **"รายการช่วงหมดอายุ"** หรือไม่ — recordId เดียวกับรอบจริง
+   * (ต้องใช้ fetch รายละเอียดได้) แต่ต้องเลือก `afterExpiryIssues` แทน `issues`
+   */
+  const [expandedExpired, setExpandedExpired] = useState(false);
   /** รายการจริงของรอบที่กาง — โหลดตอนกดเท่านั้น (ไม่ยิงตอนเปิด view) */
   const [deductionDetail, setDeductionDetail] = useState<DeductionState>({ status: "loading" });
   const [deductionRetry, setDeductionRetry] = useState(0);
@@ -522,6 +541,7 @@ function ReportsScreen() {
   // แถวที่กางต้องเป็นของหน้า/ตัวกรองปัจจุบันเสมอ — เปลี่ยน = ยุบ (เหมือน person detail)
   useEffect(() => {
     setExpandedRecordId(null);
+    setExpandedExpired(false);
   }, [deductionIdsKey]);
 
   useEffect(() => {
@@ -539,7 +559,19 @@ function ReportsScreen() {
     setDeductionDetail({ status: "loading" });
     fetchPeriodUsage(appId, expandedRecordId)
       .then((data) => {
-        if (!cancelled) setDeductionDetail({ status: "ready", data });
+        if (cancelled) return;
+        setDeductionDetail({
+          status: "ready",
+          // แถว "ช่วงหมดอายุ" ใช้รายการหลังหมดอายุ (ไม่ตัด MA) — จอ/ไฟล์
+          // ต้องโชว์ชุดเดียวกับที่ตารางนับ ไม่ใช่รายการที่ถูกหักจริง
+          data: expandedExpired
+            ? {
+                ...data,
+                issues: data.afterExpiryIssues ?? [],
+                count: data.afterExpiryCount ?? 0,
+              }
+            : data,
+        });
       })
       .catch(() => {
         if (!cancelled) setDeductionDetail({ status: "error" });
@@ -547,11 +579,17 @@ function ReportsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [expandedRecordId, recordAppId, deductionRetry]);
+  }, [expandedRecordId, expandedExpired, recordAppId, deductionRetry]);
 
-  const handleToggleDeduction = useCallback((recordId: number) => {
-    setExpandedRecordId((cur) => (cur === recordId ? null : recordId));
-  }, []);
+  const handleToggleDeduction = useCallback(
+    (recordId: number, expired = false) => {
+      setExpandedRecordId((cur) =>
+        cur === recordId && expandedExpired === expired ? null : recordId,
+      );
+      setExpandedExpired(expired);
+    },
+    [expandedExpired],
+  );
 
   const retryDeductionDetail = useCallback(() => setDeductionRetry((n) => n + 1), []);
 
@@ -707,7 +745,12 @@ function ReportsScreen() {
         header: st("deductionType"),
         value: (i) => (i.taskType ? bt(`taskType.${i.taskType}`) : "—"),
       },
-      { key: "deductionHours", header: st("deductionHours"), value: (i) => i.hours },
+      {
+        key: "deductionHours",
+        header: st("deductionHours"),
+        // งานหลังหมดอายุไม่ได้ตัด MA → ไฟล์ต้องโชว์ "—" เหมือนจอ
+        value: (i) => (i.afterExpiry ? "—" : i.hours),
+      },
       {
         key: "deductionAt",
         header: st("deductionAt"),
@@ -762,7 +805,9 @@ function ReportsScreen() {
        */
       const countsMap = exportCounts ?? deductionCounts.byRecord;
       const usedOf = (r: CompanyRow): number | null =>
-        r.recordId == null ? null : periodUsedOf(countsMap, r.recordId);
+        r.kind === "expired" || r.recordId == null
+          ? null
+          : periodUsedOf(countsMap, r.recordId);
       const usedHoursOf = (r: CompanyRow) => {
         const used = usedOf(r);
         return used === null ? "" : used;
@@ -776,7 +821,9 @@ function ReportsScreen() {
       const deductedCountOf = (r: CompanyRow) => {
         if (r.recordId == null) return "";
         const entry = (exportCounts ?? deductionCounts.byRecord).get(r.recordId);
-        return entry ? entry.count : "";
+        if (!entry) return "";
+        // แถวช่วงหมดอายุนับงานที่แจ้งหลังหมดอายุ ไม่ใช่งานที่ถูกหัก MA
+        return r.kind === "expired" ? (entry.afterExpiryCount ?? "") : entry.count;
       };
 
       switch (view) {
@@ -851,7 +898,14 @@ function ReportsScreen() {
             {
               key: "kind",
               header: t("columns.type"),
-              value: (r) => (r.kind == null ? "" : r.kind === "buy" ? st("kindBuy") : st("renew")),
+              value: (r) =>
+                r.kind == null
+                  ? ""
+                  : r.kind === "buy"
+                    ? st("kindBuy")
+                    : r.kind === "expired"
+                      ? st("afterExpiry")
+                      : st("renew"),
             },
             { key: "startedAt", header: t("columns.startedAt"), value: (r) => fmtContractDay(r.startedAt) },
             { key: "expiresAt", header: t("columns.expiresAt"), value: (r) => fmtContractDay(r.expiresAt) },
@@ -923,21 +977,28 @@ function ReportsScreen() {
        * ไม่รู้ค่านับ (ยิงนับล้มเหลว) เพราะถ้าเดาว่า "0" แล้วจริง ๆ มีรายการ
        * รายงานก็จะเงียบหายเหมือนกัน — ปล่อยให้แถวสรุปกับตัวนับนำทางไปเอง
        */
-      const detailByRecord = new Map<number, PeriodIssue[]>();
-      for (const r of rs) {
+      const detailByIndex = new Map<number, PeriodIssue[]>();
+      for (let i = 0; i < rs.length; i += 1) {
+        const r = rs[i];
         if (r.recordId == null) continue;
-        const count = exportCounts?.get(r.recordId)?.count;
+        const entry = exportCounts?.get(r.recordId);
+        const count = r.kind === "expired" ? entry?.afterExpiryCount : entry?.count;
         if (count == null || count <= 0) continue;
         const appId = recordAppId.get(r.recordId);
         if (appId == null) continue; // แถวหายจาก payload สัญญา → ข้าม (เหมือนฝั่งจอ)
         try {
           const period = await fetchPeriodUsage(appId, r.recordId);
-          detailByRecord.set(r.recordId, period.issues);
+          // คีย์ด้วย **index ของแถว** ไม่ใช่ recordId — แถวสัญญาและแถว
+          // "ช่วงหมดอายุ" ชี้ record เดียวกันแต่คนละชุดรายการ
+          detailByIndex.set(
+            i,
+            r.kind === "expired" ? (period.afterExpiryIssues ?? []) : period.issues,
+          );
         } catch {
           // fail-open: ข้ามรายละเอียดของแถวนี้ เหลือแถวสรุปกับตัวนับตามเดิม
         }
       }
-      if (detailByRecord.size === 0) return summary; // ไม่มีรายการ → หน้าตาไฟล์เท่าเดิม
+      if (detailByIndex.size === 0) return summary; // ไม่มีรายการ → หน้าตาไฟล์เท่าเดิม
 
       const detailCols = companyDetailExportCols();
       const summaryKeySet = new Set(summary.keys);
@@ -951,7 +1012,7 @@ function ReportsScreen() {
         data.push([...sumRow, ...extra.map(() => "")]);
         const r = rs[i];
         if (r?.recordId == null) return;
-        const issues = detailByRecord.get(r.recordId);
+        const issues = detailByIndex.get(i);
         if (!issues || issues.length === 0) return;
         // ชื่อบริษัทซ้ำทุกแถว detail — ให้ CSV แยกกลุ่มได้ (เหมือน assignee ซ้ำ `person`)
         const label = r.companyName ?? "";
@@ -1048,10 +1109,15 @@ function ReportsScreen() {
   const loadAllRows = useCallback(async (): Promise<ReportRows[]> => {
     if (view === "company") {
       if (!contractsReady) return [];
-      return buildCompanyRows(options.appContracts, filters, sort);
+      // ไฟล์ต้องมี "รายการช่วงหมดอายุ" เหมือนหน้าจอ (CSV/PDF ห้ามต่างกัน)
+      return withExpiredContractRows(
+        buildCompanyRows(options.appContracts, filters, sort),
+        deductionCounts.byRecord,
+        filters.kinds,
+      );
     }
     return fetchAllReportRows(view, { filters, sort });
-  }, [view, contractsReady, options.appContracts, filters, sort]);
+  }, [view, contractsReady, options.appContracts, filters, sort, deductionCounts.byRecord]);
 
   const handleExportCsv = useCallback(async () => {
     setExporting(true);
@@ -1210,6 +1276,7 @@ function ReportsScreen() {
               deductions={{
                 counts: deductionCounts,
                 expandedRecordId,
+                expandedExpired,
                 detail: deductionDetail,
                 onToggle: handleToggleDeduction,
                 onRetryDetail: retryDeductionDetail,

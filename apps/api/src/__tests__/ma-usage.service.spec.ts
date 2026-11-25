@@ -28,6 +28,8 @@ interface LinkRow {
   companyId: number;
   maHours: number | null;
   maNotifiedAt: Date | null;
+  /** `app_companies.cancelled_at` (1848) — ไม่ใช่ null = สัญญาถูกยกเลิก → ไม่ยิงกระดิ่ง */
+  cancelledAt: Date | null;
   /** `app_companies.created_at` — เวลาที่แถวนั้นถูกสร้าง (กติกาผูกชั่วโมงเข้ารอบ) */
   createdAt: Date;
 }
@@ -39,6 +41,7 @@ function link(overrides: Partial<LinkRow> = {}): LinkRow {
     companyId: 3,
     maHours: 40,
     maNotifiedAt: null,
+    cancelledAt: null,
     createdAt: new Date("2026-01-01"),
     ...overrides,
   };
@@ -177,6 +180,19 @@ describe("MaUsageService.checkAndNotify — one ring per exhaustion episode", ()
       usedHours: 40,
     });
     expect(state.link?.maNotifiedAt).toBeInstanceOf(Date);
+  });
+
+  it("stays silent for a cancelled contract (1848) — ไม่ ring และไม่แตะ latch", async () => {
+    const { service, state, notifications } = makeService({
+      reporter: REPORTER,
+      link: link({ cancelledAt: new Date("2026-11-01T00:00:00Z") }),
+      usedSeconds: 45 * HOUR,
+    });
+
+    await service.checkAndNotify(ISSUE);
+
+    expect(notifications.notifyMaDepleted).not.toHaveBeenCalled();
+    expect(state.updates).toHaveLength(0);
   });
 
   it("does not ring for hours that belong to an EARLIER round (แถวเพิ่งซื้อ = ใช้ไป 0)", async () => {

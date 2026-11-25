@@ -7,6 +7,7 @@ import { fetchCategories, fetchPriorities, fetchStatuses } from "./board-api";
 // apps-api's `fetchApps` — unlike board-api's, it types `companies[].maHours`,
 // which the MA / คงเหลือ columns need. Same endpoint, same payload.
 import { fetchCompanies, fetchApps, type AppCompanyLink, type UsageCount } from "./apps-api";
+import { daysLeftIso } from "./app-expiry";
 
 /**
  * Reports data layer — every row on the /reports page comes from the real
@@ -283,8 +284,15 @@ export interface CompanyRow {
   appName: string;
   companyId: number | null;
   companyName: string | null;
-  /** แถวสัญญานี้มาจากอะไร — `renew` (ต่ออายุ/เพิ่มรายการ) หรือ `buy` (ซื้อชั่วโมง) */
-  kind: ContractKind | null;
+  /**
+   * แถวสัญญานี้มาจากอะไร — `renew` / `buy` หรือ **`expired`** (แถวที่สร้างขึ้น
+   * ตอนแสดงผลสำหรับงานที่แจ้งหลังสัญญาหมดอายุ — ไม่มีแถวจริงใน `app_companies`)
+   */
+  kind: ContractKind | "expired" | null;
+  /** แถว "รายการช่วงหมดอายุ" — ไม่มี record จริง จึงห้ามแก้/ลบ/ต่ออายุ */
+  isExpiredGap?: boolean;
+  /** จำนวนงานหลังหมดอายุ (คอลัมน์ "รายการที่ตัด" ของแถวนี้) */
+  afterExpiryCount?: number;
   startedAt: string | null;
   expiresAt: string | null;
   maHours: number | null;
@@ -995,6 +1003,61 @@ export function buildCompanyRows(
   }));
 
   return sortRows("company", withLatest, sort) as CompanyRow[];
+}
+
+/**
+ * **"รายการช่วงหมดอายุ"** — แถวที่สร้างขึ้น**ตอนแสดงผลเท่านั้น** (ไม่มีแถวใน DB,
+ * ไม่ต้อง migration) สำหรับ**ทุกคู่ที่สัญญาหมดอายุแล้ว** แม้ยังไม่มีงานแจ้งหลังวันนั้น
+ * (0 รายการก็โชว์ — "รายการที่ 2" ต้องเห็นทันที) · ตัวเลขมาจาก
+ * `usage-counts.afterExpiryCount` (ฝั่งเซิร์ฟเวอร์คำนวณจาก `actual_fix_at` เหมือน
+ * การผูก MA ทุกประการ แต่**ไม่ตัดชั่วโมง**)
+ *
+ * - สร้างเฉพาะ**รอบล่าสุดของคู่** (มีรอบใหม่แล้ว = งานอยู่รอบเก่าตาม
+ *   `pickPeriodId()` ห้ามโชว์ซ้ำ) · กันซ้ำด้วยการกรอง `kind === "expired"` ออก
+ *   ก่อนเสมอ → เรียกซ้ำได้หลายรอบตอน counts เปลี่ยนไม่ทับกัน
+ * - `recordId` ยังชี้รอบจริงเพื่อให้ปุ่ม "N รายการ" กางดูรายการได้ · แต่
+ *   วันที่/MA/ใช้ไป/คงเหลือของแถวนี้ต้องโชว์ `—` (ที่ cell) เพราะไม่มีสัญญา
+ *
+ * idempotent — เรียกด้วย rows เดิมหรือ rows ที่เคยผ่าน helper นี้แล้วได้ผลเหมือนกัน
+ */
+export function withExpiredContractRows(
+  rows: CompanyRow[],
+  countsByRecord: Map<number, UsageCount>,
+  /** เปิดกรอง "ประเภท" อยู่ → ไม่เติมแถวจำลองที่ไม่ตรงตัวกรอง */
+  kindFilter: ContractKind[] = [],
+): CompanyRow[] {
+  const base = rows.filter((row) => row.kind !== "expired");
+  if (kindFilter.length > 0) return base;
+  const latestByPair = new Map<string, CompanyRow>();
+  for (const row of base) {
+    if (row.recordId == null) continue;
+    const key = pairKey(row.appId, row.companyId);
+    const current = latestByPair.get(key);
+    if (!current || row.recordId > (current.recordId ?? 0)) latestByPair.set(key, row);
+  }
+
+  const out = [...base];
+  for (const latest of latestByPair.values()) {
+    const afterExpiryCount = countsByRecord.get(latest.recordId ?? -1)?.afterExpiryCount ?? 0;
+    // โชว์ทุกสัญญาที่หมดอายุแล้ว (รวมวันหมดอายุพอดี = daysLeft 0) แม้ 0 รายการ
+    const daysLeft = daysLeftIso(latest.expiresAt ?? "");
+    if (daysLeft === null || daysLeft > 0) continue;
+    // วางต่อ**ใต้แถวสัญญาล่าสุดของคู่** เสมอ (ไม่ท้ายตาราง) เพื่อให้อ่านว่า
+    // "รายการที่ 1 หมดอายุ → รายการที่ 2 คือช่วงที่แจ้งต่อมา" ได้เลย
+    const at = out.findIndex((row) => row === latest);
+    out.splice(at + 1, 0, {
+      ...latest,
+      kind: "expired",
+      isExpiredGap: true,
+      afterExpiryCount,
+      // ไม่มีข้อตกลงใหม่ → ไม่มีวันที่/MA ให้โชว์ (ห้ามเดาจากแถวเก่า)
+      startedAt: null,
+      expiresAt: null,
+      maHours: null,
+      isLatestOfPair: false,
+    });
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ */

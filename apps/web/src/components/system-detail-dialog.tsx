@@ -24,7 +24,6 @@ import type { App, AppCompanyLink, UsageCount } from "@/lib/apps-api";
 import { fetchUsageCounts } from "@/lib/apps-api";
 import { periodUsedOf } from "@/lib/reports-api";
 import SystemDeductionsView, { type DeductionTarget } from "./system-deductions-view";
-import SystemReportedView, { type ReportedTarget } from "./system-reported-view";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import {
   daysLeftIso,
@@ -101,6 +100,12 @@ export default function SystemDetailDialog({
   canUndo,
   /** ย้อนกลับช่วง `recordId` ที่กด — ผู้เรียก (`/systems`) เปิดกล่องยืนยันเอง */
   onUndo,
+  /** แอดมิน (`system.update`) เท่านั้น — โชว์ปุ่มยกเลิก/เปิดสัญญาทั้งคู่ */
+  canCancel,
+  /** ยกเลิกสัญญาทั้งคู่ — ผู้เรียก (`/systems`) เปิดกล่องยืนยันเอง */
+  onCancel,
+  /** เปิดสัญญาอีกครั้ง (ไม่ต้องยืนยัน — กลับสภาพเดิมเป๊ะ) */
+  onRestore,
   /**
    * เปิดกล่อง "ติดต่อแอดมิน" — ทางออกของลูกค้าหลังกดแจ้งเตือนสัญญาหมดอายุ
    * **เฉพาะ role `customer`** ที่ผู้เรียกส่งเข้ามา (ไม่ส่ง = ไม่โชว์ปุ่ม —
@@ -118,6 +123,9 @@ export default function SystemDetailDialog({
   onBuyHours: () => void;
   canUndo: boolean;
   onUndo: (recordId: number) => void;
+  canCancel: boolean;
+  onCancel: () => void;
+  onRestore: () => void;
   onContactAdmin?: () => void;
   onClose: () => void;
 }) {
@@ -139,13 +147,6 @@ export default function SystemDetailDialog({
    */
   const [deductionsTarget, setDeductionsTarget] = useState<DeductionTarget | null>(null);
 
-  /**
-   * **มุมมอง "งานที่แจ้ง (ไม่คิด MA)"** — คนละ state กับ `deductionsTarget`
-   * เสมอ (คนละชุดข้อมูล คนละหัวข้อ แต่ใช้ breadcrumb/กล่อง scroll ตัวเดิมใน
-   * ป๊อปอัพใบเดิมตามข้อสรุป "ไม่เอาป๊อปอัพซ้อน ไม่เอาคนละหน้า")
-   */
-  const [reportedTarget, setReportedTarget] = useState<ReportedTarget | null>(null);
-
   /** จำนวนรายการที่ถูกตัดของทุกรอบในคู่นี้ — ยิงครั้งเดียวตอนเปิดป๊อปอัพ */
   const [counts, setCounts] = useState<Map<number, UsageCount> | null>(null);
   const countsSeq = useRef(0);
@@ -159,7 +160,6 @@ export default function SystemDetailDialog({
     if (open) {
       setTab(0);
       setDeductionsTarget(null);
-      setReportedTarget(null);
     }
   }, [open, record?.link.recordId]);
 
@@ -206,18 +206,13 @@ export default function SystemDetailDialog({
         locale,
         counts,
         onShowDeductions: setDeductionsTarget,
-        onShowReported: setReportedTarget,
         canUndo,
         onUndo,
       })
     : null;
 
-  /** หัว breadcrumb ใช้ร่วมกันทั้ง 2 มุมมองรายการ (รายการที่ตัด / งานที่แจ้ง) */
-  const listRound = deductionsTarget?.round ?? reportedTarget?.round ?? null;
-  const clearListTarget = () => {
-    setDeductionsTarget(null);
-    setReportedTarget(null);
-  };
+  /** สัญญาที่ยกเลิกแล้ว — chip "ยกเลิกแล้ว" แทน chip วันหมดอายุทุกกรณี */
+  const contractCancelled = Boolean(record?.link.cancelledAt);
 
   return (
     <Dialog
@@ -248,16 +243,15 @@ export default function SystemDetailDialog({
       }}
     >
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pb: 1 }}>
-        {listRound !== null ? (
+        {deductionsTarget ? (
           /**
            * **มุมมองรายการ = เปลี่ยนเฉพาะ "คำ" ในหัวป๊อปอัพเดิม** (ตามภาพ
            * อ้างอิง: `← ประวัติการต่ออายุ / รายการที่ N`) — ปุ่มแรกเป็น
-           * **ย้อนกลับ** กลับไปแท็บประวัติ (ล้างทั้ง 2 state → การ์ดกลับเป็นแท็บปกติ)
-           * ใช้หัวเดียวกันทั้ง "รายการที่ตัด" และ "งานที่แจ้ง"
+           * **ย้อนกลับ** กลับไปแท็บประวัติ (`null` → การ์ดกลับเป็นแท็บปกติ)
            */
           <>
             <Button
-              onClick={clearListTarget}
+              onClick={() => setDeductionsTarget(null)}
               size="small"
               startIcon={<ArrowBackIcon />}
               sx={{
@@ -272,7 +266,9 @@ export default function SystemDetailDialog({
               /
             </Typography>
             <Typography variant="body2" fontWeight={600}>
-              {t("historyRoundValue", { n: listRound })}
+              {deductionsTarget.expired
+                ? t("afterExpiry")
+                : t("historyRoundValue", { n: deductionsTarget.round })}
             </Typography>
             <Box sx={{ flexGrow: 1 }} />
           </>
@@ -286,7 +282,7 @@ export default function SystemDetailDialog({
 
       {/* **ซ่อนแถบแท็บระหว่างดูรายการ** — "ไม่ต้องมีแท็บอะไรเลยเพราะเป็น
           รายการที่กดลิ้งเข้ามา" · กลับไปแท็บเดิม = ปุ่ม ← ในหัว */}
-      {listRound === null && (
+      {!deductionsTarget && (
         <Tabs
           value={tab}
           onChange={(_, v) => setTab(v)}
@@ -338,7 +334,7 @@ export default function SystemDetailDialog({
                  **ซ่อนระหว่างดูรายการงานที่ถูกตัด** — ตามภาพอ้างอิงเนื้อหา
                  โชว์แค่หัวข้อรายการ + ตาราง (หัวข้อ/บริษัทอยู่ที่ breadcrumb
                  ในหัวป๊อปอัพแล้ว) */}
-            {listRound === null && (
+            {!deductionsTarget && (
               <>
                 <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.5 }}>
                   <Box sx={{ flexGrow: 1, minWidth: 0 }}>
@@ -351,8 +347,8 @@ export default function SystemDetailDialog({
                     </Typography>
                   </Box>
                   <Chip
-                    label={view.chipLabel}
-                    color={view.chipColor}
+                    label={contractCancelled ? t("contractCancelled") : view?.chipLabel ?? ""}
+                    color={contractCancelled ? "default" : view?.chipColor ?? "default"}
                     size="small"
                     variant="outlined"
                     sx={{ flexShrink: 0 }}
@@ -390,10 +386,6 @@ export default function SystemDetailDialog({
                  * ดึงเองจาก `GET /apps/:id/companies/:recordId/usage`
                  */
                 <SystemDeductionsView target={deductionsTarget} />
-              ) : reportedTarget ? (
-                /** **มุมมอง "งานที่แจ้ง (ไม่คิด MA)"** — คนละ component/CSS
-                 * กับรายการที่ตัด แต่ใช้กล่อง scroll และ breadcrumb ใบเดิม */
-                <SystemReportedView target={reportedTarget} />
               ) : (
                 (tab === 0 ? view.general : view.history)
               )}
@@ -406,7 +398,7 @@ export default function SystemDetailDialog({
                 ไปหาศูนย์ช่วยเหลือเอง · **ซื้อชั่วโมง** อยู่ในป๊อปอัพด้วยตามคำสั่ง
                 ล่าสุด (แถวคงเหลือ ≤ 0 เหมือนปุ่มในตาราง) · ซื้อกับต่ออายุไม่มีทาง
                 โผล่พร้อมกัน (เงื่อนไข expiry ตรงข้ามกัน) · ซ่อนระหว่างดู "รายการที่ตัด" ---- */}
-            {listRound === null && (canBuyHours || canRenew || onContactAdmin) && (
+            {!deductionsTarget && (canBuyHours || canRenew || canCancel || onContactAdmin) && (
               <>
                 {/* `my: 1` (จาก 1.5) — เผื่อที่ให้กล่องเนื้อหาด้านบนเลื่อนได้เต็มที่ */}
                 <Divider sx={{ my: 1 }} />
@@ -421,6 +413,18 @@ export default function SystemDetailDialog({
                       {t("renewAction")}
                     </Button>
                   )}
+                  {/* **ยกเลิกสัญญา / เปิดสัญญาอีกครั้ง** — ปุ่มถาวรของแอดมิน
+                      (อีกทางคือ toast หลังกดยกเลิก) · ยกเลิก = ทั้งคู่ ไม่ลบข้อมูล */}
+                  {canCancel &&
+                    (contractCancelled ? (
+                      <Button variant="outlined" fullWidth onClick={onRestore}>
+                        {t("restoreContract")}
+                      </Button>
+                    ) : (
+                      <Button variant="outlined" fullWidth color="error" onClick={onCancel}>
+                        {t("cancelContract")}
+                      </Button>
+                    ))}
                   {/* เฉพาะแท็บ "ข้อมูลทั่วไป" (วันที่หมดอายุ + MA) — ไม่โชว์
                       ในแท็บประวัติ · ไม่ใส่ไอคอนตามคำสั่ง */}
                   {onContactAdmin && tab === 0 && (
@@ -464,8 +468,6 @@ function buildView(
     counts: Map<number, UsageCount> | null;
     /** สลับป๊อปอัพเป็นมุมมอง `SystemDeductionsView` "รายการงานที่ถูกตัด" ของรอบที่กด */
     onShowDeductions: (target: DeductionTarget) => void;
-    /** สลับป๊อปอัพเป็นมุมมอง `SystemReportedView` "งานที่แจ้ง (ไม่คิด MA)" ของรอบที่กด */
-    onShowReported: (target: ReportedTarget) => void;
     /** มีสิทธิ์ย้อนกลับ (`system.update` | `system.delete`) — ปุ่มในคอลัมน์สุดท้าย */
     canUndo: boolean;
     /** ย้อนกลับช่วง `recordId` ที่กด — ผู้เรียกเปิดกล่องยืนยันเอง */
@@ -473,7 +475,7 @@ function buildView(
   },
 ): DetailView {
   const { app, link } = record;
-  const { t, locale, counts, onShowDeductions, onShowReported, canUndo, onUndo } = opts;
+  const { t, locale, counts, onShowDeductions, canUndo, onUndo } = opts;
 
   const caption = (text: string) => (
     <Typography variant="caption" color="text.disabled">
@@ -513,6 +515,18 @@ function buildView(
     .filter((c) => c.id === link.id)
     .slice()
     .sort((a, b) => b.recordId - a.recordId);
+
+  /**
+   * **"รายการช่วงหมดอายุ"** — แถวจำลองที่สร้างตอนแสดงผล (ไม่มีแถวใน DB, ไม่ต้อง
+   * migration) · โชว์**ทุกสัญญาที่หมดอายุแล้ว** แม้ยังไม่มีงานแจ้งหลังวันนั้นก็ตาม
+   * (0 รายการก็โชว์ — "รายการที่ 2" ต้องเห็นทันทีตามที่ผู้ใช้ขอ) · ตัวเลขมาจาก
+   * `usage-counts.afterExpiryCount` (คำนวณจาก `actual_fix_at` เหมือนการผูก MA
+   * ทุกประการ แต่ไม่ตัดชั่วโมง) จึงไม่กระทบ "ใช้ไป/คงเหลือ"
+   */
+  const afterExpiryCount = counts?.get(link.recordId)?.afterExpiryCount ?? 0;
+  const daysLeft = daysLeftIso(link.expiresAt ?? "");
+  const contractExpired =
+    link.expiryStatus === "expired" || (daysLeft !== null && daysLeft <= 0);
 
   /* ---------------- แท็บ 1: ข้อมูลทั่วไป ---------------- */
 
@@ -670,7 +684,7 @@ function buildView(
       <Table size="small" stickyHeader>
         <TableHead>
           {/**
-           * `whiteSpace: "nowrap"` — หัวคอลัมน์ทั้ง 10 **ต้องอยู่บรรทัดเดียว**
+           * `whiteSpace: "nowrap"` — หัวคอลัมน์ทั้ง 9 **ต้องอยู่บรรทัดเดียว**
            * (ป๊อปอัพกว้าง 1000px มีที่พอ) ไม่งั้นข้อความไทยยาวอย่าง
            * "วันที่เริ่มใช้งาน" / "รายการที่ตัด" จะตัดบรรทัดแล้วแถวสูงไม่เท่ากัน
            */}
@@ -694,14 +708,6 @@ function buildView(
             <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
               {t("historyDeducted")}
             </TableCell>
-            {/**
-             * **งานที่แจ้ง (ไม่คิด MA)** — คนละชุดกับ "รายการที่ตัด" เด็ดขาด:
-             * บั๊ก/Requirement/ยังไม่ระบุไม่เคยหัก MA จึงไม่โผล่ในช่องนั้นอยู่แล้ว
-             * (ต้องมีช่องของตัวเองตาม review comment)
-             */}
-            <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
-              {t("historyReported")}
-            </TableCell>
             {/* **ยกเลิกรายการ** — ปุ่มมีเฉพาะแถวล่าสุด (ดูใต้) หัวคอลัมน์จึงว่าง
                 ไว้เกือบทุกแถว แต่ชื่อคอลัมน์ต้องมีไม่งั้นตารางไม่มีความหมาย */}
             <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
@@ -710,6 +716,62 @@ function buildView(
           </TableRow>
         </TableHead>
         <TableBody>
+          {contractExpired && (
+            <TableRow key="after-expiry" sx={{ bgcolor: "action.hover" }}>
+              <TableCell>{t("historyRoundValue", { n: history.length + 1 })}</TableCell>
+              <TableCell>
+                <Chip
+                  label={t("afterExpiry")}
+                  color="warning"
+                  size="small"
+                  variant="outlined"
+                />
+              </TableCell>
+              {/**
+               * ไม่มีสัญญาใหม่ → 5 คอลัมน์นี้ **เว้นว่างจริง ๆ** (ผู้ใช้สั่งห้าม
+               * โชว์ "ยังไม่ระบุ" / "ไม่กำหนด" / "—" เพราะแถวนี้ไม่ใช่สัญญา)
+               */}
+              <TableCell />
+              <TableCell />
+              <TableCell align="center" />
+              <TableCell align="center" />
+              <TableCell align="center" />
+              <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={() =>
+                    onShowDeductions({
+                      appId: app.id,
+                      recordId: link.recordId,
+                      round: history.length + 1,
+                      expired: true,
+                    })
+                  }
+                  sx={{
+                    minWidth: 0,
+                    px: 0.5,
+                    py: 0.25,
+                    fontSize: "inherit",
+                    color: "text.primary",
+                    textDecoration: "none",
+                    border: 1,
+                    borderColor: "transparent",
+                    borderRadius: 1,
+                    "&:hover": {
+                      textDecoration: "none",
+                      borderColor: "divider",
+                      bgcolor: "transparent",
+                    },
+                  }}
+                >
+                  {t("deductionsCount", { n: afterExpiryCount })}
+                </Button>
+              </TableCell>
+              {/* แถวจำลอง → ไม่มีปุ่ม "ยกเลิกรายการ" (ลบอะไรไม่ได้) */}
+              <TableCell align="center" />
+            </TableRow>
+          )}
           {history.map((row, index) => {
             /**
              * **"รอบที่ N"** — นับจากช่วงแรก (เก่าสุด = รอบที่ 1) ไล่ขึ้นมาหา
@@ -795,47 +857,8 @@ function buildView(
                       },
                     }}
                   >
-                    {entry
-                      ? t("deductionsCount", { n: entry.count })
-                      : caption(counts === null ? "…" : "—")}
-                  </Button>
-                </TableCell>
-                {/**
-                 * **งานที่แจ้ง (ไม่คิด MA)** — ปุ่มสลับเป็นมุมมองรายการในป๊อปอัพ
-                 * เดิมของรอบนี้ (คนละ state/column กับ "รายการที่ตัด") · นับจาก
-                 * `usage-counts.reportedCount` ที่ยิงตอนเปิดป๊อปอัพ · `counts === null`
-                 * = ยังโหลด (`…`), ไม่มีคีย์ = ดึงไม่ได้ (`—` fail-open ห้ามเดา 0)
-                 */}
-                <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
-                  <Button
-                    size="small"
-                    color="inherit"
-                    onClick={() =>
-                      onShowReported({
-                        appId: app.id,
-                        recordId: row.recordId,
-                        round,
-                      })
-                    }
-                    sx={{
-                      minWidth: 0,
-                      px: 0.5,
-                      py: 0.25,
-                      fontSize: "inherit",
-                      color: "text.primary",
-                      textDecoration: "none",
-                      border: 1,
-                      borderColor: "transparent",
-                      borderRadius: 1,
-                      "&:hover": {
-                        textDecoration: "none",
-                        borderColor: "divider",
-                        bgcolor: "transparent",
-                      },
-                    }}
-                  >
-                    {entry && entry.reportedCount != null
-                      ? t("deductionsCount", { n: entry.reportedCount })
+                    {entry && entry.listedCount != null
+                      ? t("deductionsCount", { n: entry.listedCount })
                       : caption(counts === null ? "…" : "—")}
                   </Button>
                 </TableCell>

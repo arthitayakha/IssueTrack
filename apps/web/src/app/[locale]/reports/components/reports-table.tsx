@@ -142,8 +142,10 @@ export interface ReportsTableProps {
   deductions: {
     counts: { status: "loading" | "ready" | "error"; byRecord: Map<number, UsageCount> };
     expandedRecordId: number | null;
+    /** แถวกางอยู่เป็น "รายการช่วงหมดอายุ" (คนละชุดรายการกับแถวสัญญาเดียวกัน) */
+    expandedExpired: boolean;
     detail: DeductionState;
-    onToggle: (recordId: number) => void;
+    onToggle: (recordId: number, expired: boolean) => void;
     onRetryDetail: () => void;
   };
 }
@@ -827,12 +829,25 @@ export function ReportsTable({
         }
         return (
           <DataTableCell sx={{ whiteSpace: "nowrap" }}>
-            <Typography variant="body2">
-              {r.kind === "buy" ? st("kindBuy") : st("renew")}
+            <Typography
+              variant="body2"
+              color={r.kind === "expired" ? "error.main" : undefined}
+              fontWeight={r.kind === "expired" ? 600 : undefined}
+            >
+              {r.kind === "expired"
+                ? st("afterExpiry")
+                : r.kind === "buy"
+                  ? st("kindBuy")
+                  : st("renew")}
             </Typography>
           </DataTableCell>
         );
+      /**
+       * แถว "ช่วงหมดอายุ" ไม่ใช่สัญญา → 5 คอลัมน์นี้ **เว้นว่างจริง ๆ**
+       * (ห้ามโชว์ "ยังไม่ระบุ" / "—" — ผู้ใช้สั่งให้ไม่แสดงเลย)
+       */
       case "startedAt":
+        if (r.kind === "expired") return <DataTableCell>{null}</DataTableCell>;
         // `formatDay` ไม่ใช่ `new Date()` ตรง ๆ — ค่าเป็น `YYYY-MM-DD`
         // (parse เป็น UTC midnight จะเพี้ยน 1 วันใน timezone ติดลบ)
         // และต้องโชว์ตรงกับ `/systems` ที่ใช้ตัวเดียวกับ field เดียวกัน
@@ -842,16 +857,20 @@ export function ReportsTable({
           </DataTableCell>
         );
       case "expiresAt":
+        if (r.kind === "expired") return <DataTableCell>{null}</DataTableCell>;
         return (
           <DataTableCell sx={{ whiteSpace: "nowrap" }}>
             {r.expiresAt ? formatDay(r.expiresAt, locale) : "—"}
           </DataTableCell>
         );
       case "maHours":
+        if (r.kind === "expired") return <DataTableCell align="right">{null}</DataTableCell>;
         return <DataTableCell align="right">{maHoursCell(r.maHours)}</DataTableCell>;
       case "usedHours":
+        if (r.kind === "expired") return <DataTableCell align="right">{null}</DataTableCell>;
         return <DataTableCell align="right">{usedHoursCell(r.recordId)}</DataTableCell>;
       case "remaining":
+        if (r.kind === "expired") return <DataTableCell align="right">{null}</DataTableCell>;
         return (
           <DataTableCell align="right">
             {remainingCell(r.recordId, r.maHours)}
@@ -867,12 +886,16 @@ export function ReportsTable({
       case "deductedCount": {
         if (r.recordId == null) return <DataTableCell align="right">—</DataTableCell>;
         const entry = deductions.counts.byRecord.get(r.recordId);
-        const open = deductions.expandedRecordId === r.recordId;
+        const expired = r.kind === "expired";
+        const open =
+          deductions.expandedRecordId === r.recordId &&
+          deductions.expandedExpired === expired;
+        const n = expired ? r.afterExpiryCount : entry?.count;
         const label =
-          deductions.counts.status === "loading"
+          deductions.counts.status === "loading" && !expired
             ? "…"
-            : entry
-              ? st("deductionsCount", { n: entry.count })
+            : n != null
+              ? st("deductionsCount", { n })
               : "—";
         return (
           <DataTableCell align="right" sx={{ whiteSpace: "nowrap" }}>
@@ -903,7 +926,13 @@ export function ReportsTable({
    * ห้ามโชว์ "ไม่มีรายการ" เพราะนั่นคือการโกง) / สำเร็จ (หัวข้อ + ตาราง)
    */
   function companyDetailRow(r: CompanyRow): React.ReactNode {
-    if (r.recordId == null || deductions.expandedRecordId !== r.recordId) return null;
+    if (
+      r.recordId == null ||
+      deductions.expandedRecordId !== r.recordId ||
+      deductions.expandedExpired !== (r.kind === "expired")
+    ) {
+      return null;
+    }
     const detail = deductions.detail;
 
     const innerTable = (data: PeriodUsage) => (
@@ -951,7 +980,8 @@ export function ReportsTable({
                   {issue.taskType ? deductionTaskTypes(`taskType.${issue.taskType}`) : "—"}
                 </TableCell>
                 <TableCell align="right" sx={{ fontSize: 12.5 }}>
-                  {issue.hours}
+                  {/* หลังหมดอายุ = ไม่มีสัญญาให้หัก → ไม่โชว์ชั่วโมง */}
+                  {issue.afterExpiry ? "—" : issue.hours}
                 </TableCell>
                 <TableCell sx={{ fontSize: 12.5, whiteSpace: "nowrap" }}>
                   {issue.deductedAt ? fmtDate(issue.deductedAt) : "—"}
@@ -1070,11 +1100,19 @@ export function ReportsTable({
            * บริษัท (`recordId: null`) ไม่มีรอบให้ถาม จึงไม่คลิกได้
            */
           const expandable = r.recordId != null;
-          const open = expandable && deductions.expandedRecordId === r.recordId;
+          const expired = r.kind === "expired";
+          const open =
+            expandable &&
+            deductions.expandedRecordId === r.recordId &&
+            deductions.expandedExpired === expired;
           return (
             <Fragment key={`${r.appId}:${r.companyId ?? "none"}-${i}`}>
               <DataTableRow
-                onClick={expandable ? () => deductions.onToggle(r.recordId as number) : undefined}
+                onClick={
+                  expandable
+                    ? () => deductions.onToggle(r.recordId as number, expired)
+                    : undefined
+                }
                 sx={
                   expandable
                     ? { cursor: "pointer", ...(open ? { bgcolor: "action.hover" } : {}) }

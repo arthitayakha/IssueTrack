@@ -32,6 +32,8 @@ export interface DeductionTarget {
   recordId: number;
   /** ลำดับรายการในคู่ (1 = เก่าสุด) — ใช้ใน breadcrumb "รายการที่ N" */
   round: number;
+  /** รายการ **ช่วงหมดอายุ** — ใช้ `afterExpiryIssues` แทนงานที่ถูกตัดจริง */
+  expired?: boolean;
 }
 
 /**
@@ -69,7 +71,7 @@ export default function SystemDeductionsView({ target }: { target: DeductionTarg
   /** วนเมื่อกดปุ่ม "ลองใหม่" — เป็น dep ของ effect ดึงข้อมูล */
   const [reloadToken, setReloadToken] = useState(0);
 
-  const { appId, recordId } = target;
+  const { appId, recordId, expired } = target;
 
   useEffect(() => {
     const mine = ++seq.current;
@@ -78,14 +80,26 @@ export default function SystemDeductionsView({ target }: { target: DeductionTarg
     fetchPeriodUsage(appId, recordId)
       .then((result) => {
         if (mine !== seq.current) return;
-        setData(result);
+        // รายการช่วงหมดอายุ = งานที่แจ้งหลังสัญญาจบ (ไม่ได้ตัด MA) — คนละ
+        // ชุดกับ `listedIssues` ของรอบจริง จึงต้องเลือกให้ตรงก่อนโชว์
+        setData(
+          expired
+            ? {
+                ...result,
+                issues: result.afterExpiryIssues ?? [],
+                count: result.afterExpiryCount ?? 0,
+                listedIssues: result.afterExpiryIssues ?? [],
+                listedCount: result.afterExpiryCount ?? 0,
+              }
+            : result,
+        );
         setStatus("ready");
       })
       .catch(() => {
         if (mine !== seq.current) return;
         setStatus("error");
       });
-  }, [appId, recordId, reloadToken]);
+  }, [appId, recordId, expired, reloadToken]);
 
   const caption = (text: string) => (
     <Typography variant="caption" color="text.disabled">
@@ -93,12 +107,23 @@ export default function SystemDeductionsView({ target }: { target: DeductionTarg
     </Typography>
   );
 
-  /** ชั่วโม์ของคู่ที่ไปอยู่ **รายการอื่น** — ใช้ตอบว่าทำไมรายการนี้ถึงว่าง */
-  const otherRoundsHours = data ? round1(data.pairUsedHours - data.unattributedHours) : 0;
+  /**
+   * **งานทุกประเภทที่เสร็จแล้ว + กรอกเวลาแล้ว** จะโผล่ตรงนี้ (บั๊ก / Requirement /
+   * ไม่ระบุ / MA) — `count` เดิมเป็นสูตร MA ล้วน ใช้กับ "ใช้ไป/คงเหลือ" เหมือนเดิม
+   * · งานที่เกิดหลังวันหมดอายุของสัญญา sẽถูก mark ว่าเป็น "ช่วงหมดอายุ" และ
+   * **ไม่โชว์ชั่วโมง** เพราะไม่ได้ตัด MA
+   */
+  // `afterExpiry` มาจากเซิร์ฟเวอร์แล้ว (จอ/ไฟล์/รายงานตรงกัน) — ไม่เทียบซ้ำ
 
-  /** หัวข้อ `รายการงานที่ถูกตัด (N รายการ)` — ยังไม่มี count ระหว่างโหลด */
+  /** กันกรณี web deploy เร็วกว่า api — ยังไม่มีฟิลด์ใหม่ให้โชว์ `0`/ลิสต์ว่าง */
+  const listed = data?.listedIssues ?? [];
+  const listedCount = data?.listedCount ?? listed.length;
+
+  /** หัวข้อ `รายการงาน (N รายการ)` — ยังไม่มี count ระหว่างโหลด */
   const heading = data
-    ? t("deductionListTitle", { n: data.count })
+    ? expired
+      ? t("afterExpiryListTitle", { n: listedCount })
+      : t("deductionListTitle", { n: listedCount })
     : t("tabDeductions");
 
   return (
@@ -141,20 +166,10 @@ export default function SystemDeductionsView({ target }: { target: DeductionTarg
             </Alert>
           )}
 
-          {data.count === 0 ? (
+          {listedCount === 0 ? (
             <Box sx={{ py: 5, textAlign: "center" }}>
               <Typography variant="body2" color="text.secondary">
-                {/**
-                 * 3 กรณี — ตอบ "ทำไมเป็น 0" ตรง ๆ:
-                 * (1) คู่นี้ยังไม่เคยมีใครกรอกเวลาเลย
-                 * (2) มีชั่วโม์ แต่ไปอยู่รายการอื่น
-                 * (3) ทั้งคู่มีแค่ชั่วโม์กรอกก่อนระบบ → alert ด้านบนเล่าไว้แล้ว
-                 */}
-                {data.pairUsedHours === 0
-                  ? t("deductionsNoHours")
-                  : otherRoundsHours > 0
-                    ? t("deductionsOtherRounds", { n: otherRoundsHours })
-                    : t("deductionsEmpty")}
+                {t("reportedEmpty")}
               </Typography>
             </Box>
           ) : (
@@ -171,7 +186,10 @@ export default function SystemDeductionsView({ target }: { target: DeductionTarg
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {data.issues.map((issue) => (
+                  {listed.map((issue) => {
+                    /** งานที่เกิดหลังวันหมดอายุ — ไม่ได้ตัด MA จึงไม่โชว์ชั่วโมง */
+                    const late = issue.afterExpiry === true;
+                    return (
                     <TableRow key={issue.id}>
                       {/* เลขงาน = **ลิงก์ไปบอร์ด** — ไป**แท็บเดิม** (SPA ไม่ reload →
                           token ยังอยู่ เหมือนลิงก์แจ้งเตือน) · เดิมเป็น
@@ -202,11 +220,25 @@ export default function SystemDeductionsView({ target }: { target: DeductionTarg
                         </Typography>
                       </TableCell>
                       <TableCell sx={{ whiteSpace: "nowrap" }}>
-                        {issue.taskType
-                          ? taskTypes(`taskType.${issue.taskType}`)
-                          : caption(t("notSetYet"))}
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                          {issue.taskType
+                            ? taskTypes(`taskType.${issue.taskType}`)
+                            : caption(t("notSetYet"))}
+                          {late && (
+                            <Chip
+                              label={t("afterExpiry")}
+                              size="small"
+                              variant="outlined"
+                              color="warning"
+                              sx={{ height: 20, fontSize: "0.6875rem" }}
+                            />
+                          )}
+                        </Box>
                       </TableCell>
-                      <TableCell align="center">{issue.hours}</TableCell>
+                      {/* หลังหมดอายุ = ไม่มีสัญญาให้หัก → ไม่โชว์ชั่วโมง */}
+                      <TableCell align="center">
+                        {late ? caption("—") : issue.hours}
+                      </TableCell>
                       <TableCell sx={{ whiteSpace: "nowrap" }}>
                         {issue.deductedAt ? formatDay(issue.deductedAt, locale) : caption("—")}
                       </TableCell>
@@ -224,7 +256,8 @@ export default function SystemDeductionsView({ target }: { target: DeductionTarg
                         )}
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </TableContainer>
@@ -235,7 +268,3 @@ export default function SystemDeductionsView({ target }: { target: DeductionTarg
   );
 }
 
-/** ปัดเศษ 1 ตำแหน่ง — เหมือน `round1` ฝั่งเซิร์ฟเวอร์ ให้ตัวเลขตรงกัน */
-function round1(n: number): number {
-  return Math.round(n * 10) / 10;
-}

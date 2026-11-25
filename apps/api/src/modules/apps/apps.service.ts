@@ -522,6 +522,60 @@ export class AppsService {
   }
 
   /**
+   * **ยกเลิกสัญญา** (แอดมินเท่านั้น — route กันด้วย `system.update`) — stamp
+   * `cancelled_at` **ทุกแถวของคู่** (1 คู่มีได้หลายช่วงเวลา) ตามที่ผู้ใช้เลือก
+   * "ยกเลิกทั้งคู่" · ไม่ลบแถว ไม่แตะวันที่/MA/ประวัติ/ latch เดิม
+   *
+   * ผลทันที: `AppExpiryService.reconcile()`, `MaUsageService.checkAndNotify()`
+   * และ `NotificationRepeatsService.isResolved()` ข้ามคู่นี้ → ไม่มีแถว/อีเมล
+   * ใหม่ · แถวแจ้งเตือนที่ส่งไปแล้ว**ปล่อยไว้** (อ่านได้ตามปกติ)
+   *
+   * `restoreContract()` ล้าง stamp เท่านั้น → กลับสภาพเดิมเป๊ะ รวม latch
+   * ที่เคยมีอยู่ (ไม่ยิงกระดิ่งซ้ำทันทีที่กดเปิดกลับ — รอ threshold ถัดไป)
+   */
+  private async findPairRow(
+    appId: number,
+    recordId: number,
+  ): Promise<{ app: App; row: AppCompany }> {
+    const app = await this.apps.findOne({ where: { id: appId } });
+    if (!app) throw new NotFoundException(`App with id ${appId} not found`);
+    const row = await this.appCompanies.findOne({ where: { id: recordId } });
+    if (!row || row.appId !== appId) {
+      throw new NotFoundException(`Record with id ${recordId} not found`);
+    }
+    return { app, row };
+  }
+
+  async cancelContract(appId: number, recordId: number) {
+    const { app, row } = await this.findPairRow(appId, recordId);
+    const pair = await this.appCompanies.find({
+      where: { appId, companyId: row.companyId },
+      order: { id: "ASC" },
+    });
+    const cancelledAt = new Date();
+    for (const link of pair) {
+      if (link.cancelledAt == null) {
+        await this.appCompanies.save({ ...link, cancelledAt });
+      }
+    }
+    return this.appPayload(app);
+  }
+
+  async restoreContract(appId: number, recordId: number) {
+    const { app, row } = await this.findPairRow(appId, recordId);
+    const pair = await this.appCompanies.find({
+      where: { appId, companyId: row.companyId },
+      order: { id: "ASC" },
+    });
+    for (const link of pair) {
+      if (link.cancelledAt != null) {
+        await this.appCompanies.save({ ...link, cancelledAt: null });
+      }
+    }
+    return this.appPayload(app);
+  }
+
+  /**
    * **ต่ออายุ** — ปิดช่วงเก่าแล้วเปิดช่วงใหม่ให้ **คู่เดิม** (`appId` +
    * `companyId` ยืมจากแถวตั้งต้น ฟอร์มไม่ต้องเลือกใหม่ และเปลี่ยนไม่ได้)
    *
@@ -863,6 +917,8 @@ export class AppsService {
         carriedHours: link.carriedHours ?? null,
         /** แถวนี้มาจากอะไร — `renew` (ต่ออายุ/เพิ่มรายการ) หรือ `buy` (ซื้อชั่วโมง) */
         kind: link.kind,
+        /** ISO datetime ตอนแอดมินกด "ยกเลิกสัญญา" — `null` = ยังใช้งานอยู่ */
+        cancelledAt: link.cancelledAt ? link.cancelledAt.toISOString() : null,
         expiryStatus: link.expiryStatus,
         /** ISO datetime — แถวเก่าที่สร้างก่อน migration 1819 ได้ค่าตอน migrate */
         createdAt: link.createdAt ? link.createdAt.toISOString() : null,

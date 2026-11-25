@@ -90,6 +90,10 @@ export class AppExpiryService {
    * that one pair can hold several rows.
    */
   async reconcile(link: AppCompany, names: ExpiryNames): Promise<boolean> {
+    // สัญญาที่แอดมินยกเลิก (1848) — ไม่ refreshing สถานะ ไม่ยิง threshold ใด ๆ
+    // แม้ cron 09:00 หรือการโหลดหน้า /systems จะเรียกมาที่นี่ก็ตาม
+    if (link.cancelledAt != null) return false;
+
     const nextStatus = this.statusFor(link.expiresAt);
     const nextStage = this.reachedStage(link.expiresAt);
     const storedStage: AppExpiryStage = link.expiryNotified ?? "none";

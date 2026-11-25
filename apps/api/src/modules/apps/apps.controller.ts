@@ -203,6 +203,31 @@ export class AppsController {
   }
 
   /**
+   * **ยกเลิกสัญญา** — stamp `cancelled_at` ทุกแถวของคู่ แอป×บริษัท
+   * (`recordId` เป็นแค่ตัวชี้ — แถวใดของคู่ก็ได้) · **ไม่ลบข้อมูล** และ
+   * ทุกแหล่งแจ้งเตือนของคู่จะข้ามไปทันที · กันด้วย `system.update` (แอดมิน
+   * กดแทนลูกค้า ตามคำตอบของผู้ใช้) — ลูกค้าไม่มีสิทธิ์นี้
+   */
+  @Post(":id/companies/:recordId/cancel")
+  @Permissions("system.update")
+  cancelContract(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("recordId", ParseIntPipe) recordId: number,
+  ) {
+    return this.apps.cancelContract(id, recordId);
+  }
+
+  /** **เปิดสัญญาอีกครั้ง** — ล้าง `cancelled_at` ทุกแถวของคู่ → กลับสภาพเดิมเป๊ะ */
+  @Post(":id/companies/:recordId/restore")
+  @Permissions("system.update")
+  restoreContract(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("recordId", ParseIntPipe) recordId: number,
+  ) {
+    return this.apps.restoreContract(id, recordId);
+  }
+
+  /**
    * **รายการที่ถูกตัดจากช่วง MA นี้** — นับ + รายการจริงของ `recordId`
    *
    * "ชั่วโมงของงานนี้เป็นของรอบไหน" คำนวณจาก `issues.actual_fix_at` (เวลาที่กรอก)

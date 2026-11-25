@@ -2,8 +2,9 @@ import { BadRequestException } from "@nestjs/common";
 import { HelpCenterSettingsService } from "../modules/help-center-settings/help-center-settings.service";
 
 /**
- * ช่องทางติดต่อบน `/systems` — แอดมินเลือกโปรแกรมเมอร์ได้หลายคน
- * Spec ใช้ repository stub ล้วน → ปลอดภัยรันคู่ `npm run dev`
+ * ช่องทางติดต่อบน `/systems` — แอดมินเลือกโปรแกรมเมอร์ **รายบริษัท**
+ * ไม่มีรายชื่อหลัก/ข้อมูลติดต่อกลางแล้ว · Spec ใช้ repository stub ล้วน →
+ * ปลอดภัยรันคู่ `npm run dev`
  */
 
 function user(id: number, name: string, isActive = true) {
@@ -23,32 +24,27 @@ function makeService(opts: { row?: unknown; users?: unknown[]; usersError?: bool
       return Promise.resolve(opts.users ?? []);
     }),
   };
-  const service = new HelpCenterSettingsService(
-    repo as never,
-    users as never,
-  );
+  const service = new HelpCenterSettingsService(repo as never, users as never);
   return { service, repo, users, saved };
 }
 
-describe("HelpCenterSettingsService — selected programmer contacts", () => {
-  it("ไม่มีใครเลือก → contacts ว่าง + ใช้ข้อมูลติดต่อกลางเป็น fallback", async () => {
-    const { service } = makeService({ row: { id: 1, contactUserIds: [] } });
+describe("HelpCenterSettingsService — per-company contacts", () => {
+  it("บริษัทที่ไม่มี mapping → contacts ว่าง (ไม่มี global fallback)", async () => {
+    const { service } = makeService({ row: { id: 1, contactUsersByCompany: {} } });
 
-    const result = await service.get();
+    const result = await service.get(5);
 
-    expect(result.contactUserIds).toEqual([]);
     expect(result.contacts).toEqual([]);
-    expect(result.supportEmail).toBeTruthy();
-    expect(result.workingHours).toBeTruthy();
+    expect(result.updatedAt).toBeNull();
   });
 
-  it("เลือกหลายคน → resolve เป็นการ์ดตามลำดับที่เลือก", async () => {
+  it("บริษัทที่มี mapping → resolve เป็นการ์ดตามลำดับที่เลือก", async () => {
     const { service } = makeService({
-      row: { id: 1, contactUserIds: [13, 23, 7] },
+      row: { id: 1, contactUsersByCompany: { "2": [13, 23, 7] } },
       users: [user(7, "seven"), user(13, "programmer"), user(23, "b")],
     });
 
-    const result = await service.get();
+    const result = await service.get(2);
 
     expect(result.contacts.map((c) => c.userId)).toEqual([13, 23, 7]);
     expect(result.contacts[0]).toEqual({
@@ -61,23 +57,31 @@ describe("HelpCenterSettingsService — selected programmer contacts", () => {
 
   it("คนที่ถูกปิด/ลบ/เปลี่ยน role ตกออกจากการ์ด (id ยังอยู่ใน config)", async () => {
     const { service } = makeService({
-      row: { id: 1, contactUserIds: [13, 22] },
+      row: { id: 1, contactUsersByCompany: { "2": [13, 22] } },
       users: [user(13, "programmer")],
     });
 
-    const result = await service.get();
+    const result = await service.get(2);
 
-    expect(result.contactUserIds).toEqual([13, 22]);
     expect(result.contacts.map((c) => c.userId)).toEqual([13]);
+  });
+
+  it("mapping เป็น array ว่าง → บริษัทนั้นไม่เห็นโปรแกรมเมอร์", async () => {
+    const { service } = makeService({
+      row: { id: 1, contactUsersByCompany: { "2": [] } },
+      users: [user(13, "programmer")],
+    });
+
+    await expect(service.get(2)).resolves.toMatchObject({ contacts: [] });
   });
 
   it("lookup พัง → fail-open ได้การ์ดว่าง ไม่ทำให้หน้า /systems พัง", async () => {
     const { service } = makeService({
-      row: { id: 1, contactUserIds: [13] },
+      row: { id: 1, contactUsersByCompany: { "2": [13] } },
       usersError: true,
     });
 
-    await expect(service.get()).resolves.toMatchObject({ contacts: [] });
+    await expect(service.get(2)).resolves.toMatchObject({ contacts: [] });
   });
 
   it("programmers() คืนเฉพาะโปรแกรมเมอร์ active สำหรับตัวเลือกใน dialog", async () => {
@@ -91,76 +95,27 @@ describe("HelpCenterSettingsService — selected programmer contacts", () => {
     );
   });
 
-  it("update() บันทึก contactUserIds และล้างข้อมูลกลางด้วย array ว่างได้", async () => {
-    const { service, saved } = makeService({ row: { id: 1, contactUserIds: [13] } });
-
-    await service.update({ contactUserIds: [23, 23, 13], workingHours: "" });
-
-    const row = saved.mock.calls[0][0] as { contactUserIds: number[]; workingHours: string | null };
-    expect(row.contactUserIds).toEqual([23, 13]);
-    expect(row.workingHours).toBeNull();
-  });
-});
-
-describe("HelpCenterSettingsService — contacts แยกตามบริษัท (global เป็น fallback)", () => {
-  it("บริษัทที่มี mapping → เห็นชุดของตัวเอง ไม่ใช่รายชื่อหลัก", async () => {
-    const { service } = makeService({
-      row: { id: 1, contactUserIds: [13], contactUsersByCompany: { "2": [23] } },
-      users: [user(23, "b")],
-    });
-
-    const result = await service.get(2);
-
-    expect(result.contactUserIds).toEqual([23]);
-    expect(result.contacts.map((c) => c.userId)).toEqual([23]);
-    expect(result.scopedByCompany).toBe(true);
-  });
-
-  it("บริษัทที่ไม่มี mapping → ใช้ contactUserIds เดิมเป็น fallback", async () => {
-    const { service } = makeService({
-      row: { id: 1, contactUserIds: [13], contactUsersByCompany: { "2": [23] } },
-      users: [user(13, "programmer")],
-    });
-
-    const result = await service.get(5);
-
-    expect(result.contactUserIds).toEqual([13]);
-    expect(result.scopedByCompany).toBe(false);
-  });
-
-  it("mapping เป็น array ว่าง → บริษัทนั้นไม่เห็นโปรแกรมเมอร์ (ตกไปข้อมูลกลาง)", async () => {
-    const { service } = makeService({
-      row: { id: 1, contactUserIds: [13], contactUsersByCompany: { "2": [] } },
-      users: [user(13, "programmer")],
-    });
-
-    const result = await service.get(2);
-
-    expect(result.contacts).toEqual([]);
-    expect(result.scopedByCompany).toBe(true);
-  });
-
-  it("config() คืน mapping ดิบให้ dialog (คนละชุดกับ get() ที่กรองตามคนเรียก)", async () => {
+  it("config() คืนเฉพาะ mapping (ไม่มีรายชื่อหลัก/ข้อมูลกลาง)", async () => {
     const { service } = makeService({
       row: {
         id: 1,
-        contactUserIds: [13],
         contactUsersByCompany: { "2": [23, 7, "oops"] },
       },
     });
 
     const result = await service.config();
 
-    expect(result.contactUserIds).toEqual([13]);
-    expect(result.contactUsersByCompany).toEqual({ "2": [23, 7] });
+    expect(result).toEqual({
+      id: 1,
+      contactUsersByCompany: { "2": [23, 7] },
+      updatedAt: null,
+    });
   });
 
-  it("update() เก็บ mapping แบบตัดซ้ำ + เก็บ array ว่างไว้ (ไม่ให้หลุดไป global)", async () => {
-    const { service, saved } = makeService({ row: { id: 1, contactUserIds: [13] } });
+  it("update() เก็บ mapping แบบตัดซ้ำ + เก็บ array ว่างไว้", async () => {
+    const { service, saved } = makeService({ row: { id: 1, contactUsersByCompany: {} } });
 
-    await service.update({
-      contactUsersByCompany: { "2": [23, 23], "3": [] },
-    });
+    await service.update({ contactUsersByCompany: { "2": [23, 23], "3": [] } });
 
     const row = saved.mock.calls[0][0] as {
       contactUsersByCompany: Record<string, number[]>;
@@ -169,7 +124,7 @@ describe("HelpCenterSettingsService — contacts แยกตามบริษ�
   });
 
   it("update() ปฏิเสธ company id/user id ที่เพี้ยน (400)", async () => {
-    const { service } = makeService({ row: { id: 1, contactUserIds: [13] } });
+    const { service } = makeService({ row: { id: 1, contactUsersByCompany: {} } });
 
     await expect(
       service.update({ contactUsersByCompany: { abc: [1] } }),

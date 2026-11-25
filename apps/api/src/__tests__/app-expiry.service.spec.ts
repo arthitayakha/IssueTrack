@@ -59,6 +59,7 @@ function pair(overrides: Partial<AppCompany> = {}): AppCompany {
     // (`created_at` มาจาก migration 1819, `kind` จาก 1820, `maNotifiedAt` จาก 1821)
     kind: "renew",
     maNotifiedAt: null,
+    cancelledAt: null,
     createdAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
   };
@@ -115,6 +116,19 @@ describe("AppExpiryService.reconcile — one bell per threshold, per pair", () =
     const { service, links, notifications } = makeService();
 
     const changed = await service.reconcile(pair(), NAMES);
+
+    expect(changed).toBe(false);
+    expect(links.update).not.toHaveBeenCalled();
+    expect(notifications.notifyAppExpiry).not.toHaveBeenCalled();
+  });
+
+  it("a cancelled contract (1848) stays silent even on a fresh threshold", async () => {
+    const { service, links, notifications } = makeService();
+
+    const changed = await service.reconcile(
+      pair({ expiresAt: inDays(10), cancelledAt: new Date("2026-11-01T00:00:00Z") }),
+      NAMES,
+    );
 
     expect(changed).toBe(false);
     expect(links.update).not.toHaveBeenCalled();

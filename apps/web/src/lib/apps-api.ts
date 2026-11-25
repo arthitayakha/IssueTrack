@@ -52,6 +52,12 @@ export interface AppCompanyLink {
   /** stored state **ของแถวนี้** — ไม่กำหนด / ปกติ / ใกล้หมดอายุ (≤30 วัน) / หมดอายุ — UI โชว์เป็นจำนวนวันดูที่ `expiryChipLabel()` */
   expiryStatus: ExpiryStatus;
   /**
+   * ISO datetime ตอนแอดมินกด "ยกเลิกสัญญา" (migration 1848) — `null` = ยังใช้งาน
+   * อยู่ · stamp ทุกแถวของคู่ → แถวในตาราง/ป๊อปอัพโชว์ chip "ยกเลิกแล้ว" แทน
+   * chip วันหมดอายุ และทุกแหล่งแจ้งเตือนของคู่ถูกข้าม
+   */
+  cancelledAt: string | null;
+  /**
    * ISO datetime จาก `app_companies.created_at` — **วันที่บันทึกช่วงนั้น**
    * ใช้เป็นคอลัมน์ "วันที่" ของตารางประวัติการต่ออายุ (ต่างจาก `startedAt`
    * ที่เป็นวันที่ของสัญญา) · แถวที่สร้างก่อน migration 1819 ได้ค่าตอน migrate
@@ -266,6 +272,27 @@ export async function buyAppHours(
   }, getToken());
 }
 
+/**
+ * **ยกเลิกสัญญา / เปิดสัญญาอีกครั้ง** — ทั้งคู่ แอป×บริษัท (`recordId` เป็นแค่
+ * ตัวชี้) · เฉพาะแอดมิน (`system.update`) · ไม่ลบข้อมูล ไม่ล้างแถวแจ้งเตือนเดิม
+ * — หลังยกเลิก cron ทั้ง 3 ตัวจะข้ามคู่นี้จนกว่าจะกดเปิดกลับ
+ */
+export async function cancelAppContract(appId: number, recordId: number): Promise<App> {
+  return apiFetch<App>(
+    `/apps/${appId}/companies/${recordId}/cancel`,
+    { method: "POST" },
+    getToken(),
+  );
+}
+
+export async function restoreAppContract(appId: number, recordId: number): Promise<App> {
+  return apiFetch<App>(
+    `/apps/${appId}/companies/${recordId}/restore`,
+    { method: "POST" },
+    getToken(),
+  );
+}
+
 export async function toggleAppActive(id: number, isActive: boolean): Promise<App> {
   return apiFetch<App>(`/apps/${id}/active`, {
     method: "PATCH",
@@ -292,18 +319,8 @@ export interface PeriodIssue {
   deductedAt: string | null;
   statusName: string | null;
   assigneeName: string | null;
-}
-
-/** งานที่แจ้งมาในรอบสัญญา แต่ **ไม่คิด MA** (`task_type <> 'ma'` หรือยังไม่ระบุ) */
-export interface ReportedIssue {
-  id: number;
-  issueNumber: string | null;
-  title: string;
-  taskType: string | null;
-  /** วันที่แจ้ง (`issues.created_at`) — ไม่ใช่วันที่กรอกชั่วโมง */
-  reportedAt: string | null;
-  statusName: string | null;
-  assigneeName: string | null;
+  /** งานหลังวันหมดอายุของสัญญา — ไม่ตัด MA (จอโชว์ "—" แทนชั่วโมง) */
+  afterExpiry?: boolean;
 }
 
 /**
@@ -327,12 +344,17 @@ export interface PeriodUsage {
   periodUsedHours: number;
   /** ชั่วโมงที่ไม่รู้ว่ากรอกตอนไหน (ข้อมูลก่อนระบบ) — pair-level */
   unattributedHours: number;
+  /** สูตร MA ล้วน (ใช้กับ "ใช้ไป/คงเหลือ" เหมือนเดิม) */
   count: number;
   issues: PeriodIssue[];
-  /** จำนวนงานที่แจ้งในรอบนี้ (ไม่คิด MA) — คนละชุดกับ `count` */
-  reportedCount: number;
-  /** รายการงานที่แจ้งในรอบนี้ (ไม่คิด MA) */
-  reportedIssues: ReportedIssue[];
+  /** จำนวนงานที่จะโชว์ในป๊อปอัพ (ทุกประเภทที่เสร็จแล้ว + กรอกเวลาแล้ว) */
+  listedCount?: number;
+  /** รายการงานที่จะโชว์ในป๊อปอัพ (ทุกประเภท) — คนละชุดกับ `issues` */
+  listedIssues?: PeriodIssue[];
+  /** จำนวนงานหลังหมดอายุ — โชว์เป็น "รายการช่วงหมดอายุ" */
+  afterExpiryCount?: number;
+  /** รายการหลังหมดอายุ (ไม่ตัด MA) */
+  afterExpiryIssues?: PeriodIssue[];
 }
 
 /**
@@ -363,10 +385,12 @@ export interface UsageCount {
    */
   byType?: TaskTypeCounts;
   /**
-   * จำนวนงานที่แจ้งในรอบนี้ (ไม่คิด MA) — ผูกตามวันที่แจ้ง · `optional` เผื่อ web
-   * deploy เร็วกว่า api → โชว์ `—` ห้ามเดาเป็น 0
+   * จำนวนงานที่จะโชว์ในป๊อปอัพ (ทุกประเภทที่เสร็จแล้ว + กรอกเวลาแล้ว) ·
+   * `optional` เผื่อ web deploy เร็วกว่า api → โชว์ `—` ห้ามเดาเป็น 0
    */
-  reportedCount?: number;
+  listedCount?: number;
+  /** จำนวนงานหลังหมดอายุของรอบล่าสุด — ใช้สร้าง "รายการช่วงหมดอายุ" ในรายงาน */
+  afterExpiryCount?: number;
 }
 
 /**

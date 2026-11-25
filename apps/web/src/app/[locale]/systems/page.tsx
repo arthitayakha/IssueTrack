@@ -51,11 +51,13 @@ import ContactCustomerDialog, {
 } from "@/components/notifications/contact-customer-dialog";
 import ManageContactsDialog from "@/components/manage-contacts-dialog";
 import {
+  cancelAppContract,
   deleteAppPeriod,
   deleteAppRecord,
   fetchCompanies,
   fetchSystemsApps,
   fetchUsageCounts,
+  restoreAppContract,
   type App,
   type AppCompanyLink,
   type Company,
@@ -70,10 +72,7 @@ import {
   type ExpiryStatus,
 } from "@/lib/app-expiry";
 import { MA_DEDUCTION_PAUSED, pairKey, periodUsedOf } from "@/lib/reports-api";
-import {
-  FALLBACK_HELP_CENTER_CONTACT,
-  fetchHelpCenterContact,
-} from "@/lib/help-center-api";
+import { fetchHelpCenterContact } from "@/lib/help-center-api";
 
 /**
  * 1 แถวในตาราง = **1 คู่ แอป×บริษัท** — โชว์เฉพาะ **ช่วงเวลาล่าสุด** ของคู่นั้น
@@ -231,6 +230,17 @@ export default function SystemsPage() {
     recordId: number;
     label: string;
     n: number;
+  } | null>(null);
+
+  /**
+   * กล่องยืนยัน**ยกเลิกสัญญา** (ทั้งคู่ แอป×บริษัท) — `restore` ไม่ผ่านกล่องนี้
+   * (กดปุ่ม "เปิดสัญญาอีกครั้ง" = ย้อนทันทีเหมือนปุ่มใน toast หลังยกเลิก)
+   */
+  const [contractTarget, setContractTarget] = useState<{
+    appId: number;
+    recordId: number;
+    label: string;
+    mode: "cancel" | "restore";
   } | null>(null);
 
   /** แถวกำลัง**ต่ออายุ** (null = ปิดฟอร์ม) — ปุ่มขึ้นเฉพาะช่วงที่หมดอายุแล้ว (ดู `canRenew()`) */
@@ -416,7 +426,7 @@ export default function SystemsPage() {
    * แต่ปุ่มยังไม่โผล่ · บวกต้องมีสิทธิ์แก้ข้อมูลระบบด้วย
    */
   function canRenew(row: SystemRow): boolean {
-    if (!canUpdate) return false;
+    if (!canUpdate || row.link.cancelledAt) return false;
     const daysLeft = daysLeftIso(row.link.expiresAt ?? "");
     return row.link.expiryStatus === "expired" || (daysLeft !== null && daysLeft <= 0);
   }
@@ -436,7 +446,7 @@ export default function SystemsPage() {
    * ซื้อแล้ว `maHours` มากขึ้น → คงเหลือ > 0 → ปุ่มหายเองในโหลดถัดไป
    */
   function canBuyHours(row: SystemRow): boolean {
-    if (!canUpdate || usageStatus !== "ready") return false;
+    if (!canUpdate || usageStatus !== "ready" || row.link.cancelledAt) return false;
     if (row.link.expiryStatus === "expired") return false;
     const ma = row.link.maHours;
     if (ma == null) return false;
@@ -500,6 +510,57 @@ export default function SystemsPage() {
       setUndoTarget(null);
       // ตาราง + "ใช้ไป"รายรอบ + ป๊อปอัพ detail derive จาก `apps` ทั้งหมด →
       // ดึงใหม่แล้วช่วงก่อนหน้ากลับเป็น latest เอง (คอลัมน์/ชิป/ปุ่มตาม)
+      await loadApps();
+    } catch (err) {
+      notify(err instanceof ApiError ? err.message : t("genericError"), "error");
+    }
+  }
+
+  /**
+   * **ยกเลิกสัญญา** — ทั้งคู่ แอป×บริษัท (`recordId` เป็นแค่ตัวชี้) · แอดมิน
+   * (`system.update`) กดแทนลูกค้า · เปิดกล่องยืนยันก่อน (ต่างจากปุ่มใน toast
+   * ที่เป็นการย้อนสิ่งที่เพิ่งทำเมื่อกี้ → กดได้เลย)
+   */
+  function handleCancelContract(row: SystemRow) {
+    if (!canUpdate) return;
+    setContractTarget({
+      appId: row.app.id,
+      recordId: row.link.recordId,
+      label: `${row.app.name} — ${row.link.name}`,
+      mode: "cancel",
+    });
+  }
+
+  /** **เปิดสัญญาอีกครั้ง** — ย้อนทันที ไม่ยืนยัน (กลับสภาพเดิมเป๊ะ รวม latch เดิม) */
+  async function restoreContract(appId: number, recordId: number) {
+    try {
+      await restoreAppContract(appId, recordId);
+      notify(t("restoreContractSuccess"));
+      await loadApps();
+    } catch (err) {
+      notify(err instanceof ApiError ? err.message : t("genericError"), "error");
+    }
+  }
+
+  function handleRestoreContract(row: SystemRow) {
+    if (!canUpdate) return;
+    void restoreContract(row.app.id, row.link.recordId);
+  }
+
+  async function confirmContract() {
+    const target = contractTarget;
+    if (!target) return;
+    try {
+      await cancelAppContract(target.appId, target.recordId);
+      setContractTarget(null);
+      // ปุ่ม "เปิดสัญญาอีกครั้ง" แนบใน toast 8 วิ (ทางอื่น = ปุ่มถาวรในตาราง/
+      // ป๊อปอัพ) · แถวแจ้งเตือนที่ส่งไปแล้วปล่อยไว้ — หยุดเฉพาะอันใหม่
+      notify(t("cancelContractSuccess"), "success", {
+        label: t("restoreContract"),
+        onClick: () => {
+          void restoreContract(target.appId, target.recordId);
+        },
+      });
       await loadApps();
     } catch (err) {
       notify(err instanceof ApiError ? err.message : t("genericError"), "error");
@@ -574,20 +635,8 @@ export default function SystemsPage() {
       companyName: detailRow?.link.name ?? "",
     };
     void fetchHelpCenterContact()
-      .then((info) =>
-        setContactTarget(
-          info.contacts.length > 0
-            ? { ...label, contacts: info.contacts }
-            : { ...label, contacts: [], central: info },
-        ),
-      )
-      .catch(() =>
-        setContactTarget({
-          ...label,
-          contacts: [],
-          central: FALLBACK_HELP_CENTER_CONTACT,
-        }),
-      );
+      .then((info) => setContactTarget({ ...label, contacts: info.contacts }))
+      .catch(() => setContactTarget({ ...label, contacts: [] }));
   }
 
   /**
@@ -931,8 +980,12 @@ export default function SystemsPage() {
                     {/* สถานะอายุของ **แถวนั้น** (เก็บไว้รายช่วงเวลา) */}
                     <DataTableCell align="center">
                       <Chip
-                        label={expiryChipText(link.expiryStatus, link.expiresAt)}
-                        color={expiryColor(link.expiryStatus)}
+                        label={
+                          link.cancelledAt
+                            ? t("contractCancelled")
+                            : expiryChipText(link.expiryStatus, link.expiresAt)
+                        }
+                        color={link.cancelledAt ? "default" : expiryColor(link.expiryStatus)}
                         size="small"
                         variant="outlined"
                       />
@@ -965,6 +1018,29 @@ export default function SystemsPage() {
                           {t("renew")}
                         </Button>
                       )}
+                      {/* ยกเลิก/เปิดสัญญา — แอดมิน (`system.update`) เท่านั้น ·
+                          คู่ที่ยกเลิกแล้วซ่อนซื้อ/ต่ออายุ (ดู can* ด้านบน) */}
+                      {canUpdate &&
+                        (link.cancelledAt ? (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={() => handleRestoreContract(row)}
+                            sx={{ mr: 1, textTransform: "none", whiteSpace: "nowrap" }}
+                          >
+                            {t("restoreContract")}
+                          </Button>
+                        ) : (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="error"
+                            onClick={() => handleCancelContract(row)}
+                            sx={{ mr: 1, textTransform: "none", whiteSpace: "nowrap" }}
+                          >
+                            {t("cancelContract")}
+                          </Button>
+                        ))}
                       <Tooltip title={t("viewDetail")}>
                         <IconButton
                           size="small"
@@ -1061,6 +1137,13 @@ export default function SystemsPage() {
           }}
           canUndo={canUpdate || canDelete}
           onUndo={handleUndoRecord}
+          canCancel={canUpdate}
+          onCancel={() => {
+            if (detailRow) handleCancelContract(detailRow);
+          }}
+          onRestore={() => {
+            if (detailRow) handleRestoreContract(detailRow);
+          }}
           onContactAdmin={roleName === "customer" ? openContactAdmin : undefined}
           onClose={() => setDetailKey(null)}
         />
@@ -1073,7 +1156,7 @@ export default function SystemsPage() {
           onClose={() => setContactTarget(null)}
         />
 
-        {/* จัดการผู้ติดต่อ — แอดมินเลือกโปรแกรมเมอร์หลายคน + แก้ข้อมูลกลาง */}
+        {/* จัดการผู้ติดต่อ — กดแก้ไขรายบริษัท → กดเสร็จ = เซฟทันที (ไม่มีปุ่มบันทึกแยก) */}
         <ManageContactsDialog
           open={manageContactsOpen}
           onClose={() => setManageContactsOpen(false)}
@@ -1149,6 +1232,29 @@ export default function SystemsPage() {
             <Button onClick={() => setUndoTarget(null)}>{t("cancel")}</Button>
             <Button variant="contained" onClick={confirmUndo}>
               {t("undo")}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* ยืนยัน **ยกเลิกสัญญา** — ไม่ลบข้อมูล/ประวัติ แค่หยุดแจ้งเตือนของคู่
+            กดเปิดกลับได้จาก toast หลังยกเลิกหรือปุ่มถาวรในตาราง/ป๊อปอัพ */}
+        <Dialog
+          open={contractTarget?.mode === "cancel"}
+          onClose={() => setContractTarget(null)}
+          maxWidth="xs"
+        >
+          <DialogTitle>{t("cancelContractConfirmTitle")}</DialogTitle>
+          <DialogContent>
+            {contractTarget && (
+              <Typography variant="body2">
+                {t("cancelContractConfirmMessage", { name: contractTarget.label })}
+              </Typography>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setContractTarget(null)}>{t("cancel")}</Button>
+            <Button variant="contained" color="error" onClick={confirmContract}>
+              {t("cancelContract")}
             </Button>
           </DialogActions>
         </Dialog>

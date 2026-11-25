@@ -1,21 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  Autocomplete,
+  Avatar,
   Box,
   Button,
   Chip,
   Dialog,
-  DialogActions,
   DialogContent,
   DialogTitle,
   IconButton,
-  Switch,
+  Popover,
   TextField,
   Typography,
 } from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
+import CheckIcon from "@mui/icons-material/Check";
 import CloseIcon from "@mui/icons-material/Close";
+import EditIcon from "@mui/icons-material/Edit";
 import { useTranslations } from "next-intl";
 import { errorMessage } from "@/lib/api";
 import { fetchCompanies } from "@/lib/apps-api";
@@ -26,14 +28,61 @@ import {
 } from "@/lib/help-center-api";
 import type { ContractContact } from "@/lib/notifications-api";
 import { useNotification } from "@/components/notification";
-import {
-  appDialogContentSizing,
-  appDialogPaperSx,
-  appDialogSx,
-} from "@/components/common/dialog-style";
+import { appDialogContentSizing } from "@/components/common/dialog-style";
 
-/** map company id → programmer id[] · ไม่มี key = ใช้รายชื่อหลัก (global fallback) */
+/** map company id → programmer id[] · ไม่มี key = บริษัทนั้นไม่มีผู้ติดต่อ */
 type CompanyContacts = Record<string, number[]>;
+
+/**
+ * ขนาดของ dialog นี้ **ไม่ใช้** `appDialogPaperSx` ที่ล็อก shared 560×480
+ * (popup อื่นต้องไม่กระทบ) — ล็อกเฉพาะที่นี่ให้กว้างขึ้นตามที่ต้องการ
+ */
+const DIALOG_WIDTH = 860;
+const DIALOG_HEIGHT = 640;
+const dialogSize = {
+  width: `${DIALOG_WIDTH}px`,
+  height: `${DIALOG_HEIGHT}px`,
+  minWidth: `${DIALOG_WIDTH}px`,
+  maxWidth: `${DIALOG_WIDTH}px`,
+  minHeight: `${DIALOG_HEIGHT}px`,
+  maxHeight: `${DIALOG_HEIGHT}px`,
+  flexShrink: 0,
+  flexGrow: 0,
+  overflow: "hidden",
+  resize: "none",
+  borderRadius: 3,
+};
+const localPaperSx = dialogSize;
+const localDialogSx = {
+  "& .MuiDialog-paper": {
+    ...dialogSize,
+    width: `${DIALOG_WIDTH}px !important`,
+    height: `${DIALOG_HEIGHT}px !important`,
+    minWidth: `${DIALOG_WIDTH}px !important`,
+    maxWidth: `${DIALOG_WIDTH}px !important`,
+    minHeight: `${DIALOG_HEIGHT}px !important`,
+    maxHeight: `${DIALOG_HEIGHT}px !important`,
+  },
+};
+
+/** วงกลมอักษรย่อ — ดึงสีจาก theme เสมอ (ห้าม hardcode hex) */
+const AVATAR_COLORS = [
+  "primary.main",
+  "info.main",
+  "success.main",
+  "warning.main",
+  "secondary.main",
+];
+
+function initials(name: string): string {
+  return name
+    .trim()
+    .split(/\s+/)
+    .map((part) => part.charAt(0))
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
 
 function namesOf(ids: number[], programmers: ContractContact[]) {
   return ids
@@ -42,10 +91,13 @@ function namesOf(ids: number[], programmers: ContractContact[]) {
 }
 
 /**
- * "จัดการผู้ติดต่อ" — แอดมินกำหนดโปรแกรมเมอร์ที่ลูกค้าเห็นบน `/systems`
- * - รายชื่อหลัก = ทุกบริษัทที่ยังไม่ได้กำหนดเอง (global fallback)
- * - เปิดสวิตซ์บริษัทไหน → กำหนดชุดของบริษัทนั้นต่างหาก (array ว่าง = ใช้ข้อมูลกลาง)
- * บันทึกทั้งหมดครั้งเดียว พร้อมข้อมูลติดต่อกลาง
+ * "จัดการผู้ติดต่อ" — แอดมินเลือกเองรายบริษัทว่าโปรแกรมเมอร์คนไหนที่ลูกค้าเห็น
+ * โหมดอ่าน = การ์ดโปรไฟล์ + ปุ่ม "แก้ไข"; โหมดแก้ไข = chip + "+" ที่เปิด popover
+ * เลือก/ลบคนแบบเดียวกับหน้า /boards · **ไม่มีรายชื่อหลัก/ข้อมูลติดต่อกลาง**
+ *
+ * **ไม่มีปุ่ม "บันทึก" ท้ายป๊อปอัพ** (ผู้ใช้: "จะให้มีปุ่มบันทึกทำไมหล่ะ") —
+ * การกด **"เสร็จ"** ของการ์ดนั้นคือการเซฟทันที (PATCH ทั้ง map) · กดปิด ✎
+ * ตอนยังแก้ไม่เสร็จ = ทิ้ง draft การ์ดนั้น (ไม่เขียนโดยไม่รู้ตัว)
  */
 export default function ManageContactsDialog({
   open,
@@ -57,23 +109,32 @@ export default function ManageContactsDialog({
   onSaved?: () => void;
 }) {
   const t = useTranslations("SystemReports");
+  const tb = useTranslations("Boards.detail");
   const { notify } = useNotification();
   const [programmers, setProgrammers] = useState<ContractContact[]>([]);
   const [companies, setCompanies] = useState<{ id: number; name: string }[]>([]);
-  const [draft, setDraft] = useState({
-    supportEmail: "",
-    supportPhone: "",
-    workingHours: "",
-    contactUserIds: [] as number[],
-    contactUsersByCompany: {} as CompanyContacts,
-  });
+  const [draft, setDraft] = useState<CompanyContacts>({});
+  const [editingCompanyId, setEditingCompanyId] = useState<number | null>(null);
+  const [memberPicker, setMemberPicker] = useState<{
+    companyId: number;
+    anchor: HTMLElement;
+  } | null>(null);
+  const [memberSearch, setMemberSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  /** มีการแก้ draft ยังไม่เซฟหรือไม่ — ใช้กันปิดป๊อปอัพแล้วทิ้งของที่แก้ไว้ */
+  const [dirty, setDirty] = useState(false);
+  /** config ล่าสุดที่เซฟสำเร็จ — ใช้คืนค่าเมื่อกดปิดโดยยังไม่กด "เสร็จ" */
+  const savedRef = useRef<CompanyContacts>({});
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setLoading(true);
+    setEditingCompanyId(null);
+    setMemberPicker(null);
+    setMemberSearch("");
+    setDirty(false);
     void Promise.all([
       fetchProgrammerContacts(),
       fetchHelpCenterContactConfig(),
@@ -83,13 +144,8 @@ export default function ManageContactsDialog({
         if (cancelled) return;
         setProgrammers(people);
         setCompanies(companyPage.data.map((c) => ({ id: c.id, name: c.name })));
-        setDraft({
-          supportEmail: contact.supportEmail,
-          supportPhone: contact.supportPhone,
-          workingHours: contact.workingHours,
-          contactUserIds: contact.contactUserIds,
-          contactUsersByCompany: contact.contactUsersByCompany,
-        });
+        setDraft(contact.contactUsersByCompany);
+        savedRef.current = contact.contactUsersByCompany;
       })
       .catch(() => {
         if (!cancelled) notify(t("manageContactsLoadError"), "error");
@@ -103,45 +159,79 @@ export default function ManageContactsDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once per open; `notify` from context is not a stable dep
   }, [open]);
 
-  const selected = namesOf(draft.contactUserIds, programmers);
-
-  function setCompanyIds(key: string, ids: number[]) {
-    setDraft((d) => ({
-      ...d,
-      contactUsersByCompany: { ...d.contactUsersByCompany, [key]: ids },
-    }));
-  }
-
-  function toggleCompany(key: string, on: boolean) {
-    setDraft((d) => {
-      const next = { ...d.contactUsersByCompany };
-      if (on) next[key] = [];
-      else delete next[key];
-      return { ...d, contactUsersByCompany: next };
-    });
-  }
-
-  async function save() {
+  /**
+   * กด **"เสร็จ"** = เซฟทันที · API แทนที่ทั้ง map จึงส่ง `draft` ทั้งแผนที่
+   * (ใช้ค่าที่ตอบกลับเพราะเซิร์ฟเวอร์ normalise รายการที่กรอกไม่ถูกต้องอยู่แล้ว)
+   * พัง → แจ้งเตือนและ **ค้างในโหมดแก้ไข** ไม่หลุดกลับไปโชว์ข้อมูลเก่า
+   */
+  async function commit(): Promise<boolean> {
+    if (saving) return false;
     setSaving(true);
     try {
-      await updateHelpCenterContact(draft);
+      const saved = await updateHelpCenterContact({ contactUsersByCompany: draft });
+      setDraft(saved.contactUsersByCompany);
+      savedRef.current = saved.contactUsersByCompany;
+      setDirty(false);
       notify(t("manageContactsSaved"), "success");
       onSaved?.();
-      onClose();
+      return true;
     } catch (e) {
       notify(errorMessage(e, t("manageContactsSaveError")), "error");
+      return false;
     } finally {
       setSaving(false);
     }
   }
 
+  /** ปิดด้วย ✎ / ESC / backdrop — ยังแก้ไม่เสร็จ = ทิ้ง draft (ไม่เขียนโดยไม่รู้ตัว) */
+  function handleClose() {
+    if (saving) return;
+    if (dirty) {
+      setDraft(savedRef.current);
+      setDirty(false);
+    }
+    setEditingCompanyId(null);
+    setMemberPicker(null);
+    setMemberSearch("");
+    onClose();
+  }
+
+  async function toggleEdit(companyId: number) {
+    if (saving) return;
+    if (editingCompanyId === companyId) {
+      // "เสร็จ" = เซฟทันที (ไม่มีปุ่มบันทึกแยกท้ายป๊อปอัพ)
+      if (dirty && !(await commit())) return;
+      setEditingCompanyId(null);
+      setMemberPicker(null);
+      setMemberSearch("");
+      return;
+    }
+    // ย้ายไปการ์ดอื่นโดยการ์ดเดิมยังแก้ค้างอยู่ → เซฟก่อน ไม่งั้นของที่แก้หาย
+    if (editingCompanyId !== null && dirty && !(await commit())) return;
+    setEditingCompanyId(companyId);
+    setMemberPicker(null);
+    setMemberSearch("");
+  }
+
+  function addCompanyId(key: string, id: number) {
+    if ((draft[key] ?? []).includes(id)) return;
+    setDraft((d) => ({ ...d, [key]: [...(d[key] ?? []), id] }));
+    setDirty(true);
+  }
+
+  function removeCompanyId(key: string, id: number) {
+    if (!(draft[key] ?? []).includes(id)) return;
+    setDraft((d) => ({ ...d, [key]: (d[key] ?? []).filter((x) => x !== id) }));
+    setDirty(true);
+  }
+
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       maxWidth={false}
-      PaperProps={{ sx: appDialogPaperSx }}
-      sx={appDialogSx}
+      PaperProps={{ sx: localPaperSx }}
+      sx={localDialogSx}
     >
       <DialogTitle
         sx={{
@@ -160,65 +250,12 @@ export default function ManageContactsDialog({
             {t("manageContactsHint")}
           </Typography>
         </Box>
-        <IconButton size="small" onClick={onClose} aria-label={t("cancel")}>
+        <IconButton size="small" onClick={handleClose} aria-label={t("cancel")}>
           <CloseIcon fontSize="small" />
         </IconButton>
       </DialogTitle>
       <DialogContent dividers sx={appDialogContentSizing}>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {/* รายชื่อหลัก — ใช้กับบริษัทที่ยังไม่ได้เปิด "กำหนดเอง" */}
-          <Autocomplete
-            multiple
-            options={programmers}
-            value={selected}
-            loading={loading}
-            getOptionLabel={(p) => p.name}
-            isOptionEqualToValue={(a, b) => a.userId === b.userId}
-            onChange={(_, value) =>
-              setDraft((d) => ({ ...d, contactUserIds: value.map((p) => p.userId) }))
-            }
-            renderOption={(props, option) => {
-              const { key, ...rest } = props as typeof props & { key?: string };
-              return (
-                <Box
-                  component="li"
-                  key={option.userId}
-                  {...rest}
-                  sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}
-                >
-                  <Typography variant="body2" fontWeight={600}>
-                    {option.name}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {option.email || "—"}
-                  </Typography>
-                </Box>
-              );
-            }}
-            renderTags={(value, getTagProps) =>
-              value.map((option, index) => {
-                const { key, ...rest } = getTagProps({ index });
-                return (
-                  <Chip
-                    key={key ?? option.userId}
-                    {...rest}
-                    label={option.name}
-                    size="small"
-                  />
-                );
-              })
-            }
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label={t("contactProgrammers")}
-                placeholder={t("contactProgrammersPlaceholder")}
-                helperText={t("contactProgrammersHint")}
-              />
-            )}
-          />
-
-          {/* กำหนดต่างหากต่อบริษัท — ปิดสวิตซ์ = ใช้รายชื่อหลักด้านบน */}
           <Box>
             <Typography variant="subtitle2" fontWeight={700}>
               {t("contactCompanyTitle")}
@@ -226,134 +263,232 @@ export default function ManageContactsDialog({
             <Typography variant="body2" color="text.secondary" sx={{ mt: -0.5 }}>
               {t("contactCompanyHint")}
             </Typography>
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25, mt: 1.5 }}>
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, mt: 1.5 }}>
               {companies.map((c) => {
                 const key = String(c.id);
-                const scoped = Object.prototype.hasOwnProperty.call(
-                  draft.contactUsersByCompany,
-                  key,
-                );
-                const ids = scoped ? draft.contactUsersByCompany[key] : [];
+                const ids = draft[key] ?? [];
                 const value = namesOf(ids, programmers);
+                const editing = editingCompanyId === c.id;
+                const query = memberSearch.trim().toLowerCase();
+                const matches = (p: ContractContact) =>
+                  !query ||
+                  p.name.toLowerCase().includes(query) ||
+                  (p.email ?? "").toLowerCase().includes(query);
+                const selectedShown = value.filter(matches);
+                const availableShown = programmers.filter(
+                  (p) => !ids.includes(p.userId) && matches(p),
+                );
                 return (
                   <Box
                     key={c.id}
-                    sx={{
-                      border: 1,
-                      borderColor: scoped ? "primary.main" : "divider",
-                      borderRadius: 2,
-                      p: 1.5,
-                    }}
+                    sx={{ border: 1, borderColor: "divider", borderRadius: 2, p: 1.75 }}
                   >
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                      <Typography variant="body2" fontWeight={700} sx={{ flex: 1 }}>
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.25 }}>
+                      <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1 }}>
                         {c.name}
                       </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {scoped ? t("contactCompanyCustom") : t("contactCompanyUseGlobal")}
-                      </Typography>
-                      <Switch
+                      <Button
                         size="small"
-                        checked={scoped}
-                        onChange={(e) => toggleCompany(key, e.target.checked)}
-                        inputProps={{ "aria-label": c.name }}
-                      />
+                        variant="text"
+                        startIcon={editing ? <CheckIcon /> : <EditIcon />}
+                        onClick={() => void toggleEdit(c.id)}
+                        disabled={loading || saving}
+                      >
+                        {editing ? t("contactDone") : t("contactEdit")}
+                      </Button>
                     </Box>
-                    {scoped && (
-                      <Autocomplete
-                        multiple
-                        options={programmers}
-                        value={value}
-                        loading={loading}
-                        getOptionLabel={(p) => p.name}
-                        isOptionEqualToValue={(a, b) => a.userId === b.userId}
-                        onChange={(_, v) => setCompanyIds(key, v.map((p) => p.userId))}
-                        renderTags={(value, getTagProps) =>
-                          value.map((option, index) => {
-                            const { key, ...rest } = getTagProps({ index });
-                            return (
-                              <Chip
-                                key={key ?? option.userId}
-                                {...rest}
-                                label={option.name}
-                                size="small"
-                              />
-                            );
-                          })
-                        }
-                        renderInput={(params) => (
-                          <TextField
-                            {...params}
-                            size="small"
-                            label={t("contactCompanyProgrammers")}
-                            placeholder={t("contactProgrammersPlaceholder")}
-                          />
-                        )}
-                      />
-                    )}
-                  </Box>
-                );
-              })}
-              {companies.length === 0 && !loading && (
-                <Typography variant="body2" color="text.secondary">
-                  {t("contactNoCompanies")}
-                </Typography>
-              )}
-            </Box>
-          </Box>
 
-          {/* สรุปแบบอ่านอย่างเดียว — อัปเดตทันทีตอนเลือก/ลบ/เปิด-ปิดสวิตซ์ */}
-          <Box
-            sx={{
-              border: 1,
-              borderColor: "divider",
-              borderRadius: 2,
-              p: 1.5,
-              bgcolor: "action.hover",
-            }}
-          >
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mb: 1 }}
-            >
-              {t("contactVisibleToAll")}
-            </Typography>
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
-              {companies.map((c) => {
-                const key = String(c.id);
-                const scoped = Object.prototype.hasOwnProperty.call(
-                  draft.contactUsersByCompany,
-                  key,
-                );
-                const ids = scoped ? draft.contactUsersByCompany[key] : draft.contactUserIds;
-                const value = namesOf(ids, programmers);
-                return (
-                  <Box
-                    key={c.id}
-                    sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}
-                  >
-                    <Typography variant="body2" fontWeight={700}>
-                      {c.name}:
-                    </Typography>
-                    {value.length > 0 ? (
-                      value.map((p) => (
-                        <Chip
-                          key={p.userId}
-                          size="small"
-                          variant="outlined"
-                          color="primary"
-                          label={p.name}
-                        />
-                      ))
+                    {editing ? (
+                      <>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                          {value.map((p) => (
+                            <Chip
+                              key={p.userId}
+                              size="small"
+                              label={p.name}
+                              onDelete={() => removeCompanyId(key, p.userId)}
+                              disabled={loading || saving}
+                            />
+                          ))}
+                          <IconButton
+                            size="small"
+                            aria-label={tb("addMembers")}
+                            onClick={(e) => {
+                              setMemberSearch("");
+                              setMemberPicker({ companyId: c.id, anchor: e.currentTarget });
+                            }}
+                            sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}
+                          >
+                            <AddIcon fontSize="small" />
+                          </IconButton>
+                        </Box>
+                        <Popover
+                          open={memberPicker?.companyId === c.id}
+                          anchorEl={memberPicker?.anchor ?? null}
+                          onClose={() => setMemberPicker(null)}
+                          anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+                          transformOrigin={{ vertical: "top", horizontal: "left" }}
+                          PaperProps={{
+                            sx: {
+                              width: 280,
+                              p: 1.5,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 1,
+                            },
+                          }}
+                        >
+                          <TextField
+                            size="small"
+                            placeholder={tb("searchMembers")}
+                            value={memberSearch}
+                            onChange={(e) => setMemberSearch(e.target.value)}
+                            autoFocus
+                          />
+                          <Box>
+                            <Typography variant="caption" color="text.secondary">
+                              {t("contactMembersInCompany")}
+                            </Typography>
+                            {selectedShown.length === 0 ? (
+                              <Typography variant="caption" color="text.secondary">
+                                {tb("noMembers")}
+                              </Typography>
+                            ) : (
+                              selectedShown.map((p) => (
+                                <Box
+                                  key={p.userId}
+                                  sx={{ display: "flex", alignItems: "center", gap: 0.75, p: 0.5 }}
+                                >
+                                  <Avatar
+                                    sx={{
+                                      width: 28,
+                                      height: 28,
+                                      fontSize: "0.7rem",
+                                      fontWeight: 700,
+                                      bgcolor: AVATAR_COLORS[
+                                        programmers.findIndex((x) => x.userId === p.userId) %
+                                          AVATAR_COLORS.length
+                                      ],
+                                      color: "background.paper",
+                                    }}
+                                  >
+                                    {initials(p.name)}
+                                  </Avatar>
+                                  <Typography variant="body2" sx={{ flex: 1 }}>
+                                    {p.name}
+                                  </Typography>
+                                  <IconButton
+                                    size="small"
+                                    disabled={loading || saving}
+                                    onClick={() => removeCompanyId(key, p.userId)}
+                                    aria-label={t("cancel")}
+                                  >
+                                    <CloseIcon sx={{ fontSize: 16 }} />
+                                  </IconButton>
+                                </Box>
+                              ))
+                            )}
+                          </Box>
+                          <Box>
+                            <Typography variant="caption" color="text.secondary">
+                              {tb("addMembers")}
+                            </Typography>
+                            <Box sx={{ maxHeight: 200, overflowY: "auto" }}>
+                              {availableShown.length === 0 ? (
+                                <Typography variant="caption" color="text.secondary">
+                                  {tb("noMembers")}
+                                </Typography>
+                              ) : (
+                                availableShown.map((p) => (
+                                  <Box
+                                    key={p.userId}
+                                    onClick={() => {
+                                      if (!loading && !saving) addCompanyId(key, p.userId);
+                                    }}
+                                    sx={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 0.75,
+                                      p: 0.75,
+                                      borderRadius: 1,
+                                      cursor: loading || saving ? "default" : "pointer",
+                                      "&:hover": { bgcolor: "action.hover" },
+                                    }}
+                                  >
+                                    <Avatar
+                                      sx={{
+                                        width: 28,
+                                        height: 28,
+                                        fontSize: "0.7rem",
+                                        fontWeight: 700,
+                                        bgcolor: AVATAR_COLORS[
+                                          programmers.findIndex((x) => x.userId === p.userId) %
+                                            AVATAR_COLORS.length
+                                        ],
+                                        color: "background.paper",
+                                      }}
+                                    >
+                                      {initials(p.name)}
+                                    </Avatar>
+                                    <Typography variant="body2">{p.name}</Typography>
+                                  </Box>
+                                ))
+                              )}
+                            </Box>
+                          </Box>
+                        </Popover>
+                      </>
+                    ) : value.length > 0 ? (
+                      <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                        {value.map((p, index) => (
+                          <Box
+                            key={p.userId}
+                            sx={{
+                              display: "flex",
+                              gap: 1.5,
+                              p: 1.25,
+                              border: 1,
+                              borderColor: "divider",
+                              borderRadius: 2,
+                              bgcolor: "action.hover",
+                            }}
+                          >
+                            <Avatar
+                              sx={{
+                                width: 40,
+                                height: 40,
+                                flexShrink: 0,
+                                fontSize: 14,
+                                fontWeight: 700,
+                                bgcolor: AVATAR_COLORS[index % AVATAR_COLORS.length],
+                                color: "background.paper",
+                              }}
+                            >
+                              {initials(p.name)}
+                            </Avatar>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Typography variant="subtitle2" fontWeight={700}>
+                                {p.name}
+                              </Typography>
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                                sx={{ overflowWrap: "anywhere" }}
+                              >
+                                {p.email || "—"}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {p.phone || "—"}
+                              </Typography>
+                            </Box>
+                          </Box>
+                        ))}
+                      </Box>
                     ) : (
                       <Typography variant="body2" color="text.secondary">
                         {t("contactVisibleEmpty")}
                       </Typography>
                     )}
-                    <Typography variant="caption" color="text.secondary">
-                      ({scoped ? t("contactSummaryOverride") : t("contactSummaryGlobal")})
-                    </Typography>
                   </Box>
                 );
               })}
@@ -364,48 +499,9 @@ export default function ManageContactsDialog({
               )}
             </Box>
           </Box>
-
-          <Typography variant="subtitle2" fontWeight={700}>
-            {t("manageContactsFallbackTitle")}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: -1.5 }}>
-            {t("manageContactsFallbackHint")}
-          </Typography>
-          <TextField
-            label={t("contactEmail")}
-            value={draft.supportEmail}
-            onChange={(e) => setDraft((d) => ({ ...d, supportEmail: e.target.value }))}
-            fullWidth
-            size="small"
-          />
-          <TextField
-            label={t("contactPhone")}
-            value={draft.supportPhone}
-            onChange={(e) => setDraft((d) => ({ ...d, supportPhone: e.target.value }))}
-            fullWidth
-            size="small"
-          />
-          <TextField
-            label={t("contactWorkingHours")}
-            value={draft.workingHours}
-            onChange={(e) => setDraft((d) => ({ ...d, workingHours: e.target.value }))}
-            fullWidth
-            size="small"
-          />
         </Box>
       </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={saving}>
-          {t("cancel")}
-        </Button>
-        <Button
-          onClick={() => void save()}
-          variant="contained"
-          disabled={saving || loading}
-        >
-          {saving ? t("submitting") : t("manageContactsSave")}
-        </Button>
-      </DialogActions>
+      {/** ไม่มีท้ายป๊อปอัพ (ยกเลิก/บันทึก) — "เสร็จ" ของการ์ดคือการเซฟ */}
     </Dialog>
   );
 }
