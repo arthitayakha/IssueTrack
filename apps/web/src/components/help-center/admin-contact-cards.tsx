@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { useTranslations } from "next-intl";
-import { Avatar, Box, Chip, IconButton, Tooltip, Typography } from "@mui/material";
-import { alpha, useTheme } from "@mui/material/styles";
+import { Avatar, Box, IconButton, Tooltip, Typography } from "@mui/material";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import EmailOutlinedIcon from "@mui/icons-material/EmailOutlined";
 import LocalPhoneOutlinedIcon from "@mui/icons-material/LocalPhoneOutlined";
@@ -41,7 +40,6 @@ export default function AdminContactCards({
   emptyText?: string;
 }) {
   const t = useTranslations("Notifications");
-  const theme = useTheme();
   const [copied, setCopied] = useState<string | null>(null);
 
   function copy(value: string, key: string) {
@@ -69,17 +67,7 @@ export default function AdminContactCards({
         return (
           <Box
             key={contact.userId}
-            sx={{
-              display: "flex",
-              gap: 1.5,
-              p: 1.75,
-              border: 1,
-              borderColor: alpha(theme.palette.primary.main, 0.16),
-              borderRadius: 2,
-              bgcolor: alpha(theme.palette.primary.main, 0.04),
-              transition: "box-shadow .15s, border-color .15s",
-              "&:hover": { borderColor: "primary.main", boxShadow: theme.custom.cardShadow },
-            }}
+            sx={{ display: "flex", gap: 1.5, p: 1.25, borderRadius: 1 }}
           >
             <Avatar
               sx={{
@@ -115,8 +103,11 @@ export default function AdminContactCards({
                       <IconButton
                         size="small"
                         component="a"
-                        href={`mailto:${contact.email}`}
+                        href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(contact.email!)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         aria-label={t("contactOpenEmail")}
+                        sx={{ color: "text.secondary" }}
                       >
                         <EmailOutlinedIcon fontSize="small" />
                       </IconButton>
@@ -130,6 +121,7 @@ export default function AdminContactCards({
                         size="small"
                         onClick={() => copy(contact.email!, `e${contact.userId}`)}
                         aria-label={t("contactCopy")}
+                        sx={{ color: "text.secondary" }}
                       >
                         <ContentCopyIcon fontSize="small" />
                       </IconButton>
@@ -150,6 +142,7 @@ export default function AdminContactCards({
                       component="a"
                       href={`tel:${contact.phone}`}
                       aria-label={t("contactCall")}
+                      sx={{ color: "text.secondary" }}
                     >
                       <LocalPhoneOutlinedIcon fontSize="small" />
                     </IconButton>
@@ -160,17 +153,6 @@ export default function AdminContactCards({
           </Box>
         );
       })}
-
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mt: 0.25 }}>
-        <Chip
-          size="small"
-          label={`${contacts.length} ${t("contactCount")}`}
-          sx={{ bgcolor: alpha(theme.palette.primary.main, 0.12), color: "primary.main", fontWeight: 700 }}
-        />
-        <Typography variant="caption" color="text.secondary" sx={{ flex: 1, minWidth: 180 }}>
-          {t("contactAdminHint")}
-        </Typography>
-      </Box>
     </Box>
   );
 }

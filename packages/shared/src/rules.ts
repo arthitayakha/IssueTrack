@@ -389,7 +389,12 @@ export const RULE_ACTIONS: RuleActionDef[] = [
   {
     key: "issue.unlock",
     category: "card",
-    status: "supported",
+    // Parked on the senior's ruling: a locked column is sealed — there is no
+    // release, so a programmer cannot drag a finished card back to re-enter
+    // MA hours and drift the deducted amount. Pausing the `issue.lock` rule
+    // in the ระบบอัตโนมัติ tab is the only way out. Kept in the registry (not
+    // deleted) so the engine case, old rules and i18n keys stay valid.
+    status: "unsupported",
     label: { th: "ปลดล็อกการ์ด", en: "Unlock card" },
     description: { th: "ปลดล็อกการ์ดที่ถูกล็อกอยู่", en: "Unlock a locked card" },
   },

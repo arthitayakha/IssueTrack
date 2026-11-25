@@ -235,6 +235,20 @@ describe("getPickerActions — wizard step ② list", () => {
     }
   });
 
+  it("never offers the unlock action — a locked column has no release", () => {
+    // The senior's ruling: once a card is locked in a status (e.g. เสร็จสิ้น)
+    // it cannot be dragged back to re-enter MA hours and drift the deduction.
+    // Pausing the lock rule is the only release. The action stays in the
+    // registry so the engine case + old rules + i18n keys remain valid.
+    expect(RULE_ACTIONS.find((a) => a.key === "issue.unlock")?.status).toBe("unsupported");
+    for (const trigger of RULE_TRIGGERS) {
+      const offered = RULE_ACTION_CATEGORIES.flatMap((cat) =>
+        getPickerActions(trigger.key, cat.key).map((a) => a.key),
+      );
+      expect(offered).not.toContain("issue.unlock");
+    }
+  });
+
   it("keeps the whole supported list minus parked / incompatible entries", () => {
     const offered = RULE_ACTION_CATEGORIES.flatMap((cat) =>
       getPickerActions("issue.moved", cat.key).map((a) => a.key),

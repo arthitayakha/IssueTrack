@@ -1150,15 +1150,47 @@ export class IssuesService {
   }
 
   /**
-   * One-shot release from a status lock (`PUT /issues/:id/unlock`, the lock
-   * icon on the board's card menu): clears the per-card flag and grants
-   * `lock_exempted`, which the next successful move consumes — so moving the
-   * card into another locked status locks it again.
+   * Is this card frozen by an active `issue.lock` rule that names its status?
+   * Unlike `isMoveAllowedByLock` (which fails open so a hiccup never traps a
+   * card mid-drag), this fails **closed**: a broken lookup must never hand out
+   * a release from a sealed status.
+   */
+  private async isStatusLocked(statusId: number | null): Promise<boolean> {
+    if (statusId == null) return false;
+    try {
+      const gates = await this.rulesEngine.statusGates([statusId]);
+      return gates.locked.has(statusId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`status lock lookup failed for unlock: ${message}`);
+      return true;
+    }
+  }
+
+  /**
+   * One-shot release from a *per-card* lock (`issues.is_locked`, written by a
+   * condition-less `issue.lock` rule): clears the flag and grants
+   * `lock_exempted`, which the next successful move consumes.
+   *
+   * A card frozen by a **status** lock has no release — the senior's ruling is
+   * that a locked column is sealed, so a programmer cannot drag a finished
+   * card back to re-enter MA hours and drift the deducted amount. Pausing the
+   * lock rule (ระบบอัตโนมัติ tab) is the only way out. The endpoint used to
+   * also bypass status locks; it is now refused even for callers who hold
+   * `issue.all.update`, which is exactly why the board hides the button when
+   * no unlock rule is active.
    */
   async unlock(id: number, actor?: ActorInfo | null) {
     const issue = await this.issues.findOne({ where: { id }, relations: ISSUE_DETAIL_RELATIONS });
     if (!issue) {
       throw new NotFoundException(`Issue ${id} not found`);
+    }
+    // a per-card flag must stay releasable — it outlives pausing its rule and
+    // would otherwise leave the card stuck forever. A status gate must not.
+    if (!issue.isLocked && (await this.isStatusLocked(issue.statusId))) {
+      throw new ForbiddenException(
+        "This card is locked by a status rule — pause the lock rule to release it",
+      );
     }
     await this.issues.update(id, { isLocked: false, lockExempted: true });
     await this.logActivity({

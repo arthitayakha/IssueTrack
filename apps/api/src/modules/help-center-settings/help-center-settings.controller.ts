@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Patch, Query, UseGuards } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Permissions } from "../auth/permissions.decorator";
@@ -10,9 +10,10 @@ import { UpdateHelpCenterSettingsDto } from "./dto/help-center-settings.dto";
 /**
  * ช่องทางติดต่อที่ลูกค้าเห็น
  * - `GET contact` เปิดให้คนที่ล็อกอินอยู่ — resolve ตาม `users.company_id` ของคนเรียก
- *   (มี mapping ของบริษัทนั้น → เห็นชุดนั้น, ไม่มี → รายชื่อว่าง → ป๊อปอัพโชว์ข้อความ)
+ *   และ `?appId=` (ถ้าส่ง) ต้องเป็นแอปของบริษัทนั้นถึงจะใช้รายชื่อระดับแอป;
+ *   ไม่มี key รายแอป → ตกมาค่าบริษัท (fallback)
  * - `GET contact/config` / `GET programmers` / `PATCH contact` กันด้วย `system.update`
- *   (แอดมินกำหนดรายชื่อของทุกบริษัทได้ใน dialog เดียว)
+ *   (แอดมินกำหนดรายชื่อระดับบริษัท + รายแอปได้ใน dialog เดียว)
  *
  * ไม่มีรายชื่อหลัก/ข้อมูลติดต่อกลางแล้ว — ปุ่ม "ส่งอีเมล" เป็น `mailto:` ฝั่งเว็บ
  * ไม่มี endpoint ส่งเมลฝั่งเซิร์ฟเวอร์
@@ -22,10 +23,14 @@ import { UpdateHelpCenterSettingsDto } from "./dto/help-center-settings.dto";
 export class HelpCenterSettingsController {
   constructor(private readonly service: HelpCenterSettingsService) {}
 
-  /** รายชื่อที่คนนี้เห็นจริง (ตามบริษัทของเขา — ไม่มี mapping = รายชื่อว่าง) */
+  /**
+   * รายชื่อที่คนนี้เห็นจริง — ตามบริษัทของเขา + แอปของสัญญาที่กด (ถ้าส่ง appId)
+   * appId ที่เพี้ยน/ไม่ใช่ของบริษัทนี้ → ไม่ใช้ map รายแอป (ตกมาค่าบริษัท)
+   */
   @Get("contact")
-  contact(@CurrentUser() user: AuthUser) {
-    return this.service.get(user.companyId ?? null);
+  contact(@CurrentUser() user: AuthUser, @Query("appId") appId?: string) {
+    const parsed = appId != null && /^\d+$/.test(appId) ? Number(appId) : null;
+    return this.service.get(user.companyId ?? null, parsed != null && parsed > 0 ? parsed : null);
   }
 
   /** config ดิบสำหรับ dialog "จัดการผู้ติดต่อ" บน /systems */

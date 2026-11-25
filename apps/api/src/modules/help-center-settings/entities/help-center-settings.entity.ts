@@ -2,7 +2,8 @@ import { Column, Entity, PrimaryColumn, UpdateDateColumn } from "typeorm";
 
 /**
  * config รายชื่อผู้ติดต่อ — มีแถวเดียว (id = 1)
- * เก็บแค่ map บริษัท → โปรแกรมเมอร์ (ไม่มีรายชื่อหลัก/ข้อมูลกลางแล้ว)
+ * 2 ชั้น: map คู่แอป × บริษัท → โปรแกรมเมอร์ (เฉพาะคู่นั้น) ทับ map บริษัท → โปรแกรมเมอร์
+ * (fallback เมื่อคู่แอป×บริษัทยังไม่ได้กำหนด) · ไม่มีรายชื่อหลัก/ข้อมูลกลางแล้ว
  * แยกจากรายชื่อแอดมินรายคน (`notifications/admin-contacts`) ที่ดึงแบบ live
  */
 @Entity("help_center_settings")
@@ -16,6 +17,13 @@ export class HelpCenterSettings {
    */
   @Column({ name: "contact_users_by_company", type: "jsonb", default: () => "'{}'" })
   contactUsersByCompany!: Record<string, number[]>;
+
+  /**
+   * map `app_id:company_id (string)` → รายชื่อ user id ของคู่นั้น (ทับค่าบริษัท)
+   * **ไม่มี key = ตกมาคนระดับบริษัท** แต่ array ว่าง = ตั้งใจไม่มีคนสำหรับคู่นี้
+   */
+  @Column({ name: "contact_users_by_app", type: "jsonb", default: () => "'{}'" })
+  contactUsersByApp!: Record<string, number[]>;
 
   @UpdateDateColumn({ name: "updated_at" })
   updatedAt!: Date;

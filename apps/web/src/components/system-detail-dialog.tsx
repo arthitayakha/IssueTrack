@@ -100,7 +100,11 @@ export default function SystemDetailDialog({
   canUndo,
   /** ย้อนกลับช่วง `recordId` ที่กด — ผู้เรียก (`/systems`) เปิดกล่องยืนยันเอง */
   onUndo,
-  /** แอดมิน (`system.update`) เท่านั้น — โชว์ปุ่มยกเลิก/เปิดสัญญาทั้งคู่ */
+  /**
+   * โชว์ปุ่มยกเลิก/เปิดสัญญาทั้งคู่ — ผู้เรียกส่ง `true` ก็ต่อเมื่อมี `system.update`
+   * และ **MA หมด** (หรือคู่นี้ยกเลิกแล้ว → โชว์ปุ่มเปิดกลับเสมอ ต้องมีทางกู้คืน)
+   * ปุ่มยกเลิกถูกย้ายออกจากตาราง `/systems` มาไว้ในป๊อปอัพนี้เท่านั้น
+   */
   canCancel,
   /** ยกเลิกสัญญาทั้งคู่ — ผู้เรียก (`/systems`) เปิดกล่องยืนยันเอง */
   onCancel,
@@ -397,38 +401,56 @@ export default function SystemDetailDialog({
                 สัญญาหมดอายุมาที่นี่แล้วต้องมีช่องทางติดต่อโดยไม่ต้องปิดป๊อปอัพ
                 ไปหาศูนย์ช่วยเหลือเอง · **ซื้อชั่วโมง** อยู่ในป๊อปอัพด้วยตามคำสั่ง
                 ล่าสุด (แถวคงเหลือ ≤ 0 เหมือนปุ่มในตาราง) · ซื้อกับต่ออายุไม่มีทาง
-                โผล่พร้อมกัน (เงื่อนไข expiry ตรงข้ามกัน) · ซ่อนระหว่างดู "รายการที่ตัด" ---- */}
+                โผล่พร้อมกัน (เงื่อนไข expiry ตรงข้ามกัน) · ซ่อนระหว่างดู "รายการที่ตัด" ·
+                **ปุ่มหลักวางแถวเดียวกัน ขนาดเท่ากัน** (ซื้อ/ต่ออายุซ้าย → ยกเลิกขวา)
+                ส่วนติดต่อแอดมินเป็นปุ่มรองอยู่คนละแถว ---- */}
             {!deductionsTarget && (canBuyHours || canRenew || canCancel || onContactAdmin) && (
               <>
                 {/* `my: 1` (จาก 1.5) — เผื่อที่ให้กล่องเนื้อหาด้านบนเลื่อนได้เต็มที่ */}
                 <Divider sx={{ my: 1 }} />
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
                   {canBuyHours && (
-                    <Button variant="outlined" fullWidth onClick={onBuyHours}>
+                    <Button variant="outlined" sx={{ flex: 1, minWidth: 120 }} onClick={onBuyHours}>
                       {t("buyHours")}
                     </Button>
                   )}
                   {canRenew && (
-                    <Button variant="outlined" fullWidth onClick={onRenew}>
+                    <Button variant="outlined" sx={{ flex: 1, minWidth: 120 }} onClick={onRenew}>
                       {t("renewAction")}
                     </Button>
                   )}
-                  {/* **ยกเลิกสัญญา / เปิดสัญญาอีกครั้ง** — ปุ่มถาวรของแอดมิน
-                      (อีกทางคือ toast หลังกดยกเลิก) · ยกเลิก = ทั้งคู่ ไม่ลบข้อมูล */}
+                  {/* **ยกเลิกสัญญา / เปิดสัญญาอีกครั้ง** — ปุ่มของแอดมินเฉพาะใน
+                      ป๊อปอัพนี้ (ไม่มีในตาราง) · `canCancel` จากผู้เรียก true
+                      เฉพาะตอน MA หมด หรือคู่ที่ยกเลิกแล้ว (ปุ่มเปิดกลับ) ·
+                      อีกทางกู้คืนคือ toast หลังกดยกเลิก · ไม่ลบข้อมูล */}
                   {canCancel &&
                     (contractCancelled ? (
-                      <Button variant="outlined" fullWidth onClick={onRestore}>
+                      <Button
+                        variant="outlined"
+                        sx={{ flex: 1, minWidth: 120 }}
+                        onClick={onRestore}
+                      >
                         {t("restoreContract")}
                       </Button>
                     ) : (
-                      <Button variant="outlined" fullWidth color="error" onClick={onCancel}>
+                      <Button
+                        variant="outlined"
+                        color="error"
+                        sx={{ flex: 1, minWidth: 120 }}
+                        onClick={onCancel}
+                      >
                         {t("cancelContract")}
                       </Button>
                     ))}
                   {/* เฉพาะแท็บ "ข้อมูลทั่วไป" (วันที่หมดอายุ + MA) — ไม่โชว์
-                      ในแท็บประวัติ · ไม่ใส่ไอคอนตามคำสั่ง */}
+                      ในแท็บประวัติ · ไม่ใส่ไอคอนตามคำสั่ง · ปุ่มรองจึงขึ้น
+                      คนละแถวด้านล่าง (`flexBasis: "100%"`) */}
                   {onContactAdmin && tab === 0 && (
-                    <Button variant="text" fullWidth onClick={onContactAdmin}>
+                    <Button
+                      variant="text"
+                      sx={{ flexBasis: "100%" }}
+                      onClick={onContactAdmin}
+                    >
                       {tn("contactAdmin")}
                     </Button>
                   )}

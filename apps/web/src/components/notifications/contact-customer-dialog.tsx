@@ -1,8 +1,6 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { alpha } from "@mui/material/styles";
-import { useTheme } from "@mui/material/styles";
 import {
   Box,
   Button,
@@ -13,7 +11,6 @@ import {
   IconButton,
   Typography,
 } from "@mui/material";
-import SupportAgentIcon from "@mui/icons-material/SupportAgent";
 import CloseIcon from "@mui/icons-material/Close";
 import type { ContractContact } from "@/lib/notifications-api";
 import {
@@ -48,7 +45,6 @@ export default function ContactCustomerDialog({
   onClose: () => void;
 }) {
   const t = useTranslations("Notifications");
-  const theme = useTheme();
 
   return (
     <Dialog
@@ -58,29 +54,7 @@ export default function ContactCustomerDialog({
       PaperProps={{ sx: appDialogPaperSx }}
       sx={appDialogSx}
     >
-      <DialogTitle
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1.5,
-          background: `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.1)}, ${alpha(theme.palette.info.main, 0.04)})`,
-          borderBottom: 1,
-          borderColor: "divider",
-        }}
-      >
-        <Box
-          sx={{
-            width: 40,
-            height: 40,
-            borderRadius: "12px",
-            display: "grid",
-            placeItems: "center",
-            bgcolor: alpha(theme.palette.primary.main, 0.14),
-            color: "primary.main",
-          }}
-        >
-          <SupportAgentIcon />
-        </Box>
+      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography variant="subtitle1" fontWeight={700}>
             {t("contactAdminTitle")}

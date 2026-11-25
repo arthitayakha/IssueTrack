@@ -114,4 +114,18 @@ export const theme = createTheme({
       default: "#9e9e9e",
     },
   },
+  /**
+   * หัว popup ทั้งระบบ — พื้นหลังขาว + เส้นแบ่งล่าง แก้ที่เดียวมีผลทุก DialogTitle
+   * (dialog ที่ตั้ง sx เฉพาะ เช่น padding ยังทับค่านี้ได้เหมือนเดิม)
+   */
+  components: {
+    MuiDialogTitle: {
+      styleOverrides: {
+        root: ({ theme }) => ({
+          backgroundColor: theme.palette.background.paper,
+          borderBottom: `1px solid ${theme.palette.divider}`,
+        }),
+      },
+    },
+  },
 });

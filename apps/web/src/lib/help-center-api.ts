@@ -11,10 +11,11 @@ export interface HelpCenterContact {
   updatedAt: string | null;
 }
 
-/** config ดิบที่แอดมินใช้แก้ใน dialog — map company id → user id[] */
+/** config ดิบที่แอดมินใช้แก้ใน dialog — 2 ชั้น: company → user id[] และ `appId:companyId` → user id[] */
 export interface HelpCenterContactConfig {
   id: number;
   contactUsersByCompany: Record<string, number[]>;
+  contactUsersByApp: Record<string, number[]>;
   updatedAt: string | null;
 }
 
@@ -22,9 +23,13 @@ function getToken(): string | null {
   return useAuthStore.getState().token;
 }
 
-/** รายชื่อที่คนล็อกอินอยู่เห็น (เซิร์ฟเวอร์อ่าน company_id จาก JWT เอง) */
-export function fetchHelpCenterContact(): Promise<HelpCenterContact> {
-  return apiFetch<HelpCenterContact>("/help-center/contact", {}, getToken());
+/**
+ * รายชื่อที่คนล็อกอินอยู่เห็น (เซิร์ฟเวอร์อ่าน company_id จาก JWT เอง)
+ * ส่ง `appId` จากสัญญาที่กด → ใช้คนของแอปนั้น (ถ้าไม่มี → ค่าบริษัท)
+ */
+export function fetchHelpCenterContact(appId?: number): Promise<HelpCenterContact> {
+  const query = appId != null ? `?appId=${appId}` : "";
+  return apiFetch<HelpCenterContact>(`/help-center/contact${query}`, {}, getToken());
 }
 
 /** config เต็มสำหรับ dialog จัดการผู้ติดต่อ (แอดมินเท่านั้น) */
@@ -38,7 +43,8 @@ export function fetchProgrammerContacts(): Promise<ContractContact[]> {
 }
 
 export function updateHelpCenterContact(input: {
-  contactUsersByCompany: Record<string, number[]>;
+  contactUsersByCompany?: Record<string, number[]>;
+  contactUsersByApp?: Record<string, number[]>;
 }): Promise<HelpCenterContactConfig> {
   return apiFetch<HelpCenterContactConfig>(
     "/help-center/contact",

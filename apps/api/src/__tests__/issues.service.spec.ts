@@ -1,6 +1,7 @@
 import {
   ConflictException,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -544,6 +545,31 @@ describe("IssuesService.unlock — the one-shot release", () => {
       expect.objectContaining({ action: "card.unlocked", entityId: 5 }),
     );
     expect(result.isLocked).toBe(false);
+  });
+
+  it("refuses a card frozen by a status lock — the column is sealed", async () => {
+    const { service, issues, rulesEngine, activityLogs } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 4, isLocked: false }));
+    rulesEngine.statusGates.mockResolvedValue({
+      timer: new Set<number>(),
+      analysis: new Set<number>(),
+      resolution: new Set<number>(),
+      locked: new Set<number>([4]),
+      taskType: new Set<number>(),
+    });
+
+    await expect(service.unlock(5, ACTOR)).rejects.toThrow(ForbiddenException);
+    expect(issues.update).not.toHaveBeenCalled();
+    expect(activityLogs.save).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the status-lock lookup breaks — no release is handed out", async () => {
+    const { service, issues, rulesEngine } = makeService();
+    issues.findOne.mockResolvedValue(issueRow({ statusId: 4 }));
+    rulesEngine.statusGates.mockRejectedValueOnce(new Error("connection lost"));
+
+    await expect(service.unlock(5, ACTOR)).rejects.toThrow(ForbiddenException);
+    expect(issues.update).not.toHaveBeenCalled();
   });
 
   it("404s for a card that no longer exists", async () => {

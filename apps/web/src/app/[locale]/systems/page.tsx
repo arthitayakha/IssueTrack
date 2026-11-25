@@ -432,28 +432,37 @@ export default function SystemsPage() {
   }
 
   /**
-   * ปุ่ม "ซื้อชั่วโมง" โชว์**เฉพาะแถวที่คงเหลือ ≤ 0** (MA ใช้หมดพอดี/เกิน) —
-   * ยังไม่หมดไม่ต้องซื้อ · เงื่อนไข fail-open ทุกข้อเหมือนคอลัมน์ "คงเหลือ":
-   *
-   * - **แถว "หมดอายุแล้ว" ไม่ซื้อ** — สัญญาจบแล้ว ต้อง "ต่ออายุ" แทน
-   *   (ปุ่มต่ออายุขึ้นอยู่แล้วตาม `canRenew()`); การซื้อชม. บนสัญญาที่หมด
-   *   โดยไม่ต่ออายุ = ชั่วโมงลอยอยู่ในช่วงที่ปิดไปแล้ว
-   * - ยังดึง "ใช้ไป" ไม่สำเร็จ (`usageStatus !== "ready"`) → **ห้ามตัดสิน**ว่าหมด
-   *   (ถ้าปล่อยผ่าน ปุ่มจะโผล่ทุกแถวตอนข้อมูลโหลดไม่ทัน)
-   * - ยังไม่เคยกรอก `maHours` (`null`) → ไม่มีเพดาน = ไม่ถือว่าหมด
-   * - ต้องมี `system.update` (เหมือนปุ่มต่ออายุ)
-   *
-   * ซื้อแล้ว `maHours` มากขึ้น → คงเหลือ > 0 → ปุ่มหายเองในโหลดถัดไป
+   * เช็ก "MA หมด" ของแถวนั้น — ใช้ร่วมกันระหว่างปุ่ม "ซื้อชั่วโมง" (ตาราง)
+   * กับ "ยกเลิกสัญญา" (ป๊อปอัพ) เพื่อให้สองปุ่มตรงกันเสมอ · fail-closed:
+   * ยังดึง "ใช้ไป" ไม่สำเร็จ (`usageStatus !== "ready"`) หรือยังไม่เคยกรอก
+   * `maHours` (`null`) → ไม่รู้ว่าหมด → ไม่โชว์ปุ่มยกเลิก
    */
-  function canBuyHours(row: SystemRow): boolean {
-    if (!canUpdate || usageStatus !== "ready" || row.link.cancelledAt) return false;
-    if (row.link.expiryStatus === "expired") return false;
+  function isMaExhausted(row: SystemRow): boolean {
+    if (usageStatus !== "ready") return false;
     const ma = row.link.maHours;
     if (ma == null) return false;
     // **ใช้ไปรายรอบของแถวนั้น** — แถวที่เพิ่งซื้อ (ยังไม่ได้ใช้) = 0 → คงเหลือเต็ม
     // จำนวนที่ซื้อ → ปุ่มหายเองหลังซื้อ · entry หาย = ไม่รู้ → ถือว่าไม่หมด (fail-open)
     const used = periodUsedOf(usedByRecord, row.link.recordId) ?? 0;
     return ma - used <= 0;
+  }
+
+  /**
+   * ปุ่ม "ซื้อชั่วโมง" โชว์**เฉพาะแถวที่คงเหลือ ≤ 0** (MA ใช้หมดพอดี/เกิน) —
+   * ยังไม่หมดไม่ต้องซื้อ · เงื่อนไขเหมือนคอลัมน์ "คงเหลือ":
+   *
+   * - **แถว "หมดอายุแล้ว" ไม่ซื้อ** — สัญญาจบแล้ว ต้อง "ต่ออายุ" แทน
+   *   (ปุ่มต่ออายุขึ้นอยู่แล้วตาม `canRenew()`); การซื้อชม. บนสัญญาที่หมด
+   *   โดยไม่ต่ออายุ = ชั่วโมงลอยอยู่ในช่วงที่ปิดไปแล้ว
+   * - คู่ที่ยกเลิกสัญญาแล้ว (ดู `isMaExhausted()`)
+   * - ต้องมี `system.update` (เหมือนปุ่มต่ออายุ)
+   *
+   * ซื้อแล้ว `maHours` มากขึ้น → คงเหลือ > 0 → ปุ่มหายเองในโหลดถัดไป
+   */
+  function canBuyHours(row: SystemRow): boolean {
+    if (!canUpdate || row.link.cancelledAt) return false;
+    if (row.link.expiryStatus === "expired") return false;
+    return isMaExhausted(row);
   }
 
   /**
@@ -553,8 +562,8 @@ export default function SystemsPage() {
     try {
       await cancelAppContract(target.appId, target.recordId);
       setContractTarget(null);
-      // ปุ่ม "เปิดสัญญาอีกครั้ง" แนบใน toast 8 วิ (ทางอื่น = ปุ่มถาวรในตาราง/
-      // ป๊อปอัพ) · แถวแจ้งเตือนที่ส่งไปแล้วปล่อยไว้ — หยุดเฉพาะอันใหม่
+      // ปุ่ม "เปิดสัญญาอีกครั้ง" แนบใน toast 8 วิ (ทางอื่น = ปุ่มถาวรใน
+      // ป๊อปอัพรายละเอียด) · แถวแจ้งเตือนที่ส่งไปแล้วปล่อยไว้ — หยุดเฉพาะอันใหม่
       notify(t("cancelContractSuccess"), "success", {
         label: t("restoreContract"),
         onClick: () => {
@@ -621,8 +630,10 @@ export default function SystemsPage() {
 
   /**
    * เปิดกล่องติดต่อแอดมิน — มีทางเข้าเดียวคือปุ่มท้ายป๊อปอัพสัญญา
-   * (หลังกดแจ้งเตือนสัญญาหมดอายุ) · **เฉพาะ role `customer`** — กันซ้ำกับ
-   * การส่ง prop แบบมีเงื่อนไขด้านล่าง (แอดมิน/สตาฟฟ์ไม่มีทางเปิดกล่องนี้)
+   * (หลังกดแจ้งเตือนสัญญาหมดอายุ) · ส่ง `appId` ของสัญญานี้ไปด้วย → เห็นคน
+   * ของแอปนั้น (ถ้าแอดมินไม่ได้กำหนด → ตกมาคนระดับบริษัท)
+   * **เฉพาะ role `customer`** — กันซ้ำกับการส่ง prop แบบมีเงื่อนไขด้านล่าง
+   * (แอดมิน/สตาฟฟ์ไม่มีทางเปิดกล่องนี้)
    * · ปิดป๊อปอัพสัญญาก่อนเสมอเพื่อไม่ให้เกิดป๊อปอัพซ้อน · fail-open:
    * ดึงรายชื่อไม่ได้ = เปิดกล่องแล้วโชว์ข้อความ "ยังไม่มีข้อมูลติดต่อ..."
    * ที่ `ContactCustomerDialog` มีอยู่แล้ว
@@ -634,7 +645,7 @@ export default function SystemsPage() {
       appName: detailRow?.app.name ?? "",
       companyName: detailRow?.link.name ?? "",
     };
-    void fetchHelpCenterContact()
+    void fetchHelpCenterContact(detailRow?.app.id)
       .then((info) => setContactTarget({ ...label, contacts: info.contacts }))
       .catch(() => setContactTarget({ ...label, contacts: [] }));
   }
@@ -1018,29 +1029,9 @@ export default function SystemsPage() {
                           {t("renew")}
                         </Button>
                       )}
-                      {/* ยกเลิก/เปิดสัญญา — แอดมิน (`system.update`) เท่านั้น ·
-                          คู่ที่ยกเลิกแล้วซ่อนซื้อ/ต่ออายุ (ดู can* ด้านบน) */}
-                      {canUpdate &&
-                        (link.cancelledAt ? (
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            onClick={() => handleRestoreContract(row)}
-                            sx={{ mr: 1, textTransform: "none", whiteSpace: "nowrap" }}
-                          >
-                            {t("restoreContract")}
-                          </Button>
-                        ) : (
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            color="error"
-                            onClick={() => handleCancelContract(row)}
-                            sx={{ mr: 1, textTransform: "none", whiteSpace: "nowrap" }}
-                          >
-                            {t("cancelContract")}
-                          </Button>
-                        ))}
+                      {/* ยกเลิก/เปิดสัญญา **ไม่มีปุ่มในตาราง** — ย้ายเข้า
+                          ป๊อปอัพรายละเอียดแล้ว (ปุ่มยกเลิกโชว์เฉพาะตอน MA หมด)
+                          ดู `canCancel` ที่ส่งให้ `SystemDetailDialog` */}
                       <Tooltip title={t("viewDetail")}>
                         <IconButton
                           size="small"
@@ -1137,7 +1128,9 @@ export default function SystemsPage() {
           }}
           canUndo={canUpdate || canDelete}
           onUndo={handleUndoRecord}
-          canCancel={canUpdate}
+          canCancel={Boolean(
+            detailRow && canUpdate && (detailRow.link.cancelledAt || isMaExhausted(detailRow)),
+          )}
           onCancel={() => {
             if (detailRow) handleCancelContract(detailRow);
           }}

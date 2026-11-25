@@ -1074,14 +1074,15 @@ const TrelloCard = memo(function TrelloCard({
       {...(!issue.isLocked ? listeners : {})}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={() => {
-        if (!issue.isLocked) onOpen?.(issue);
-      }}
+      // A locked card is still viewable — the lock seals edits and moves,
+      // not reading. IssueDetailDialog derives read-only from `issue.isLocked`
+      // itself, so every host (board/folder/table/deep link) agrees.
+      onClick={() => onOpen?.(issue)}
       elevation={0}
       sx={{
         p: 1.5,
         mb: 1.25,
-        cursor: issue.isLocked ? "not-allowed" : "grab",
+        cursor: issue.isLocked ? "pointer" : "grab",
         bgcolor: "background.paper",
         borderRadius: "12px",
         // ดีไซน์ใหม่: การ์ดลอยด้วยเงานุ่ม (สีมาจาก theme เสมอ)
@@ -1127,7 +1128,9 @@ const TrelloCard = memo(function TrelloCard({
         },
       }}
     >
-      {canEdit && (
+      {/* the full edit form has no read-only mode — hide it on a locked card,
+          otherwise staff could re-enter MA hours and drift the deduction */}
+      {canEdit && !issue.isLocked && (
         <MenuItem onClick={() => { setMenuAnchor(null); onEdit?.(issue); }}>
           <ListItemIcon><EditIcon fontSize="small" /></ListItemIcon>
           <ListItemText>{t("edit")}</ListItemText>
@@ -1145,7 +1148,7 @@ const TrelloCard = memo(function TrelloCard({
           <ListItemText sx={{ color: "warning.main" }}>{t("unlock")}</ListItemText>
         </MenuItem>
       )}
-      {canDelete && (
+      {canDelete && !issue.isLocked && (
         <MenuItem onClick={() => { setMenuAnchor(null); onDelete?.(issue); }}>
           <ListItemIcon><DeleteIcon fontSize="small" color="error" /></ListItemIcon>
           <ListItemText sx={{ color: "error.main" }}>{t("delete")}</ListItemText>
@@ -1774,7 +1777,7 @@ function IssueDetailDialog({
   statuses,
   labels,
   onRefresh,
-  readOnly = false,
+  trashed = false,
   onRestore,
   initialTab = "comments",
 }: {
@@ -1784,12 +1787,19 @@ function IssueDetailDialog({
   statuses: IssueStatus[];
   labels: Label[];
   onRefresh: () => void;
-  readOnly?: boolean;
+  /** Set only by the recycle bin — drives the "deleted" banner + restore button. */
+  trashed?: boolean;
   onRestore?: (id: number) => void;
   initialTab?: "comments" | "history";
 }) {
   const { can } = usePermissions();
   const { notify } = useNotification();
+  // A card frozen by an active lock rule can still be opened, but it is
+  // view-only — deriving here (instead of passing a prop at each call site)
+  // makes the board, folder, table, deep-link and trash hosts all agree.
+  // `trashed` is separate: only a recycled card gets the "deleted" banner
+  // and the restore button, never a merely locked one.
+  const readOnly = trashed || Boolean(issue?.isLocked);
   const fail = useCallback(
     (msg: string | null) => {
       if (msg) notify(msg, "error");
@@ -1914,7 +1924,9 @@ function IssueDetailDialog({
   const canSetLabels = can("label.view") && canEditIssue;
   const canCreateLabel = can("label.create");
   const canEditLabel = can("label.update");
-  const canAssign = can("issue.assign");
+  // the assignee controls are inline edit controls, not just display —
+  // respect read-only so a locked card stays truly view-only
+  const canAssign = can("issue.assign") && !readOnly;
   const canViewAttachments = can("board.view");
   const canUploadAttachment = can("issue.create") && !readOnly;
   const canDeleteAttachment = can("issue.all.update") && !readOnly;
@@ -2364,7 +2376,7 @@ function IssueDetailDialog({
         </IconButton>
       </Box>
       <Divider />
-      {readOnly && (
+      {trashed && (
         <Alert severity="warning" sx={{ mx: 2.5, mt: 1.5, mb: 0 }} icon={<RestoreFromTrashIcon />}>
           {t("trashDetailBanner")}
         </Alert>
@@ -3466,7 +3478,7 @@ function IssueDetailDialog({
       </Box>
       <Divider />
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 2.5, py: 1.5 }}>
-        {readOnly && (
+        {trashed && (
           <Button
             size="small"
             variant="contained"
@@ -7142,7 +7154,7 @@ function BoardsPageInner() {
             statuses={statuses}
             labels={labels}
             onRefresh={() => {}}
-            readOnly={!!trashDetailIssue}
+            trashed={!!trashDetailIssue}
             onRestore={async (id) => {
               try {
                 await restoreIssue(id);

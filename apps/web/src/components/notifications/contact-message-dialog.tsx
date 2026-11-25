@@ -2,8 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
-import { alpha } from "@mui/material/styles";
-import { useTheme } from "@mui/material/styles";
 import {
   Box,
   Button,
@@ -51,7 +49,6 @@ export default function ContactMessageDialog({
   onClose: () => void;
 }) {
   const t = useTranslations("Notifications");
-  const theme = useTheme();
   const { notify } = useNotification();
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
@@ -101,28 +98,9 @@ export default function ContactMessageDialog({
       sx={appDialogSx}
     >
       <DialogTitle
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1.5,
-          background: `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.1)}, ${alpha(theme.palette.info.main, 0.04)})`,
-          borderBottom: 1,
-          borderColor: "divider",
-        }}
+        sx={{ display: "flex", alignItems: "center", gap: 1.5 }}
       >
-        <Box
-          sx={{
-            width: 40,
-            height: 40,
-            borderRadius: "12px",
-            display: "grid",
-            placeItems: "center",
-            bgcolor: alpha(theme.palette.primary.main, 0.14),
-            color: "primary.main",
-          }}
-        >
-          <SendIcon />
-        </Box>
+        <SendIcon sx={{ color: "primary.main", flexShrink: 0 }} />
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography variant="subtitle1" fontWeight={700}>
             {t("notifyTitle")}
