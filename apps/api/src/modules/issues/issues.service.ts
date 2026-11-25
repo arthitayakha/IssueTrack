@@ -8,7 +8,7 @@ import {
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DeepPartial, Repository } from "typeorm";
+import { DeepPartial, Repository, type SelectQueryBuilder } from "typeorm";
 import { Issue } from "./entities/issue.entity";
 import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
 import { User } from "../auth/entities/user.entity";
@@ -89,6 +89,8 @@ const SORT_COLUMNS: Record<string, string> = {
    * re-stamp it: nudging a card would reset its stale counter.
    */
   statusChangedAt: "issue.statusChangedAt",
+  /** The folder view's "ความสำคัญ" criterion — `priority.sortOrder` ASC = สำคัญมากก่อน. */
+  prioritySortOrder: "priority.sortOrder",
 };
 
 /**
@@ -109,6 +111,39 @@ function dayEnd(value?: string): Date | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const d = new Date(`${value}T23:59:59.999`);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Every condition `GET /issues` understands. Shared by the paged list and by
+ * `GET /issues/counts` so a folder tile can never count a different set of
+ * cards than the page it opens.
+ */
+export interface FindAllFilters {
+  priorityIds?: number[];
+  categoryIds?: number[];
+  appIds?: number[];
+  /** NULL slices are OR-parts of their own dimension, never ANDed with ids. */
+  noApp?: boolean;
+  noCategory?: boolean;
+  noPriority?: boolean;
+  /** `issue.status_id IS NULL` — the folder's "ไม่มีสถานะ" bucket. */
+  noStatus?: boolean;
+  /** `issue.category_id IS NULL AND issue.custom_category IN (...)`. */
+  customCategories?: string[];
+  companyIds?: number[];
+  assigneeIds?: number[];
+  reporterIds?: number[];
+  taskTypes?: string[];
+  noTaskType?: boolean;
+  notDone?: boolean;
+  createdFrom?: string;
+  createdTo?: string;
+  completedFrom?: string;
+  completedTo?: string;
+  sortBy?: string;
+  sortOrder?: string;
+  /** Board/folder hide policy; the table never sets it. */
+  hideStaleDone?: boolean;
 }
 
 @Injectable()
@@ -140,71 +175,49 @@ export class IssuesService {
     private readonly apps: AppsService,
   ) {}
 
-  async findAll(
-    params: PaginationParams,
-    statuses: number[] = [],
-    user?: AuthUser | null,
-    search?: string,
-    filters: {
-      priorityIds?: number[];
-      categoryIds?: number[];
-      appIds?: number[];
-      /**
-       * "ไม่มีแอป" / "ไม่มีหมวดหมู่" / "ไม่ระบุความสำคัญ" — the dashboard's NULL
-       * slices (`id: null`) have no id to filter by, so the list carries a flag
-       * instead. It is an **OR-part of its own dimension**: ticking POS *and*
-       * "ไม่มีแอป" means `app_id IN (POS) OR app_id IS NULL`, never an AND
-       * (which would always be empty). Absent flag → the old `IN`-only clause.
-       */
-      noApp?: boolean;
-      noCategory?: boolean;
-      /** "ไม่ระบุความสำคัญ" — priority_id IS NULL, the priority bar's NULL bucket. */
-      noPriority?: boolean;
-      companyIds?: number[];
-      assigneeIds?: number[];
-      reporterIds?: number[];
-      /**
-       * **ประเภทงาน** (`bug` / `ma` / `requirement`) — whitelist ฝั่ง controller
-       * กรอกมาเฉพาะ 3 ค่านี้แล้ว (`common/task-types.ts` ชุดเดียวกับ
-       * `GET /reports/summary` ให้ทุกมุมมองของหน้ารายงานนับงานชุดเดียวกัน)
-       */
-      taskTypes?: string[];
-      /**
-       * "ไม่ระบุประเภทงาน" (`task_type IS NULL`) — OR-part ของ dimension
-       * เดียวกันกับ `noApp` / `noCategory`: ติ๊กรวมกับ type จริง = `IN (…) OR
-       * IS NULL` ไม่ใช่ AND ที่จะว่างเสมอ · NULL ต้องมาพร้อม flag เพราะ
-       * `IN (...)` จับค่า NULL ไม่ได้
-       */
-      noTaskType?: boolean;
-      /**
-       * Dashboard trend's pending bar — `status_id <> 4 OR status_id IS NULL`.
-       * Rides together with `createdFrom/To` so the drill list matches the bar
-       * (which cohorts by creation date and splits by CURRENT status). Absent
-       * → no clause, so every other caller keeps its exact behaviour.
-       */
-      notDone?: boolean;
-      createdFrom?: string;
-      createdTo?: string;
-      /** Completed-bar drill: cards moved into เสร็จสิ้น inside this window. */
-      completedFrom?: string;
-      completedTo?: string;
-      sortBy?: string;
-      sortOrder?: string;
-      /**
-       * The board's hide flag (`?hideStaleDone=1`) — only the per-column
-       * fetch sends it, so the table's request can never be filtered. Reads
-       * the active `issue.hide_from_board` rules fresh on every call: pause
-       * or edit the rule and the next board load already agrees, with no
-       * per-card flag to clean up.
-       */
-      hideStaleDone?: boolean;
-    } = {},
-    withTimeline = false,
-  ) {
+async findAll(
+  params: PaginationParams,
+  statuses: number[] = [],
+  user?: AuthUser | null,
+  search?: string,
+  filters: FindAllFilters = {},
+  withTimeline = false,
+) {
+  const { qb, sortKey, sortDir } = await this.buildFindAllQuery(statuses, user, search, filters);
+  return this.finishFindAll(params, qb, sortKey, sortDir, withTimeline);
+}
+
+/**
+ * The WHERE/JOIN/SORT half of `findAll`, extracted so the grouped count
+ * endpoint can reuse it byte-for-byte. No pagination happens here.
+ */
+private async buildFindAllQuery(
+  statuses: number[],
+  user: AuthUser | null | undefined,
+  search: string | undefined,
+  filters: FindAllFilters,
+): Promise<{ qb: SelectQueryBuilder<Issue>; sortKey: string; sortDir: "ASC" | "DESC" }> {
     const qb = this.issues.createQueryBuilder("issue").where("issue.deleted_at IS NULL");
 
     if (statuses.length > 0) {
       qb.andWhere("issue.status_id IN (:...statuses)", { statuses });
+    }
+    /**
+     * The folder's "ไม่มีสถานะ" bucket — cards with no status at all. There is
+     * no id to send, so it rides as its own flag (same idea as `noApp`).
+     */
+    if (filters.noStatus) {
+      qb.andWhere("issue.status_id IS NULL");
+    }
+    /**
+     * Custom category folders (`x:<name>`): a free-text category on a card
+     * whose `category_id` is NULL. Exact match, not ILIKE, so two similarly
+     * named folders never bleed into each other.
+     */
+    if (filters.customCategories && filters.customCategories.length > 0) {
+      qb.andWhere("issue.category_id IS NULL AND issue.custom_category IN (:...customCategories)", {
+        customCategories: filters.customCategories,
+      });
     }
 
     const canViewAll = await canViewAllIssues(this.permissions, user);
@@ -408,7 +421,20 @@ export class IssuesService {
     if (sortKey === "sortUser.name") {
       qb.leftJoin("issue.programmer", "sortUser");
     }
+    if (sortKey === "priority.sortOrder") {
+      qb.leftJoin("issue.priority", "priority");
+    }
 
+    return { qb, sortKey, sortDir };
+  }
+
+  private async finishFindAll(
+    params: PaginationParams,
+    qb: SelectQueryBuilder<Issue>,
+    sortKey: string,
+    sortDir: "ASC" | "DESC",
+    withTimeline: boolean,
+  ) {
     const total = await qb.clone().getCount();
 
     // Postgres requires every ORDER BY expression to appear in the SELECT
@@ -475,8 +501,22 @@ export class IssuesService {
           : this.apps.isPairExpired(i.appId, i.customer.companyId).catch(() => false),
       ),
     );
+    /** วันเหลือของแต่ละคู่ (กรอบแดง 7 วันสุดท้ายบนการ์ด) — query เดียวต่อหน้า */
+    const daysLeftByPair = await this.apps
+      .daysLeftForPairs(
+        issues.map((i) => ({ appId: i.appId, companyId: i.customer?.companyId ?? null })),
+      )
+      .catch(() => new Map<string, number>());
     const rows = await Promise.all(
-      issues.map((i, idx) => this.toResponse(i, gates, order, maExpiredFlags[idx])),
+      issues.map((i, idx) =>
+        this.toResponse(
+          i,
+          gates,
+          order,
+          maExpiredFlags[idx],
+          daysLeftByPair.get(`${i.appId}:${i.customer?.companyId}`),
+        ),
+      ),
     );
     const data = withTimeline ? await this.attachWorkTimeline(rows) : rows;
     return {
@@ -486,6 +526,84 @@ export class IssuesService {
       limit: params.limit,
       totalPages,
     };
+  }
+
+  /**
+   * Folder tiles need one count per sibling at the current drill level
+   * without downloading every card. Uses the SAME where-builder as `findAll`,
+   * so a filter can never mean one thing in the tile and another in the page
+   * it opens. `COUNT(DISTINCT issue.id)` keeps numbers exact when `search`
+   * added the to-many `labels` join. NULL is the `-1` bucket; custom
+   * categories are `x:<name>` so the web's `FolderPath` uses them verbatim.
+   */
+  async groupCounts(
+    groupBy:
+      | "app"
+      | "category"
+      | "priority"
+      | "status"
+      | "assignee"
+      | "reporter"
+      | "company",
+    statuses: number[],
+    user: AuthUser | null | undefined,
+    search: string | undefined,
+    filters: FindAllFilters,
+  ): Promise<{ total: number; counts: Record<string, number> }> {
+    const { qb } = await this.buildFindAllQuery(statuses, user, search, filters);
+    /**
+     * The company lives on the reporter (`issue.customer → users.company`),
+     * not on the issue. Join it only for this grouping so every other count
+     * keeps its existing, lean query.
+     */
+    if (groupBy === "company") {
+      qb.leftJoin("issue.customer", "groupCustomer").leftJoin(
+        "groupCustomer.company",
+        "groupCompany",
+      );
+    }
+    const total = await qb.clone().getCount();
+    const column = {
+      app: "issue.app_id",
+      category: "issue.category_id",
+      priority: "issue.priority_id",
+      status: "issue.status_id",
+      assignee: "issue.programmer_id",
+      reporter: "issue.customer_id",
+      company: "groupCompany.id",
+    }[groupBy];
+
+    const counts: Record<string, number> = {};
+    if (groupBy === "category") {
+      const rows = await qb
+        .clone()
+        .select("issue.category_id", "categoryId")
+        .addSelect("issue.custom_category", "customCategory")
+        .addSelect("COUNT(DISTINCT issue.id)::int", "count")
+        .groupBy("issue.category_id")
+        .addGroupBy("issue.custom_category")
+        .getRawMany<{ categoryId: number | null; customCategory: string | null; count: number }>();
+      for (const row of rows) {
+        const key =
+          row.categoryId != null
+            ? String(row.categoryId)
+            : row.customCategory != null
+              ? `x:${row.customCategory}`
+              : "-1";
+        counts[key] = Number(row.count);
+      }
+    } else {
+      const rows = await qb
+        .clone()
+        .select(column, "key")
+        .addSelect("COUNT(DISTINCT issue.id)::int", "count")
+        .groupBy(column)
+        .getRawMany<{ key: number | null; count: number }>();
+      for (const row of rows) {
+        counts[row.key == null ? "-1" : String(row.key)] = Number(row.count);
+      }
+    }
+    return { total, counts };
   }
 
   /**
@@ -856,20 +974,6 @@ export class IssuesService {
         ...engineCtx,
         newValue: updates.categoryId ?? null,
         oldValue: previous.categoryId,
-      });
-    }
-    if (changes.includes("title")) {
-      await this.rulesEngine.evaluate("issue.title_changed", {
-        ...engineCtx,
-        newValue: updates.title ?? null,
-        oldValue: previous.title,
-      });
-    }
-    if (changes.includes("description")) {
-      await this.rulesEngine.evaluate("issue.description_changed", {
-        ...engineCtx,
-        newValue: updates.description ?? null,
-        oldValue: previous.description,
       });
     }
     const fresh = await this.issues.findOne({
@@ -1337,12 +1441,6 @@ export class IssuesService {
       detail: JSON.stringify({ title: issue.title }),
       actor,
     });
-    await this.rulesEngine.evaluate("issue.deleted", {
-      issueId: issue.id,
-      fromStatusId: issue.statusId ?? null,
-      actorId: actor?.actorId ?? null,
-      actorRole: actor?.actorRole ?? null,
-    });
     return { deleted: true };
   }
 
@@ -1370,12 +1468,6 @@ export class IssuesService {
       entityId: issue.id,
       detail: JSON.stringify({ title: issue.title }),
       actor,
-    });
-    await this.rulesEngine.evaluate("issue.restored", {
-      issueId: issue.id,
-      toStatusId: issue.statusId ?? null,
-      actorId: actor?.actorId ?? null,
-      actorRole: actor?.actorRole ?? null,
     });
     return this.toResponse(issue);
   }
@@ -1504,6 +1596,12 @@ export class IssuesService {
      * ธงนี้ใน payload (fail-open: popup ถือว่าไม่หมดอายุ)
      */
     maExpired?: boolean,
+    /**
+     * วันเหลือก่อนหมดอายุของคู่แอป × บริษัทผู้แจ้ง — คำนวณที่ `findAll()` แล้วส่งมา
+     * (ไม่คำนวณใน `toResponse()` เพราะทุก write ก็เรียกมัน) · ไม่ส่ง = ไม่เปิดเผย
+     * ธงนี้ (fail-open: บอร์ดถือว่าไม่ใกล้หมดอายุ = ไม่มีกรอบแดง)
+     */
+    contractDaysLeft?: number | null,
   ) {
     const statusId = issue.statusId ?? null;
     // a card with no status can never be covered (and costs no rules query)
@@ -1561,6 +1659,7 @@ export class IssuesService {
       // มาจาก AppsService.isPairExpired() ตัวเดียวกับตาข่าย 400 ใน update()
       // — ป๊อปอัพใช้ย่อข้อความ/ขีดปุ่มบันทึกโดยไม่ต้องรอ error ก่อน
       ...(maExpired === undefined ? {} : { maExpired }),
+      ...(contractDaysLeft === undefined ? {} : { contractDaysLeft }),
       labelId: issue.labelId,
       labelIds: (issue.labels ?? []).map((l) => l.id).sort((a, b) => a - b),
       labelName: issue.labels?.[0]?.name ?? issue.label?.name ?? null,

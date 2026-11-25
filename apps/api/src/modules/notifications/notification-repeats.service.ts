@@ -19,7 +19,8 @@ export const REPEATABLE_ACTIONS = new Set<NotificationAction>([
   "app_expired",
   "app_expiring",
   "needs_assignment",
-  "stale",
+  // `stale` ถูกเอาออก — ตอนนี้ StaleCardsService ยิงทุกวันเอง (จนกว่างานเสร็จ)
+  // การเปิดสายซ้ำอีกชั้นจะทำให้แอดมิน/ผู้รับได้แถวซ้ำวันละ 2 รอบ
 ]);
 
 export interface RepeatCadence {

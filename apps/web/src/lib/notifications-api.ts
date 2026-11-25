@@ -25,7 +25,8 @@ export type NotificationAction =
   // system rows the API can also send (not in every older payload)
   | "app_expiring"
   | "app_expired"
-  | "ma_depleted";
+  | "ma_depleted"
+  | "contract_ma_remaining";
 
 /**
  * ความสำคัญ — chip สี (แดง/เหลือง/เทา) + ลำดับในกล่องเข้า (สูงก่อน)

@@ -600,7 +600,9 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
       <Dialog open={deleteTarget != null} onClose={() => setDeleteTarget(null)} maxWidth="xs" fullWidth>
         <DialogTitle>{t("deleteTitle")}</DialogTitle>
         <DialogContent>
-          <DialogContentText>{deleteTarget ? t("deleteMessage") : ""}</DialogContentText>
+          <DialogContentText>
+            {deleteTarget ? t("deleteMessage", { name: deleteTarget.name }) : ""}
+          </DialogContentText>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteTarget(null)}>{t("cancel")}</Button>

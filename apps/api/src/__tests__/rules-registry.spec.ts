@@ -10,6 +10,7 @@ import {
   getMessageTokens,
   getPickerActions,
   getRecommendedActions,
+  getTriggerByKey,
   isActionCompatible,
 } from "@kanban/shared";
 
@@ -146,6 +147,17 @@ describe("rules registry integrity", () => {
     }
   });
 
+  it("offers only the card title, actor and destination status for card moves", () => {
+    expect(getMessageTokens("issue.moved").map((p) => p.token)).toEqual([
+      "{ชื่อการ์ด}",
+      "{ผู้กระทำ}",
+      "{สถานะใหม่}",
+    ]);
+    // the source-status token is no longer suggested, but old rules still render
+    expect(getMessageTokens("issue.moved").map((p) => p.token)).not.toContain("{สถานะเดิม}");
+    expect(ENGINE_SOURCE).toContain("{สถานะเดิม}");
+  });
+
   it("renders every offered token in the engine", () => {
     const offered = new Set<string>();
     for (const trigger of RULE_TRIGGERS) {
@@ -188,11 +200,10 @@ describe("getPickerActions — wizard step ② list", () => {
   });
 
   it("never lists an action the picker hides as an invalid combination", () => {
-    // comment.created → issue.comment just echoes the trigger, so it is hidden
-    const all = getPickerActions("comment.created", "content").map((a) => a.key);
-    expect(all).not.toContain("issue.comment");
-    expect(all).toContain("issue.delete");
-    expect(all).toContain("issue.restore");
+    // issue.assigned → issue.assign just echoes the trigger, so it is hidden
+    const all = getPickerActions("issue.assigned", "card").map((a) => a.key);
+    expect(all).not.toContain("issue.assign");
+    expect(all).toContain("issue.lock");
   });
 
   it("offers both board-policy actions for board.policy — and only there", () => {
@@ -257,6 +268,51 @@ describe("getPickerActions — wizard step ② list", () => {
       (a) => a.status === "supported" && isActionCompatible("issue.moved", a.key),
     ).map((a) => a.key);
     expect(offered.sort()).toEqual(expected.sort());
+  });
+});
+
+/**
+ * Seven wizard sentences were retired outright (title/description/deleted/
+ * restored/comment/file triggers and the "timer_over" template): none had a
+ * rule in the DB, so no migration was needed and the engine hooks went with
+ * them. This stops a stale cross-reference from quietly bringing one back.
+ */
+describe("retired triggers stay deleted", () => {
+  it("no longer registers the six retired triggers", () => {
+    for (const key of [
+      "issue.title_changed",
+      "issue.description_changed",
+      "issue.deleted",
+      "issue.restored",
+      "comment.created",
+      "attachment.created",
+    ]) {
+      expect(getTriggerByKey(key)).toBeUndefined();
+      expect(RULE_TRIGGERS.some((t) => t.key === key)).toBe(false);
+    }
+    // the trigger tab is gone; the ACTION category of the same key stays
+    expect(RULE_TRIGGER_CATEGORIES.some((c) => c.key === "content")).toBe(false);
+    expect(RULE_ACTION_CATEGORIES.some((c) => c.key === "content")).toBe(true);
+    // neighbours that only looked similar must survive
+    for (const key of [
+      "issue.priority_changed",
+      "issue.category_changed",
+      "work_session.stopped",
+    ]) {
+      expect(getTriggerByKey(key)).toBeDefined();
+    }
+  });
+
+  it("no longer offers the timer_over sentence", () => {
+    expect(getTriggerByKey("work_session.stopped")?.templates.map((t) => t.key)).toEqual([
+      "timer_stopped",
+    ]);
+    for (const trigger of RULE_TRIGGERS) {
+      for (const template of trigger.templates) {
+        expect(template.text.th).not.toContain("ใช้เวลาเกิน");
+        expect(template.text.en).not.toContain("after more than");
+      }
+    }
   });
 });
 

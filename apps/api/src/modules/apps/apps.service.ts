@@ -311,6 +311,40 @@ export class AppsService {
   }
 
   /**
+   * **วันเหลือก่อนหมดอายุของหลายคู่** — ใช้กับการ์ดบนบอร์ด (กรอบแดง 7 วัน
+   * สุดท้าย) · query เดียวต่อหน้า ไม่ใช่ `isPairExpired()` ทีละใบ · ดูแค่
+   * **ช่วงล่าสุดของคู่** (max `id`) เหมือนธง `maExpired` · fail-open ทุกกรณี:
+   * ไม่มีคู่ / ไม่กรอกวันหมดอายุ / สัญญาถูกยกเลิก → ไม่ใส่ key นั้นในผลลัพธ์
+   * (การ์ดก็ไม่ได้กรอบ) · ฝั่งเว็บใช้วาดสีกรอบเท่านั้น
+   */
+  async daysLeftForPairs(
+    pairs: Array<{ appId: number | null; companyId: number | null }>,
+  ): Promise<Map<string, number>> {
+    const valid = pairs.filter(
+      (pair): pair is { appId: number; companyId: number } =>
+        pair.appId != null && pair.companyId != null,
+    );
+    if (valid.length === 0) return new Map();
+    const validKeys = new Set(valid.map((pair) => `${pair.appId}:${pair.companyId}`));
+    const rows = await this.appCompanies.find({
+      where: valid.map((pair) => ({ appId: pair.appId, companyId: pair.companyId })),
+      order: { id: "ASC" },
+    });
+    const latest = new Map<string, AppCompany>();
+    for (const row of rows) {
+      const key = `${row.appId}:${row.companyId}`;
+      const prev = latest.get(key);
+      if (!prev || row.id > prev.id) latest.set(key, row);
+    }
+    const out = new Map<string, number>();
+    for (const [key, row] of latest) {
+      if (!validKeys.has(key) || row.cancelledAt != null || !row.expiresAt) continue;
+      out.set(key, daysBetween(todayIso(), toIsoDate(row.expiresAt)));
+    }
+    return out;
+  }
+
+  /**
    * สร้าง "ชื่อแอป" อย่างเดียว — หน้าที่ของแท็บแอปใน `/master-data`
    * (ข้อมูลระบบเพิ่มทีหลังผ่าน `addRecord()` ที่ `/systems`)
    */

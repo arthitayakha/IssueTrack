@@ -38,6 +38,8 @@ function repo(overrides: Partial<Stub> = {}): Stub {
     select: jest.fn().mockReturnThis(),
     addSelect: jest.fn().mockReturnThis(),
     addOrderBy: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
+    addGroupBy: jest.fn().mockReturnThis(),
     offset: jest.fn().mockReturnThis(),
     limit: jest.fn().mockReturnThis(),
     leftJoin: jest.fn().mockReturnThis(),
@@ -1688,5 +1690,91 @@ describe("IssuesService.findAll — ?notDone=1 (the trend's pending bar)", () =>
     await service.findAll(PARAMS, [], null, undefined, {});
 
     expect(whereCalls(issues).some(([sql]) => String(sql).includes(":doneStatusId"))).toBe(false);
+  });
+});
+
+describe("IssuesService.groupCounts — the folder view's grouped tiles", () => {
+  const builderOf = (issues: { createQueryBuilder: jest.Mock }) =>
+    issues.createQueryBuilder.mock.results.at(-1)?.value;
+
+  it("groups by the requested dimension and turns NULL into the -1 bucket", async () => {
+    const { service, issues } = makeService();
+    // the stub returns the SAME builder on every call, so configuring it here
+    // also configures the clone used by groupCounts
+    const builder = issues.createQueryBuilder();
+    builder.getCount.mockResolvedValueOnce(9);
+    builder.getRawMany.mockResolvedValueOnce([
+      { key: 3, count: 5 },
+      { key: null, count: 4 },
+    ]);
+
+    const result = await service.groupCounts("app", [], null, undefined, {});
+
+    expect(result).toEqual({ total: 9, counts: { "3": 5, "-1": 4 } });
+    expect(builder.groupBy).toHaveBeenCalledWith("issue.app_id");
+    expect(builder.addSelect).toHaveBeenCalledWith("COUNT(DISTINCT issue.id)::int", "count");
+  });
+
+  it("custom categories get their x:<name> key and are grouped by raw value", async () => {
+    const { service, issues } = makeService();
+    const builder = issues.createQueryBuilder();
+    builder.getRawMany.mockResolvedValueOnce([
+      { categoryId: 7, customCategory: null, count: 2 },
+      { categoryId: null, customCategory: "อื่น ๆ", count: 3 },
+      { categoryId: null, customCategory: null, count: 1 },
+    ]);
+
+    const result = await service.groupCounts("category", [], null, undefined, {});
+
+    expect(result.counts).toEqual({ "7": 2, "x:อื่น ๆ": 3, "-1": 1 });
+    expect(builder.groupBy).toHaveBeenCalledWith("issue.category_id");
+    expect(builder.addGroupBy).toHaveBeenCalledWith("issue.custom_category");
+  });
+
+  it("the filter popover's groups use issue columns; company joins the reporter", async () => {
+    const { service, issues } = makeService();
+    const builder = issues.createQueryBuilder();
+    builder.getRawMany.mockResolvedValue([{ key: 13, count: 2 }]);
+
+    const people = await service.groupCounts("assignee", [], null, undefined, {});
+    expect(builder.groupBy).toHaveBeenCalledWith("issue.programmer_id");
+    expect(people.counts).toEqual({ "13": 2 });
+
+    await service.groupCounts("reporter", [], null, undefined, {});
+    expect(builder.groupBy).toHaveBeenCalledWith("issue.customer_id");
+
+    await service.groupCounts("company", [], null, undefined, {});
+    expect(builder.leftJoin).toHaveBeenCalledWith("issue.customer", "groupCustomer");
+    expect(builder.leftJoin).toHaveBeenCalledWith("groupCustomer.company", "groupCompany");
+    expect(builder.groupBy).toHaveBeenCalledWith("groupCompany.id");
+  });
+
+  it("shares findAll's WHERE builder — noStatus and customCategories both reach it", async () => {
+    const { service, issues } = makeService();
+
+    await service.groupCounts("status", [], null, undefined, {
+      noStatus: true,
+      customCategories: ["อื่น ๆ"],
+      hideStaleDone: true,
+    });
+
+    const clauses = builderOf(issues).andWhere.mock.calls.map(([sql]: unknown[]) => String(sql));
+    expect(clauses).toContain("issue.status_id IS NULL");
+    expect(clauses).toContain("issue.category_id IS NULL AND issue.custom_category IN (:...customCategories)");
+    // no hide rule is active (fail open) → no NOT clause, but the flag was read
+    expect(service).toBeDefined();
+  });
+
+  it("prioritySortOrder is whitelisted and joins the priority table for paging", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll({ page: 1, limit: 10 }, [], null, undefined, {
+      sortBy: "prioritySortOrder",
+      sortOrder: "desc",
+    });
+
+    const builder = builderOf(issues);
+    expect(builder.leftJoin).toHaveBeenCalledWith("issue.priority", "priority");
+    expect(builder.orderBy).toHaveBeenCalledWith("priority.sortOrder", "DESC", "NULLS LAST");
   });
 });

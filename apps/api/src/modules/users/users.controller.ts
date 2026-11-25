@@ -37,13 +37,19 @@ export class UsersController {
       companyIds?: string;
       roleIds?: string;
       positionIds?: string;
+      /** `1` = include per-group counts for the filter popover. */
+      withCounts?: string;
     },
   ) {
-    return this.users.findAll(normalizePagination(query), {
-      companyIds: parseIds(query.companyIds),
-      roleIds: parseIds(query.roleIds),
-      positionIds: parseIds(query.positionIds),
-    });
+    return this.users.findAll(
+      normalizePagination(query),
+      {
+        companyIds: parseIds(query.companyIds),
+        roleIds: parseIds(query.roleIds),
+        positionIds: parseIds(query.positionIds),
+      },
+      query.withCounts === "1",
+    );
   }
 
   @Get("members")

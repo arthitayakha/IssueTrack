@@ -5,6 +5,53 @@ import { apiFetch, apiFetchResponse } from "./api";
 import { useAuthStore } from "./auth-store";
 import type { AppCompanyLink } from "./apps-api";
 
+/**
+ * The board's ONE set of user-driven issue conditions. All three views
+ * (table / Kanban / folder) send this same object to `GET /issues`, so a
+ * filter, a search term or a sort direction can never mean something
+ * different depending on which view happens to be on screen.
+ *
+ * View-specific clauses (the Kanban column's `statuses`, the folder path,
+ * the hide-stale policy) are layered on top by the caller — they are not
+ * user filters and are deliberately kept out of this object.
+ */
+export interface BoardDrillFilters {
+  noApp: boolean;
+  noCategory: boolean;
+  noPriority: boolean;
+  notDone: boolean;
+  createdFrom: string;
+  createdTo: string;
+  completedFrom: string;
+  completedTo: string;
+}
+
+export const EMPTY_BOARD_DRILL_FILTERS: BoardDrillFilters = {
+  noApp: false,
+  noCategory: false,
+  noPriority: false,
+  notDone: false,
+  createdFrom: "",
+  createdTo: "",
+  completedFrom: "",
+  completedTo: "",
+};
+
+export interface BoardIssueQuery {
+  /** Already debounced by the page — every view sees the same value. */
+  search: string;
+  priorityIds: number[];
+  categoryIds: number[];
+  appIds: number[];
+  companyIds: number[];
+  assigneeIds: string[];
+  reporterIds: string[];
+  drill: BoardDrillFilters;
+  /** An explicit toolbar range wins over a dashboard drill's window. */
+  dateRange: { from: string; to: string };
+  cardOrder: "asc" | "desc";
+}
+
 export interface IssueStatus {
   id: number;
   name: string;
@@ -118,6 +165,12 @@ export interface BoardIssue {
    * (ไม่ส่ง/older API = ถือว่าไม่หมดอายุ = fail open)
    */
   maExpired?: boolean;
+  /**
+   * วันเหลือก่อนหมดอายุของสัญญาคู่ "แอป × บริษัทผู้แจ้ง" — เซิร์ฟเวอร์คำนวณจาก
+   * ช่วงล่าสุด (batched ใน `GET /issues`) · ใช้เฉพาะวาดกรอบแดง 7 วันสุดท้าย
+   * (ไม่ส่ง/older API = ไม่ใกล้หมดอายุ = fail open)
+   */
+  contractDaysLeft?: number | null;
   /** An active start-timer rule covers this card's status (computed). */
   timerRuleApplies?: boolean;
   /** "Actual fix time" field states: editable now / shown at least once. */
@@ -218,71 +271,50 @@ export async function reorderStatuses(
   }, getToken());
 }
 
-export async function fetchIssues(
-  page = 1,
-  limit = 100,
+export interface IssueFetchFilters {
+  priorityIds?: number[];
+  categoryIds?: number[];
+  appIds?: number[];
+  companyIds?: number[];
+  assigneeIds?: string[];
+  reporterIds?: string[];
+  /** Dashboard drill-down NULL slices (the board seeds them from the URL). */
+  noApp?: boolean;
+  noCategory?: boolean;
+  noPriority?: boolean;
+  /** `status_id IS NULL` — the folder's "ไม่มีสถานะ" bucket. */
+  noStatus?: boolean;
+  /** Free-text categories with no category row — the folder's `x:<name>` bucket. */
+  customCategories?: string[];
+  createdFrom?: string;
+  createdTo?: string;
+  completedFrom?: string;
+  completedTo?: string;
+  notDone?: boolean;
+  /** Board/folder hide policy; the table deliberately never sends it. */
+  hideStaleDone?: boolean;
+  /** Whitelisted server-side sort. */
+  sort?: { field: string; dir: "asc" | "desc" };
+}
+
+/**
+ * The single query-string builder behind every `/issues` reader. Keeping it
+ * in one place is what makes the three board views agree on what a filter
+ * means — the old code had the board filtering in memory and the table
+ * filtering in a separate memo, so the same chip could produce two answers.
+ */
+export function buildIssueParams(
+  page: number,
+  limit: number,
   statuses?: number[],
   search?: string,
   mine?: boolean,
-  filters?: {
-    priorityIds?: number[];
-    categoryIds?: number[];
-    appIds?: number[];
-    companyIds?: number[];
-    assigneeIds?: string[];
-    reporterIds?: string[];
-    /**
-     * Dashboard drill-down filters for the NULL slices — the board has no
-     * checkbox for these, but GET /issues accepts the flags. The board seeds
-     * them from the URL when a chart opened the table view.
-     */
-    noApp?: boolean;
-    noCategory?: boolean;
-    noPriority?: boolean;
-    /**
-     * Dashboard drill-down trend window — both bars cohort by CREATION date,
-     * so the window always binds `createdFrom/To`.
-     */
-    createdFrom?: string;
-    createdTo?: string;
-    completedFrom?: string;
-    completedTo?: string;
-    /**
-     * The pending bar's current-status cohort: `status_id <> 4 OR IS NULL`.
-     * The done bar instead sends `statuses=[4]`; both ride with createdFrom/To.
-     */
-    notDone?: boolean;
-    /**
-     * The board's hide policy — only the Kanban column fetch sets it. The
-     * server then cuts the cards an active `issue.hide_from_board` rule
-     * covers out of the response (count and search included); the table
-     * never sends it, so it still shows every card.
-     */
-    hideStaleDone?: boolean;
-    /**
-     * Card order — only the Kanban column fetch sends it to the API:
-     * `statusChangedAt` desc = "entered this column when", so a card that was
-     * just dragged in lands on TOP of its new column instead of falling back
-     * to its creation date. The table / folder sort the SAME list client-side
-     * with the same comparator (`sortByEnteredAt` in `boards/page.tsx`) and
-     * the reports keep the API default (`createdAt` desc). Whatever is
-     * chosen, `KanbanColumn`'s comparator mirrors it exactly — each column
-     * pages 20 cards at a time and appends the next page on scroll, so server
-     * and screen must agree.
-     */
-    sort?: { field: string; dir: "asc" | "desc" };
-  },
-): Promise<PaginatedResponse<BoardIssue>> {
+  filters?: IssueFetchFilters,
+): URLSearchParams {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
-  if (statuses && statuses.length > 0) {
-    params.set("statuses", statuses.join(","));
-  }
-  if (search) {
-    params.set("search", search);
-  }
-  if (mine) {
-    params.set("mine", "true");
-  }
+  if (statuses && statuses.length > 0) params.set("statuses", statuses.join(","));
+  if (search) params.set("search", search);
+  if (mine) params.set("mine", "true");
   if (filters?.priorityIds && filters.priorityIds.length > 0) {
     params.set("priorityIds", filters.priorityIds.join(","));
   }
@@ -301,23 +333,125 @@ export async function fetchIssues(
   if (filters?.reporterIds && filters.reporterIds.length > 0) {
     params.set("reporterIds", filters.reporterIds.join(","));
   }
+  if (filters?.customCategories && filters.customCategories.length > 0) {
+    params.set("customCategories", filters.customCategories.join(","));
+  }
   if (filters?.noApp) params.set("noApp", "1");
   if (filters?.noCategory) params.set("noCategory", "1");
   if (filters?.noPriority) params.set("noPriority", "1");
+  if (filters?.noStatus) params.set("noStatus", "1");
   if (filters?.notDone) params.set("notDone", "1");
   if (filters?.createdFrom) params.set("createdFrom", filters.createdFrom);
   if (filters?.createdTo) params.set("createdTo", filters.createdTo);
   if (filters?.completedFrom) params.set("completedFrom", filters.completedFrom);
   if (filters?.completedTo) params.set("completedTo", filters.completedTo);
-  if (filters?.hideStaleDone) {
-    params.set("hideStaleDone", "1");
-  }
+  if (filters?.hideStaleDone) params.set("hideStaleDone", "1");
   if (filters?.sort) {
     params.set("sortBy", filters.sort.field);
     params.set("sortOrder", filters.sort.dir);
   }
+  return params;
+}
+
+/** Generic paged reader — still used by the comments page with all defaults. */
+export async function fetchIssues(
+  page = 1,
+  limit = 100,
+  statuses?: number[],
+  search?: string,
+  mine?: boolean,
+  filters?: IssueFetchFilters,
+): Promise<PaginatedResponse<BoardIssue>> {
   return apiFetch<PaginatedResponse<BoardIssue>>(
-    `/issues?${params.toString()}`,
+    `/issues?${buildIssueParams(page, limit, statuses, search, mine, filters).toString()}`,
+    {},
+    getToken(),
+  );
+}
+
+/** The board's paged reader: one query object, three views, no full-table load. */
+export async function fetchBoardIssues(
+  query: BoardIssueQuery,
+  page: number,
+  limit: number,
+  options: {
+    statuses?: number[];
+    hideStaleDone?: boolean;
+    noStatus?: boolean;
+    customCategories?: string[];
+    sort?: { field: string; dir: "asc" | "desc" };
+  } = {},
+): Promise<PaginatedResponse<BoardIssue>> {
+  return fetchIssues(page, limit, options.statuses, query.search, false, {
+    priorityIds: query.priorityIds,
+    categoryIds: query.categoryIds,
+    appIds: query.appIds,
+    companyIds: query.companyIds,
+    assigneeIds: query.assigneeIds,
+    reporterIds: query.reporterIds,
+    noApp: query.drill.noApp,
+    noCategory: query.drill.noCategory,
+    noPriority: query.drill.noPriority,
+    notDone: query.drill.notDone,
+    createdFrom: query.dateRange.from || query.drill.createdFrom || undefined,
+    createdTo: query.dateRange.to || query.drill.createdTo || undefined,
+    completedFrom: query.drill.completedFrom || undefined,
+    completedTo: query.drill.completedTo || undefined,
+    hideStaleDone: options.hideStaleDone,
+    noStatus: options.noStatus,
+    customCategories: options.customCategories,
+    sort: options.sort ?? { field: "statusChangedAt", dir: query.cardOrder },
+  });
+}
+
+/**
+ * One request for every folder count at the current drill level (the backend
+ * groups with `GROUP BY` and counts distinct issue ids, so the labels join
+ * from `search` can never inflate a bucket).
+ */
+export type IssueCountGroup =
+  | "app"
+  | "category"
+  | "priority"
+  | "status"
+  | "assignee"
+  | "reporter"
+  | "company";
+
+export async function fetchIssueGroupCounts(
+  query: BoardIssueQuery,
+  groupBy: IssueCountGroup,
+  options: {
+    statuses?: number[];
+    hideStaleDone?: boolean;
+    noStatus?: boolean;
+    customCategories?: string[];
+    sort?: { field: string; dir: "asc" | "desc" };
+  } = {},
+): Promise<{ total: number; counts: Record<string, number> }> {
+  const params = buildIssueParams(1, 1, options.statuses, query.search, false, {
+    priorityIds: query.priorityIds,
+    categoryIds: query.categoryIds,
+    appIds: query.appIds,
+    companyIds: query.companyIds,
+    assigneeIds: query.assigneeIds,
+    reporterIds: query.reporterIds,
+    noApp: query.drill.noApp,
+    noCategory: query.drill.noCategory,
+    noPriority: query.drill.noPriority,
+    notDone: query.drill.notDone,
+    createdFrom: query.dateRange.from || query.drill.createdFrom || undefined,
+    createdTo: query.dateRange.to || query.drill.createdTo || undefined,
+    completedFrom: query.drill.completedFrom || undefined,
+    completedTo: query.drill.completedTo || undefined,
+    hideStaleDone: options.hideStaleDone,
+    noStatus: options.noStatus,
+    customCategories: options.customCategories,
+    sort: options.sort ?? { field: "statusChangedAt", dir: query.cardOrder },
+  });
+  params.set("groupBy", groupBy);
+  return apiFetch<{ total: number; counts: Record<string, number> }>(
+    `/issues/counts?${params.toString()}`,
     {},
     getToken(),
   );

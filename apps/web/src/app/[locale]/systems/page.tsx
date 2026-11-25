@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import {
   Badge,
@@ -377,14 +377,6 @@ export default function SystemsPage() {
     void loadUsage(latestRecordIds(apps));
   }
 
-  /** ล้างตัวกรองทั้ง 3 แล้วกลับไปหน้าแรก — เรียกจากปุ่ม "ล้างทั้งหมด" ใน popover */
-  function resetFilters() {
-    setSearch("");
-    setCompanyIds([]);
-    setExpiryFilters([]);
-    setPage(1);
-  }
-
   function openAddApp() {
     setEditingRecord(null);
     setAppDialogOpen(true);
@@ -701,6 +693,38 @@ export default function SystemsPage() {
   const totalSelected =
     companyIds.length + expiryFilters.length + (search.trim() ? 1 : 0);
 
+  /**
+   * หน้านี้โหลดข้อมูลครบอยู่แล้ว (ไม่มี pagination ฝั่ง server) — count ต่อตัวเลือก
+   * จึงนับจากชุดแถวเดียวกับที่ตารางใช้ได้ตรงเป๊ะ ไม่ต้องยิง API เพิ่ม
+   */
+  const matchesSearch = useCallback(
+    ({ app, link }: (typeof rows)[number], term = search.trim().toLowerCase()) =>
+      !term || app.name.toLowerCase().includes(term) || link.name.toLowerCase().includes(term),
+    [search],
+  );
+  const systemCounts = useMemo(() => {
+    const company: Record<string, number> = {};
+    for (const { id } of companyList) {
+      company[String(id)] = rows.filter(
+        (row) =>
+          matchesSearch(row) &&
+          (expiryFilters.length === 0 ||
+            expiryFilters.some((v) => matchesExpiryFilter(row.link.expiryStatus, v))) &&
+          row.link.id === id,
+      ).length;
+    }
+    const expiry: Record<string, number> = {};
+    for (const value of EXPIRY_FILTERS) {
+      expiry[value] = rows.filter(
+        (row) =>
+          matchesSearch(row) &&
+          (companyIds.length === 0 || companyIds.includes(row.link.id)) &&
+          matchesExpiryFilter(row.link.expiryStatus, value),
+      ).length;
+    }
+    return { company, expiry };
+  }, [rows, companyList, matchesSearch, expiryFilters, companyIds]);
+  /** กด tick = กรองทันที (ตารางกรองใน memory อยู่แล้ว) */
   function toggleCompany(id: number) {
     setCompanyIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
     setPage(1);
@@ -713,12 +737,20 @@ export default function SystemsPage() {
     setPage(1);
   }
 
-  /** ตัวเลือกของทั้ง 2 section — สร้างจาก state ปัจจุบัน (`checked` = tick ไว้) */
+  function clearSystemFilters() {
+    setSearch("");
+    setCompanyIds([]);
+    setExpiryFilters([]);
+    setPage(1);
+  }
+
+  /** ตัวเลือกของทั้ง 2 section — `checked` มาจาก state ที่ apply แล้ว */
   const companyFilterOptions: FilterOption[] = companyList.map((company) => ({
     id: company.id,
     label: company.name,
     checked: companyIds.includes(company.id),
     onToggle: () => toggleCompany(company.id),
+    count: systemCounts.company[String(company.id)],
     start: <BusinessIcon sx={{ fontSize: 16, flexShrink: 0, color: "warning.main" }} />,
   }));
 
@@ -727,6 +759,7 @@ export default function SystemsPage() {
     label: t(EXPIRY_FILTER_LABEL[value]),
     checked: expiryFilters.includes(value),
     onToggle: () => toggleExpiry(value),
+    count: systemCounts.expiry[value],
     start: (
       <ScheduleIcon sx={{ fontSize: 16, flexShrink: 0, color: EXPIRY_FILTER_COLOR[value] }} />
     ),
@@ -939,8 +972,7 @@ export default function SystemsPage() {
             anchorEl={filterAnchor}
             onClose={() => setFilterAnchor(null)}
             sections={filterSections}
-            onClearAll={resetFilters}
-            selectedCount={totalSelected}
+            onClearAll={clearSystemFilters}
           />
 
           <DataTable>

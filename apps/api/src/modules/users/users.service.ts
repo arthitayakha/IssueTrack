@@ -33,6 +33,7 @@ export class UsersService {
       roleIds?: number[];
       positionIds?: number[];
     } = {},
+    withCounts = false,
   ) {
     const qb = this.users
       .createQueryBuilder("user")
@@ -41,16 +42,22 @@ export class UsersService {
       // บริษัทของลูกค้า — join มาเพื่อให้ตารางผู้ใช้โชว์ชื่อบริษัทได้ทันที
       .leftJoinAndSelect("user.company", "company");
 
-    const { companyIds, roleIds, positionIds } = filters;
-    if (companyIds && companyIds.length > 0) {
-      qb.andWhere("user.companyId IN (:...companyIds)", { companyIds });
-    }
-    if (roleIds && roleIds.length > 0) {
-      qb.andWhere("user.roleId IN (:...roleIds)", { roleIds });
-    }
-    if (positionIds && positionIds.length > 0) {
-      qb.andWhere("user.positionId IN (:...positionIds)", { positionIds });
-    }
+    /** One where-builder for the paged rows AND the grouped counts. */
+    const applyFilters = (
+      target: ReturnType<typeof this.users.createQueryBuilder>,
+    ) => {
+      const { companyIds, roleIds, positionIds } = filters;
+      if (companyIds && companyIds.length > 0) {
+        target.andWhere("user.companyId IN (:...companyIds)", { companyIds });
+      }
+      if (roleIds && roleIds.length > 0) {
+        target.andWhere("user.roleId IN (:...roleIds)", { roleIds });
+      }
+      if (positionIds && positionIds.length > 0) {
+        target.andWhere("user.positionId IN (:...positionIds)", { positionIds });
+      }
+    };
+    applyFilters(qb);
 
     /**
      * **นับ + เลือกหน้าด้วย SQL** (`getCount` ก่อน แล้วค่อย `skip/take`) —
@@ -63,6 +70,36 @@ export class UsersService {
       .skip((params.page - 1) * params.limit)
       .take(params.limit)
       .getMany();
+
+    /**
+     * Optional per-group counts for the filter popover. Computed from the
+     * SAME where-builder as the paged rows (before skip/take), so a chip can
+     * never show a number that disagrees with the page it opens.
+     */
+    let counts: Record<string, Record<string, number>> | undefined;
+    if (withCounts) {
+      const groupCount = async (column: string) => {
+        // A fresh qb (no `leftJoinAndSelect`) — cloning the page qb would keep
+        // the joined entity columns in SELECT and break PostgreSQL's GROUP BY.
+        const countQb = this.users.createQueryBuilder("user");
+        applyFilters(countQb);
+        const rows = await countQb
+          .select(column, "key")
+          .addSelect("COUNT(DISTINCT user.id)::int", "count")
+          .groupBy(column)
+          .getRawMany<{ key: number | null; count: number }>();
+        const out: Record<string, number> = {};
+        for (const row of rows) {
+          if (row.key != null) out[String(row.key)] = Number(row.count);
+        }
+        return out;
+      };
+      counts = {
+        companyIds: await groupCount("user.companyId"),
+        roleIds: await groupCount("user.roleId"),
+        positionIds: await groupCount("user.positionId"),
+      };
+    }
 
     const mapped = users.map((user) => ({
       id: String(user.id),
@@ -79,7 +116,8 @@ export class UsersService {
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     }));
-    return paginateTotal(mapped, total, params);
+    const result = paginateTotal(mapped, total, params);
+    return counts ? { ...result, counts } : result;
   }
 
   /**

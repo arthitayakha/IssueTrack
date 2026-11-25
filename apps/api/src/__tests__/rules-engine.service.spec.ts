@@ -200,7 +200,7 @@ describe("RulesEngineService.evaluate", () => {
     rules.find.mockResolvedValue([rule({ actionKey: "issue.unlock" })]);
     issues.update.mockImplementation(async () => {
       // an action must not trigger another round of rules
-      void engine.evaluate("comment.created", { issueId: 42 });
+      void engine.evaluate("issue.created", { issueId: 42 });
       return { affected: 1 };
     });
 
@@ -221,11 +221,11 @@ describe("RulesEngineService.evaluate", () => {
     const { engine, rules } = makeEngine();
     rules.find.mockResolvedValue([]);
 
-    await engine.evaluate("comment.created", { issueId: 1 });
+    await engine.evaluate("issue.created", { issueId: 1 });
 
     expect(rules.find).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { triggerKey: "comment.created", isActive: true },
+        where: { triggerKey: "issue.created", isActive: true },
       }),
     );
   });

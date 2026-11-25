@@ -602,6 +602,21 @@ function filterParams(f: ReportFilters): URLSearchParams {
   return p;
 }
 
+/**
+ * Counts beside every filter option under the applied filters (server-side,
+ * same query builder as the report rows) plus the matching total for CTA preview.
+ */
+export async function fetchReportFilterCounts(
+  filters: ReportFilters,
+): Promise<{ total: number; counts: Record<string, Record<string, number>> }> {
+  const p = filterParams(filters);
+  return apiFetch<{ total: number; counts: Record<string, Record<string, number>> }>(
+    `/reports/filter-counts?${p.toString()}`,
+    {},
+    getToken(),
+  );
+}
+
 interface RawPage<T> {
   data: T[];
   total: number;

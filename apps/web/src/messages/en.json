@@ -180,6 +180,7 @@
     "taskTypeRequired": "Set this card's task type before moving it out of this status — open the card and pick a task type in the detail panel",
     "staleDays": "Sitting in this status for {days} days",
     "staleBadge": "{days} days stuck",
+    "expiringBadge": "{days} days left",
     "errorTitle": "The board could not be opened",
     "errorDesc": "Something unexpected went wrong — try again, or refresh this page.",
     "errorRetry": "Try again",
@@ -971,6 +972,7 @@
       "app_expiring": "expiring soon",
       "app_expired": "expired",
       "ma_depleted": "MA exhausted",
+      "contract_ma_remaining": "MA left before expiry",
       "app_renewed": "renewed",
       "app_hours_purchased": "hours purchased",
       "contact_message": "message from",
@@ -1302,7 +1304,13 @@
     "drillNotDone": "Not done",
     "drillNoApp": "No app",
     "drillNoCategory": "No category",
-    "drillNoPriority": "No priority"
+    "drillNoPriority": "No priority",
+    "searchGroups": "Search filters...",
+    "searchOptions": "Search options...",
+    "back": "Back",
+    "selectGroup": "Select a filter group on the left",
+    "resultCount": "View {count} results",
+    "apply": "Apply filters"
   },
   "pagination": {
     "showing": "Showing {start}-{end} of {total}"
@@ -1337,7 +1345,7 @@
     "emptyTitle": "No automation rules yet",
     "emptyDescription": "There are no automation rules configured yet",
     "deleteTitle": "Delete rule",
-    "deleteMessage": "Do you want to delete this rule?",
+    "deleteMessage": "Are you sure you want to delete rule \"{name}\"?",
     "deleteConfirm": "Delete",
     "cancel": "Cancel",
     "deleted": "Rule deleted successfully",

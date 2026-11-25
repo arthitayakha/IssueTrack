@@ -1466,6 +1466,60 @@ describe("AppsService.isPairExpired — ตาข่ายตอนทีมต�
   });
 });
 
+/**
+ * `daysLeftForPairs()` — แหล่งตัวเลขของกรอบแดง 7 วันสุดท้ายบนการ์ด · ต้องดู
+ * ช่วงล่าสุดของคู่เหมือน `isPairExpired()` และ fail-open ทุกกรณี
+ */
+describe("AppsService.daysLeftForPairs — วันเหลือสำหรับกรอบแดงบนบอร์ด", () => {
+  const inDays = (n: number): string =>
+    new Date(Date.parse(`${todayIso()}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+
+  it("query ครั้งเดียว คืนวันเหลือของช่วงล่าสุดต่อคู่", async () => {
+    const { service, appCompanies } = makeService({
+      rows: [
+        row({ id: 11, appId: 7, companyId: 1, expiresAt: inDays(-100) }), // รอบเก่า
+        row({ id: 12, appId: 7, companyId: 1, expiresAt: inDays(5) }),
+        row({ id: 13, appId: 11, companyId: 2, expiresAt: inDays(20) }),
+      ],
+    });
+
+    const result = await service.daysLeftForPairs([
+      { appId: 7, companyId: 1 },
+      { appId: 11, companyId: 2 },
+    ]);
+
+    expect(appCompanies.find).toHaveBeenCalledTimes(1);
+    expect(result.get("7:1")).toBe(5);
+    expect(result.get("11:2")).toBe(20);
+  });
+
+  it("ข้ามคู่ที่ยกเลิก / ไม่กรอกวัน / ไม่มีแถว / ไม่ส่ง app หรือ company", async () => {
+    const { service } = makeService({
+      rows: [
+        row({ id: 11, appId: 7, companyId: 1, expiresAt: inDays(3), cancelledAt: new Date() }),
+        row({ id: 12, appId: 11, companyId: 2, expiresAt: null }),
+      ],
+    });
+
+    const result = await service.daysLeftForPairs([
+      { appId: 7, companyId: 1 },
+      { appId: 11, companyId: 2 },
+      { appId: 99, companyId: 2 },
+      { appId: null, companyId: 2 },
+      { appId: 7, companyId: null },
+    ]);
+
+    expect(result.size).toBe(0);
+  });
+
+  it("ไม่มีคู่ที่ใช้ได้ → ไม่ query เลย", async () => {
+    const { service, appCompanies } = makeService();
+    const result = await service.daysLeftForPairs([{ appId: null, companyId: null }]);
+    expect(result.size).toBe(0);
+    expect(appCompanies.find).not.toHaveBeenCalled();
+  });
+});
+
 describe("AppsService.cancelContract / restoreContract — ยกเลิกทั้งคู่, ย้อนได้", () => {
   it("stamps cancelledAt on EVERY row of the pair, not just the pointed one", async () => {
     const { service, state } = makeService({

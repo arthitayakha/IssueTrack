@@ -10,7 +10,6 @@ import { ActivityLog } from "../activity-logs/entities/activity-log.entity";
 import { Issue } from "../issues/entities/issue.entity";
 import { ActorInfo } from "../activity-logs/activity-logs.service";
 import { PermissionsService } from "../permissions/permissions.service";
-import { RulesEngineService } from "../rules/rules-engine.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { paginate, PaginationParams } from "../../common/pagination";
 import type { AuthUser } from "../auth/auth-user";
@@ -26,7 +25,6 @@ export class CommentsService {
     @InjectRepository(Issue)
     private readonly issues: Repository<Issue>,
     private readonly permissions: PermissionsService,
-    private readonly rulesEngine: RulesEngineService,
     private readonly notifications: NotificationsService,
   ) {}
 
@@ -82,13 +80,6 @@ export class CommentsService {
       recipients: [issue.programmerId, issue.customerId],
       actor,
       alsoAdmins: !issue.programmerId,
-    });
-    await this.rulesEngine.evaluate("comment.created", {
-      issueId,
-      actorId: userId,
-      actorRole: actor?.actorRole ?? null,
-      toStatusId: issue.statusId ?? null,
-      newValue: content,
     });
     const fresh = await this.loadWithUser(saved.id);
     return this.toResponse(fresh ?? saved);

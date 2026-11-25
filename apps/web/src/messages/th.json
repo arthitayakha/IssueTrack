@@ -180,6 +180,7 @@
     "taskTypeRequired": "ต้องเลือกประเภทงานให้เรียบร้อยก่อนย้ายการ์ดออกจากสถานะนี้ — เปิดการ์ดแล้วเลือกประเภทงานที่แผงรายละเอียด",
     "staleDays": "ค้างในสถานะนี้ {days} วัน",
     "staleBadge": "ค้าง {days} วัน",
+    "expiringBadge": "เหลือ {days} วัน",
     "errorTitle": "เปิดบอร์ดไม่สำเร็จ",
     "errorDesc": "เกิดข้อผิดพลาดที่ไม่คาดคิด — กดลองใหม่ หรือรีเฟรชหน้านี้",
     "errorRetry": "ลองอีกครั้ง",
@@ -971,6 +972,7 @@
       "app_expiring": "ใกล้หมดอายุ",
       "app_expired": "หมดอายุแล้ว",
       "ma_depleted": "MA หมดแล้ว",
+      "contract_ma_remaining": "MA คงเหลือก่อนหมดอายุ",
       "app_renewed": "ต่ออายุแล้ว",
       "app_hours_purchased": "ซื้อชั่วโมงเพิ่มแล้ว",
       "daily_digest": "เตือนรายวัน",
@@ -1308,7 +1310,13 @@
     "drillNotDone": "ยังไม่เสร็จสิ้น",
     "drillNoApp": "ไม่มีแอป",
     "drillNoCategory": "ไม่มีหมวดหมู่",
-    "drillNoPriority": "ไม่ระบุความสำคัญ"
+    "drillNoPriority": "ไม่ระบุความสำคัญ",
+    "searchGroups": "ค้นหาตัวกรอง...",
+    "searchOptions": "ค้นหาตัวเลือก...",
+    "back": "ย้อนกลับ",
+    "selectGroup": "เลือกหัวข้อตัวกรองทางด้านซ้าย",
+    "resultCount": "ดูผลลัพธ์ {count} รายการ",
+    "apply": "ใช้ตัวกรอง"
   },
   "pagination": {
     "showing": "แสดง {start}-{end} จาก {total}"
@@ -1343,7 +1351,7 @@
     "emptyTitle": "ยังไม่มีกฎอัตโนมัติ",
     "emptyDescription": "ยังไม่มีกฎที่ตั้งค่าไว้ในระบบ",
     "deleteTitle": "ลบกฎ",
-    "deleteMessage": "ต้องการลบกฎนี้หรือไม่?",
+    "deleteMessage": "ต้องการลบกฎ \"{name}\" หรือไม่?",
     "deleteConfirm": "ลบ",
     "cancel": "ยกเลิก",
     "deleted": "ลบกฎเรียบร้อยแล้ว",

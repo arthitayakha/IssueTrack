@@ -3,8 +3,10 @@ import { StaleCardsService } from "../modules/rules/stale-cards.service";
 /**
  * The 09:00 stale sweep — the only caller of `notifyStaleCard()`:
  *
- *   - rings once per *sitting*: only rows with `stale_notified_at IS NULL`
- *     are picked up, and each one is stamped right after the bell;
+ *   - rings **every day** until the card reaches เสร็จสิ้น: the query takes a
+ *     card whose `stale_notified_at` is NULL (just moved in) or older than
+ *     today, then stamps it right after the bell;
+ *   - a rule pointed at the done column is skipped entirely;
  *   - never rings for a trashed card or a card that is not past the days;
  *   - no active rule (or an unreadable rules table) = the sweep does
  *     nothing at all (fail open, same contract as the app-expiry sweep);
@@ -47,17 +49,18 @@ describe("StaleCardsService.sweep — the daily stale bell", () => {
     expect(notifications.notifyStaleCard).not.toHaveBeenCalled();
   });
 
-  it("asks only for un-notified, non-trashed cards past the cutoff", async () => {
+  it("asks for cards that have not rung today, non-trashed and past the cutoff", async () => {
     const { service, issues, rulesEngine } = makeSweep();
-    rulesEngine.staleRules.mockResolvedValue([{ statusId: 4, days: 7 }]);
+    rulesEngine.staleRules.mockResolvedValue([{ statusId: 3, days: 7 }]);
     const before = Date.now();
 
     await service.sweep();
 
     expect(issues.find).toHaveBeenCalledTimes(1);
     const { where, relations } = issues.find.mock.calls[0][0];
-    expect(where.statusId).toBe(4);
-    expect(where.staleNotifiedAt).toEqual(expect.anything()); // IS NULL
+    expect(where.statusId).toBe(3);
+    // Or(IsNull(), LessThan(today 00:00 Bangkok)) — yesterday's stamp rings again
+    expect(where.staleNotifiedAt.type).toBe("or");
     expect(where.deletedAt).toEqual(expect.anything()); // IS NULL
     expect(where.statusChangedAt).toEqual(expect.anything()); // < cutoff
     // cutoff ≈ now − 7 days (a second of slack either way)
@@ -66,18 +69,28 @@ describe("StaleCardsService.sweep — the daily stale bell", () => {
     expect(relations).toContain("status");
   });
 
-  it("notifies with the status + day count and stamps the card", async () => {
+  it("skips a rule pointed at เสร็จสิ้น — the bell stops when the work is done", async () => {
     const { service, issues, notifications, rulesEngine } = makeSweep();
     rulesEngine.staleRules.mockResolvedValue([{ statusId: 4, days: 7 }]);
+
+    await service.sweep();
+
+    expect(issues.find).not.toHaveBeenCalled();
+    expect(notifications.notifyStaleCard).not.toHaveBeenCalled();
+  });
+
+  it("notifies with the status + day count and stamps the card", async () => {
+    const { service, issues, notifications, rulesEngine } = makeSweep();
+    rulesEngine.staleRules.mockResolvedValue([{ statusId: 3, days: 7 }]);
     issues.find.mockResolvedValue([
-      { id: 42, title: "POS error", status: { name: "เสร็จสิ้น" }, statusChangedAt: OLD_STAMP },
+      { id: 42, title: "POS error", status: { name: "Review" }, statusChangedAt: OLD_STAMP },
     ]);
 
     await service.sweep();
 
     expect(notifications.notifyStaleCard).toHaveBeenCalledWith({
       issue: expect.objectContaining({ id: 42 }),
-      statusName: "เสร็จสิ้น",
+      statusName: "Review",
       days: 7,
     });
     // the stamp lands after the bell — a lost stamp only means a rare
@@ -89,10 +102,10 @@ describe("StaleCardsService.sweep — the daily stale bell", () => {
 
   it("rings every card the rule covers, stamping each one", async () => {
     const { service, issues, notifications, rulesEngine } = makeSweep();
-    rulesEngine.staleRules.mockResolvedValue([{ statusId: 4, days: 3 }]);
+    rulesEngine.staleRules.mockResolvedValue([{ statusId: 3, days: 3 }]);
     issues.find.mockResolvedValue([
-      { id: 1, title: "a", status: { name: "เสร็จสิ้น" } },
-      { id: 2, title: "b", status: { name: "เสร็จสิ้น" } },
+      { id: 1, title: "a", status: { name: "Review" } },
+      { id: 2, title: "b", status: { name: "Review" } },
     ]);
 
     await service.sweep();
@@ -105,14 +118,14 @@ describe("StaleCardsService.sweep — the daily stale bell", () => {
   it("one round per rule — several rules each get their own query", async () => {
     const { service, issues, rulesEngine } = makeSweep();
     rulesEngine.staleRules.mockResolvedValue([
-      { statusId: 4, days: 3 },
+      { statusId: 3, days: 3 },
       { statusId: 7, days: 14 },
     ]);
 
     await service.sweep();
 
     expect(issues.find).toHaveBeenCalledTimes(2);
-    expect(issues.find.mock.calls[0][0].where.statusId).toBe(4);
+    expect(issues.find.mock.calls[0][0].where.statusId).toBe(3);
     expect(issues.find.mock.calls[1][0].where.statusId).toBe(7);
   });
 
@@ -125,7 +138,7 @@ describe("StaleCardsService.sweep — the daily stale bell", () => {
 
   it("a failed lookup mid-round stops that round without throwing", async () => {
     const { service, issues, rulesEngine } = makeSweep();
-    rulesEngine.staleRules.mockResolvedValue([{ statusId: 4, days: 7 }]);
+    rulesEngine.staleRules.mockResolvedValue([{ statusId: 3, days: 7 }]);
     issues.find.mockRejectedValue(new Error("connection refused"));
 
     await expect(service.sweep()).resolves.toBeUndefined();

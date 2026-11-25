@@ -115,6 +115,8 @@ describe("REPEAT_CADENCE — ความถี่ตามระดับ", () 
   it("high ไม่จำกัด / medium ซ้ำ 4 ครั้ง / low ซ้ำ 2 ครั้งแบบเว้นวัน", () => {
     expect(REPEATABLE_ACTIONS.has("ma_depleted")).toBe(true);
     expect(REPEATABLE_ACTIONS.has("rule_updated")).toBe(false);
+    // stale ยิงจาก StaleCardsService ทุกวันอยู่แล้ว — ห้ามเปิดสายซ้ำอีกชั้น
+    expect(REPEATABLE_ACTIONS.has("stale")).toBe(false);
     expect(REPEAT_CADENCE.high).toEqual({ intervalDays: 1, maxRepeats: Infinity });
     expect(REPEAT_CADENCE.medium).toEqual({ intervalDays: 1, maxRepeats: 4 });
     expect(REPEAT_CADENCE.low).toEqual({ intervalDays: 2, maxRepeats: 2 });
@@ -153,6 +155,12 @@ describe("NotificationRepeatsService.register", () => {
   it("ข้ามประเภทที่ไม่ต้องบริหาร (rule_* / ยืนยันการต่ออายุ)", async () => {
     const { service, repeats } = makeService();
     await service.register(savedRow({ type: "rule_updated", priority: "low" }));
+    expect(repeats.save).not.toHaveBeenCalled();
+  });
+
+  it("ข้าม stale — cron รายวันของ StaleCardsService เป็นคนยิงเอง", async () => {
+    const { service, repeats } = makeService();
+    await service.register(savedRow({ type: "stale", priority: "medium" }));
     expect(repeats.save).not.toHaveBeenCalled();
   });
 

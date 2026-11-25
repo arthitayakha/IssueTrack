@@ -127,8 +127,13 @@ import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import {
-  fetchIssues,
+  fetchBoardIssues,
+  fetchIssueGroupCounts,
+  type IssueCountGroup,
+  EMPTY_BOARD_DRILL_FILTERS,
   fetchIssue,
+  type BoardDrillFilters,
+  type BoardIssueQuery,
   createIssue,
   moveIssue,
   assignIssue,
@@ -192,28 +197,8 @@ function getErrorMessage(e: unknown, fallback: string): string | null {
  * board's checkbox state covers the rest, so these only need to ride along to
  * both fetch sites (the main table/folder list and the Kanban columns).
  */
-interface DrillIssueFilters {
-  noApp: boolean;
-  noCategory: boolean;
-  noPriority: boolean;
-  /** Dashboard trend's pending bar — not currently done (no status included). */
-  notDone: boolean;
-  createdFrom: string;
-  createdTo: string;
-  completedFrom: string;
-  completedTo: string;
-}
-
-const EMPTY_DRILL_FILTERS: DrillIssueFilters = {
-  noApp: false,
-  noCategory: false,
-  noPriority: false,
-  notDone: false,
-  createdFrom: "",
-  createdTo: "",
-  completedFrom: "",
-  completedTo: "",
-};
+type DrillIssueFilters = BoardDrillFilters;
+const EMPTY_DRILL_FILTERS = EMPTY_BOARD_DRILL_FILTERS;
 
 /** Everything a drill link can seed — one parse, once on mount. */
 interface BoardUrlFilters {
@@ -562,13 +547,39 @@ function labelContrast(color: string, theme: Theme): string {
   return theme.palette.getContrastText(labelColorValue(color, theme));
 }
 
+/**
+ * Detail-panel label chip — a PALE tint of the label's own colour with black
+ * text, no border, fully oval and a touch larger than a stock small Chip.
+ *
+ * The Kanban bar deliberately stays SOLID (`labelColorValue()` is used there
+ * directly): it is a colour marker meant to read at a glance. Inside this
+ * popup the same solid pink behind 0.8rem black text was too heavy to read,
+ * so the chip uses 20% of that same hue over the white dialog paper (~13:1
+ * contrast). Same hue, lighter weight — no new colour is invented here.
+ *
+ * All three detail-panel spots spread this helper, so the look lives here:
+ * the chip with ✕ in the header, the read-only chip, and the rows in the
+ * label-picker popover. Call sites must NOT re-override `fontSize`.
+ *
+ * MUI paints a translucent BLACK overlay on a clickable Chip's :hover /
+ * :focusVisible (`alpha(action.selected, ...)` — see Chip.js) with
+ * `.MuiChip-root:hover` specificity (0,2,0), which beats a plain sx class
+ * (0,1,0). `&&` lifts the re-assertion to (0,3,0); it must re-assert the TINT
+ * (not the solid base) or hovering would darken the chip again.
+ */
 function labelChipSx(color: string | null | undefined, theme: Theme) {
-  const base = labelColorValue(color, theme);
+  const tint = alpha(labelColorValue(color, theme), 0.2);
   return {
-    bgcolor: `${base}26`,
+    bgcolor: tint,
     color: theme.palette.common.black,
-    border: `1px solid ${base}66`,
-    borderRadius: 6,
+    border: "none",
+    borderRadius: "999px",
+    fontSize: "0.8rem",
+    "& .MuiChip-label": { px: 1.25 },
+    "&&:hover, &&:focus, &&.Mui-focusVisible, &&:active": {
+      bgcolor: tint,
+      color: theme.palette.common.black,
+    },
   };
 }
 
@@ -612,6 +623,44 @@ function statusChipSx(color: string) {
   };
 }
 
+/**
+ * The coloured dot that leads a status pill in the table (design reference).
+ * Kept as a plain Box instead of MUI's `Chip icon` so the hue is never dimmed
+ * by the icon slot's own styling.
+ */
+function statusDotSx(color: string) {
+  return {
+    width: 7,
+    height: 7,
+    flexShrink: 0,
+    borderRadius: "50%",
+    bgcolor: color,
+  };
+}
+
+/**
+ * Filled pastel priority chip — the recipe from the Kanban card, where a
+ * "Medium" chip is a 12% tint of the theme colour under that colour's dark
+ * variant. Shared by the card and the table's priority column so the two can
+ * never drift apart; `default` (no/unknown priority) falls back to neutral.
+ * Colours come from the theme only — no hardcoded hex.
+ */
+function priorityChipSx(color: string, theme: Theme) {
+  const tone =
+    color === "error" || color === "warning" || color === "success"
+      ? theme.palette[color]
+      : null;
+  return {
+    px: 1,
+    py: 0.25,
+    borderRadius: 1,
+    bgcolor: tone ? alpha(tone.main, 0.12) : "action.selected",
+    color: tone ? tone.dark : "text.secondary",
+    fontWeight: 700,
+    lineHeight: 1.5,
+  };
+}
+
 const dropAnimation: DropAnimation = {
   duration: 250,
   easing: "cubic-bezier(0.25, 1, 0.5, 1)",
@@ -634,7 +683,7 @@ function getCategoryLabel(issue: BoardIssue): string {
 
 /**
  * Days this card has sat in its current status when a stale rule covers its
- * status and the count has reached that rule's days — the number the red
+ * status and the count has reached that rule's days — the number the AMBER
  * border's tooltip shows. Null = no border: no rule, no stamp or an
  * unreadable date all fail open (the card just looks normal).
  */
@@ -653,7 +702,18 @@ function staleDaysFor(
   return covered ? days : null;
 }
 
-/** Search tokens for the red "ค้าง N วัน" badge the card actually renders. */
+/**
+ * วันเหลือ 1–7 ของสัญญาแอป × บริษัทผู้แจ้ง — ตัวเลขที่ทำให้การ์ดได้**กรอบแดง**
+ * ( urgent กว่ากรอบส้มของงานค้าง ) · การ์ดที่เสร็จแล้ว / ไม่มีวันที่ / older API
+ * ล้วน fail open = ไม่มีกรอบ · ตรงกับหน้าต่างกระดิ่ง `contract_ma_remaining`
+ */
+function expiringDaysFor(issue: BoardIssue): number | null {
+  if (issue.statusId === DONE_STATUS_ID) return null;
+  const left = issue.contractDaysLeft;
+  return typeof left === "number" && left >= 1 && left <= 7 ? left : null;
+}
+
+/** Search tokens for the amber "ค้าง N วัน" badge the card actually renders. */
 function staleSearchTokens(
   issue: BoardIssue,
   staleRules: StaleRule[],
@@ -730,6 +790,22 @@ function sortByEnteredAt(items: BoardIssue[], order: "desc" | "asc"): BoardIssue
 const EMPTY_ITEMS: BoardIssue[] = [];
 
 /**
+ * Server paging can shift rows between requests (a card is moved, deleted,
+ * or a rule hides it), so "load more" must never render the same id twice —
+ * two components sharing one `issue-<id>` sortable id break dnd-kit outright.
+ */
+function appendUniqueIssues(current: BoardIssue[], incoming: BoardIssue[]): BoardIssue[] {
+  if (incoming.length === 0) return current;
+  const seen = new Set(current.map((i) => i.id));
+  const fresh = incoming.filter((i) => {
+    if (seen.has(i.id)) return false;
+    seen.add(i.id);
+    return true;
+  });
+  return fresh.length === 0 ? current : [...current, ...fresh];
+}
+
+/**
  * Where the board decides a card is being dropped.
  *
  * `pointerWithin` first: "which droppable is the cursor actually INSIDE?" — a
@@ -768,23 +844,26 @@ const TrelloCardContent = memo(function TrelloCardContent({
   canUnlockIssue?: boolean;
   /**
    * Days past a stale rule's limit — renders the always-visible
-   * "ค้าง N วัน" chip (the red border's owner passes it down; the
-   * drag overlay can omit it). Null = no chip, same fail-open as the border.
+   * "ค้าง N วัน" text (the border's owner passes it down; the drag overlay
+   * can omit it). Null = no text, same fail-open as the border. A near-expiry
+   * contract overrides this with red "เหลือ N วัน" — read straight off `issue`.
    */
   staleDays?: number | null;
   onUnlock?: (issue: BoardIssue) => void;
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
+  // สัญญาใกล้หมด (1–7 วัน, งานยังไม่เสร็จ) ชนะข้อความงานค้างในแถวป้ายเดียวกัน
+  // — สีแดง/`เหลือ N วัน` แทนสีส้ม/`ค้าง N วัน` ตรงกับกติกากรอบของการ์ด
+  const expiringDays = expiringDaysFor(issue);
+  const noticeDays = expiringDays ?? staleDays;
+  const noticeKey = expiringDays != null ? "expiringBadge" : "staleBadge";
   // This card's OWN clock — ticks only while a session runs on it, so the
   // board no longer re-renders every second (see `useNow`).
   const nowMs = useNow(!!runningSince);
   const priorityColor = issue.priorityName
     ? PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"
     : "default";
-  /** พื้นหลัง pill ความสำคัญแบบทบสีจาก theme (ไม่ hardcode hex) */
-  const priorityTone =
-    priorityColor === "default" ? null : theme.palette[priorityColor];
   const avatarChar = issue.programmerName
     ? issue.programmerName.charAt(0).toUpperCase()
     : null;
@@ -803,8 +882,9 @@ const TrelloCardContent = memo(function TrelloCardContent({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
-      {/* แถวป้าย: แถบสีล้วน + "ค้าง N วัน" เป็นตัวอักษรแดงไม่มีพื้นหลังชิดขวา */}
-      {(labelBars.length > 0 || staleDays != null) && (
+      {/* แถวป้าย: แถบสีล้วน + ข้อความชิดขวา — สัญญาใกล้หมด = แดง "เหลือ N วัน"
+          (ชนะ) · งานค้าง = ส้ม "ค้าง N วัน" · ไม่มีพื้นหลังเหมือนเดิม */}
+      {(labelBars.length > 0 || noticeDays != null) && (
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mb: 0.75, minWidth: 0 }}>
           {labelBars.map((lbl) => (
             <Tooltip key={lbl.id} title={lbl.name}>
@@ -826,18 +906,18 @@ const TrelloCardContent = memo(function TrelloCardContent({
               />
             </Tooltip>
           )}
-          {staleDays != null && (
+          {noticeDays != null && (
             <Typography
               sx={{
                 ml: "auto",
                 flexShrink: 0,
-                color: "error.main",
+                color: expiringDays != null ? "error.main" : "warning.main",
                 fontSize: "0.7rem",
                 fontWeight: 700,
                 lineHeight: 1,
               }}
             >
-              {t("staleBadge", { days: staleDays })}
+              {t(noticeKey, { days: noticeDays })}
             </Typography>
           )}
         </Box>
@@ -874,14 +954,8 @@ const TrelloCardContent = memo(function TrelloCardContent({
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
           <Box
             sx={{
-              px: 1,
-              py: 0.25,
-              borderRadius: 1,
-              bgcolor: priorityTone ? alpha(priorityTone.main, 0.12) : "action.selected",
-              color: priorityTone ? priorityTone.dark : "text.secondary",
+              ...priorityChipSx(priorityColor, theme),
               fontSize: "0.68rem",
-              fontWeight: 700,
-              lineHeight: 1.5,
             }}
           >
             {priorityLabel(t, issue.priorityName)}
@@ -1011,7 +1085,7 @@ const TrelloCard = memo(function TrelloCard({
   canUnlockIssue?: boolean;
   runningSince?: string | null;
   showTime?: boolean;
-  /** Days past a stale rule's limit — paints the card's own border red. */
+  /** Days past a stale rule's limit — paints the card's own border amber. */
   staleDays?: number | null;
   onOpen?: (issue: BoardIssue) => void;
   onEdit?: (issue: BoardIssue) => void;
@@ -1039,6 +1113,8 @@ const TrelloCard = memo(function TrelloCard({
 
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [hovered, setHovered] = useState(false);
+  /** สัญญาใกล้หมดได้กรอบแดง ( urgent กว่ากรอบส้มของงานค้าง ) */
+  const expiringDays = expiringDaysFor(issue);
 
   /**
    * The "…" button lives here (it needs this card's `hovered` state), but it is
@@ -1091,10 +1167,12 @@ const TrelloCard = memo(function TrelloCard({
           boxShadow: `0 8px 22px ${alpha(theme.palette.navy.main, 0.16)}`,
           transform: "translateY(-2px)",
         },
-        // การ์ดค้าง = แถบแดงด้านซ้าย (แทน border แดงรอบใบที่ดูรุนแรงเกินไป)
-        // ใช้ borderLeftColor โปร่งใสตอนไม่ค้าง เพื่อไม่ให้ขนาดการ์ดกระโดด
+        // สองระดับความเร่งด่วน: สัญญาใกล้หมด = แถบแดง (ต้องปิดงานก่อนเสียสิทธิ์)
+        // งานค้าง = แถบส้ม (แจ้งเตือนทุกวันอยู่แล้ว) · ใส่สีโปร่งใสตอนปกติ
+        // เพื่อไม่ให้ขนาดการ์ดกระโดด
         borderLeft: "3px solid",
-        borderLeftColor: staleDays != null ? "error.main" : "transparent",
+        borderLeftColor:
+          expiringDays != null ? "error.main" : staleDays != null ? "warning.main" : "transparent",
         transition: "box-shadow 0.2s ease, transform 0.2s ease",
       }}
     >
@@ -1776,6 +1854,7 @@ function IssueDetailDialog({
   onClose,
   statuses,
   labels,
+  setLabels,
   onRefresh,
   trashed = false,
   onRestore,
@@ -1786,6 +1865,8 @@ function IssueDetailDialog({
   onClose: () => void;
   statuses: IssueStatus[];
   labels: Label[];
+  /** Live master list — lets this dialog add/edit a label without a reload. */
+  setLabels: Dispatch<SetStateAction<Label[]>>;
   onRefresh: () => void;
   /** Set only by the recycle bin — drives the "deleted" banner + restore button. */
   trashed?: boolean;
@@ -1817,6 +1898,14 @@ function IssueDetailDialog({
   const [draftPriorityId, setDraftPriorityId] = useState<number | null>(null);
   const [draftProgrammerId, setDraftProgrammerId] = useState<number | null>(null);
   const [draftLabelIds, setDraftLabelIds] = useState<number[]>([]);
+  /**
+   * Local copy of the master label list. The parent only reloads `labels` on
+   * mount, so edits/creates made inside this popup are applied here at once —
+   * otherwise the board bars (issue payload) and these chips can show two
+   * different shades of the same label until the whole page is reloaded.
+   */
+  const [labelList, setLabelList] = useState<Label[]>(labels);
+  useEffect(() => setLabelList(labels), [labels]);
   /** ประเภทงาน draft (null = ยังไม่ระบุ) — บันทึกพร้อมกันตอนกด "บันทึก" */
   const [draftTaskType, setDraftTaskType] = useState<IssueTaskType | null>(null);
   const [priorities, setPriorities] = useState<IssuePriority[]>([]);
@@ -2118,7 +2207,21 @@ function IssueDetailDialog({
 
   const selectedLabelIds = draftLabelIds;
 
-  const selectedLabels = labels.filter((l) => selectedLabelIds.includes(l.id));
+  const selectedLabels = labelList.filter((l) => selectedLabelIds.includes(l.id));
+
+  /**
+   * Colour source for the detail chips: the OPENED issue's own `labels`
+   * payload — byte-identical to the Kanban bar drawn on that card. The
+   * separately fetched master `labels` list is only a fallback for a label
+   * not attached to this card (e.g. one just created), so a stale master
+   * list can never repaint a chip a different shade from its board bar.
+   */
+  const labelColorById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const l of labelList) map.set(l.id, l.color);
+    for (const l of current?.labels ?? []) map.set(l.id, l.color);
+    return map;
+  }, [labelList, current?.labels]);
 
   const handleToggleLabel = (labelId: number) => {
     setDraftLabelIds((prev) =>
@@ -2132,6 +2235,10 @@ function IssueDetailDialog({
     setSaving(true);
     try {
       const label = await createLabel({ name, color: newLabelColor });
+      // Keep the master list in step with the board: without this the new
+      // label exists in the DB and on the card but has no colour in this
+      // popup until the whole page is reloaded.
+      setLabelList((prev) => (prev.some((l) => l.id === label.id) ? prev : [...prev, label]));
       setNewLabelName("");
       setNewLabelColor("default");
       setCreatingLabel(false);
@@ -2237,6 +2344,10 @@ function IssueDetailDialog({
     setEditingLabel(null);
     try {
       await updateLabel(id, data);
+      // `onRefresh()` reloads ISSUES (→ the board bars get the new colour)
+      // but NOT this popup's label list — update the local copy too so the
+      // two can never show different shades of the same label.
+      setLabelList((prev) => prev.map((l) => (l.id === id ? { ...l, ...data } : l)));
       onRefresh();
     } catch (e) {
       fail(getErrorMessage(e, t("labelEditFailed")));
@@ -2300,7 +2411,7 @@ function IssueDetailDialog({
       u.id !== member?.id &&
       u.name.toLowerCase().includes(memberSearch.trim().toLowerCase()),
   );
-  const visibleLabels = labels.filter((l) =>
+  const visibleLabels = labelList.filter((l) =>
     l.name.toLowerCase().includes(labelSearch.trim().toLowerCase()),
   );
 
@@ -2653,8 +2764,7 @@ function IssueDetailDialog({
                     onDelete={() => handleToggleLabel(l.id)}
                     deleteIcon={<CancelIcon sx={{ fontSize: 14 }} />}
                     sx={{
-                      ...labelChipSx(l.color, theme),
-                      fontSize: "0.75rem",
+                      ...labelChipSx(labelColorById.get(l.id) ?? l.color, theme),
                       fontWeight: 600,
                       cursor: "pointer",
                     }}
@@ -2678,7 +2788,6 @@ function IssueDetailDialog({
                 size="small"
                 sx={{
                   ...labelChipSx(current.labelColor, theme),
-                  fontSize: "0.75rem",
                   fontWeight: 600,
                 }}
               />
@@ -3094,9 +3203,8 @@ function IssueDetailDialog({
                       label={l.name}
                       size="small"
                       sx={{
-                        ...labelChipSx(l.color, theme),
+                        ...labelChipSx(labelColorById.get(l.id) ?? l.color, theme),
                         flex: 1,
-                        fontSize: "0.75rem",
                         fontWeight: 600,
                       }}
                     />
@@ -3644,6 +3752,9 @@ function BoardFilterPanel({
   selectedAssigneeIds,
   selectedReporterIds,
   isCustomer,
+  countsByGroup,
+  onGroupOpen,
+  onClearAll,
   onToggleStatus,
   onTogglePriority,
   onToggleCategory,
@@ -3651,7 +3762,6 @@ function BoardFilterPanel({
   onToggleCompany,
   onToggleAssignee,
   onToggleReporter,
-  onClearAll,
 }: {
   anchorEl: HTMLElement | null;
   open: boolean;
@@ -3670,6 +3780,10 @@ function BoardFilterPanel({
   selectedAssigneeIds: string[];
   selectedReporterIds: string[];
   isCustomer: boolean;
+  /** lazily loaded per opened group, from GET /issues/counts */
+  countsByGroup: Record<string, Record<string, number>>;
+  onGroupOpen: (key: string) => void;
+  onClearAll: () => void;
   onToggleStatus: (statusId: number) => void;
   onTogglePriority: (priorityId: number) => void;
   onToggleCategory: (categoryId: number) => void;
@@ -3677,7 +3791,6 @@ function BoardFilterPanel({
   onToggleCompany: (companyId: number) => void;
   onToggleAssignee: (userId: string) => void;
   onToggleReporter: (userId: string) => void;
-  onClearAll: () => void;
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
@@ -3701,6 +3814,7 @@ function BoardFilterPanel({
     label: status.customName ?? status.name,
     checked: selectedStatusIds.includes(status.id),
     onToggle: () => onToggleStatus(status.id),
+    count: countsByGroup.status?.[String(status.id)],
     start: (
       <Box
         component="span"
@@ -3720,6 +3834,7 @@ function BoardFilterPanel({
     label: app.name,
     checked: selectedAppIds.includes(app.id),
     onToggle: () => onToggleApp(app.id),
+    count: countsByGroup.app?.[String(app.id)],
     start: <AppsIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main" }} />,
   }));
 
@@ -3728,6 +3843,7 @@ function BoardFilterPanel({
     label: company.name,
     checked: selectedCompanyIds.includes(company.id),
     onToggle: () => onToggleCompany(company.id),
+    count: countsByGroup.company?.[String(company.id)],
     start: <BusinessIcon sx={{ fontSize: 16, flexShrink: 0, color: "warning.main" }} />,
   }));
 
@@ -3736,6 +3852,7 @@ function BoardFilterPanel({
     label: priority.name,
     checked: selectedPriorityIds.includes(priority.id),
     onToggle: () => onTogglePriority(priority.id),
+    count: countsByGroup.priority?.[String(priority.id)],
     start: (
       <FlagIcon sx={{ fontSize: 16, flexShrink: 0, color: getPriorityColor(theme, priority.name) }} />
     ),
@@ -3746,6 +3863,7 @@ function BoardFilterPanel({
     label: category.name,
     checked: selectedCategoryIds.includes(category.id),
     onToggle: () => onToggleCategory(category.id),
+    count: countsByGroup.category?.[String(category.id)],
     start: <CategoryIcon sx={{ fontSize: 16, flexShrink: 0, color: "secondary.main" }} />,
   }));
 
@@ -3754,6 +3872,7 @@ function BoardFilterPanel({
     label: member.name,
     checked: selectedAssigneeIds.includes(member.id),
     onToggle: () => onToggleAssignee(member.id),
+    count: countsByGroup.assignee?.[String(member.id)],
     start: (
       <Avatar sx={{ width: 22, height: 22, fontSize: 11, flexShrink: 0 }}>
         {getInitials(member.name)}
@@ -3766,6 +3885,7 @@ function BoardFilterPanel({
     label: member.name,
     checked: selectedReporterIds.includes(member.id),
     onToggle: () => onToggleReporter(member.id),
+    count: countsByGroup.reporter?.[String(member.id)],
     start: (
       <Avatar sx={{ width: 22, height: 22, fontSize: 11, flexShrink: 0 }}>
         {getInitials(member.name)}
@@ -3847,6 +3967,7 @@ function BoardFilterPanel({
       onClose={onClose}
       sections={sections}
       onClearAll={onClearAll}
+      onGroupOpen={onGroupOpen}
     />
   );
 }
@@ -3877,6 +3998,7 @@ function useDebouncedValue<T>(value: T, delay = 300): T {
 function KanbanView({
   statuses,
   labels,
+  setLabels,
   priorities,
   categories,
   users,
@@ -3903,9 +4025,13 @@ function KanbanView({
   cardOrder,
   drillFilters,
   dateRange,
+  query,
+  refreshVersion,
+  onMetaRefresh,
 }: {
   statuses: IssueStatus[];
   labels: Label[];
+  setLabels: Dispatch<SetStateAction<Label[]>>;
   priorities: IssuePriority[];
   categories: Category[];
   users: BoardMember[];
@@ -3946,6 +4072,12 @@ function KanbanView({
   drillFilters: DrillIssueFilters;
   /** The toolbar's date range — filters cards by their creation date. */
   dateRange: DateRangeValue;
+  /** One shared condition object — each column sends it with its own status. */
+  query: BoardIssueQuery;
+  /** Bumped by every mutation so every column refetches fresh totals. */
+  refreshVersion: number;
+  /** Status add/rename/reorder needs fresh metadata, not just fresh rows. */
+  onMetaRefresh: () => void;
 }) {
   const t = useTranslations("Boards");
   const theme = useTheme();
@@ -3982,16 +4114,12 @@ function KanbanView({
   const dropChainRef = useRef<Promise<void>>(Promise.resolve());
   const isDraggingRef = useRef(false);
   /**
-   * The board fetches ALL of its cards in ONE request and splits them into
-   * columns in memory (the table/folder keep their own separate load). These
-   * replace the old per-column seq/in-flight maps: `allBoardIssuesRef` holds
-   * every card grouped by status so "load more on scroll" is a pure slice
-   * with no API call, and the seq guard drops a stale response when a newer
-   * filter/search change fires another request.
+   * Per-column server paging. Each column owns its items/page/total AND its
+   * own in-flight flag + sequence, so one slow column can never block the
+   * others and a late response from a previous filter is simply dropped.
    */
-  const allBoardIssuesRef = useRef<Record<number, BoardIssue[]>>({});
-  const boardRequestSeqRef = useRef(0);
-  const boardInFlightRef = useRef(false);
+  const columnInFlightRef = useRef<Record<number, boolean>>({});
+  const columnSeqRef = useRef<Record<number, number>>({});
   /**
    * Mirror of `columns` for callbacks that must keep ONE identity across data
    * changes — see `handleLoadMore`. Always current by the time a scroll
@@ -4001,18 +4129,6 @@ function KanbanView({
   useEffect(() => {
     columnsRef.current = columns;
   }, [columns]);
-  /**
-   * `staleRules` lands with the move-policy fetch, after the first board load
-   * already asked the API to hide stale cards. Re-running `loadBoard` when it
-   * landed duplicated `GET /issues`; read it through a ref so the in-memory
-   * search tokens stay current without another request.
-   */
-  const staleRulesRef = useRef(staleRules);
-  useEffect(() => {
-    staleRulesRef.current = staleRules;
-  }, [staleRules]);
-
-  const debouncedSearch = useDebouncedValue(searchQuery);
 
   /**
    * The board renders ALL statuses at all times. The status filter narrows the
@@ -4028,153 +4144,88 @@ function KanbanView({
   const firstStatusId = localStatuses[0]?.id ?? null;
 
   /**
-   * Board data now comes from ONE fetch (plus extra pages only if the board
-   * ever outgrows the API's 100-row page cap), then gets split into columns in
-   * memory. The old code fired one request per status, which duplicated the
-   * table/folder's 100-row load and made one board open cost ~6 issue requests.
-   * Everything below still talks to `columns` exactly as before — the drag
-   * preview / drop / cancel paths are untouched.
+   * ONE request per column: `?statuses=<id>&limit=20` with the shared query.
+   * The response's `total` is that column's header number, so counts, paging
+   * and the hide policy all agree without downloading the whole board.
    */
-
-  const loadBoard = useCallback(
-    async (silent = false) => {
-      const seq = ++boardRequestSeqRef.current;
-      boardInFlightRef.current = true;
-      // `silent` = the follow-up to a successful drop: the preview already
-      // shows the card where the server put it, so skip the intermediate
-      // spinner (same contract as the old per-column reload).
-      if (!silent) {
-        setColumns((prev) => {
-          const next: Record<number, KanbanColumnState> = { ...prev };
-          for (const s of localStatuses) {
-            next[s.id] = {
-              ...(prev[s.id] ?? { items: [], page: 0, total: 0, loading: false }),
-              loading: true,
-            };
-          }
-          return next;
-        });
-      }
+  const loadColumn = useCallback(
+    async (statusId: number, targetPage: number, append: boolean) => {
+      if (columnInFlightRef.current[statusId]) return;
+      columnInFlightRef.current[statusId] = true;
+      const seq = (columnSeqRef.current[statusId] ?? 0) + 1;
+      columnSeqRef.current[statusId] = seq;
+      setColumns((prev) => ({
+        ...prev,
+        [statusId]: {
+          ...(prev[statusId] ?? { items: [], page: 0, total: 0, loading: false }),
+          loading: !append,
+        },
+      }));
       try {
-        const request = (pageNum: number) =>
-          fetchIssues(
-            pageNum,
-            100,
-            // Fetch every status: the board always renders all columns, and
-            // the status filter narrows the cards in memory below (same rule
-            // the table/folder use) instead of collapsing the board.
-            [],
-            // Search is applied in memory below — the API's raw-timestamp
-            // match can't find the Thai-formatted dates ("14 ต.ค. 69") the
-            // cards actually show. All three views share one matcher now.
-            "",
-            roleName === "programmer",
-            {
-              priorityIds: selectedPriorityIds,
-              categoryIds: selectedCategoryIds,
-              appIds: selectedAppIds,
-              // the API resolves companies through the card's REPORTER — same
-              // rule the table/folder apply in memory via `companyReporterIds`
-              companyIds: selectedCompanyIds,
-              assigneeIds: selectedAssigneeIds,
-              reporterIds: selectedReporterIds,
-              // dashboard drill filters (NULL slices + trend date window)
-              ...drillFilters,
-              // the toolbar's date range wins over a drill's window when set
-              createdFrom: dateRange.from || drillFilters.createdFrom || undefined,
-              createdTo: dateRange.to || drillFilters.createdTo || undefined,
-              // the board hides stale cards AT THE API — column counts, pages
-              // and search all drop them together (the table never sends this)
-              hideStaleDone: true,
-              // "entered this column when" — newest first or longest-sitting
-              // first, per the toolbar toggle. KanbanColumn mirrors it.
-              sort: { field: "statusChangedAt", dir: cardOrder },
-            },
-          );
-        const first = await request(1);
-        // MAX_PAGE_SIZE is 100 — only pay for extra pages if the board has
-        // actually outgrown one page (normally this block never runs).
-        const rest =
-          first.totalPages > 1
-            ? await Promise.all(
-                Array.from({ length: first.totalPages - 1 }, (_, i) => request(i + 2)),
-              )
-            : [];
-        if (boardRequestSeqRef.current !== seq) return;
-        const allIssues = [...first.data, ...rest.flatMap((r) => r.data)].filter((i) => {
-          if (
-            selectedStatusIds.length > 0 &&
-            (i.statusId === null || !selectedStatusIds.includes(i.statusId))
-          ) {
-            return false;
-          }
-          return matchesIssueSearch(
-            i,
-            debouncedSearch,
-            staleSearchTokens(i, staleRulesRef.current, t),
-          );
+        const res = await fetchBoardIssues(query, targetPage, 20, {
+          statuses: [statusId],
+          // board-only policy: the table never hides stale cards
+          hideStaleDone: true,
         });
-        const grouped: Record<number, BoardIssue[]> = {};
-        for (const s of localStatuses) grouped[s.id] = [];
-        for (const issue of allIssues) {
-          if (issue.statusId == null) continue;
-          (grouped[issue.statusId] ??= []).push(issue);
-        }
-        allBoardIssuesRef.current = grouped;
-        setColumns((prev) => {
-          const next: Record<number, KanbanColumnState> = {};
-          for (const s of localStatuses) {
-            const all = grouped[s.id] ?? [];
-            // keep however many cards the user had scroll-loaded, but never
-            // fewer than the first page (20)
-            const shown = Math.min(all.length, Math.max(20, prev[s.id]?.items.length ?? 0));
-            const items = all.slice(0, shown);
-            next[s.id] = {
-              items,
-              page: Math.ceil(items.length / 20),
-              total: all.length,
-              loading: false,
+        if (columnSeqRef.current[statusId] !== seq) return;
+        if (append) {
+          setColumns((prev) => {
+            const col = prev[statusId];
+            // A scroll firing twice (or a filter change landing mid-scroll)
+            // must never append the same page again.
+            if (!col || col.page !== targetPage - 1) return prev;
+            return {
+              ...prev,
+              [statusId]: {
+                items: appendUniqueIssues(col.items, res.data),
+                page: targetPage,
+                total: res.total,
+                loading: false,
+              },
             };
-          }
-          return next;
-        });
+          });
+        } else {
+          setColumns((prev) => ({
+            ...prev,
+            [statusId]: { items: res.data, page: 1, total: res.total, loading: false },
+          }));
+        }
       } catch (e) {
-        if (boardRequestSeqRef.current !== seq) return;
+        if (columnSeqRef.current[statusId] !== seq) return;
         fail(getErrorMessage(e, t("loadFailed")));
-        setColumns((prev) => {
-          const next = { ...prev };
-          for (const s of localStatuses) {
-            if (next[s.id]) next[s.id] = { ...next[s.id], loading: false };
-          }
-          return next;
-        });
+        setColumns((prev) =>
+          prev[statusId] ? { ...prev, [statusId]: { ...prev[statusId], loading: false } } : prev,
+        );
       } finally {
-        if (boardRequestSeqRef.current === seq) boardInFlightRef.current = false;
+        if (columnSeqRef.current[statusId] === seq) columnInFlightRef.current[statusId] = false;
       }
     },
-    [
-      localStatuses,
-      selectedStatusIds,
-      debouncedSearch,
-      roleName,
-      cardOrder,
-      selectedPriorityIds,
-      selectedCategoryIds,
-      selectedAppIds,
-      selectedCompanyIds,
-      selectedAssigneeIds,
-      selectedReporterIds,
-      drillFilters,
-      dateRange,
-      fail,
-      t,
-    ],
+    [query, fail, t],
   );
+
+  const loadBoard = useCallback(async () => {
+    const targets =
+      selectedStatusIds.length > 0
+        ? localStatuses.filter((s) => selectedStatusIds.includes(s.id))
+        : localStatuses;
+    // A status filter narrows the CARDS, never the set of rendered columns —
+    // unselected columns simply show a correct zero.
+    setColumns((prev) => {
+      const next = { ...prev };
+      for (const s of localStatuses) {
+        if (!targets.some((t) => t.id === s.id)) {
+          next[s.id] = { items: [], page: 0, total: 0, loading: false };
+        }
+      }
+      return next;
+    });
+    await Promise.all(targets.map((s) => loadColumn(s.id, 1, false)));
+  }, [localStatuses, selectedStatusIds, loadColumn]);
 
   useEffect(() => {
     if (localStatuses.length === 0) return;
     void loadBoard();
-  }, [loadBoard, localStatuses]);
+  }, [loadBoard, localStatuses, refreshVersion]);
 
   const issueMap = useMemo(() => {
     const map = new Map<number, BoardIssue>();
@@ -4186,39 +4237,29 @@ function KanbanView({
 
   const handleLoadMore = useCallback(
     (statusId: number) => {
-      // Same guards as before: don't paginate mid-drag or while a reload is in
-      // flight — both would re-render every column under the pointer.
+      // No paging mid-drag — re-rendering columns under the pointer breaks it.
       if (isDraggingRef.current) return;
-      if (boardInFlightRef.current) return;
       const col = columnsRef.current[statusId];
       if (!col || col.loading || col.items.length >= col.total) return;
-      // The cards are already in memory — no API call for "load more".
-      const all = allBoardIssuesRef.current[statusId] ?? [];
-      const items = all.slice(0, col.items.length + 20);
-      if (items.length === col.items.length) return;
-      setColumns((prev) => {
-        const existing = prev[statusId];
-        if (!existing || existing.items.length !== col.items.length) return prev;
-        return {
-          ...prev,
-          [statusId]: { ...existing, items, page: existing.page + 1 },
-        };
-      });
+      void loadColumn(statusId, col.page + 1, true);
     },
     // `columns` deliberately NOT a dep: reading it through the ref keeps this
-    // callback stable, so an unrelated `setColumns` (a drag preview, another
-    // column's page append) no longer hands every KanbanColumn a new
-    // `onLoadMore` and defeats `React.memo`.
-    [],
+    // callback stable so a drag preview doesn't hand every memoized column a
+    // fresh `onLoadMore`.
+    [loadColumn],
   );
 
   const reloadColumns = useCallback(
-    (_ids?: number[], silent = false) => {
-      // One board request replaces the old per-column fan-out. Every caller
-      // (drop, save, delete, unlock, drag-cancel) keeps its existing signature.
-      void loadBoard(silent);
+    (ids?: number[], _silent = false) => {
+      // Every caller (drop, save, delete, unlock, drag-cancel) keeps its
+      // signature; only the named columns are refetched when we know them.
+      const wanted =
+        ids && ids.length > 0
+          ? localStatuses.filter((s) => ids.includes(s.id))
+          : localStatuses;
+      wanted.forEach((s) => void loadColumn(s.id, 1, false));
     },
-    [loadBoard],
+    [localStatuses, loadColumn],
   );
 
   /**
@@ -4461,7 +4502,7 @@ function KanbanView({
         );
       } catch (e) {
         fail(getErrorMessage(e, t("genericError")));
-        onRefresh();
+        onMetaRefresh();
       }
       return;
     }
@@ -4543,8 +4584,8 @@ function KanbanView({
       if (refusal) notify(refusal, "warning");
       else fail(getErrorMessage(e, t("genericError")));
       // the write was refused: the card is still where it started, so the
-      // preview copy in the target column has to go (onRefresh reloads the
-      // table/folder sources, not the per-column state)
+      // preview copy in the target column has to go. Both columns are
+      // refetched below; the version bump also refreshes any other view.
       reloadDragColumns(dragStartStatusId, previewedStatusId);
       onRefresh();
     } finally {
@@ -4597,7 +4638,7 @@ function KanbanView({
     try {
       await createStatus(name, description);
       setAddColumnOpen(false);
-      onRefresh();
+      onMetaRefresh();
     } catch (e) {
       fail(getErrorMessage(e, t("genericError")));
     }
@@ -4798,6 +4839,7 @@ function KanbanView({
         initialTab={detailTab}
         statuses={localStatuses}
         labels={labels}
+        setLabels={setLabels}
         onRefresh={onRefresh}
       />
       <IssueDialog
@@ -4831,19 +4873,12 @@ function KanbanView({
 
 function TableView({
   statuses,
-  issues,
   labels,
+  setLabels,
   priorities,
-  categories,
-  selectedStatusIds,
-  selectedPriorityIds,
-  selectedCategoryIds,
-  selectedAppIds,
-  companyReporterIds,
-  selectedAssigneeIds,
-  selectedReporterIds,
-  searchQuery,
-  staleRules,
+  query,
+  queryKey,
+  refreshVersion,
   canManage,
   canEdit,
   canSeeReporter,
@@ -4853,30 +4888,20 @@ function TableView({
   canSeeActualTime,
   currentUserId,
   onRefresh,
-  cardOrder,
   toolbar,
 }: {
   statuses: IssueStatus[];
-  issues: BoardIssue[];
   labels: Label[];
+  setLabels: Dispatch<SetStateAction<Label[]>>;
   priorities: IssuePriority[];
-  categories: Category[];
-  selectedStatusIds: number[];
-  selectedPriorityIds: number[];
-  selectedCategoryIds: number[];
-  selectedAppIds: number[];
-  /**
-   * Company filter resolved to **reporter ids**: `null` = no company selected
-   * (no constraint), `[]` = a selected company with no members (must match
-   * nothing — an empty array on its own would read as "no filter").
-   */
-  companyReporterIds: string[] | null;
-  selectedAssigneeIds: string[];
-  selectedReporterIds: string[];
-  searchQuery: string;
-  staleRules: StaleRule[];
+  /** The ONE shared condition object — the table never filters in memory. */
+  query: BoardIssueQuery;
+  /** Changes whenever any condition changes; used to reset to page 1. */
+  queryKey: string;
+  /** Bumped by every mutation — reloads the current page with fresh totals. */
+  refreshVersion: number;
   canManage: boolean;
-  /** `issue.all.update` — gates the "ยกเลิกงาน" row (same as the board card's). */
+  /** `issue.all.update` — gates the delete row (same as the board card's). */
   canEdit: boolean;
   canSeeReporter: boolean;
   canViewOwnHistory: boolean;
@@ -4885,13 +4910,6 @@ function TableView({
   canSeeActualTime: boolean;
   currentUserId: string | null;
   onRefresh: () => void;
-  /**
-   * Shared ↑↓ direction (the toolbar button is gone — only the folder view's
-   * dropdown flips it now) — `desc` = newest status change on top, `asc` =
-   * longest-sitting on top, same comparator as the Kanban columns
-   * (`sortByEnteredAt`).
-   */
-  cardOrder: "desc" | "asc";
   toolbar?: React.ReactNode;
 }) {
   const t = useTranslations("Boards");
@@ -4911,60 +4929,62 @@ function TableView({
     el: HTMLElement;
     issue: BoardIssue;
   } | null>(null);
-  const [page, setPage] = useState(1);
-  const hasActiveFilters =
-    selectedStatusIds.length > 0 ||
-    selectedPriorityIds.length > 0 ||
-    selectedCategoryIds.length > 0 ||
-    selectedAppIds.length > 0 ||
-    companyReporterIds !== null ||
-    selectedAssigneeIds.length > 0 ||
-    selectedReporterIds.length > 0 ||
-    searchQuery.trim() !== "";
-  const filteredIssues = useMemo(() => {
-    if (!hasActiveFilters) return issues;
-    const query = searchQuery.trim().toLowerCase();
-    return issues.filter((issue) => {
-      if (selectedStatusIds.length > 0) {
-        if (issue.statusId === null || !selectedStatusIds.includes(issue.statusId)) return false;
-      }
-      if (selectedPriorityIds.length > 0 && !selectedPriorityIds.includes(issue.priorityId ?? -1)) return false;
-      if (selectedCategoryIds.length > 0) {
-        const selectedCatNames = categories.filter((c) => selectedCategoryIds.includes(c.id)).map((c) => c.name);
-        const matchCat = selectedCategoryIds.includes(issue.categoryId ?? -1);
-        const matchCustom = issue.customCategory != null && selectedCatNames.includes(issue.customCategory);
-        if (!matchCat && !matchCustom) return false;
-      }
-      if (selectedAppIds.length > 0 && !selectedAppIds.includes(issue.appId ?? -1)) return false;
-      // company → the card's REPORTER must belong to one of the selected ones
-      // (no reporter → "-1" never matches → hidden, same rule as the API)
-      if (companyReporterIds !== null && !companyReporterIds.includes(String(issue.customerId ?? -1))) return false;
-      if (selectedAssigneeIds.length > 0) {
-        if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
-      }
-      if (selectedReporterIds.length > 0) {
-        if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
-      }
-      if (query && !matchesIssueSearch(issue, query, staleSearchTokens(issue, staleRules, t))) return false;
-      return true;
-    });
-  }, [issues, categories, selectedStatusIds, selectedPriorityIds, selectedCategoryIds, selectedAppIds, companyReporterIds, selectedAssigneeIds, selectedReporterIds, searchQuery, hasActiveFilters, staleRules, t]);
   /**
-   * Row order — the SAME comparator as the Kanban columns (`sortByEnteredAt`),
-   * so the table reads in the same order the board's columns do. Purely
-   * client-side: the list is already loaded (the API's default `createdAt`
-   * order just gets re-sorted), so flipping it costs no request.
+   * Keyed page state: changing ANY condition snaps back to page 1 without an
+   * intermediate render of the old page (an effect would flash it first).
    */
-  const orderedIssues = useMemo(
-    () => sortByEnteredAt(filteredIssues, cardOrder),
-    [filteredIssues, cardOrder],
+  const [pager, setPager] = useState<{ key: string; page: number }>({ key: queryKey, page: 1 });
+  const page = pager.key === queryKey ? pager.page : 1;
+  const setPage = useCallback(
+    (next: number) => setPager({ key: queryKey, page: next }),
+    [queryKey],
   );
-  const pageIssues = orderedIssues.slice((page - 1) * 10, page * 10);
-  // Flipping the order must not strand the reader on page 5 of a
-  // differently-ordered list.
+  const [pageIssues, setPageIssues] = useState<BoardIssue[]>(EMPTY_ITEMS);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const seqRef = useRef(0);
+  const inFlightRef = useRef<string | null>(null);
+
+  /**
+   * The table asks for exactly one page and REPLACES its rows. Filtering,
+   * searching and sorting all happen in `GET /issues` now — nothing is
+   * sliced/sorted in memory, so the server's `total` is the pagination truth.
+   */
+  const load = useCallback(
+    async (targetPage: number) => {
+      const requestKey = `${queryKey}|${targetPage}|${refreshVersion}`;
+      // StrictMode remounts and rapid page clicks must not double-fire.
+      if (inFlightRef.current === requestKey) return;
+      inFlightRef.current = requestKey;
+      const seq = ++seqRef.current;
+      setLoading(true);
+      try {
+        const res = await fetchBoardIssues(query, targetPage, 10);
+        if (seqRef.current !== seq) return;
+        setPageIssues(res.data);
+        setTotal(res.total);
+        setTotalPages(res.totalPages);
+      } catch (e) {
+        if (seqRef.current === seq) fail(getErrorMessage(e, t("loadFailed")));
+      } finally {
+        if (seqRef.current === seq) {
+          setLoading(false);
+          inFlightRef.current = null;
+        }
+      }
+    },
+    [query, queryKey, refreshVersion, fail, t],
+  );
+
   useEffect(() => {
-    setPage(1);
-  }, [cardOrder]);
+    void load(page);
+  }, [load, page]);
+
+  // Deleting the last row of the final page must not strand us on an empty page.
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages, setPage]);
 
   const handleSaveIssue = async (data: { title: string; description: string; statusId: number; labelId?: number | null }) => {
     try {
@@ -5073,23 +5093,37 @@ function TableView({
                   <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>{getCategoryLabel(issue)}</DataTableCell>
                   <DataTableCell sx={{ display: { xs: "none", xl: "table-cell" } }}>
                     {issue.priorityName ? (
-                      <Chip
-                        label={priorityLabel(t, issue.priorityName)}
-                        size="small"
-                        variant="outlined"
-                        color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
-                        sx={{ fontSize: "0.7rem", fontWeight: 600 }}
-                      />
+                      <Box
+                        component="span"
+                        sx={{
+                          ...priorityChipSx(
+                            PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default",
+                            theme,
+                          ),
+                          display: "inline-block",
+                          fontSize: "0.7rem",
+                        }}
+                      >
+                        {priorityLabel(t, issue.priorityName)}
+                      </Box>
                     ) : "—"}
                   </DataTableCell>
                   <DataTableCell>
                     <Chip
-                      label={getStatusName(issue.statusId)}
+                      label={
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 0.7 }}>
+                          {issue.statusId ? (
+                            <Box sx={statusDotSx(getStatusColorById(issue.statusId))} />
+                          ) : null}
+                          <span>{getStatusName(issue.statusId)}</span>
+                        </Box>
+                      }
                       size="small"
                       sx={{
                         ...statusChipSx(getStatusColorById(issue.statusId)),
                         fontWeight: 600,
                         fontSize: "0.7rem",
+                        "& .MuiChip-label": { px: 1 },
                       }}
                     />
                   </DataTableCell>
@@ -5209,7 +5243,7 @@ function TableView({
                     }
                     sx={{ py: 6, color: "text.secondary" }}
                   >
-                    {t("filter.noResults")}
+                    {loading ? <CircularProgress size={20} /> : t("filter.noResults")}
                   </DataTableCell>
                 </DataTableRow>
               )}
@@ -5217,8 +5251,8 @@ function TableView({
       </DataTable>
       <Pagination
         page={page}
-        totalPages={Math.max(1, Math.ceil(filteredIssues.length / 10))}
-        total={filteredIssues.length}
+        totalPages={totalPages}
+        total={total}
         limit={10}
         onPageChange={setPage}
       />
@@ -5230,6 +5264,7 @@ function TableView({
         initialTab={detailTab}
         statuses={statuses}
         labels={labels}
+        setLabels={setLabels}
         onRefresh={onRefresh}
       />
       <IssueDialog
@@ -5410,33 +5445,27 @@ type FolderPath = {
 
 function FolderView({
   statuses,
-  issues,
   labels,
+  setLabels,
   apps,
   categories,
   priorities,
   path,
   setPath,
-  selectedStatusIds,
-  selectedPriorityIds,
-  selectedCategoryIds,
-  selectedAppIds,
-  companyReporterIds,
-  selectedAssigneeIds,
-  selectedReporterIds,
-  searchQuery,
   canEdit,
   canSeeReporter,
   staleRules,
-  hideStaleRules,
   onRefresh,
   cardOrder,
   onToggleCardOrder,
+  query,
+  queryKey,
+  refreshVersion,
   toolbar,
 }: {
   statuses: IssueStatus[];
-  issues: BoardIssue[];
   labels: Label[];
+  setLabels: Dispatch<SetStateAction<Label[]>>;
   apps: App[];
   categories: Category[];
   priorities: IssuePriority[];
@@ -5447,25 +5476,10 @@ function FolderView({
    */
   path: FolderPath;
   setPath: Dispatch<SetStateAction<FolderPath>>;
-  selectedStatusIds: number[];
-  selectedPriorityIds: number[];
-  selectedCategoryIds: number[];
-  selectedAppIds: number[];
-  /** See TableView: `null` = no company selected, `[]` = matches nothing. */
-  companyReporterIds: string[] | null;
-  selectedAssigneeIds: string[];
-  selectedReporterIds: string[];
-  searchQuery: string;
   canEdit: boolean;
   canSeeReporter: boolean;
   /** Active stale rules ({statusId, days}) — the red card border. */
   staleRules: StaleRule[];
-  /**
-   * Active hide rules ({statusId, days}) — cards past their day count are
-   * dropped before anything below (folder counts, breadcrumbs, cards), so
-   * every number in this view agrees. The table next door never filters.
-   */
-  hideStaleRules: StaleRule[];
   onRefresh: () => void;
   /**
    * Shared ↑↓ direction — of whichever sort criterion this view's dropdown is
@@ -5478,6 +5492,12 @@ function FolderView({
   cardOrder: "desc" | "asc";
   /** Flip `cardOrder` — the folder view's own direction control (see above). */
   onToggleCardOrder: () => void;
+  /** One shared condition object — every count and every page uses it. */
+  query: BoardIssueQuery;
+  /** Changes on any filter change → resets the card grid to page 1. */
+  queryKey: string;
+  /** Bumped by mutations → refetch counts and the current card page. */
+  refreshVersion: number;
   toolbar?: ReactNode;
 }) {
   const t = useTranslations("Boards");
@@ -5491,7 +5511,20 @@ function FolderView({
     [notify],
   );
   const [detailIssue, setDetailIssue] = useState<BoardIssue | null>(null);
-  const [visibleCount, setVisibleCount] = useState(FOLDER_PAGE_SIZE);
+  /** Counts for the CURRENT level's tiles — one grouped request, not N cards. */
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [countsLoading, setCountsLoading] = useState(false);
+  const countSeqRef = useRef(0);
+  /** The level-5 card grid: one server page at a time, keyed to path+query. */
+  const [cardData, setCardData] = useState<{
+    key: string;
+    items: BoardIssue[];
+    page: number;
+    total: number;
+  }>({ key: "", items: EMPTY_ITEMS, page: 0, total: 0 });
+  const [cardsLoading, setCardsLoading] = useState(false);
+  const cardSeqRef = useRef(0);
+  const cardInFlightRef = useRef<string | null>(null);
   /**
    * Sort **criterion** for the level-5 card grid — the direction is NOT in
    * here: the shared `cardOrder` flips it (this dropdown's direction items —
@@ -5520,111 +5553,157 @@ function FolderView({
     path.st !== null ? 5 : path.prio !== null ? 4 : path.cat !== null ? 3 : path.app !== null ? 2 : 1;
 
   const hasActiveFilters =
-    selectedStatusIds.length > 0 ||
-    selectedPriorityIds.length > 0 ||
-    selectedCategoryIds.length > 0 ||
-    selectedAppIds.length > 0 ||
-    companyReporterIds !== null ||
-    selectedAssigneeIds.length > 0 ||
-    selectedReporterIds.length > 0 ||
-    searchQuery.trim() !== "";
+    query.priorityIds.length > 0 ||
+    query.categoryIds.length > 0 ||
+    query.appIds.length > 0 ||
+    query.companyIds.length > 0 ||
+    query.assigneeIds.length > 0 ||
+    query.reporterIds.length > 0 ||
+    query.search.trim() !== "" ||
+    query.drill.noApp ||
+    query.drill.noCategory ||
+    query.drill.noPriority ||
+    Boolean(query.drill.createdFrom || query.drill.createdTo);
 
-  /* Same filter rules as TableView, so the chips + search behave identically.
-     The hide policy runs FIRST: a card an active `issue.hide_from_board`
-     rule covers never reaches the filters, so folder counts, breadcrumbs and
-     cards all drop it together (the table never receives this prop). */
-  const visibleIssues = useMemo(
-    () =>
-      hideStaleRules.length === 0
-        ? issues
-        : issues.filter((issue) => !isHiddenFromFolder(issue, hideStaleRules)),
-    [issues, hideStaleRules],
-  );
-  const filteredIssues = useMemo(() => {
-    if (!hasActiveFilters) return visibleIssues;
-    const query = searchQuery.trim().toLowerCase();
-    return visibleIssues.filter((issue) => {
-      if (selectedStatusIds.length > 0) {
-        if (issue.statusId === null || !selectedStatusIds.includes(issue.statusId)) return false;
-      }
-      if (selectedPriorityIds.length > 0 && !selectedPriorityIds.includes(issue.priorityId ?? -1)) return false;
-      if (selectedCategoryIds.length > 0) {
-        const selectedCatNames = categories.filter((c) => selectedCategoryIds.includes(c.id)).map((c) => c.name);
-        const matchCat = selectedCategoryIds.includes(issue.categoryId ?? -1);
-        const matchCustom = issue.customCategory != null && selectedCatNames.includes(issue.customCategory);
-        if (!matchCat && !matchCustom) return false;
-      }
-      if (selectedAppIds.length > 0 && !selectedAppIds.includes(issue.appId ?? -1)) return false;
-      // company → the card's REPORTER must belong to one of the selected ones
-      // (no reporter → "-1" never matches → hidden, same rule as the API)
-      if (companyReporterIds !== null && !companyReporterIds.includes(String(issue.customerId ?? -1))) return false;
-      if (selectedAssigneeIds.length > 0) {
-        if (!issue.programmerId || !selectedAssigneeIds.includes(String(issue.programmerId))) return false;
-      }
-      if (selectedReporterIds.length > 0) {
-        if (!issue.customerId || !selectedReporterIds.includes(String(issue.customerId))) return false;
-      }
-      if (query && !matchesIssueSearch(issue, query, staleSearchTokens(issue, staleRules, t))) return false;
-      return true;
-    });
-  }, [
-    visibleIssues,
-    categories,
-    selectedStatusIds,
-    selectedPriorityIds,
-    selectedCategoryIds,
-    selectedAppIds,
-    companyReporterIds,
-    selectedAssigneeIds,
-    selectedReporterIds,
-    searchQuery,
-    hasActiveFilters,
-    staleRules,
-    t,
-  ]);
-
-  /* Cards inside the current folder path (app → category → priority → status). */
-  const branch = filteredIssues.filter((issue) => {
+  /**
+   * The drill path becomes ordinary `/issues` filters — the same params the
+   * table and Kanban send, plus the two buckets the API needed for folders
+   * (`noStatus`, `customCategories`). `-1` = "no value" bucket.
+   */
+  const pathParams = useMemo<{
+    appIds?: number[];
+    noApp?: boolean;
+    categoryIds?: number[];
+    noCategory?: boolean;
+    customCategories?: string[];
+    priorityIds?: number[];
+    noPriority?: boolean;
+    statuses?: number[];
+    noStatus?: boolean;
+  }>(() => {
+    const p: {
+      appIds?: number[];
+      noApp?: boolean;
+      categoryIds?: number[];
+      noCategory?: boolean;
+      customCategories?: string[];
+      priorityIds?: number[];
+      noPriority?: boolean;
+      statuses?: number[];
+      noStatus?: boolean;
+    } = {};
     if (path.app !== null) {
-      if (path.app === -1 ? issue.appId !== null : issue.appId !== path.app) return false;
+      if (path.app === -1) p.noApp = true;
+      else p.appIds = [path.app];
     }
     if (path.cat !== null) {
       if (typeof path.cat === "string") {
-        // custom category with no row of its own: "x:<name>"
-        if (!(issue.categoryId === null && issue.customCategory === path.cat.slice(2))) return false;
+        p.customCategories = [path.cat.slice(2)];
       } else if (path.cat === -1) {
-        if (!(issue.categoryId === null && issue.customCategory == null)) return false;
+        p.noCategory = true;
       } else {
-        const catName = categories.find((c) => c.id === path.cat)?.name;
-        if (!(issue.categoryId === path.cat || (catName != null && issue.customCategory === catName))) {
-          return false;
-        }
+        p.categoryIds = [path.cat];
       }
     }
     if (path.prio !== null) {
-      if (path.prio === -1 ? issue.priorityId !== null : issue.priorityId !== path.prio) return false;
+      if (path.prio === -1) p.noPriority = true;
+      else p.priorityIds = [path.prio];
     }
     if (path.st !== null) {
-      if (path.st === -1 ? issue.statusId !== null : issue.statusId !== path.st) return false;
+      if (path.st === -1) p.noStatus = true;
+      else p.statuses = [path.st];
     }
-    return true;
-  });
+    return p;
+  }, [path.app, path.cat, path.prio, path.st]);
 
-  /* Folders for levels 1–4; level 4 keeps the board's status order. Cards
-     missing a value get their own "no value" bucket so nothing is invisible. */
+  const groupBy = level === 1 ? "app" : level === 2 ? "category" : level === 3 ? "priority" : "status";
+  const cardKey = `${queryKey}|${JSON.stringify(path)}|${sort}`;
+  const shown = cardData.key === cardKey ? cardData : { key: cardKey, items: EMPTY_ITEMS, page: 0, total: 0 };
+
+  /** One grouped request gives every sibling tile its count — no card rows. */
+  const loadCounts = useCallback(async () => {
+    const seq = ++countSeqRef.current;
+    setCountsLoading(true);
+    try {
+      const res = await fetchIssueGroupCounts(query, groupBy, {
+        ...pathParams,
+        hideStaleDone: true,
+      });
+      if (countSeqRef.current !== seq) return;
+      setCounts(res.counts);
+    } catch (e) {
+      if (countSeqRef.current === seq) fail(getErrorMessage(e, t("loadFailed")));
+    } finally {
+      if (countSeqRef.current === seq) setCountsLoading(false);
+    }
+  }, [query, groupBy, pathParams, fail, t]);
+
+  /** Level 5: one page of 10 cards, appended on "ดูเพิ่มเติม" (never replaced). */
+  const loadCards = useCallback(
+    async (targetPage: number, append: boolean) => {
+      const requestKey = `${cardKey}|${targetPage}|${refreshVersion}`;
+      if (cardInFlightRef.current === requestKey) return;
+      cardInFlightRef.current = requestKey;
+      const seq = ++cardSeqRef.current;
+      setCardsLoading(true);
+      try {
+        // `prio` keeps its old visual direction: desc = สำคัญมากก่อน = sortOrder ASC.
+        const field = sort === "prio" ? "prioritySortOrder" : sort === "created" ? "createdAt" : "statusChangedAt";
+        const dir = sort === "prio"
+          ? query.cardOrder === "desc" ? "asc" : "desc"
+          : query.cardOrder;
+        const res = await fetchBoardIssues(query, targetPage, 10, {
+          ...pathParams,
+          hideStaleDone: true,
+          sort: { field, dir },
+        });
+        if (cardSeqRef.current !== seq) return;
+        setCardData((prev) => {
+          const base = prev.key === cardKey ? prev : { key: cardKey, items: EMPTY_ITEMS, page: 0, total: 0 };
+          if (append && base.page !== targetPage - 1) return prev;
+          return {
+            key: cardKey,
+            items: append ? appendUniqueIssues(base.items, res.data) : res.data,
+            page: targetPage,
+            total: res.total,
+          };
+        });
+      } catch (e) {
+        if (cardSeqRef.current === seq) fail(getErrorMessage(e, t("loadFailed")));
+      } finally {
+        if (cardSeqRef.current === seq) {
+          setCardsLoading(false);
+          cardInFlightRef.current = null;
+        }
+      }
+    },
+    [query, cardKey, pathParams, sort, refreshVersion, fail, t],
+  );
+
+  // Tiles first; cards only once a folder is actually opened (level 5).
+  useEffect(() => {
+    if (level < 5) void loadCounts();
+  }, [level, loadCounts, refreshVersion]);
+
+  useEffect(() => {
+    if (level === 5) void loadCards(1, false);
+  }, [level, loadCards]);
+
+  /* Folders for levels 1–4 — names come from metadata, counts from the one
+     grouped request. Level 4 keeps the board's status order. */
   const folders: { id: number | string; name: string; count: number; color: string }[] = [];
+  const countOf = (key: number | string) => counts[String(key)] ?? 0;
   if (level === 1) {
     apps.forEach((a) =>
       folders.push({
         id: a.id,
         name: a.name,
         color: theme.palette.primary.main,
-        count: branch.filter((i) => i.appId === a.id).length,
+        count: countOf(a.id),
       }),
     );
-    const noApp = branch.filter((i) => i.appId === null).length;
-    if (noApp > 0) {
-      folders.push({ id: -1, name: t("folderNoApp"), color: theme.palette.text.disabled, count: noApp });
+    if (countOf(-1) > 0) {
+      folders.push({ id: -1, name: t("folderNoApp"), color: theme.palette.text.disabled, count: countOf(-1) });
     }
   } else if (level === 2) {
     categories.forEach((c) =>
@@ -5632,28 +5711,22 @@ function FolderView({
         id: c.id,
         name: c.name,
         color: theme.palette.secondary.main,
-        count: branch.filter((i) => i.categoryId === c.id || i.customCategory === c.name).length,
+        // a free-text category with the same name folds into its real row
+        count: countOf(c.id) + countOf("x:" + c.name),
       }),
     );
-    // custom categories that have no row of their own in `categories`
-    const customNames = [
-      ...new Set(
-        branch
-          .filter((i) => i.categoryId === null && i.customCategory)
-          .map((i) => i.customCategory as string),
-      ),
-    ].filter((n) => !categories.some((c) => c.name === n));
-    customNames.forEach((n) =>
-      folders.push({
-        id: "x:" + n,
-        name: n,
-        color: theme.palette.secondary.light,
-        count: branch.filter((i) => i.categoryId === null && i.customCategory === n).length,
-      }),
-    );
-    const noCat = branch.filter((i) => i.categoryId === null && i.customCategory == null).length;
-    if (noCat > 0) {
-      folders.push({ id: -1, name: t("folderNoCat"), color: theme.palette.text.disabled, count: noCat });
+    Object.keys(counts)
+      .filter((k) => k.startsWith("x:") && !categories.some((c) => c.name === k.slice(2)))
+      .forEach((k) =>
+        folders.push({
+          id: k,
+          name: k.slice(2),
+          color: theme.palette.secondary.light,
+          count: counts[k],
+        }),
+      );
+    if (countOf(-1) > 0) {
+      folders.push({ id: -1, name: t("folderNoCat"), color: theme.palette.text.disabled, count: countOf(-1) });
     }
   } else if (level === 3) {
     priorities.forEach((p) =>
@@ -5661,12 +5734,11 @@ function FolderView({
         id: p.id,
         name: p.name,
         color: theme.palette.info.main,
-        count: branch.filter((i) => i.priorityId === p.id).length,
+        count: countOf(p.id),
       }),
     );
-    const noPrio = branch.filter((i) => i.priorityId === null).length;
-    if (noPrio > 0) {
-      folders.push({ id: -1, name: t("folderNoPrio"), color: theme.palette.text.disabled, count: noPrio });
+    if (countOf(-1) > 0) {
+      folders.push({ id: -1, name: t("folderNoPrio"), color: theme.palette.text.disabled, count: countOf(-1) });
     }
   } else if (level === 4) {
     statuses.forEach((s) =>
@@ -5676,58 +5748,23 @@ function FolderView({
         // resolve first — the column may hold a palette *name* ("yellow"),
         // which MUI's alpha() would reject (it only takes hex/rgb/hsl)
         color: resolveStatusColor(theme, s.color, s.name),
-        count: branch.filter((i) => i.statusId === s.id).length,
+        count: countOf(s.id),
       }),
     );
-    const noStatus = branch.filter((i) => i.statusId === null).length;
-    if (noStatus > 0) {
-      folders.push({ id: -1, name: t("folderNoStatus"), color: theme.palette.text.disabled, count: noStatus });
+    if (countOf(-1) > 0) {
+      folders.push({ id: -1, name: t("folderNoStatus"), color: theme.palette.text.disabled, count: countOf(-1) });
     }
   }
   const visibleFolders = hasActiveFilters ? folders.filter((f) => f.count > 0) : folders;
 
-  /* Level 5: flat card grid — paged client-side. The CRITERION comes from the
-     dropdown below, the DIRECTION from the shared `cardOrder` — flipped ONLY
-     by that dropdown's direction items now (the toolbar's ↑↓ is gone), so one
-     arrow means "flip the order" in every view. (Plain code, not a memo:
-     `branch` is rebuilt every render anyway, exactly as before.) */
-  const sortedCards = (() => {
-    // Creation time, newest-first by default and flipped by the same arrow —
-    // tie-breaks (createdAt, id) mirror the API's fixed addOrderBy exactly
-    // like `sortByEnteredAt` does for the status-change stamp.
-    const byCreatedAt = (a: BoardIssue, b: BoardIssue) => {
-      const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      const base = diff !== 0 ? diff : b.id - a.id;
-      return cardOrder === "asc" ? -base : base;
-    };
-    if (sort === "entered") return sortByEnteredAt(branch, cardOrder);
-    if (sort === "created") return [...branch].sort(byCreatedAt);
-    // `prio`: sortOrder ASCENDING = ความสำคัญมากก่อน, which is what the
-    // DEFAULT direction (desc) has always shown here — flipping to `asc`
-    // simply reverses it (น้อย → มาก). A card with no priority sorts last
-    // either way, then falls through to the same time tie-break.
-    return [...branch].sort((a, b) => {
-      const ra = priorities.find((p) => p.id === a.priorityId)?.sortOrder ?? Number.MAX_SAFE_INTEGER;
-      const rb = priorities.find((p) => p.id === b.priorityId)?.sortOrder ?? Number.MAX_SAFE_INTEGER;
-      if (ra !== rb) return cardOrder === "desc" ? ra - rb : rb - ra;
-      return byCreatedAt(a, b);
-    });
-  })();
-  const shownCards = sortedCards.slice(0, visibleCount);
-
-  /* New folder / new filters → back to the first page of cards. */
-  useEffect(() => {
-    setVisibleCount(FOLDER_PAGE_SIZE);
-  }, [
-    path,
-    searchQuery,
-    selectedStatusIds,
-    selectedPriorityIds,
-    selectedCategoryIds,
-    selectedAppIds,
-    selectedAssigneeIds,
-    selectedReporterIds,
-  ]);
+  /* Level 5: the cards are ALREADY the server's current page. A new path,
+     filter or criterion changes `cardKey`, so the keyed state above starts
+     from page 1 without an intermediate flash of the previous folder. */
+  const shownCards = shown.items;
+  const hasMoreCards = shown.items.length < shown.total;
+  // A key change (folder opened / filter changed) starts a new page-1 fetch;
+  // show the spinner immediately instead of one frame of "no cards".
+  const cardsBusy = cardsLoading || cardData.key !== cardKey;
 
   const drill = (id: number | string) => {
     setPath((p) =>
@@ -5783,7 +5820,11 @@ function FolderView({
           the gap those crumbs used to own. */}
 
       {level < 5 ? (
-        visibleFolders.length > 0 ? (
+        countsLoading ? (
+          <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+            <CircularProgress size={24} />
+          </Box>
+        ) : visibleFolders.length > 0 ? (
           <Box
             sx={{
               mt: 2,
@@ -5930,7 +5971,11 @@ function FolderView({
               </Select>
             </FormControl>
           </Box>
-          {sortedCards.length === 0 ? (
+          {cardsBusy && shown.items.length === 0 ? (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+              <CircularProgress size={24} />
+            </Box>
+          ) : shownCards.length === 0 ? (
             <Alert severity="info" sx={{ mt: 2 }}>
               {t("noCards")}
             </Alert>
@@ -5948,6 +5993,10 @@ function FolderView({
                 const hiddenLabels = allLabels.slice(4);
                 const statusEditable = canEdit && !issue.isLocked && movingId !== issue.id;
                 const staleDays = staleDaysFor(issue, staleRules);
+                const expiringDays = expiringDaysFor(issue);
+                // แดง "เหลือ N วัน" ชนะส้ม "ค้าง N วัน" — เหมือนการ์ดบนบอร์ด
+                const noticeDays = expiringDays ?? staleDays;
+                const noticeKey = expiringDays != null ? "expiringBadge" : "staleBadge";
                 return (
                 <Paper
                   key={issue.id}
@@ -5962,20 +6011,22 @@ function FolderView({
                     flexDirection: "column",
                     gap: 0.75,
                     borderRadius: 3,
-                    // the card's own outline turns red while it sits past a
-                    // stale rule — same rule, same look as the Kanban board
-                    ...(staleDays != null
+                    // สองระดับ: สัญญาใกล้หมด = แดง (ชนะ) · งานค้าง = ส้ม
+                    // เหมือนแถบด้านซ้ายของการ์ดบนบอร์ด
+                    ...(expiringDays != null
                       ? { border: "2px solid", borderColor: "error.main" }
-                      : {}),
+                      : staleDays != null
+                        ? { border: "2px solid", borderColor: "warning.main" }
+                        : {}),
                     transition: "box-shadow .15s ease, transform .15s ease",
                     "&:hover": { boxShadow: 4, transform: "translateY(-2px)" },
                   }}
                 >
-                  {/* Label colour stubs + the stale notice — SAME shape as the
-                      Kanban card (TrelloCardContent): the row exists whenever
-                      EITHER half does, so a stale card with no labels still
-                      says "ค้าง N วัน" (alone, on the right). */}
-                  {(staleDays != null || labelBars.length > 0) && (
+                  {/* Label colour stubs + the notice — SAME shape as the Kanban
+                      card (TrelloCardContent): the row exists whenever EITHER
+                      half does. Near-expiry wins → red "เหลือ N วัน"; otherwise
+                      stale → amber "ค้าง N วัน". */}
+                  {(noticeDays != null || labelBars.length > 0) && (
                     <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                       {labelBars.map((lbl) => (
                         <Box
@@ -6010,22 +6061,21 @@ function FolderView({
                           +{hiddenLabels.length}
                         </Box>
                       )}
-                      {/* Plain red text pushed to the RIGHT of the stubs —
-                          the Kanban card's treatment byte-for-byte (no chip,
-                          no clock icon, no background, same 0.7rem metrics);
-                          `ml: "auto"` keeps the labels on the left edge. */}
-                      {staleDays != null && (
+                      {/* Plain text pushed to the RIGHT of the stubs — no chip,
+                          no icon, no background, same 0.7rem metrics; `ml: "auto"`
+                          keeps labels left. Red (contract) wins over amber. */}
+                      {noticeDays != null && (
                         <Typography
                           sx={{
                             ml: "auto",
-                            color: "error.main",
+                            color: expiringDays != null ? "error.main" : "warning.main",
                             fontSize: "0.7rem",
                             fontWeight: 700,
                             lineHeight: 1,
                             flexShrink: 0,
                           }}
                         >
-                          {t("staleBadge", { days: staleDays })}
+                          {t(noticeKey, { days: noticeDays })}
                         </Typography>
                       )}
                     </Box>
@@ -6183,13 +6233,23 @@ function FolderView({
             </Box>
           )}
           <Box sx={{ display: "flex", justifyContent: "center", gap: 1, mt: 2 }}>
-            {sortedCards.length > shownCards.length && (
-              <Button variant="outlined" size="small" onClick={() => setVisibleCount((v) => v + FOLDER_PAGE_SIZE)}>
+            {hasMoreCards && (
+              <Button
+                variant="outlined"
+                size="small"
+                disabled={cardsBusy}
+                onClick={() => void loadCards(shown.page + 1, true)}
+              >
                 {t("folderLoadMore")}
               </Button>
             )}
-            {visibleCount > FOLDER_PAGE_SIZE && sortedCards.length > FOLDER_PAGE_SIZE && (
-              <Button variant="text" size="small" onClick={() => setVisibleCount(FOLDER_PAGE_SIZE)}>
+            {shown.page > 1 && (
+              <Button
+                variant="text"
+                size="small"
+                disabled={cardsBusy}
+                onClick={() => void loadCards(1, false)}
+              >
                 {t("folderShowLess")}
               </Button>
             )}
@@ -6237,6 +6297,7 @@ function FolderView({
         onClose={() => setDetailIssue(null)}
         statuses={statuses}
         labels={labels}
+        setLabels={setLabels}
         onRefresh={onRefresh}
       />
     </Box>
@@ -6314,7 +6375,6 @@ function BoardsPageInner() {
    * category with no row of its own).
    */
   const [path, setPath] = useState<FolderPath>({ app: null, cat: null, prio: null, st: null });
-  const [issues, setIssues] = useState<BoardIssue[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
   const [statuses, setStatuses] = useState<IssueStatus[]>([]);
   // the "one column at a time" rule — false also while the lookup fails, so
@@ -6352,10 +6412,104 @@ function BoardsPageInner() {
   const [drillFilters, setDrillFilters] = useState<DrillIssueFilters>(seeded.drill);
   /** Toolbar date range — filters cards by the date printed on each card. */
   const [dateRange, setDateRange] = useState<DateRangeValue>({ from: "", to: "" });
+
+  /**
+   * THE single source of issue conditions. Search is debounced here (not in
+   * one view only), the toolbar's range wins over a drill window, and every
+   * view receives this exact object. `queryKey` lets each view snap back to
+   * page 1 the moment any of it changes.
+   */
+  const debouncedSearch = useDebouncedValue(searchQuery);
+  const query: BoardIssueQuery = useMemo(
+    () => ({
+      search: debouncedSearch,
+      priorityIds: selectedPriorityIds,
+      categoryIds: selectedCategoryIds,
+      appIds: selectedAppIds,
+      companyIds: selectedCompanyIds,
+      assigneeIds: selectedAssigneeIds,
+      reporterIds: selectedReporterIds,
+      drill: drillFilters,
+      dateRange: {
+        from: dateRange.from || drillFilters.createdFrom,
+        to: dateRange.to || drillFilters.createdTo,
+      },
+      cardOrder,
+    }),
+    [
+      debouncedSearch,
+      selectedPriorityIds,
+      selectedCategoryIds,
+      selectedAppIds,
+      selectedCompanyIds,
+      selectedAssigneeIds,
+      selectedReporterIds,
+      drillFilters,
+      dateRange.from,
+      dateRange.to,
+      cardOrder,
+    ],
+  );
+  const queryKey = JSON.stringify(query);
+  /** Mutations bump this; each mounted view refetches its own slice + totals. */
+  const [dataVersion, setDataVersion] = useState(0);
+  const bumpData = useCallback(() => setDataVersion((v) => v + 1), []);
   const [recycleBinOpen, setRecycleBinOpen] = useState(false);
   const [trashedIssues, setTrashedIssues] = useState<TrashedIssue[]>([]);
   const [trashDetailIssue, setTrashDetailIssue] = useState<TrashedIssue | null>(null);
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
+  /** Per-option counts for the open filter group (lazy, applied filters). */
+  const [filterCounts, setFilterCounts] = useState<Record<string, Record<string, number>>>({});
+  const handleFilterGroupOpen = useCallback(
+    (key: string) => {
+      const groupBy: Record<string, IssueCountGroup> = {
+        status: "status",
+        app: "app",
+        company: "company",
+        priority: "priority",
+        category: "category",
+        assignee: "assignee",
+        reporter: "reporter",
+      };
+      const mode = groupBy[key];
+      if (!mode) return;
+      // Exclude this group's own selection: the numbers answer "how many
+      // cards would this option add under the OTHER applied filters".
+      void fetchIssueGroupCounts(
+        {
+          ...query,
+          priorityIds: key === "priority" ? [] : query.priorityIds,
+          categoryIds: key === "category" ? [] : query.categoryIds,
+          appIds: key === "app" ? [] : query.appIds,
+          companyIds: key === "company" ? [] : query.companyIds,
+          assigneeIds: key === "assignee" ? [] : query.assigneeIds,
+          reporterIds: key === "reporter" ? [] : query.reporterIds,
+        },
+        mode,
+        {
+          hideStaleDone: !isTableView,
+          statuses: key === "status" ? [] : selectedStatusIds,
+        },
+      )
+        .then((res) => setFilterCounts((prev) => ({ ...prev, [key]: res.counts })))
+        .catch(() => setFilterCounts((prev) => ({ ...prev, [key]: {} })));
+    },
+    [query, isTableView, selectedStatusIds],
+  );
+  /** ปุ่ม "ล้างทั้งหมด" ในหัว panel — ล้างทุก group (รวมค้นหา/ปฏิทิน) */
+  const handleClearAllFilters = useCallback(() => {
+    setSelectedStatusIds([]);
+    setSelectedPriorityIds([]);
+    setSelectedCategoryIds([]);
+    setSelectedAppIds([]);
+    setSelectedCompanyIds([]);
+    setSelectedAssigneeIds([]);
+    setSelectedReporterIds([]);
+    setSearchQuery("");
+    setDrillFilters(EMPTY_DRILL_FILTERS);
+    setDateRange({ from: "", to: "" });
+    setFilterCounts({});
+  }, []);
   const { notify } = useNotification();
   const fail = useCallback(
     (msg: string | null) => {
@@ -6467,33 +6621,14 @@ function BoardsPageInner() {
     );
   };
 
-  const handleClearAllFilters = () => {
-    setSelectedStatusIds([]);
-    setSelectedPriorityIds([]);
-    setSelectedCategoryIds([]);
-    setSelectedAppIds([]);
-    setSelectedCompanyIds([]);
-    setSelectedAssigneeIds([]);
-    setSelectedReporterIds([]);
-    setSearchQuery("");
-    setDrillFilters(EMPTY_DRILL_FILTERS);
-    setDateRange({ from: "", to: "" });
-    void loadData(false, { from: "", to: "" });
-  };
-
-  const loadData = useCallback(async (showLoading = true, rangeOverride?: DateRangeValue) => {
+  /**
+   * Metadata only — issue rows now belong to whichever view is on screen.
+   * Filtering/searching never touches this loader; it only runs once per mount.
+   */
+  const loadMeta = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
-    // The date-picker handler passes the new range explicitly so the fetch
-    // never runs one render behind the state it just set.
-    const range = rangeOverride ?? dateRange;
     try {
       const results = await Promise.allSettled([
-        fetchIssues(1, 100, [], "", roleName === "programmer", {
-          ...drillFilters,
-          // an explicit toolbar range wins over a drill's trend window
-          createdFrom: range.from || drillFilters.createdFrom || undefined,
-          createdTo: range.to || drillFilters.createdTo || undefined,
-        }),
         fetchLabels(),
         fetchStatuses(),
         fetchPriorities(),
@@ -6511,8 +6646,7 @@ function BoardsPageInner() {
         })),
         refreshTimers(),
       ]);
-      const [iss, lbls, sts, pri, cats, aps, cmps, usr, policy] = results;
-      if (iss.status === "fulfilled") setIssues(iss.value.data);
+      const [lbls, sts, pri, cats, aps, cmps, usr, policy] = results;
       if (lbls.status === "fulfilled") setLabels(lbls.value.data);
       if (sts.status === "fulfilled") setStatuses(sts.value.data);
       if (pri.status === "fulfilled") setPriorities(pri.value.data);
@@ -6536,25 +6670,19 @@ function BoardsPageInner() {
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [roleName, refreshTimers, fail, t, drillFilters, dateRange]);
+  }, [refreshTimers, fail, t]);
 
-  /**
-   * One automatic load per mount. StrictMode re-runs the mount effect and any
-   * late permission/i18n resolution re-creates `loadData` — both used to fire
-   * another full `GET /issues` batch, so the Network tab showed the same row
-   * 4–8 times on a single page open. Manual refresh / restore paths call
-   * `loadData` directly and are deliberately unaffected by this guard.
-   */
-  const loadDataRef = useRef(loadData);
-  useEffect(() => {
-    loadDataRef.current = loadData;
-  }, [loadData]);
+  /** Status rename/reorder/add changes metadata, not just issue rows. */
+  const refreshMeta = useCallback(() => {
+    void loadMeta(false);
+  }, [loadMeta]);
+
   const didInitialLoadRef = useRef(false);
   useEffect(() => {
     if (didInitialLoadRef.current) return;
     didInitialLoadRef.current = true;
-    void loadDataRef.current();
-  }, []);
+    void loadMeta();
+  }, [loadMeta]);
 
   // Notification deep link: fetch that one card and open its detail dialog.
   // A card that is gone (trashed meanwhile, wrong permissions) just leaves the
@@ -6573,33 +6701,6 @@ function BoardsPageInner() {
       cancelled = true;
     };
   }, [issueParam]);
-
-  /**
-   * Company filter resolved to **reporter ids** for the two in-memory views
-   * (table / folder) — the kanban columns ask the API with `companyIds`
-   * instead and the server runs the identical rule as a subquery.
-   * `null` = no company selected (no constraint at all); `[]` = a selected
-   * company that has no members, which must match nothing (an empty array
-   * without the null would read as "no filter" and show every card).
-   *
-   * Path is **การ์ด → ผู้แจ้ง → บริษัท** (`issues.customer_id` →
-   * `users.company_id`): a card is "of" a company because the person who
-   * reported it belongs to that company — exactly what the company field on
-   * the user form records. A card with no reporter, or a reporter with no
-   * company, is never in the list → hidden while a company filter is on
-   * (deliberate: it belongs to no company).
-   *
-   * NOTE: the OLD path (card → app → `app_companies`) is gone here. It made
-   * every company return the same cards whenever one app was linked to all
-   * of them (POS was linked to all three).
-   */
-  const companyReporterIds = useMemo<string[] | null>(() => {
-    if (selectedCompanyIds.length === 0) return null;
-    const wanted = new Set(selectedCompanyIds);
-    return users
-      .filter((member) => member.companyId != null && wanted.has(member.companyId))
-      .map((member) => member.id);
-  }, [selectedCompanyIds, users]);
 
   const activeFilterChips = useMemo(() => {
     type FilterChipEntry = {
@@ -6882,10 +6983,7 @@ function BoardsPageInner() {
             here it filters cards by their creation date (the date on a card). */}
         <DateRangeIconButton
           value={dateRange}
-          onChange={(next) => {
-            setDateRange(next);
-            void loadData(false, next);
-          }}
+          onChange={(next) => setDateRange(next)}
         />
         {/* Filter sits next to search: both answer "which cards do I see?"
             (left = query, right = view/utility). Anchored here so the popover
@@ -7026,34 +7124,29 @@ function BoardsPageInner() {
             isFolderView ? (
               <FolderView
                 statuses={statuses}
-                issues={issues}
                 labels={labels}
+                setLabels={setLabels}
                 apps={apps}
                 categories={categories}
                 priorities={priorities}
                 path={path}
                 setPath={setPath}
-                selectedStatusIds={selectedStatusIds}
-                selectedPriorityIds={selectedPriorityIds}
-                selectedCategoryIds={selectedCategoryIds}
-                selectedAppIds={selectedAppIds}
-                companyReporterIds={companyReporterIds}
-                selectedAssigneeIds={selectedAssigneeIds}
-                selectedReporterIds={selectedReporterIds}
-                searchQuery={searchQuery}
                 canEdit={canEdit}
                 canSeeReporter={canSeeReporter}
                 staleRules={staleRules}
-                hideStaleRules={hideStaleRules}
-                onRefresh={() => loadData(false)}
+                onRefresh={bumpData}
                 cardOrder={cardOrder}
                 onToggleCardOrder={toggleCardOrder}
+                query={query}
+                queryKey={queryKey}
+                refreshVersion={dataVersion}
                 toolbar={toolbar}
               />
             ) : isBoardView ? (
               <KanbanView
                 statuses={statuses}
                 labels={labels}
+                setLabels={setLabels}
                 priorities={priorities}
                 categories={categories}
                 users={users}
@@ -7071,7 +7164,7 @@ function BoardsPageInner() {
                 canUnlockIssue={canUnlockIssue}
                 timers={timers}
                 showTime={canSeeTime}
-                onRefresh={() => loadData(false)}
+                onRefresh={bumpData}
                 roleName={roleName}
                 stepOnlyMoves={stepOnlyMoves}
                 taskTypeGateIds={taskTypeGateIds}
@@ -7079,24 +7172,20 @@ function BoardsPageInner() {
                 cardOrder={cardOrder}
                 drillFilters={drillFilters}
                 dateRange={dateRange}
+                query={query}
+                refreshVersion={dataVersion}
+                onMetaRefresh={refreshMeta}
                 toolbar={toolbar}
               />
             ) : (
               <TableView
                 statuses={statuses}
-                issues={issues}
                 labels={labels}
+                setLabels={setLabels}
                 priorities={priorities}
-                categories={categories}
-                selectedStatusIds={selectedStatusIds}
-                selectedPriorityIds={selectedPriorityIds}
-                selectedCategoryIds={selectedCategoryIds}
-                selectedAppIds={selectedAppIds}
-                companyReporterIds={companyReporterIds}
-                selectedAssigneeIds={selectedAssigneeIds}
-                selectedReporterIds={selectedReporterIds}
-                searchQuery={searchQuery}
-                staleRules={staleRules}
+                query={query}
+                queryKey={queryKey}
+                refreshVersion={dataVersion}
                 canManage={canManage}
                 canEdit={canEdit}
                 canSeeReporter={canSeeReporter}
@@ -7105,8 +7194,7 @@ function BoardsPageInner() {
                 canSeeTrackedTime={canSeeTime}
                 canSeeActualTime={canSeeActualTime}
                 currentUserId={currentUserId}
-                onRefresh={() => loadData(false)}
-                cardOrder={cardOrder}
+                onRefresh={bumpData}
                 toolbar={toolbar}
               />
             ))}
@@ -7128,6 +7216,9 @@ function BoardsPageInner() {
             selectedAssigneeIds={selectedAssigneeIds}
             selectedReporterIds={selectedReporterIds}
             isCustomer={isCustomer}
+            countsByGroup={filterCounts}
+            onGroupOpen={handleFilterGroupOpen}
+            onClearAll={handleClearAllFilters}
             onToggleStatus={handleToggleStatusFilter}
             onTogglePriority={handleTogglePriorityFilter}
             onToggleCategory={handleToggleCategoryFilter}
@@ -7135,13 +7226,12 @@ function BoardsPageInner() {
             onToggleCompany={handleToggleCompanyFilter}
             onToggleAssignee={handleToggleAssigneeFilter}
             onToggleReporter={handleToggleReporterFilter}
-            onClearAll={handleClearAllFilters}
             onClose={() => setFilterAnchor(null)}
           />
           <RecycleBinDialog
             open={recycleBinOpen}
             onClose={() => setRecycleBinOpen(false)}
-            onRestored={loadData}
+            onRestored={bumpData}
             onViewDetail={(issue) => {
               setRecycleBinOpen(false);
               setTrashDetailIssue(issue);
@@ -7153,6 +7243,7 @@ function BoardsPageInner() {
             onClose={() => setTrashDetailIssue(null)}
             statuses={statuses}
             labels={labels}
+            setLabels={setLabels}
             onRefresh={() => {}}
             trashed={!!trashDetailIssue}
             onRestore={async (id) => {
@@ -7160,7 +7251,7 @@ function BoardsPageInner() {
                 await restoreIssue(id);
                 setTrashDetailIssue(null);
                 setRecycleBinOpen(true);
-                loadData();
+                bumpData();
               } catch {
                 // keep dialog open on failure
               }
@@ -7182,7 +7273,8 @@ function BoardsPageInner() {
             }}
             statuses={statuses}
             labels={labels}
-            onRefresh={() => loadData(false)}
+            setLabels={setLabels}
+            onRefresh={bumpData}
           />
         </Box>
 

@@ -466,6 +466,67 @@ export class ReportsService {
       .filter((r): r is AppUsageRow => r.appId != null && r.companyId != null);
   }
 
+  /**
+   * Per-option counts for the shared filter popover. Every group is computed
+   * from the SAME `summaryBaseQb` the report rows use (with the filters that
+   * are already applied), so a badge can never disagree with the table it
+   * opens. NULL slices are returned under their synthetic keys (`no-app`,
+   * `no-category`, `no-priority`, `no-task-type`) so the client can attach
+   * them to the matching checkbox without a second convention.
+   */
+  async filterCounts(
+    f: ReportIssueFilters,
+    user?: AuthUser | null,
+  ): Promise<{ total: number; counts: Record<string, Record<string, number>> }> {
+    const canViewAll = await this.canViewAll(user);
+    const uid = Number(user?.id ?? 0);
+    const base = this.summaryBaseQb(f, canViewAll, uid);
+    const totalRow = await base
+      .clone()
+      .select("COUNT(DISTINCT issue.id)::int", "count")
+      .getRawOne<{ count: number }>();
+    const total = Number(totalRow?.count ?? 0);
+
+    const groups: Array<{
+      key: string;
+      column: string;
+      nullKey?: string;
+      company?: boolean;
+    }> = [
+      { key: "status", column: "issue.status_id" },
+      { key: "priority", column: "issue.priority_id", nullKey: "no-priority" },
+      { key: "category", column: "issue.category_id", nullKey: "no-category" },
+      { key: "app", column: "issue.app_id", nullKey: "no-app" },
+      { key: "assignee", column: "issue.programmer_id" },
+      { key: "reporter", column: "issue.customer_id" },
+      { key: "taskType", column: "issue.task_type", nullKey: "no-task-type" },
+      { key: "company", column: "groupCompany.id", company: true },
+    ];
+
+    const counts: Record<string, Record<string, number>> = {};
+    for (const group of groups) {
+      const qb = base.clone();
+      if (group.company) {
+        qb.leftJoin("issue.customer", "groupReporter").leftJoin(
+          "groupReporter.company",
+          "groupCompany",
+        );
+      }
+      const rows = await qb
+        .select(group.column, "key")
+        .addSelect("COUNT(DISTINCT issue.id)::int", "count")
+        .groupBy(group.column)
+        .getRawMany<{ key: number | string | null; count: number }>();
+      const out: Record<string, number> = {};
+      for (const row of rows) {
+        const key = row.key == null ? (group.nullKey ?? "-1") : String(row.key);
+        out[key] = Number(row.count);
+      }
+      counts[group.key] = out;
+    }
+    return { total, counts };
+  }
+
   /** Shared WHERE (visibility + dimension + date + search) on the bare `issue` alias. */
   private summaryBaseQb(
     f: ReportIssueFilters,

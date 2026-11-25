@@ -151,7 +151,8 @@ export interface RuleTriggerCategoryDef {
 export const RULE_TRIGGER_CATEGORIES: RuleTriggerCategoryDef[] = [
   { key: "card_move", label: { th: "ย้าย & มอบหมายการ์ด", en: "Move & Assign" } },
   { key: "card_change", label: { th: "สร้าง · แก้ไข · ลบการ์ด", en: "Create · Edit · Delete" } },
-  { key: "content", label: { th: "คอมเมนต์ & ไฟล์แนบ", en: "Comments & Files" } },
+  // The "content" trigger tab is gone — comment/file triggers were retired;
+  // the action category of the same key still holds comment/delete/restore.
   { key: "timing", label: { th: "จับเวลา", en: "Time Tracking" } },
   // display policies — "when the board lists cards", never fired as an event
   { key: "board_policy", label: { th: "บอร์ด", en: "Board" } },
@@ -208,59 +209,10 @@ export const RULE_TRIGGERS: RuleTriggerDef[] = [
       { key: "created_any", text: { th: "เมื่อมีการ์ดใหม่ถูกสร้าง", en: "When a new card is created" }, slots: [] },
     ],
   },
-  {
-    key: "comment.created",
-    category: "content",
-    phase: "mvp",
-    label: { th: "มีคอมเมนต์ใหม่", en: "New comment" },
-    fields: [
-      { key: "comment_author", type: "user", contextKey: "actorId" },
-      { key: "actor_role", type: "role", contextKey: "actorRole" },
-      { key: "status", type: "status", contextKey: "toStatusId" },
-    ],
-    templates: [
-      { key: "comment_any", text: { th: "เมื่อมีคอมเมนต์ใหม่", en: "When a new comment is added" }, slots: [] },
-    ],
-  },
-  {
-    key: "attachment.created",
-    category: "content",
-    phase: "mvp",
-    label: { th: "มีไฟล์ถูกแนบ", en: "File attached" },
-    fields: [
-      { key: "attachment_author", type: "user", contextKey: "actorId" },
-      { key: "actor_role", type: "role", contextKey: "actorRole" },
-    ],
-    templates: [
-      { key: "attachment_any", text: { th: "เมื่อมีไฟล์ถูกแนบ", en: "When a file is attached" }, slots: [] },
-    ],
-  },
-  {
-    key: "issue.title_changed",
-    category: "card_change",
-    phase: "planned",
-    label: { th: "เปลี่ยนชื่อการ์ด", en: "Title changed" },
-    fields: [
-      { key: "title", type: "text", contextKey: "newValue" },
-      { key: "old_title", type: "text", contextKey: "oldValue" },
-    ],
-    templates: [
-      { key: "title_changed_to", text: { th: "เมื่อชื่อการ์ดเป็น {title}", en: "When the card title is {title}" }, slots: [{ name: "title", field: "title", type: "text" }] },
-    ],
-  },
-  {
-    key: "issue.description_changed",
-    category: "card_change",
-    phase: "planned",
-    label: { th: "เปลี่ยนรายละเอียด", en: "Description changed" },
-    fields: [
-      { key: "description", type: "text", contextKey: "newValue" },
-      { key: "old_description", type: "text", contextKey: "oldValue" },
-    ],
-    templates: [
-      { key: "description_changed", text: { th: "เมื่อเปลี่ยนรายละเอียดการ์ด", en: "When the card description changes" }, slots: [] },
-    ],
-  },
+  // Comment / file triggers were removed — notifications and activity logs
+  // still run on those events, but there is no automation hook any more.
+  // Title / description change triggers were removed — the wizard sentences
+  // were unused and the matching engine hooks are gone with them.
   {
     key: "issue.priority_changed",
     category: "card_change",
@@ -287,26 +239,8 @@ export const RULE_TRIGGERS: RuleTriggerDef[] = [
       { key: "category_changed_to", text: { th: "เมื่อหมวดหมู่เป็น {category}", en: "When the category is {category}" }, slots: [{ name: "category", field: "category", type: "category" }] },
     ],
   },
-  {
-    key: "issue.deleted",
-    category: "card_change",
-    phase: "planned",
-    label: { th: "ลบการ์ด", en: "Card deleted" },
-    fields: [{ key: "status", type: "status", contextKey: "fromStatusId" }],
-    templates: [
-      { key: "deleted_any", text: { th: "เมื่อการ์ดถูกลบ", en: "When a card is deleted" }, slots: [] },
-    ],
-  },
-  {
-    key: "issue.restored",
-    category: "card_change",
-    phase: "planned",
-    label: { th: "กู้คืนการ์ด", en: "Card restored" },
-    fields: [{ key: "status", type: "status", contextKey: "toStatusId" }],
-    templates: [
-      { key: "restored_any", text: { th: "เมื่อการ์ดถูกกู้คืน", en: "When a card is restored" }, slots: [] },
-    ],
-  },
+  // Soft-delete / restore triggers were removed for the same reason — the
+  // recycle bin stays a plain data operation, not an automation event.
   {
     key: "work_session.started",
     category: "timing",
@@ -331,7 +265,6 @@ export const RULE_TRIGGERS: RuleTriggerDef[] = [
     ],
     templates: [
       { key: "timer_stopped", text: { th: "เมื่อหยุดจับเวลา", en: "When the timer stops" }, slots: [] },
-      { key: "timer_over", text: { th: "เมื่อหยุดจับเวลาแล้วใช้เวลาเกิน {minutes} นาที", en: "When the timer stops after more than {minutes} minutes" }, slots: [{ name: "minutes", field: "duration", type: "number" }] },
     ],
   },
   {
@@ -589,7 +522,8 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     // (isActionCompatible). Two consumers read the active rules of this key
     // — the sentence's status + days:
     //   * the daily 09:00 sweep (stale-cards.service) notifies the assignee
-    //     and every admin once per sitting;
+    //     and every admin every day until the card reaches เสร็จสิ้น (moving
+    //     the card restarts the day count);
     //   * the board/folder draw a red border on the card (move-policy's
     //     staleRules + statusChangedAt in the payload).
     // Nothing is hidden or deleted — the table shows every card too.
@@ -598,8 +532,8 @@ export const RULE_ACTIONS: RuleActionDef[] = [
     status: "supported",
     label: { th: "แจ้งเตือน + ตีกรอบการ์ดค้าง", en: "Notify & flag stale cards" },
     description: {
-      th: "เมื่อการ์ดค้างในสถานะเกินจำนวนวันที่กำหนด — ตีกรอบแดงที่บอร์ด/โฟลเดอร์ และแจ้งผู้รับผิดชอบ + แอดมินทุกวัน 09:00 (ครั้งเดียวต่อการค้าง 1 รอบ) ไม่มีการลบข้อมูล",
-      en: "Once a card sits in the status past the chosen days — draws a red border on the board/folder and notifies the assignee + every admin daily at 09:00 (once per sitting). Nothing is deleted",
+      th: "เมื่อการ์ดค้างในสถานะเกินจำนวนวันที่กำหนด — ตีกรอบแดงที่บอร์ด/โฟลเดอร์ และแจ้งผู้รับผิดชอบ + แอดมินทุกวัน 09:00 จนกว่าจะปิดงานเป็นเสร็จสิ้น (ถ้าย้ายสถานะจะเริ่มนับใหม่) ไม่มีการลบข้อมูล",
+      en: "Once a card sits in the status past the chosen days — draws a red border on the board/folder and notifies the assignee + every admin daily at 09:00 until the card reaches Done (moving it restarts the count). Nothing is deleted",
     },
   },
   {
@@ -665,10 +599,7 @@ export function getActionsByCategory(category: string): RuleActionDef[] {
 export const INVALID_ACTION_COMBOS: Array<{ trigger: string; action: string }> = [
   { trigger: "work_session.started", action: "work_session.start" },
   { trigger: "work_session.stopped", action: "work_session.stop" },
-  { trigger: "issue.deleted", action: "issue.delete" },
-  { trigger: "issue.restored", action: "issue.restore" },
   { trigger: "issue.moved", action: "issue.move_status" },
-  { trigger: "comment.created", action: "issue.comment" },
   // echoes: the action only redoes what the trigger just did
   { trigger: "issue.assigned", action: "issue.assign" },
   { trigger: "issue.priority_changed", action: "issue.set_priority" },
@@ -733,17 +664,11 @@ export const RULE_ACTION_RECOMMENDATIONS: Record<string, string[]> = {
   "issue.assigned": ["issue.comment"],
   // a fresh comment / attachment is a good moment to tag the card
   // (e.g. a "รอคำตอบ" / "มีเอกสารแนบ" label)
-  "comment.created": ["issue.add_label"],
-  "attachment.created": ["issue.add_label"],
-  "issue.title_changed": ["issue.add_label"],
-  "issue.description_changed": ["issue.add_label"],
   // e.g. priority jumps to urgent → tag the card "เร่งด่วน"
   "issue.priority_changed": ["issue.add_label"],
   // no set_category here: category_changed → set_category is an echo combo
   // and is hidden from the picker (see INVALID_ACTION_COMBOS)
   "issue.category_changed": [],
-  "issue.deleted": [],
-  "issue.restored": ["issue.move_status"],
   // the policy trigger offers exactly these two (isActionCompatible)
   "board.policy": ["issue.notify_stale", "issue.hide_from_board"],
   "work_session.started": ["issue.set_time", "issue.add_label"],
@@ -781,21 +706,13 @@ const COMMON_MESSAGE_TOKENS: RulePlaceholder[] = [
 
 /** Extra tokens that only exist for a specific trigger. */
 const TRIGGER_MESSAGE_TOKENS: Record<string, RulePlaceholder[]> = {
+  // Only the destination status is offered — the wizard used to suggest the
+  // source status too, which produced awkward comments. The engine still
+  // renders {สถานะเดิม} for rules that already use it.
   "issue.moved": [
-    { token: "{สถานะเดิม}", label: { th: "สถานะก่อนย้าย", en: "Status before the move" } },
     { token: "{สถานะใหม่}", label: { th: "สถานะหลังย้าย", en: "Status after the move" } },
   ],
   "issue.assigned": [{ token: "{ตำแหน่ง}", label: { th: "ตำแหน่งที่มอบหมาย", en: "Assigned position" } }],
-  "comment.created": [
-    { token: "{ข้อความคอมเมนต์}", label: { th: "ข้อความคอมเมนต์ที่ถูกส่ง", en: "The comment that was posted" } },
-  ],
-  "attachment.created": [
-    { token: "{ชื่อไฟล์}", label: { th: "ชื่อไฟล์ที่ถูกแนบ", en: "Name of the attached file" } },
-  ],
-  "issue.title_changed": [{ token: "{ชื่อใหม่}", label: { th: "ชื่อการ์ดใหม่", en: "New card title" } }],
-  "issue.description_changed": [
-    { token: "{รายละเอียดใหม่}", label: { th: "รายละเอียดใหม่", en: "New description" } },
-  ],
   "issue.priority_changed": [
     { token: "{ความสำคัญใหม่}", label: { th: "ความสำคัญใหม่", en: "New priority" } },
   ],

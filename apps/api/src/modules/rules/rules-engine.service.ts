@@ -18,16 +18,10 @@ import { Rule } from "./entities/rule.entity";
 /** Triggers the engine listens for — one per hook placed in the services. */
 export type EngineTrigger =
   | "issue.created"
-  | "issue.title_changed"
-  | "issue.description_changed"
   | "issue.priority_changed"
   | "issue.category_changed"
   | "issue.moved"
   | "issue.assigned"
-  | "issue.deleted"
-  | "issue.restored"
-  | "comment.created"
-  | "attachment.created"
   | "work_session.started"
   | "work_session.stopped";
 
@@ -717,12 +711,6 @@ export class RulesEngineService {
           : null;
       out.set("{ผู้กระทำ}", actor?.name ?? "");
     }
-    if (has("{ข้อความคอมเมนต์}") && triggerKey === "comment.created") {
-      out.set("{ข้อความคอมเมนต์}", String(ctx.newValue ?? ""));
-    }
-    if (has("{ชื่อไฟล์}") && triggerKey === "attachment.created") {
-      out.set("{ชื่อไฟล์}", String(ctx.filename ?? ""));
-    }
     if (has("{สถานะเดิม}")) {
       out.set("{สถานะเดิม}", (await this.statusName(Number(ctx.fromStatusId))) ?? "");
     }
@@ -737,8 +725,6 @@ export class RulesEngineService {
           : null;
       out.set("{ตำแหน่ง}", position?.name ?? "");
     }
-    if (has("{ชื่อใหม่}")) out.set("{ชื่อใหม่}", String(ctx.newValue ?? ""));
-    if (has("{รายละเอียดใหม่}")) out.set("{รายละเอียดใหม่}", String(ctx.newValue ?? ""));
     if (has("{ความสำคัญใหม่}") && triggerKey === "issue.priority_changed") {
       out.set("{ความสำคัญใหม่}", (await this.priorityName(Number(ctx.newValue))) ?? "");
     }

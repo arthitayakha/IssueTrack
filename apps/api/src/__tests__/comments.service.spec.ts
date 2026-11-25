@@ -46,17 +46,9 @@ function makeService() {
     // ไม่มี `issue.all.view` → การเช็คขอบเขตเดินจริง (ผู้รับ/ผู้แจ้งผ่าน)
     getUserPermissions: jest.fn().mockResolvedValue([]),
   };
-  const rulesEngine = { evaluate: jest.fn().mockResolvedValue(undefined) };
   const notifications = { notifyIssueEvent: jest.fn().mockResolvedValue(undefined) };
   const service = new CommentsService(
-    ...([
-      comments,
-      activityLogs,
-      issues,
-      permissions,
-      rulesEngine,
-      notifications,
-    ] as unknown as ServiceArgs),
+    ...([comments, activityLogs, issues, permissions, notifications] as unknown as ServiceArgs),
   );
   return { service, comments, issues, notifications };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { Box } from "@mui/material";
 import { useTheme, type Theme } from "@mui/material/styles";
 import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
@@ -20,7 +20,15 @@ import DescriptionIcon from "@mui/icons-material/Description";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import { useTranslations } from "next-intl";
 import type { IssueTaskType } from "@kanban/shared";
-import { activeFilterCount, EMPTY_FILTERS, TASK_TYPE_VALUES } from "@/lib/reports-api";
+import {
+  activeFilterCount,
+  buildCompanyRows,
+  EMPTY_FILTERS,
+  DEFAULT_SORT,
+  fetchReportFilterCounts,
+  TASK_TYPE_VALUES,
+} from "@/lib/reports-api";
+
 import type {
   ContractKind,
   FilterOptions,
@@ -139,6 +147,12 @@ export function ReportsFilterPanel({
   const startsOpen = (count: number, fallback: boolean) =>
     totalSelected > 0 ? count > 0 : fallback;
 
+  /** Section keys are prefixed by the view so switching view re-mounts them. */
+  const sectionKey = useCallback((key: SectionKey) => `${view}-${key}`, [view]);
+  const [reportCounts, setReportCounts] = useState<Record<string, Record<string, number>>>({});
+  const cnt = (key: SectionKey, id: string | number) => reportCounts[sectionKey(key)]?.[String(id)];
+
+  /** กด tick = กรองทันที (state อยู่ใน URL ของหน้ารายงาน) */
   const toggleIn = (
     key:
       | "statusIds"
@@ -157,18 +171,14 @@ export function ReportsFilterPanel({
     });
   };
 
-  /** toggle ประเภทงาน (`IssueTaskType[]`) — list ตัวหนังสือ จึงแยกจาก `toggleIn`. */
   const toggleTaskType = (value: IssueTaskType) => {
     const current = filters.taskTypes;
     onFiltersChange({
       ...filters,
-      taskTypes: current.includes(value)
-        ? current.filter((x) => x !== value)
-        : [...current, value],
+      taskTypes: current.includes(value) ? current.filter((x) => x !== value) : [...current, value],
     });
   };
 
-  /** toggle ประเภทสัญญา (`ContractKind[]`) — เฉพาะมุมมองตามบริษัท. */
   const toggleKind = (value: ContractKind) => {
     const current = filters.kinds;
     onFiltersChange({
@@ -177,23 +187,91 @@ export function ReportsFilterPanel({
     });
   };
 
-  /**
-   * "ไม่มีแอป" / "ไม่มีหมวดหมู่" / "ไม่ระบุความสำคัญ" / "ไม่ระบุประเภทงาน" — the
-   * NULL bucket of each dimension, which has no id to sit in `appIds`/
-   * `categoryIds`/`priorityIds`/`taskTypes` (the dashboard's `id: null` slices
-   * land here via `?noApp=1` / `?noPriority=1`). A plain boolean beside the id
-   * list, so ticking it together with a real value means OR on the server,
-   * never an empty AND.
-   */
+  /** NULL bucket ของแต่ละ dimension — OR-part เดียวกับ id ที่เลือก */
   const toggleFlag = (key: "noApp" | "noCategory" | "noPriority" | "noTaskType") => {
     onFiltersChange({ ...filters, [key]: !filters[key] });
   };
+
+  const clearAll = () => {
+    onFiltersChange({ ...EMPTY_FILTERS });
+    setReportCounts({});
+  };
+
+  /** Counts for the group being opened — applied filters only, never the draft. */
+  const handleGroupOpen = useCallback(
+    (keyWithView: string) => {
+      const key = keyWithView.slice(view.length + 1) as SectionKey;
+      if (view === "company") {
+        // Contract rows are built client-side from the full `appContracts` list.
+        const clear: ReportFilters = {
+          ...filters,
+          companyIds: key === "company" ? [] : filters.companyIds,
+          appIds: key === "app" ? [] : filters.appIds,
+          kinds: key === "kind" ? [] : filters.kinds,
+        };
+        const rows = buildCompanyRows(options.appContracts, clear, DEFAULT_SORT.company);
+        const count = (field: "companyId" | "appId" | "kind", id: string | number) =>
+          rows.filter((row) => String(row[field] ?? "") === String(id)).length;
+        if (key === "company") {
+          setReportCounts((prev) => ({
+            ...prev,
+            [keyWithView]: Object.fromEntries(
+              options.companies.map((c) => [String(c.id), count("companyId", c.id)]),
+            ),
+          }));
+        } else if (key === "app") {
+          setReportCounts((prev) => ({
+            ...prev,
+            [keyWithView]: Object.fromEntries(
+              options.apps.map((a) => [String(a.id), count("appId", a.id)]),
+            ),
+          }));
+        } else if (key === "kind") {
+          setReportCounts((prev) => ({
+            ...prev,
+            [keyWithView]: { renew: count("kind", "renew"), buy: count("kind", "buy") },
+          }));
+        }
+        return;
+      }
+      // Exclude this section's own selection so a number answers "how many
+      // rows would this option add under the OTHER applied filters".
+      const cleared: ReportFilters = { ...filters };
+      if (key === "status") cleared.statusIds = [];
+      if (key === "priority") {
+        cleared.priorityIds = [];
+        cleared.noPriority = false;
+      }
+      if (key === "category") {
+        cleared.categoryIds = [];
+        cleared.noCategory = false;
+      }
+      if (key === "app") {
+        cleared.appIds = [];
+        cleared.noApp = false;
+      }
+      if (key === "assignee") cleared.assigneeIds = [];
+      if (key === "reporter") cleared.reporterIds = [];
+      if (key === "taskType") {
+        cleared.taskTypes = [];
+        cleared.noTaskType = false;
+      }
+      if (key === "company") cleared.companyIds = [];
+      void fetchReportFilterCounts(cleared)
+        .then((res) =>
+          setReportCounts((prev) => ({ ...prev, [keyWithView]: res.counts[key] ?? {} })),
+        )
+        .catch(() => setReportCounts((prev) => ({ ...prev, [keyWithView]: {} })));
+    },
+    [view, filters, options],
+  );
 
   const statusOptions: FilterOption[] = options.statuses.map((status) => ({
     id: status.id,
     label: status.name,
     checked: filters.statusIds.includes(status.id),
     onToggle: () => toggleIn("statusIds", status.id),
+    count: cnt("status", status.id),
     start: (
       <Box
         component="span"
@@ -213,6 +291,7 @@ export function ReportsFilterPanel({
     label: app.name,
     checked: filters.appIds.includes(app.id),
     onToggle: () => toggleIn("appIds", app.id),
+    count: cnt("app", app.id),
     start: <AppsIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main" }} />,
   }));
   /**
@@ -226,6 +305,7 @@ export function ReportsFilterPanel({
       label: t("filters.noApp"),
       checked: filters.noApp,
       onToggle: () => toggleFlag("noApp"),
+      count: cnt("app", "no-app"),
       start: <AppsIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main", opacity: 0.55 }} />,
     });
   }
@@ -235,6 +315,7 @@ export function ReportsFilterPanel({
     label: company.name,
     checked: filters.companyIds.includes(company.id),
     onToggle: () => toggleIn("companyIds", company.id),
+    count: cnt("company", company.id),
     start: <BusinessIcon sx={{ fontSize: 16, flexShrink: 0, color: "warning.main" }} />,
   }));
 
@@ -250,6 +331,7 @@ export function ReportsFilterPanel({
       label: st("renew"),
       checked: filters.kinds.includes("renew"),
       onToggle: () => toggleKind("renew"),
+      count: cnt("kind", "renew"),
       start: <AutorenewIcon sx={{ fontSize: 16, flexShrink: 0, color: "info.main" }} />,
     },
     {
@@ -257,6 +339,7 @@ export function ReportsFilterPanel({
       label: st("kindBuy"),
       checked: filters.kinds.includes("buy"),
       onToggle: () => toggleKind("buy"),
+      count: cnt("kind", "buy"),
       start: <ScheduleIcon sx={{ fontSize: 16, flexShrink: 0, color: "primary.main" }} />,
     },
   ];
@@ -266,6 +349,7 @@ export function ReportsFilterPanel({
     label: priority.name,
     checked: filters.priorityIds.includes(priority.id),
     onToggle: () => toggleIn("priorityIds", priority.id),
+    count: cnt("priority", priority.id),
     start: (
       <FlagIcon sx={{ fontSize: 16, flexShrink: 0, color: getPriorityColor(theme, priority.name) }} />
     ),
@@ -277,6 +361,7 @@ export function ReportsFilterPanel({
     label: t("filters.noPriority"),
     checked: filters.noPriority,
     onToggle: () => toggleFlag("noPriority"),
+    count: cnt("priority", "no-priority"),
     start: <FlagIcon sx={{ fontSize: 16, flexShrink: 0, color: "text.disabled" }} />,
   });
 
@@ -299,6 +384,7 @@ export function ReportsFilterPanel({
     label: bt(`taskType.${value}`),
     checked: filters.taskTypes.includes(value),
     onToggle: () => toggleTaskType(value),
+    count: cnt("taskType", value),
     start: taskTypeIcons[value],
   }));
   taskTypeOptions.push({
@@ -306,6 +392,7 @@ export function ReportsFilterPanel({
     label: bt("detail.taskTypeUnset"),
     checked: filters.noTaskType,
     onToggle: () => toggleFlag("noTaskType"),
+    count: cnt("taskType", "no-task-type"),
     start: <HelpOutlineIcon sx={{ fontSize: 16, flexShrink: 0, color: "text.disabled" }} />,
   });
 
@@ -314,6 +401,7 @@ export function ReportsFilterPanel({
     label: category.name,
     checked: filters.categoryIds.includes(category.id),
     onToggle: () => toggleIn("categoryIds", category.id),
+    count: cnt("category", category.id),
     start: <CategoryIcon sx={{ fontSize: 16, flexShrink: 0, color: "secondary.main" }} />,
   }));
   // NULL bucket, same deal as the app section (the company view never shows
@@ -323,6 +411,7 @@ export function ReportsFilterPanel({
     label: t("filters.noCategory"),
     checked: filters.noCategory,
     onToggle: () => toggleFlag("noCategory"),
+    count: cnt("category", "no-category"),
     start: <CategoryIcon sx={{ fontSize: 16, flexShrink: 0, color: "secondary.main", opacity: 0.55 }} />,
   });
 
@@ -331,6 +420,7 @@ export function ReportsFilterPanel({
     label: person.name,
     checked: filters.assigneeIds.includes(person.id),
     onToggle: () => toggleIn("assigneeIds", person.id),
+    count: cnt("assignee", person.id),
     start: <PersonIcon sx={{ fontSize: 16, flexShrink: 0, color: "primary.main" }} />,
   }));
 
@@ -339,6 +429,7 @@ export function ReportsFilterPanel({
     label: person.name,
     checked: filters.reporterIds.includes(person.id),
     onToggle: () => toggleIn("reporterIds", person.id),
+    count: cnt("reporter", person.id),
     start: <ChatBubbleOutlineIcon sx={{ fontSize: 16, flexShrink: 0, color: "success.main" }} />,
   }));
 
@@ -429,8 +520,8 @@ export function ReportsFilterPanel({
       anchorEl={anchorEl}
       onClose={onClose}
       sections={orderedSections}
-      onClearAll={() => onFiltersChange({ ...EMPTY_FILTERS })}
-      selectedCount={totalSelected}
+      onClearAll={clearAll}
+      onGroupOpen={handleGroupOpen}
     />
   );
 }

@@ -34,8 +34,10 @@ export type NotificationAction =
   | "rule_updated"
   | "rule_deleted"
   // a card sat past a board-policy rule's days — the 09:00 sweep rings this
-  // once per sitting (assignee + every admin)
+  // every day until the card reaches เสร็จสิ้น (assignee + every admin)
   | "stale"
+  // last 7 days of a contract with MA still unspent — every other day at 09:00
+  | "contract_ma_remaining"
   // app expiry — not an issue at all, so it points at the apps tab
   | "app_expiring" // ใกล้หมดอายุ (≤30 วัน)
   | "app_expired" // หมดอายุแล้ว
@@ -62,6 +64,7 @@ const FIXED_PRIORITY: Partial<Record<NotificationAction, NotificationPriority>> 
   ma_depleted: "high",
   app_expired: "high",
   app_expiring: "medium",
+  contract_ma_remaining: "medium",
   // เสียงของการแก้กฎทุกวัน — 483/921 แถวเป็น rule_updated, เตือนวันเดียวจบ
   rule_created: "low",
   rule_updated: "low",
@@ -682,8 +685,10 @@ export class NotificationsService {
    * The bell for a card that sat past an `issue.notify_stale` rule's day
    * count — to the assignee (the person who can clear it) and every active
    * admin, deduplicated. Called by the 09:00 sweep only, which stamps
-   * `stale_notified_at` right after, so a sitting rings exactly once.
-   * No actor: the system is the sender, so nobody is skipped.
+   * `stale_notified_at` right after; the sweep picks a card up again the next
+   * day, so one sitting rings daily until the card reaches เสร็จสิ้น or moves
+   * (which clears the stamp and restarts the count). No actor: the system is
+   * the sender, so nobody is skipped.
    */
   async notifyStaleCard(params: {
     issue: NotificationIssueTarget;
@@ -831,6 +836,51 @@ export class NotificationsService {
       }
     } catch (error) {
       this.logger.warn(`ma depletion notification failed: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * **"สัญญาใกล้หมดแต่ MA ยังเหลือ"** — audience เดียวกับเหตุการณ์สัญญาอื่น
+   * (ลูกค้าบริษัทคู่นั้น + แอดมิน) ผ่าน `contractRecipients` · เรียกจาก cron
+   * 09:00 เฉพาะ **7 วันสุดท้าย วันเว้นวัน** เพื่อเตือนก่อนที่สิทธิ์จะหมดไป
+   *
+   * แถวลูกค้าต่อ "ติดต่อ..." เพื่อต่ออายุ · **ไม่ส่งอีเมล** (แจ้งในกล่องเข้า
+   * พอ และยิงซ้ำทุกสองวัน — เมลจะรบกวน) · best-effort เหมือน `notify()`
+   */
+  async notifyContractMaRemaining(params: {
+    companyId: number;
+    appId: number;
+    appName: string;
+    companyName: string;
+    daysLeft: number;
+    remainingHours: number;
+  }): Promise<void> {
+    try {
+      const { companyId, appId, appName, companyName, daysLeft, remainingHours } = params;
+      const recipients = await this.contractRecipients(companyId);
+      if (recipients.length === 0) return;
+      const contact = this.contactHint(
+        recipients.filter((r) => r.kind === "admin").map((r) => r.user),
+        "ต่ออายุสัญญา",
+      );
+      const title = [appName, companyName].filter(Boolean).join(" ");
+      const remain = Math.round(remainingHours * 10) / 10;
+      const context = `เหลือ ${daysLeft} วัน · MA คงเหลือ ${remain} ชม.`;
+
+      for (const { user, kind } of recipients) {
+        const link = await this.contractLink(user, kind, appId, companyId);
+        await this.notify({
+          userId: user.id,
+          action: "contract_ma_remaining",
+          title,
+          context: this.withContact(context, kind, contact.inApp).slice(0, 100),
+          link,
+          appId,
+          companyId,
+        });
+      }
+    } catch (error) {
+      this.logger.warn(`contract MA reminder failed: ${(error as Error).message}`);
     }
   }
 

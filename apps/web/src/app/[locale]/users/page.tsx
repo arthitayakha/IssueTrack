@@ -327,6 +327,8 @@ export default function UsersPage() {
   });
   /** anchor ของ popover ตัวกรอง (`components/filter-panel.tsx` — แชร์กับบอร์ด/รายงาน/systems) */
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
+  /** count ต่อหัวข้อจาก server (โหลดตอนเปิดหัวข้อ) */
+  const [userCounts, setUserCounts] = useState<Record<string, Record<string, number>>>({});
   const [usersError, setUsersError] = useState(false);
   const [rolesError, setRolesError] = useState(false);
   const [positionsError, setPositionsError] = useState(false);
@@ -424,10 +426,32 @@ export default function UsersPage() {
     setPages((prev) => (prev[key] > totalPages ? { ...prev, [key]: totalPages } : prev));
   }
 
-  /**
-   * เปลี่ยนฟิวเตอร์ = กลับไปหน้า 1 แล้วให้ effect ดึงใหม่ (server-side filter) —
-   * tick/untick 1 ตัวเลือกใน popover ตัวกรอง
-   */
+  /** Query เดียวสำหรับ count ต่อหัวข้อและยอด preview ของ draft ทั้งสองทาง */
+  async function fetchUserCounts(filters: typeof userFilters) {
+    const qs = new URLSearchParams({ page: "1", limit: "1", withCounts: "1" });
+    if (filters.companyIds.length) qs.set("companyIds", filters.companyIds.join(","));
+    if (filters.roleIds.length) qs.set("roleIds", filters.roleIds.join(","));
+    if (filters.positionIds.length) qs.set("positionIds", filters.positionIds.join(","));
+    const res = await apiFetch<
+      PaginatedResponse<User> & { counts?: Record<string, Record<string, number>> }
+    >(`/users?${qs.toString()}`, {}, token);
+    return { total: res.total, counts: res.counts ?? {} };
+  }
+
+  /** โหลด count ของหัวข้อที่เปิด — ใช้ตัวกรองที่ apply แล้ว */
+  function handleUserGroupOpen(key: string) {
+    const field = ({ company: "companyIds", role: "roleIds", position: "positionIds" } as const)[
+      key as "company" | "role" | "position"
+    ];
+    if (!field) return;
+    // Exclude the group's own selection — counts answer "how many users would
+    // this option add under the OTHER applied filters".
+    void fetchUserCounts({ ...userFilters, [field]: [] })
+      .then((res) => setUserCounts((prev) => ({ ...prev, [key]: res.counts[field] ?? {} })))
+      .catch(() => setUserCounts((prev) => ({ ...prev, [key]: {} })));
+  }
+
+  /** กด tick = กรองทันที (server-side) แล้วกลับไปหน้า 1 */
   function toggleUserFilter(key: keyof typeof userFilters, id: number) {
     setUserFilters((prev) => {
       const next = { ...prev };
@@ -438,10 +462,10 @@ export default function UsersPage() {
     setPages((prev) => ({ ...prev, users: 1 }));
   }
 
-  /** ปุ่ม "ล้างทั้งหมด" ใน popover ตัวกรอง */
   function clearUserFilters() {
     setUserFilters({ companyIds: [], roleIds: [], positionIds: [] });
     setPages((prev) => ({ ...prev, users: 1 }));
+    setUserCounts({});
   }
 
   // ชุด dropdown — ดึงครั้งเดียวตอนแท็บแรกที่ต้องใช้เปิด (เช็ค `=== null` ก่อน
@@ -957,6 +981,7 @@ export default function UsersPage() {
         label: company.name,
         checked: userFilters.companyIds.includes(company.id),
         onToggle: () => toggleUserFilter("companyIds", company.id),
+        count: userCounts.company?.[String(company.id)],
       })),
       initialOpen: userFilters.companyIds.length > 0 || !hasFilter,
     },
@@ -970,6 +995,7 @@ export default function UsersPage() {
         label: roleLabel(role.name),
         checked: userFilters.roleIds.includes(role.id),
         onToggle: () => toggleUserFilter("roleIds", role.id),
+        count: userCounts.role?.[String(role.id)],
       })),
       initialOpen: userFilters.roleIds.length > 0,
     },
@@ -983,6 +1009,7 @@ export default function UsersPage() {
         label: position.name,
         checked: userFilters.positionIds.includes(position.id),
         onToggle: () => toggleUserFilter("positionIds", position.id),
+        count: userCounts.position?.[String(position.id)],
       })),
       initialOpen: userFilters.positionIds.length > 0,
     },
@@ -1060,6 +1087,7 @@ export default function UsersPage() {
               onClose={() => setFilterAnchor(null)}
               sections={filterSections}
               onClearAll={clearUserFilters}
+              onGroupOpen={handleUserGroupOpen}
             />
 
             {!loaded.users ? (

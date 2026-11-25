@@ -104,12 +104,14 @@ const db = connectDb();
   }
   const makeIssueAt = (title, statusId) => makeIssue(title, statusId);
 
-  // ── R1: comment.created → set priority ────────────────────────────
+  // ── R1: issue.created → set priority ──────────────────────────────
+  // (the old comment.created / attachment.created triggers were retired —
+  //  these actions are now exercised from a live event)
   await makeRule({
-    name: "E2E R1: comment -> priority",
-    triggerKey: "comment.created",
-    templateKey: "comment_any",
-    category: "content",
+    name: "E2E R1: created -> priority",
+    triggerKey: "issue.created",
+    templateKey: "created_any",
+    category: "card_change",
     actionKey: "issue.set_priority",
     actionConfig: { priority: String(p1.id) },
     conditions: [],
@@ -117,9 +119,8 @@ const db = connectDb();
     stopOnError: false,
   });
   const r1issue = await makeIssue("E2E R1 card");
-  await call(`/issues/${r1issue.id}/comments`, { method: "POST", body: { content: "ping" } });
   const r1check = await db.query("SELECT priority_id FROM issues WHERE id = $1", [r1issue.id]);
-  check("R1 comment.created -> set_priority",
+  check("R1 issue.created -> set_priority",
     String(r1check.rows[0].priority_id) === String(p1.id),
     `priority=${r1check.rows[0].priority_id} expected=${p1.id}`);
 
@@ -202,12 +203,12 @@ const db = connectDb();
   const r5check = await db.query("SELECT is_locked FROM issues WHERE id = $1", [r5issue.id]);
   check("R5 issue.created -> lock", r5check.rows[0].is_locked === true, `locked=${r5check.rows[0].is_locked}`);
 
-  // ── R6: attachment.created → set category ─────────────────────────
+  // ── R6: issue.created → set category (attachment upload still checked) ──
   await makeRule({
-    name: "E2E R6: attachment -> category",
-    triggerKey: "attachment.created",
-    templateKey: "attachment_any",
-    category: "content",
+    name: "E2E R6: created -> category",
+    triggerKey: "issue.created",
+    templateKey: "created_any",
+    category: "card_change",
     actionKey: "issue.set_category",
     actionConfig: { category: String(c1.id) },
     conditions: [],
@@ -220,7 +221,7 @@ const db = connectDb();
   form.append("file", new Blob(["%PDF-1.4 e2e"], { type: "application/pdf" }), "e2e.pdf");
   const upload = await call(`/issues/${r6issue.id}/attachments`, { method: "POST", formData: form });
   const r6check = await db.query("SELECT category_id FROM issues WHERE id = $1", [r6issue.id]);
-  check("R6 attachment.created -> set_category",
+  check("R6 issue.created -> set_category (upload still works)",
     upload.status < 300 && String(r6check.rows[0].category_id) === String(c1.id),
     `upload=${upload.status} category=${r6check.rows[0].category_id} expected=${c1.id}`);
 

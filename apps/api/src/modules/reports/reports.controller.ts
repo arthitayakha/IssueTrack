@@ -70,6 +70,19 @@ export class ReportsController {
     return this.reports.summary(groupBy, parseFilters(query), user);
   }
 
+  /**
+   * Counts per filter option under the CURRENTLY applied filters — the shared
+   * popover shows these beside each checkbox and uses `total` for its preview.
+   */
+  @Get("filter-counts")
+  @Permissions("report.view")
+  filterCounts(
+    @Query() query: Record<string, string | undefined>,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.reports.filterCounts(parseFilters(query), user);
+  }
+
   /** Distinct assignees / reporters for the filter panel's people lists. */
   @Get("people")
   @Permissions("report.view")

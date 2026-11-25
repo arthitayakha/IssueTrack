@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -33,6 +34,83 @@ function parseIdList(value?: string): number[] {
     .filter((n) => Number.isInteger(n) && n > 0);
 }
 
+function parseStringList(value?: string): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Every query param the board's paged list and its grouped counts share. */
+interface IssueListQuery {
+  page?: string;
+  limit?: string;
+  statuses?: string;
+  notDone?: string;
+  search?: string;
+  mine?: string;
+  priorityIds?: string;
+  categoryIds?: string;
+  appIds?: string;
+  noCategory?: string;
+  noPriority?: string;
+  noApp?: string;
+  noStatus?: string;
+  customCategories?: string;
+  companyIds?: string;
+  assigneeIds?: string;
+  reporterIds?: string;
+  taskTypes?: string;
+  noTaskType?: string;
+  createdFrom?: string;
+  createdTo?: string;
+  completedFrom?: string;
+  completedTo?: string;
+  sortBy?: string;
+  sortOrder?: string;
+  withTimeline?: string;
+  hideStaleDone?: string;
+  groupBy?: string;
+}
+
+const flag = (value?: string) => value === "1" || value === "true";
+
+/** ONE parser for both endpoints — a filter can never differ between them. */
+function parseIssueListQuery(query: IssueListQuery) {
+  return {
+    statuses: parseIdList(query.statuses),
+    search: query.search,
+    filters: {
+      priorityIds: parseIdList(query.priorityIds),
+      categoryIds: parseIdList(query.categoryIds),
+      appIds: parseIdList(query.appIds),
+      // "no app"/"no category" is an OR-part of the same dimension, so it
+      // rides along with the id list instead of replacing it (see IssuesService)
+      noCategory: flag(query.noCategory),
+      noPriority: flag(query.noPriority),
+      noApp: flag(query.noApp),
+      noStatus: flag(query.noStatus),
+      customCategories: parseStringList(query.customCategories),
+      companyIds: parseIdList(query.companyIds),
+      assigneeIds: parseIdList(query.assigneeIds),
+      reporterIds: parseIdList(query.reporterIds),
+      // ประเภทงาน — whitelist กลาง + bucket NULL (ดู common/task-types.ts)
+      taskTypes: parseTaskTypes(query.taskTypes),
+      noTaskType: parseNoTaskType(query.noTaskType),
+      notDone: flag(query.notDone),
+      createdFrom: query.createdFrom,
+      createdTo: query.createdTo,
+      completedFrom: query.completedFrom,
+      completedTo: query.completedTo,
+      sortBy: query.sortBy,
+      sortOrder: query.sortOrder,
+      // only the board/folder fetches set it — the table never does, so the
+      // hide policy can never leak into the list that must show everything
+      hideStaleDone: flag(query.hideStaleDone),
+    },
+  };
+}
+
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class IssuesController {
@@ -47,80 +125,41 @@ export class IssuesController {
 
   @Get("issues")
   @Permissions("issue.own.view")
-  findAll(
-    @Query()
-    query: {
-      page?: string;
-      limit?: string;
-      statuses?: string;
-      /**
-       * Dashboard trend's pending bar — cards currently NOT in the done column
-       * (`status_id <> 4 OR status_id IS NULL`), combined with `createdFrom/To`.
-       * No flag = no clause, so every existing caller is unchanged.
-       */
-      notDone?: string;
-      search?: string;
-      mine?: string;
-      priorityIds?: string;
-      categoryIds?: string;
-      appIds?: string;
-      /** "ไม่มีหมวดหมู่" — the dashboard's NULL slice lands here (`?noCategory=1`). */
-      noCategory?: string;
-      /** "ไม่ระบุความสำคัญ" — the priority bar's NULL slice (`?noPriority=1`). */
-      noPriority?: string;
-      /** "ไม่มีแอป" — same deal, for cards with no app at all. */
-      noApp?: string;
-      companyIds?: string;
-      assigneeIds?: string;
-      reporterIds?: string;
-      /**
-       * ประเภทงาน (`bug,ma,requirement`) — whitelist ใน `common/task-types.ts`,
-       * ชุดเดียวกับ `GET /reports/summary` ให้ทุกมุมมองของหน้ารายงานนับงาน
-       * ชุดเดียวกัน
-       */
-      taskTypes?: string;
-      /** "ไม่ระบุประเภทงาน" (`task_type IS NULL`) — OR-part ของ dimension เดียวกัน. */
-      noTaskType?: string;
-      createdFrom?: string;
-      createdTo?: string;
-      /** Completed bar's window — cards moved into เสร็จสิ้น in this range. */
-      completedFrom?: string;
-      completedTo?: string;
-      sortBy?: string;
-      sortOrder?: string;
-      withTimeline?: string;
-      hideStaleDone?: string;
-    },
-    @CurrentUser() user: AuthUser,
-  ) {
-    const statuses = parseIdList(query.statuses);
-    return this.issues.findAll(normalizePagination(query), statuses, user, query.search, {
-      priorityIds: parseIdList(query.priorityIds),
-      categoryIds: parseIdList(query.categoryIds),
-      appIds: parseIdList(query.appIds),
-      // "no app"/"no category" is an OR-part of the same dimension, so it rides
-      // along with the id list instead of replacing it (see IssuesService)
-      noCategory: query.noCategory === "1" || query.noCategory === "true",
-      noPriority: query.noPriority === "1" || query.noPriority === "true",
-      noApp: query.noApp === "1" || query.noApp === "true",
-      companyIds: parseIdList(query.companyIds),
-      assigneeIds: parseIdList(query.assigneeIds),
-      reporterIds: parseIdList(query.reporterIds),
-      // ประเภทงาน — whitelist กลาง + bucket NULL (ดู common/task-types.ts)
-      taskTypes: parseTaskTypes(query.taskTypes),
-      noTaskType: parseNoTaskType(query.noTaskType),
-      notDone: query.notDone === "1" || query.notDone === "true",
-      createdFrom: query.createdFrom,
-      createdTo: query.createdTo,
-      completedFrom: query.completedFrom,
-      completedTo: query.completedTo,
-      sortBy: query.sortBy,
-      sortOrder: query.sortOrder,
-      // only the board's per-column fetch sets it — the table never does, so
-      // the hide policy can never leak into the list that must show everything
-      hideStaleDone: query.hideStaleDone === "1" || query.hideStaleDone === "true",
-    },
-    query.withTimeline === "1" || query.withTimeline === "true");
+  findAll(@Query() query: IssueListQuery, @CurrentUser() user: AuthUser) {
+    const { statuses, search, filters } = parseIssueListQuery(query);
+    return this.issues.findAll(
+      normalizePagination(query),
+      statuses,
+      user,
+      search,
+      filters,
+      flag(query.withTimeline),
+    );
+  }
+
+  /**
+   * One request for the folder view's tiles. Registered before `issues/:id`
+   * so "counts" is never eaten by `ParseIntPipe` as an issue id.
+   */
+  @Get("issues/counts")
+  @Permissions("issue.own.view")
+  groupCounts(@Query() query: IssueListQuery, @CurrentUser() user: AuthUser) {
+    const groupBy = query.groupBy;
+    if (
+      groupBy !== "app" &&
+      groupBy !== "category" &&
+      groupBy !== "priority" &&
+      groupBy !== "status" &&
+      groupBy !== "assignee" &&
+      groupBy !== "reporter" &&
+      groupBy !== "company"
+    ) {
+      throw new BadRequestException(
+        "groupBy must be app | category | priority | status | assignee | reporter | company",
+      );
+    }
+    const { statuses, search, filters } = parseIssueListQuery(query);
+    return this.issues.groupCounts(groupBy, statuses, user, search, filters);
   }
 
   @Get("issues/trash")

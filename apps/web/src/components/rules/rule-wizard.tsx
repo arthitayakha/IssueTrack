@@ -139,10 +139,17 @@ export default function RuleWizard({ initialRule, onClose, onSaved }: RuleWizard
     const nextTemplate = tplKey ?? getTriggerByKey(key)?.templates[0]?.key ?? null;
     // re-picking the row that is already active (e.g. a dropdown click) must keep values
     if (key === triggerKey && nextTemplate === templateKey) return;
+    // Leaving a row resets ITS slots: only the active template's values are ever
+    // saved (buildConditions), so showing a stale pick in the row we just left
+    // is misleading. The early return above keeps a dropdown pick in this row.
+    if (triggerKey || templateKey) {
+      const prefix = slotKey(triggerKey, templateKey, "");
+      setSlotValues((prev) =>
+        Object.fromEntries(Object.entries(prev).filter(([slot]) => !slot.startsWith(prefix))),
+      );
+    }
     setTriggerKey(key);
     setTemplateKey(nextTemplate);
-    // slot values are keyed per trigger+template (slotKey) — no wipe here, otherwise
-    // a reset landing in the same batch as a dropdown pick erases the picked value
     // drop an action that no longer makes sense for the new trigger
     if (actionKey && !isActionCompatible(key, actionKey)) {
       setActionKey(null);

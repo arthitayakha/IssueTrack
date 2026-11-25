@@ -6,8 +6,6 @@ import { createReadStream, existsSync, unlinkSync } from "fs";
 import { basename, join } from "path";
 import { Attachment } from "./entities/attachment.entity";
 import { Issue } from "../issues/entities/issue.entity";
-import { User } from "../auth/entities/user.entity";
-import { RulesEngineService } from "../rules/rules-engine.service";
 import { PermissionsService } from "../permissions/permissions.service";
 import type { AuthUser } from "../auth/auth-user";
 import { loadVisibleIssue } from "../issues/issue-access";
@@ -32,9 +30,6 @@ export class AttachmentsService {
     private readonly attachments: Repository<Attachment>,
     @InjectRepository(Issue)
     private readonly issues: Repository<Issue>,
-    @InjectRepository(User)
-    private readonly users: Repository<User>,
-    private readonly rulesEngine: RulesEngineService,
     private readonly permissions: PermissionsService,
   ) {}
 
@@ -49,7 +44,8 @@ export class AttachmentsService {
     uploadedBy: number,
     user: AuthUser,
   ) {
-    const issue = await loadVisibleIssue(this.issues, this.permissions, issueId, user);
+    // still load + scope-check the card before writing (IDOR guard)
+    await loadVisibleIssue(this.issues, this.permissions, issueId, user);
     const attachment = await this.attachments.save(
       this.attachments.create({
         issueId,
@@ -60,15 +56,6 @@ export class AttachmentsService {
         fileSize: file.size,
       }),
     );
-    // automation rules — file name + card status context
-    const uploader = await this.users.findOne({ where: { id: uploadedBy }, relations: ["role"] });
-    await this.rulesEngine.evaluate("attachment.created", {
-      issueId,
-      toStatusId: issue.statusId ?? null,
-      filename: file.originalname,
-      actorId: uploadedBy,
-      actorRole: uploader?.role?.name ?? null,
-    });
     return {
       id: attachment.id,
       fileName: attachment.fileName,
