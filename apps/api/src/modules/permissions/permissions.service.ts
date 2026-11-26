@@ -102,20 +102,24 @@ export class PermissionsService implements OnModuleInit {
    * A position is the single source of truth for its members. When the user
    * has one, only `position_permissions` decides — the role is NOT unioned in,
    * so unticking a box in the position matrix really does revoke it. The role
-   * is consulted only for users without a position (and admin keeps its
-   * always-allow short-circuit).
+   * is consulted only for users without a position — including admins: an
+   * admin WITH a position is bound by that position's rows (no role union),
+   * so unticking a box really revokes their access. The always-allow
+   * short-circuit applies only to an admin who has no position at all.
    */
   async hasPermission(roleId: number | null, permission: string, positionId?: number | null): Promise<boolean> {
     if (roleId === null || roleId === undefined) return false;
-    const adminRole = await this.rolesRepo.findOne({ where: { name: "admin" } });
-    if (adminRole && roleId === adminRole.id) return true;
     const role = await this.rolesRepo.findOne({ where: { id: roleId } });
     if (!role || !role.isActive) return false;
 
+    // Position wins for everyone, admin included — check it before the
+    // admin short-circuit so a position can never be bypassed.
     if (positionId) {
       const posPerm = await this.positionPermissions.findOne({ where: { positionId, permission } });
       return !!posPerm && !posPerm.denied;
     }
+
+    if (role.name === "admin") return true;
 
     const rolePerm = await this.repo.findOne({ where: { roleId, permission } });
     return !!rolePerm;
@@ -124,13 +128,14 @@ export class PermissionsService implements OnModuleInit {
   /** Mirror of {@link hasPermission} for the whole set the frontend uses. */
   async getUserPermissions(roleId: number | null, positionId: number | null): Promise<string[]> {
     if (!roleId) return [];
-    const adminRole = await this.rolesRepo.findOne({ where: { name: "admin" } });
-    if (adminRole && roleId === adminRole.id) return [...ALL_PERMISSIONS];
 
     if (positionId) {
       const posPerms = await this.positionPermissions.find({ where: { positionId } });
       return [...new Set(posPerms.filter((p) => !p.denied).map((p) => p.permission))];
     }
+
+    const adminRole = await this.rolesRepo.findOne({ where: { name: "admin" } });
+    if (adminRole && roleId === adminRole.id) return [...ALL_PERMISSIONS];
 
     const rolePerms = await this.repo.find({ where: { roleId } });
     return [...new Set(rolePerms.map((p) => p.permission))];

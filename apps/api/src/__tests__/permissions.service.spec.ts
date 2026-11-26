@@ -6,7 +6,9 @@ import { ALL_PERMISSIONS } from "@kanban/shared";
  * from `position_permissions` alone and the role is no longer unioned in —
  * that union was exactly why an unticked "แจ้งปัญหา" box did nothing (the
  * role kept granting `issue.create`). Role defaults only survive for people
- * who have no position, and admin keeps its always-allow short-circuit.
+ * who have no position — including admins: an admin with a position is bound
+ * by that position's rows; the always-allow short-circuit is for admins with
+ * no position at all.
  *
  * Stubbed repositories only — safe to run while `npm run dev` is up.
  */
@@ -130,14 +132,38 @@ describe("PermissionsService — position is authoritative", () => {
       expect(perms).toEqual(["issue.create", "board.view"]);
     });
 
-    it("gives admin every permission regardless of position", async () => {
+    it("gives an admin with a position only that position's rows", async () => {
       const { service } = makeService({
+        rolePerms: roleRows(["issue.create"], 1),
         positionPerms: [{ positionId: FRONTEND, permission: "board.view" }],
       });
 
       const perms = await service.getUserPermissions(1, FRONTEND);
 
+      // the admin role is NOT unioned in — issue.create is revoked here
+      expect(perms).toEqual(["board.view"]);
+    });
+
+    it("still gives admin every permission when they have no position", async () => {
+      const { service } = makeService({
+        positionPerms: [{ positionId: FRONTEND, permission: "board.view" }],
+      });
+
+      const perms = await service.getUserPermissions(1, null);
+
       expect(perms).toEqual([...ALL_PERMISSIONS]);
+    });
+
+    it("gives a customer with a position only that position's rows", async () => {
+      const { service } = makeService({
+        rolePerms: roleRows(["issue.create", "system.view"], 3),
+        positionPerms: [{ positionId: FRONTEND, permission: "board.view" }],
+      });
+
+      const perms = await service.getUserPermissions(3, FRONTEND);
+
+      // role defaults (including system.view) are NOT unioned in
+      expect(perms).toEqual(["board.view"]);
     });
 
     it("returns nothing when there is no role at all", async () => {
@@ -191,10 +217,19 @@ describe("PermissionsService — position is authoritative", () => {
       );
     });
 
-    it("always allows admin", async () => {
+    it("always allows admin without a position", async () => {
       const { service } = makeService({});
 
       await expect(service.hasPermission(1, "anything.at.all", null)).resolves.toBe(true);
+    });
+
+    it("binds an admin with a position to that position's rows", async () => {
+      const { service } = makeService({
+        positionPerms: [{ positionId: FRONTEND, permission: "board.view" }],
+      });
+
+      await expect(service.hasPermission(1, "board.view", FRONTEND)).resolves.toBe(true);
+      await expect(service.hasPermission(1, "anything.at.all", FRONTEND)).resolves.toBe(false);
     });
 
     it("denies a deactivated role even when its position grants it", async () => {

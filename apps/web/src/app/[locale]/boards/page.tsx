@@ -590,12 +590,12 @@ function statusChipSx(color: string) {
 function appChipSx(theme: Theme) {
   return {
     flexShrink: 0,
-    px: 1.25,
-    py: 0.35,
+    px: 0.9,
+    py: 0.2,
     borderRadius: 1,
     bgcolor: theme.palette.info.main,
     color: theme.palette.info.contrastText,
-    fontSize: "0.72rem",
+    fontSize: "0.65rem",
     fontWeight: 700,
     lineHeight: 1.4,
   };
@@ -967,13 +967,13 @@ const TrelloCardContent = memo(function TrelloCardContent({
           {avatarChar ? (
             <Avatar
               sx={{
-                width: 24,
-                height: 24,
-                fontSize: "0.7rem",
+                width: 20,
+                height: 20,
+                fontSize: "0.62rem",
                 fontWeight: 700,
                 bgcolor: "primary.main",
                 color: "primary.contrastText",
-                boxShadow: `0 0 0 2px ${theme.palette.background.paper}, 0 0 0 3px ${alpha(theme.palette.sky.main, 0.9)}`,
+                boxShadow: `0 0 0 1px ${theme.palette.background.paper}, 0 0 0 2px ${alpha(theme.palette.sky.main, 0.9)}`,
               }}
             >
               {avatarChar}
@@ -981,14 +981,14 @@ const TrelloCardContent = memo(function TrelloCardContent({
           ) : (
             <Avatar
               sx={{
-                width: 24,
-                height: 24,
-                fontSize: "0.7rem",
+                width: 20,
+                height: 20,
+                fontSize: "0.62rem",
                 bgcolor: theme.palette.grey[300],
                 color: theme.palette.grey[600],
               }}
             >
-              <PersonIcon sx={{ fontSize: 14 }} />
+              <PersonIcon sx={{ fontSize: 12 }} />
             </Avatar>
           )}
         </Box>
@@ -999,18 +999,16 @@ const TrelloCardContent = memo(function TrelloCardContent({
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minHeight: 22 }}>
             {issue.isLocked &&
               (canUnlockIssue ? (
-                <Tooltip title={t("unlock")}>
-                  <IconButton
-                    size="small"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onUnlock?.(issue);
-                    }}
-                    sx={{ p: 0.15, cursor: "pointer" }}
-                  >
-                    <LockIcon sx={{ fontSize: 14, color: "warning.dark" }} />
-                  </IconButton>
-                </Tooltip>
+                <IconButton
+                  size="small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onUnlock?.(issue);
+                  }}
+                  sx={{ p: 0.15, cursor: "pointer" }}
+                >
+                  <LockIcon sx={{ fontSize: 14, color: "warning.dark" }} />
+                </IconButton>
               ) : (
                 <LockIcon sx={{ fontSize: 14, color: "text.disabled" }} />
               ))}
@@ -1563,53 +1561,63 @@ function RecycleBinDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle>{t("recycleBin")}</DialogTitle>
-      <DialogContent>
+      <DialogTitle sx={{ pb: 3 }}>{t("recycleBin")}</DialogTitle>
+      <DialogContent sx={{ display: "flex", flexDirection: "column" }}>
+        {/* ช่องค้นหาอยู่นอก conditional เสมอ — ทุกสถานะ (โหลด/ว่าง/มีผลลัพธ์)
+            มีพื้นที่รายการความสูงเท่ากัน → Dialog ไม่หด/ไม่เลื่อนตอนพิมพ์ค้นหา */}
+        <TextField
+          fullWidth
+          size="small"
+          autoComplete="off"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={t("searchPlaceholder")}
+          // MUI บังคับ `DialogContent { paddingTop: 0 }` เมื่ออยู่ต่อจาก
+          // DialogTitle (กฎ `.MuiDialogTitle-root + &`) — ใช้ margin ที่นี่
+          // แทน padding ของ content จะได้ระยะห่างจากเส้นแบ่งจริง
+          sx={{ mt: 2, mb: 2 }}
+          InputProps={{
+            startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
+          }}
+        />
         {loading ? (
-          <Box sx={{ display: "flex", justifyContent: "center", p: 3 }}>
+          <Box sx={{ height: "60vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <CircularProgress />
           </Box>
+        ) : items.length === 0 ? (
+          <Box
+            sx={{
+              height: "60vh",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
+            }}
+          >
+            <RestoreFromTrashIcon sx={{ fontSize: 48, color: "text.disabled", mb: 1 }} />
+            <Typography color="text.secondary">{t("noTrashItems")}</Typography>
+          </Box>
+        ) : filteredItems.length === 0 ? (
+          <Box sx={{ height: "60vh", display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+            <Typography color="text.secondary">{t("filter.noResults")}</Typography>
+          </Box>
         ) : (
-          <>
-            <TextField
-              fullWidth
-              size="small"
-              autoComplete="off"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t("searchPlaceholder")}
-              sx={{ mb: 1 }}
-              InputProps={{
-                startAdornment: <SearchIcon sx={{ fontSize: 18, color: "text.secondary", mr: 1 }} />,
-              }}
-            />
-            {items.length === 0 ? (
-              <Box sx={{ textAlign: "center", py: 4 }}>
-                <RestoreFromTrashIcon sx={{ fontSize: 48, color: "text.disabled", mb: 1 }} />
-                <Typography color="text.secondary">{t("noTrashItems")}</Typography>
-              </Box>
-            ) : filteredItems.length === 0 ? (
-              <Box sx={{ textAlign: "center", py: 4 }}>
-                <Typography color="text.secondary">{t("filter.noResults")}</Typography>
-              </Box>
-            ) : (
-              <List sx={{ maxHeight: "60vh", overflowY: "auto", pr: 1 }}>
-                {filteredItems.map((item, idx) => (
+          <List
+            sx={{
+              height: "60vh",
+              overflowY: "auto",
+              pr: 1,
+              pt: 1,
+              // เลื่อนได้แต่ไม่โชว์แถบสกอร์บาร์
+              scrollbarWidth: "none",
+              msOverflowStyle: "none",
+              "&::-webkit-scrollbar": { display: "none" },
+            }}
+          >
+            {filteredItems.map((item, idx) => (
               <Box key={item.id}>
-                <ListItem
-                  alignItems="flex-start"
-                  secondaryAction={
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<RestoreFromTrashIcon />}
-                      onClick={() => handleRestore(item.id)}
-                      disabled={restoringId === item.id}
-                    >
-                      {t("restore")}
-                    </Button>
-                  }
-                >
+                <ListItem alignItems="center" sx={{ pr: 1, gap: 1 }}>
                   <Box
                     onClick={() => onViewDetail(item)}
                     sx={{
@@ -1635,13 +1643,23 @@ function RecycleBinDialog({
                       }
                     />
                   </Box>
+                  {/* ปุ่มเป็น flex child ปกติ (ไม่ใช่ secondaryAction ที่ absolute)
+                      → พื้นที่ hover ของ Box ข้างๆ หยุดตรงปุ่ม ไม่ทับกัน */}
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<RestoreFromTrashIcon />}
+                    onClick={() => handleRestore(item.id)}
+                    disabled={restoringId === item.id}
+                    sx={{ flexShrink: 0 }}
+                  >
+                    {t("restore")}
+                  </Button>
                 </ListItem>
-                  {idx < filteredItems.length - 1 && <Divider />}
-                </Box>
-              ))}
-              </List>
-            )}
-          </>
+                {idx < filteredItems.length - 1 && <Divider />}
+              </Box>
+            ))}
+          </List>
         )}
       </DialogContent>
       <DialogActions>
@@ -7174,7 +7192,12 @@ function BoardsPageInner() {
           <IssueDetailDialog
             issue={trashDetailIssue}
             open={!!trashDetailIssue}
-            onClose={() => setTrashDetailIssue(null)}
+            onClose={() => {
+              setTrashDetailIssue(null);
+              // หน้ารายละเอียดของการ์ดในถังขยะเปิดมาจาก RecycleBinDialog —
+              // ปิดแล้วต้องย้อนกลับไปหน้า "ยกเลิก" เหมือนกด back ไม่ใช่ปิดจนกลับไปบอร์ด
+              setRecycleBinOpen(true);
+            }}
             statuses={statuses}
             labels={labels}
             setLabels={setLabels}

@@ -612,9 +612,10 @@ export default function UsersPage() {
     try {
       const payload = {
         ...form,
-        positionId: form.roleId === 2 ? form.positionId : null,
-        // บทบาทอื่นถูกล้างเป็น null ที่เซิร์ฟเวอร์อยู่แล้ว ส่งตรงไปเลยจะได้
-        // ฟอร์มกับ API ตรงกันตั้งแต่ฝั่งแรก
+        // ตำแหน่งใช้ได้กับทุกบทบาท — สิ่งที่กำหนดสิทธิ์คือ position_permissions
+        // ไม่ใช่ role; เฉพาะตอนยังไม่เลือกบทบาทเท่านั้นที่ล้างเป็น null
+        positionId: form.roleId === null ? null : form.positionId,
+        // บริษัทเป็นข้อมูลของลูกค้าเท่านั้น
         companyId: isCustomerRole ? form.companyId : null,
       };
       if (editingUser) {
@@ -1405,7 +1406,7 @@ export default function UsersPage() {
                   )}
                 </FormControl>
               )}
-              {form.roleId === 2 && (
+              {form.roleId !== null && (
                 <FormControl fullWidth>
                   <InputLabel>{t("columnPosition")}</InputLabel>
                   <Select
@@ -1440,7 +1441,14 @@ export default function UsersPage() {
 
         <Dialog open={positionDialogOpen} onClose={() => setPositionDialogOpen(false)} maxWidth="sm" fullWidth>
           <DialogTitle>{editingPosition ? t("editPosition") : t("addPosition")}</DialogTitle>
-          <DialogContent>
+          <DialogContent
+            sx={{
+              // เลื่อนได้เหมือนเดิม แต่ไม่โชว์แถบสกอร์บาร์ (สูตรเดียวกับถังขยะ)
+              scrollbarWidth: "none",
+              msOverflowStyle: "none",
+              "&::-webkit-scrollbar": { display: "none" },
+            }}
+          >
             <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 1 }}>
               <TextField
                 label={t("columnPosition")}
@@ -1479,14 +1487,10 @@ export default function UsersPage() {
                   ))}
                 </Select>
               </FormControl>
-              <Box sx={{ mt: 2 }}>
+              <Box>
                 <Typography variant="subtitle2" gutterBottom>
                   {t("positionPermissions")}
                 </Typography>
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                  {t("positionPermissionsHint")}
-                </Typography>
-
                 <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
                   <FormControlLabel
                     control={
@@ -1499,7 +1503,7 @@ export default function UsersPage() {
                             permissions: e.target.checked ? [...ALL_PERMISSIONS] : [],
                           });
                         }}
-                        disabled={positionForm.roleId === null || rolesAll?.find((r) => r.id === positionForm.roleId)?.name === "admin"}
+                        disabled={positionForm.roleId === null}
                         size="small"
                       />
                     }
@@ -1514,7 +1518,7 @@ export default function UsersPage() {
                     const Icon = group.icon;
                     const allChecked = groupPerms.every((p) => positionForm.permissions.includes(p));
                     const someChecked = groupPerms.some((p) => positionForm.permissions.includes(p));
-                    const isDisabled = positionForm.roleId === null || rolesAll?.find((r) => r.id === positionForm.roleId)?.name === "admin";
+                    const isDisabled = positionForm.roleId === null;
                     const hasMultipleChildren = group.children.length > 1;
                     return (
                       <Card key={group.key} variant="outlined" sx={{ overflow: "visible" }}>

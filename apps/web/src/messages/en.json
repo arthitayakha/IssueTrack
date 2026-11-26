@@ -578,7 +578,7 @@
     "permissionsSaved": "Permissions saved successfully",
     "permissionsReset": "Permissions reset to defaults successfully",
     "resetToDefaults": "Reset to Defaults",
-    "positionPermissions": "Permissions (default)",
+    "positionPermissions": "(default)",
     "positionPermissionsHint": "These are the full permissions for everyone in this position — an unticked box means no access (they are not inherited from the role), and ticking a sub-permission auto-ticks the ones it needs",
     "positionPermsLoadError": "Could not load this position's permissions — close and reopen the dialog",
     "selectAll": "Select All",
