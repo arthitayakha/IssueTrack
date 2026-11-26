@@ -32,6 +32,7 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import DnsIcon from "@mui/icons-material/Dns";
 import { Pagination } from "@/components/pagination";
+import ConfirmDialog from "@/components/confirm-dialog";
 import { FilterPanel, type FilterSectionData } from "@/components/filter-panel";
 import { PaginatedResponse } from "@kanban/shared";
 import EditIcon from "@mui/icons-material/Edit";
@@ -312,7 +313,6 @@ export default function UsersPage() {
   const [deleteTarget, setDeleteTarget] = useState<{ type: "role" | "position"; id: number; name: string } | null>(null);
   const [deleteCheck, setDeleteCheck] = useState<{ canDelete: boolean; userCount: number } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
-  const [errorAlert, setErrorAlert] = useState<string | null>(null);
   const [deleteUserTarget, setDeleteUserTarget] = useState<User | null>(null);
   const [deleteUserLoading, setDeleteUserLoading] = useState(false);
   /** หน้าที่เปิดอยู่ของแต่ละแท็บ — เปลี่ยนหน้า = ยิง API หน้านั้นใหม่ทีละหน้า */
@@ -1632,90 +1632,85 @@ export default function UsersPage() {
           </DialogActions>
         </Dialog>
 
-        <Dialog open={!!warningPosition} onClose={() => setWarningPosition(null)} maxWidth="xs">
-          <DialogTitle>{t("cannotDeactivateTitle")}</DialogTitle>
-          <DialogContent>
-            <Typography variant="body2" sx={{ mb: 2 }}>
-              {t("cannotDeactivateMessage", { position: warningPosition?.name ?? "", count: warningUsers.length })}
-            </Typography>
-            <Box component="ul" sx={{ pl: 2, m: 0 }}>
-              {warningUsers.map((u) => (
-                <li key={u.id}>
-                  <Typography variant="body2">
-                    {u.name} ({u.email})
-                  </Typography>
-                </li>
-              ))}
-            </Box>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setWarningPosition(null)}>{t("ok")}</Button>
-          </DialogActions>
-        </Dialog>
+        <ConfirmDialog
+          open={!!warningPosition}
+          title={t("cannotDeactivateTitle")}
+          message={
+            <>
+              {t("cannotDeactivateMessage", {
+                position: warningPosition?.name ?? "",
+                count: warningUsers.length,
+              })}
+              <Box component="ul" sx={{ pl: 2, m: 0, mt: 1 }}>
+                {warningUsers.map((u) => (
+                  <li key={u.id}>
+                    <Typography variant="body2">
+                      {u.name} ({u.email})
+                    </Typography>
+                  </li>
+                ))}
+              </Box>
+            </>
+          }
+          confirmLabel={t("ok")}
+          align="left"
+          onConfirm={() => setWarningPosition(null)}
+          onClose={() => setWarningPosition(null)}
+        />
 
-        <Dialog open={!!deleteTarget} onClose={() => { setDeleteTarget(null); setDeleteCheck(null); }} maxWidth="xs">
-          <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
-          <DialogContent>
-            {deleteLoading ? (
+        <ConfirmDialog
+          open={!!deleteTarget}
+          title={t("deleteConfirmTitle")}
+          message={
+            deleteLoading ? (
               <CircularProgress size={24} />
             ) : deleteCheck && !deleteCheck.canDelete && deleteTarget ? (
-              <Typography variant="body2">
-                {deleteTarget.type === "role"
-                  ? t("deleteRoleInUse", { name: deleteTarget.name, count: deleteCheck.userCount })
-                  : t("deletePositionInUse", { name: deleteTarget.name, count: deleteCheck.userCount })}
-              </Typography>
+              deleteTarget.type === "role"
+                ? t("deleteRoleInUse", { name: deleteTarget.name, count: deleteCheck.userCount })
+                : t("deletePositionInUse", { name: deleteTarget.name, count: deleteCheck.userCount })
             ) : deleteTarget ? (
-              <Typography variant="body2">
-                {t("deleteConfirmMessage", {
-                  type: deleteTarget.type === "role" ? t("role") : t("position"),
-                  name: deleteTarget.name,
-                })}
-              </Typography>
-            ) : null}
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => { setDeleteTarget(null); setDeleteCheck(null); }}>{t("cancel")}</Button>
-            {deleteCheck?.canDelete && (
-              <Button variant="contained" color="error" onClick={confirmDelete}>
-                {t("delete")}
-              </Button>
-            )}
-          </DialogActions>
-        </Dialog>
+              t("deleteConfirmMessage", {
+                type: deleteTarget.type === "role" ? t("role") : t("position"),
+                name: deleteTarget.name,
+              })
+            ) : null
+          }
+          confirmLabel={deleteCheck && !deleteCheck.canDelete ? t("ok") : t("delete")}
+          cancelLabel={deleteCheck && !deleteCheck.canDelete ? undefined : t("cancel")}
+          loading={deleteLoading}
+          onConfirm={
+            deleteCheck && !deleteCheck.canDelete
+              ? () => {
+                  setDeleteTarget(null);
+                  setDeleteCheck(null);
+                }
+              : confirmDelete
+          }
+          onClose={() => {
+            setDeleteTarget(null);
+            setDeleteCheck(null);
+          }}
+        />
 
-        <Dialog open={!!deleteUserTarget} onClose={() => !deleteUserLoading && setDeleteUserTarget(null)} maxWidth="xs">
-          <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
-          <DialogContent>
-            {deleteUserLoading ? (
+        <ConfirmDialog
+          open={!!deleteUserTarget}
+          title={t("deleteConfirmTitle")}
+          message={
+            deleteUserLoading ? (
               <CircularProgress size={24} />
             ) : (
-              <Typography variant="body2">
-                {t("deleteUserConfirmMessage", {
-                  name: deleteUserTarget?.name ?? "",
-                  email: deleteUserTarget?.email ?? "",
-                })}
-              </Typography>
-            )}
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setDeleteUserTarget(null)} disabled={deleteUserLoading}>
-              {t("cancel")}
-            </Button>
-            <Button variant="contained" color="error" onClick={confirmDeleteUser} disabled={deleteUserLoading}>
-              {t("delete")}
-            </Button>
-          </DialogActions>
-        </Dialog>
-
-        <Dialog open={!!errorAlert} onClose={() => setErrorAlert(null)} maxWidth="xs">
-          <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
-          <DialogContent>
-            <Typography variant="body2">{errorAlert}</Typography>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setErrorAlert(null)}>{t("cancel")}</Button>
-          </DialogActions>
-        </Dialog>
+              t("deleteUserConfirmMessage", {
+                name: deleteUserTarget?.name ?? "",
+                email: deleteUserTarget?.email ?? "",
+              })
+            )
+          }
+          confirmLabel={t("delete")}
+          cancelLabel={t("cancel")}
+          loading={deleteUserLoading}
+          onConfirm={confirmDeleteUser}
+          onClose={() => setDeleteUserTarget(null)}
+        />
         </Box>
       </DashboardLayout>
     </RequirePermission>

@@ -42,6 +42,8 @@ export interface BoardIssueQuery {
   search: string;
   priorityIds: number[];
   categoryIds: number[];
+  /** "อื่น ๆ" ticked → include every free-text category in the category slice. */
+  allCustomCategories: boolean;
   appIds: number[];
   companyIds: number[];
   assigneeIds: string[];
@@ -286,6 +288,8 @@ export interface IssueFetchFilters {
   noStatus?: boolean;
   /** Free-text categories with no category row — the folder's `x:<name>` bucket. */
   customCategories?: string[];
+  /** "อื่น ๆ" — union with categoryIds instead of a separate AND condition. */
+  allCustomCategories?: boolean;
   createdFrom?: string;
   createdTo?: string;
   completedFrom?: string;
@@ -336,6 +340,7 @@ export function buildIssueParams(
   if (filters?.customCategories && filters.customCategories.length > 0) {
     params.set("customCategories", filters.customCategories.join(","));
   }
+  if (filters?.allCustomCategories) params.set("allCustomCategories", "1");
   if (filters?.noApp) params.set("noApp", "1");
   if (filters?.noCategory) params.set("noCategory", "1");
   if (filters?.noPriority) params.set("noPriority", "1");
@@ -369,6 +374,34 @@ export async function fetchIssues(
   );
 }
 
+/**
+ * The folder drill path (app → category → priority) arrives in `options`.
+ * For dimensions the path actually names it must WIN over the toolbar query —
+ * otherwise drilling into POS still shows cards from every app (including the
+ * ones with no app). Dimensions the path does not name keep the user's filters.
+ * A `no*` bucket also clears the matching ids so the API's OR semantics cannot
+ * resurrect a toolbar selection.
+ */
+type DrillFilterOptions = {
+  appIds?: number[];
+  noApp?: boolean;
+  categoryIds?: number[];
+  noCategory?: boolean;
+  priorityIds?: number[];
+  noPriority?: boolean;
+};
+
+function effectiveDrillFilters(query: BoardIssueQuery, options: DrillFilterOptions) {
+  return {
+    appIds: options.noApp ? undefined : (options.appIds ?? query.appIds),
+    noApp: options.noApp ?? query.drill.noApp,
+    categoryIds: options.noCategory ? undefined : (options.categoryIds ?? query.categoryIds),
+    noCategory: options.noCategory ?? query.drill.noCategory,
+    priorityIds: options.noPriority ? undefined : (options.priorityIds ?? query.priorityIds),
+    noPriority: options.noPriority ?? query.drill.noPriority,
+  };
+}
+
 /** The board's paged reader: one query object, three views, no full-table load. */
 export async function fetchBoardIssues(
   query: BoardIssueQuery,
@@ -379,19 +412,15 @@ export async function fetchBoardIssues(
     hideStaleDone?: boolean;
     noStatus?: boolean;
     customCategories?: string[];
+    allCustomCategories?: boolean;
     sort?: { field: string; dir: "asc" | "desc" };
-  } = {},
+  } & DrillFilterOptions = {},
 ): Promise<PaginatedResponse<BoardIssue>> {
   return fetchIssues(page, limit, options.statuses, query.search, false, {
-    priorityIds: query.priorityIds,
-    categoryIds: query.categoryIds,
-    appIds: query.appIds,
+    ...effectiveDrillFilters(query, options),
     companyIds: query.companyIds,
     assigneeIds: query.assigneeIds,
     reporterIds: query.reporterIds,
-    noApp: query.drill.noApp,
-    noCategory: query.drill.noCategory,
-    noPriority: query.drill.noPriority,
     notDone: query.drill.notDone,
     createdFrom: query.dateRange.from || query.drill.createdFrom || undefined,
     createdTo: query.dateRange.to || query.drill.createdTo || undefined,
@@ -400,6 +429,7 @@ export async function fetchBoardIssues(
     hideStaleDone: options.hideStaleDone,
     noStatus: options.noStatus,
     customCategories: options.customCategories,
+    allCustomCategories: options.allCustomCategories ?? query.allCustomCategories,
     sort: options.sort ?? { field: "statusChangedAt", dir: query.cardOrder },
   });
 }
@@ -426,19 +456,15 @@ export async function fetchIssueGroupCounts(
     hideStaleDone?: boolean;
     noStatus?: boolean;
     customCategories?: string[];
+    allCustomCategories?: boolean;
     sort?: { field: string; dir: "asc" | "desc" };
-  } = {},
+  } & DrillFilterOptions = {},
 ): Promise<{ total: number; counts: Record<string, number> }> {
   const params = buildIssueParams(1, 1, options.statuses, query.search, false, {
-    priorityIds: query.priorityIds,
-    categoryIds: query.categoryIds,
-    appIds: query.appIds,
+    ...effectiveDrillFilters(query, options),
     companyIds: query.companyIds,
     assigneeIds: query.assigneeIds,
     reporterIds: query.reporterIds,
-    noApp: query.drill.noApp,
-    noCategory: query.drill.noCategory,
-    noPriority: query.drill.noPriority,
     notDone: query.drill.notDone,
     createdFrom: query.dateRange.from || query.drill.createdFrom || undefined,
     createdTo: query.dateRange.to || query.drill.createdTo || undefined,
@@ -447,6 +473,7 @@ export async function fetchIssueGroupCounts(
     hideStaleDone: options.hideStaleDone,
     noStatus: options.noStatus,
     customCategories: options.customCategories,
+    allCustomCategories: options.allCustomCategories ?? query.allCustomCategories,
     sort: options.sort ?? { field: "statusChangedAt", dir: query.cardOrder },
   });
   params.set("groupBy", groupBy);

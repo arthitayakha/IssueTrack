@@ -6,11 +6,6 @@ import {
   Box,
   Button,
   Chip,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
   IconButton,
   List,
   ListItem,
@@ -47,6 +42,7 @@ import {
 } from "@/lib/board-api";
 import { fetchLabels, type Label } from "@/lib/labels-api";
 import { Pagination } from "@/components/pagination";
+import ConfirmDialog from "@/components/confirm-dialog";
 import { getParamLabel } from "./param-labels";
 
 interface RuleListProps {
@@ -597,20 +593,15 @@ export default function RuleList({ rules, onToggle, onDelete, onEdit, canUpdate 
         />
       )}
 
-      <Dialog open={deleteTarget != null} onClose={() => setDeleteTarget(null)} maxWidth="xs" fullWidth>
-        <DialogTitle>{t("deleteTitle")}</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            {deleteTarget ? t("deleteMessage", { name: deleteTarget.name }) : ""}
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>{t("cancel")}</Button>
-          <Button onClick={handleDelete} color="error" variant="contained">
-            {t("deleteConfirm")}
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ConfirmDialog
+        open={deleteTarget != null}
+        title={t("deleteTitle")}
+        message={deleteTarget ? t("deleteMessage", { name: deleteTarget.name }) : ""}
+        confirmLabel={t("deleteConfirm")}
+        cancelLabel={t("cancel")}
+        onConfirm={handleDelete}
+        onClose={() => setDeleteTarget(null)}
+      />
     </Box>
   );
 }

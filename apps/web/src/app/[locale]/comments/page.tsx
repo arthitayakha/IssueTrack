@@ -18,6 +18,7 @@ import { Add as AddIcon, Edit as EditIcon, Delete as DeleteIcon } from "@mui/ico
 import { useTranslations } from "next-intl";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
+import ConfirmDialog from "@/components/confirm-dialog";
 import RequirePermission from "@/components/require-permission";
 import { usePermissions } from "@/lib/permissions";
 import { useNotification } from "@/components/notification";
@@ -275,30 +276,22 @@ export default function CommentsPage() {
             </DialogActions>
           </Dialog>
 
-          <Dialog
+          <ConfirmDialog
             open={!!deleteTarget}
-            onClose={() => !deleteLoading && setDeleteTarget(null)}
-            maxWidth="xs"
-          >
-            <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
-            <DialogContent>
-              {deleteLoading ? (
+            title={t("deleteConfirmTitle")}
+            message={
+              deleteLoading ? (
                 <CircularProgress size={24} />
               ) : (
-                <Typography variant="body2">
-                  {t("deleteCommentConfirmMessage")}
-                </Typography>
-              )}
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setDeleteTarget(null)} disabled={deleteLoading}>
-                {t("cancel")}
-              </Button>
-              <Button variant="contained" color="error" onClick={confirmDelete} disabled={deleteLoading}>
-                {t("delete")}
-              </Button>
-            </DialogActions>
-          </Dialog>
+                t("deleteCommentConfirmMessage")
+              )
+            }
+            confirmLabel={t("delete")}
+            cancelLabel={t("cancel")}
+            loading={deleteLoading}
+            onConfirm={confirmDelete}
+            onClose={() => setDeleteTarget(null)}
+          />
         </Box>
       </DashboardLayout>
     </RequirePermission>

@@ -26,6 +26,7 @@ import { Pagination } from "@/components/pagination";
 import { PaginatedResponse } from "@kanban/shared";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
+import ConfirmDialog from "@/components/confirm-dialog";
 import RequirePermission from "@/components/require-permission";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermissions } from "@/lib/permissions";
@@ -253,36 +254,37 @@ export default function RolesPage() {
             </DialogActions>
           </Dialog>
 
-          <Dialog open={!!warningRole} onClose={() => setWarningRole(null)} maxWidth="xs">
-            <DialogTitle>{t("cannotDeactivateTitle")}</DialogTitle>
-            <DialogContent>
-              <Typography variant="body2" sx={{ mb: 2 }}>
+          <ConfirmDialog
+            open={!!warningRole}
+            title={t("cannotDeactivateTitle")}
+            message={
+              <>
                 {t("cannotDeactivateMessage", { role: warningRole?.name ?? "", count: warningUsers.length })}
-              </Typography>
-              <Box component="ul" sx={{ pl: 2, m: 0 }}>
-                {warningUsers.map((u) => (
-                  <li key={u.id}>
-                    <Typography variant="body2">
-                      {u.name} ({u.email})
-                    </Typography>
-                  </li>
-                ))}
-              </Box>
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setWarningRole(null)}>{t("ok")}</Button>
-            </DialogActions>
-          </Dialog>
+                <Box component="ul" sx={{ pl: 2, m: 0, mt: 1 }}>
+                  {warningUsers.map((u) => (
+                    <li key={u.id}>
+                      <Typography variant="body2">
+                        {u.name} ({u.email})
+                      </Typography>
+                    </li>
+                  ))}
+                </Box>
+              </>
+            }
+            confirmLabel={t("ok")}
+            align="left"
+            onConfirm={() => setWarningRole(null)}
+            onClose={() => setWarningRole(null)}
+          />
 
-          <Dialog open={!!errorAlert} onClose={() => setErrorAlert(null)} maxWidth="xs">
-            <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
-            <DialogContent>
-              <Typography variant="body2">{errorAlert}</Typography>
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setErrorAlert(null)}>{t("cancel")}</Button>
-            </DialogActions>
-          </Dialog>
+          <ConfirmDialog
+            open={!!errorAlert}
+            title={t("errorTitle")}
+            message={errorAlert ?? ""}
+            confirmLabel={t("ok")}
+            onConfirm={() => setErrorAlert(null)}
+            onClose={() => setErrorAlert(null)}
+          />
         </Box>
       </DashboardLayout>
     </RequirePermission>

@@ -51,6 +51,8 @@ import {
   ListItem,
   keyframes,
   ClickAwayListener,
+  ToggleButton,
+  ToggleButtonGroup,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import {
@@ -125,6 +127,7 @@ import { isApiError, errorMessage, apiFetchResponse } from "@/lib/api";
 import { DONE_STATUS_ID, type IssueTaskType } from "@kanban/shared";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import RequirePermission from "@/components/require-permission";
+import ConfirmDialog from "@/components/confirm-dialog";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import {
   fetchBoardIssues,
@@ -199,6 +202,9 @@ function getErrorMessage(e: unknown, fallback: string): string | null {
  */
 type DrillIssueFilters = BoardDrillFilters;
 const EMPTY_DRILL_FILTERS = EMPTY_BOARD_DRILL_FILTERS;
+
+/** The report form's "other" category — its free text lives in `custom_category`. */
+const OTHER_CATEGORY = "อื่น ๆ";
 
 /** Everything a drill link can seed — one parse, once on mount. */
 interface BoardUrlFilters {
@@ -279,7 +285,7 @@ const PRIORITY_COLORS: Record<string, "error" | "warning" | "success" | "default
   low: "success",
 };
 
-/** localStorage key for the board's card order toggle (see `cardOrder`). */
+/** localStorage key for the toolbar's card order toggle (see `cardOrder`). */
 const BOARD_CARD_ORDER_KEY = "kanban-board-card-order";
 
 /**
@@ -290,54 +296,6 @@ const BOARD_CARD_ORDER_KEY = "kanban-board-card-order";
  * A priority an admin renamed (or created) has no key and stays as stored.
  */
 const PRIORITY_I18N_KEYS = ["critical", "high", "medium", "low"] as const;
-
-/**
- * สไตล์ pill ของดรอปดาวน์บนบอร์ด (ตัวเรียงโฟลเดอร์ + ตัวเลือกในป๊อปอัพการ์ด)
- * — mirrors `PILL_*` ใน `components/rules/rule-list.tsx`,
- * `rules/run-history-dialog.tsx` + `reports/components/reports-toolbar.tsx`
- * (แก้ที่ไหนต้องแก้ทั้งชุด): **พื้นขาว** + ขอบ `divider` เห็นตลอด (พื้นขาวบน
- * พื้นขาวต้องมีขอบกันกลืน) → hover `grey.50` + ขอบเข้มขึ้น → focus น้ำเงิน,
- * เมนูมุมมน + ✓ หน้ารายการที่เลือก
- *
- * ⚠️ **2 ช่องบนแดชบอร์ด** (`[locale]/page.tsx` + `workload-card.tsx`) ขาว
- * เหมือนกันแล้ว — ต่าง**แค่ไซส์**: เล็ก (13 / py 0.75) ตามคำสั่ง
- *
- * **เวอร์ชันใหญ่** (fontSize 14 / py 1) ตามคำสั่ง — ทุกหน้ายกเว้นแดชบอร์ด
- * ใช้ไซส์นี้
- */
-const PILL_SELECT_SX = {
-  fontSize: 14,
-  bgcolor: "common.white",
-  borderRadius: "10px",
-  transition: "background-color 150ms ease",
-  "&:hover": { bgcolor: "grey.50" },
-  // divider line at rest (white-on-white would otherwise vanish) →
-  // grey.400 on hover → primary on focus (keyboard ring stays visible)
-  "& .MuiOutlinedInput-notchedOutline": { border: "1px solid", borderColor: "divider" },
-  "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: "grey.400" },
-  "&.Mui-focused .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main" },
-  "& .MuiSelect-select": { py: 1, pr: "30px !important" },
-} as const;
-
-/** แถวในเมนู — 13px เหมือน pill ฝั่งอื่น (เมนูไม่ใช่ส่วนที่ต้องใหญ่). */
-const PILL_ITEM_SX = {
-  borderRadius: "8px",
-  fontSize: 13,
-  py: 0.75,
-  px: 1.25,
-  gap: 1,
-  "&.Mui-selected": { bgcolor: "action.selected", fontWeight: 600 },
-  "&.Mui-selected:hover": { bgcolor: "action.selected" },
-} as const;
-
-/** ข้อความในกล่องปิด — ตัวหนา + ตัดด้วย … (ไซส์ใหญ่ 14 เหมือนฝั่งอื่น). */
-const PILL_VALUE_SX = {
-  fontSize: 14,
-  fontWeight: 600,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-} as const;
 
 /** กระดาษเมนูของ pill — มุมมน 14 + ขอบ divider + เงาการ์ด (MenuProps / Popover). */
 function pillPaperSx(theme: Theme) {
@@ -624,6 +582,26 @@ function statusChipSx(color: string) {
 }
 
 /**
+ * App chip on a Kanban card — ONE identical solid-blue chip for every app
+ * (POS, CRM, …), per the user's reference: filled theme blue, white bold text,
+ * small rounded corners. No per-app colour hash, no hardcoded names or hex;
+ * both colours come from the theme so the chip follows a theme change.
+ */
+function appChipSx(theme: Theme) {
+  return {
+    flexShrink: 0,
+    px: 1.25,
+    py: 0.35,
+    borderRadius: 1,
+    bgcolor: theme.palette.info.main,
+    color: theme.palette.info.contrastText,
+    fontSize: "0.72rem",
+    fontWeight: 700,
+    lineHeight: 1.4,
+  };
+}
+
+/**
  * The coloured dot that leads a status pill in the table (design reference).
  * Kept as a plain Box instead of MUI's `Chip icon` so the hue is never dimmed
  * by the icon slot's own styling.
@@ -659,6 +637,21 @@ function priorityChipSx(color: string, theme: Theme) {
     fontWeight: 700,
     lineHeight: 1.5,
   };
+}
+
+/**
+ * Wording for a refused status move — 422 = task type missing, 409 = status
+ * lock, 400 = step-only guard. Shared by the detail popup's Save with the
+ * board's drag handler so the same rule refusal always reads the same way.
+ */
+function statusMoveRefusal(e: unknown, t: (key: string) => string): string | null {
+  return isApiError(e, 422)
+    ? t("taskTypeRequired")
+    : isApiError(e, 409)
+      ? t("lockedCard")
+      : isApiError(e, 400)
+        ? t("invalidTransition")
+        : null;
 }
 
 const dropAnimation: DropAnimation = {
@@ -931,20 +924,7 @@ const TrelloCardContent = memo(function TrelloCardContent({
           {issue.title}
         </Typography>
         {issue.appName && (
-          <Box
-            sx={{
-              flexShrink: 0,
-              px: 0.9,
-              py: 0.2,
-              borderRadius: 1,
-              bgcolor: alpha(theme.palette.navy.main, 0.06),
-              color: "text.secondary",
-              fontSize: "0.65rem",
-              fontWeight: 700,
-              letterSpacing: 0.3,
-              lineHeight: 1.5,
-            }}
-          >
+          <Box sx={appChipSx(theme)}>
             {issue.appName}
           </Box>
         )}
@@ -1377,7 +1357,9 @@ const KanbanColumn = memo(function KanbanColumn({
         </Typography>
         <Box
           sx={{
-            ml: 1,
+            // Count badge hugs the far right of the header row — dot and name
+            // keep their place.
+            ml: "auto",
             px: 1,
             py: 0.15,
             borderRadius: 1,
@@ -1859,6 +1841,7 @@ function IssueDetailDialog({
   trashed = false,
   onRestore,
   initialTab = "comments",
+  hideStatusPicker = false,
 }: {
   issue: BoardIssue | null;
   open: boolean;
@@ -1872,6 +1855,8 @@ function IssueDetailDialog({
   trashed?: boolean;
   onRestore?: (id: number) => void;
   initialTab?: "comments" | "history";
+  /** The Kanban board moves cards by dragging — hide its status dropdown there. */
+  hideStatusPicker?: boolean;
 }) {
   const { can } = usePermissions();
   const { notify } = useNotification();
@@ -1896,6 +1881,8 @@ function IssueDetailDialog({
   const [posting, setPosting] = useState(false);
   const [localIssue, setLocalIssue] = useState<BoardIssue | null>(null);
   const [draftPriorityId, setDraftPriorityId] = useState<number | null>(null);
+  /** Status move is staged like every other field — `moveIssue` on footer Save. */
+  const [draftStatusId, setDraftStatusId] = useState<number | null>(null);
   const [draftProgrammerId, setDraftProgrammerId] = useState<number | null>(null);
   const [draftLabelIds, setDraftLabelIds] = useState<number[]>([]);
   /**
@@ -1913,6 +1900,7 @@ function IssueDetailDialog({
   const [attachmentUploading, setAttachmentUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [priorityAnchor, setPriorityAnchor] = useState<HTMLElement | null>(null);
+  const [statusAnchor, setStatusAnchor] = useState<HTMLElement | null>(null);
   const [taskTypeAnchor, setTaskTypeAnchor] = useState<HTMLElement | null>(null);
   const [labelAnchor, setLabelAnchor] = useState<HTMLElement | null>(null);
   const [memberAnchor, setMemberAnchor] = useState<HTMLElement | null>(null);
@@ -2010,6 +1998,9 @@ function IssueDetailDialog({
   const canViewHistory = can("issue.detail.view");
   const canEditIssue = !readOnly && can("issue.all.update");
   const canSetPriority = can("priority.view") && canEditIssue;
+  // Status moves need `issue.all.update` only — the status list arrives with
+  // the board payload (`status.view` is revoked for staff roles on purpose).
+  const canSetStatus = canEditIssue;
   const canSetLabels = can("label.view") && canEditIssue;
   const canCreateLabel = can("label.create");
   const canEditLabel = can("label.update");
@@ -2023,6 +2014,7 @@ function IssueDetailDialog({
   useEffect(() => {
     setLocalIssue(issue);
     setDraftPriorityId(issue?.priorityId ?? null);
+    setDraftStatusId(issue?.statusId ?? null);
     setDraftProgrammerId(issue?.programmerId ?? null);
     setDraftLabelIds(issue?.labelIds ?? []);
     setDraftTaskType(issue?.taskType ?? null);
@@ -2193,6 +2185,11 @@ function IssueDetailDialog({
     setDraftPriorityId(priorityId);
   };
 
+  const handleSetStatus = (statusId: number) => {
+    setStatusAnchor(null);
+    setDraftStatusId(statusId);
+  };
+
   /** เลือก/ล้างประเภทงาน — null = กลับเป็น "ยังไม่ระบุ" (ไม่หัก MA) */
   const handleSetTaskType = (taskType: IssueTaskType | null) => {
     setTaskTypeAnchor(null);
@@ -2263,6 +2260,7 @@ function IssueDetailDialog({
     (localIssue?.resolution ?? "") !== resolutionDraft ||
     (localIssue?.actualFixDuration ?? 0) !== draftActualSeconds() ||
     (localIssue?.priorityId ?? null) !== draftPriorityId ||
+    (draftStatusId != null && (localIssue?.statusId ?? null) !== draftStatusId) ||
     (localIssue?.programmerId ?? null) !== draftProgrammerId ||
     (localIssue?.taskType ?? null) !== draftTaskType ||
     !sortedEqual(localIssue?.labelIds ?? [], draftLabelIds);
@@ -2271,6 +2269,7 @@ function IssueDetailDialog({
   // from setLocalIssue are not visible inside the same function run).
   const resetDrafts = (source: BoardIssue | null = localIssue) => {
     setDraftPriorityId(source?.priorityId ?? null);
+    setDraftStatusId(source?.statusId ?? null);
     setDraftProgrammerId(source?.programmerId ?? null);
     setDraftLabelIds(source?.labelIds ?? []);
     setDraftTaskType(source?.taskType ?? null);
@@ -2312,6 +2311,19 @@ function IssueDetailDialog({
       if ((localIssue.taskType ?? null) !== draftTaskType) data.taskType = draftTaskType;
 
       let saved = localIssue;
+      // Status first: a rule refusal (step-only / lock / task type) must not
+      // leave half the other fields written. The merged copy keeps a retry
+      // from re-issuing the same move after a later write fails.
+      if (draftStatusId != null && (saved.statusId ?? null) !== draftStatusId) {
+        try {
+          await moveIssue(saved.id, draftStatusId);
+          saved = { ...saved, statusId: draftStatusId };
+        } catch (e) {
+          const refusal = statusMoveRefusal(e, t);
+          notify(refusal ?? getErrorMessage(e, t("saveFailed")) ?? t("saveFailed"), "warning");
+          return; // keep the popup open and the other drafts untouched
+        }
+      }
       // all text/pick fields go in ONE write; assignee and time are the only
       // separate endpoints (they carry notification / MA-bell side effects)
       if (Object.keys(data).length > 0) saved = await updateIssue(saved.id, data);
@@ -2385,6 +2397,10 @@ function IssueDetailDialog({
   const isNarrow = useMediaQuery(theme.breakpoints.down("md"));
   const status = current?.statusId ? statuses.find((s) => s.id === current.statusId) : null;
   const statusName = status ? (status.customName ?? status.name) : null;
+  const draftStatusName = (() => {
+    const s = statuses.find((st) => st.id === draftStatusId);
+    return s ? (s.customName ?? s.name) : null;
+  })();
   const categoryName = current ? getCategoryLabel(current) : "—";
   /**
    * Empty value → "ยังไม่ระบุ" (key `detail.notSet`), never a bare "—": an
@@ -2506,6 +2522,9 @@ function IssueDetailDialog({
             minWidth: 0,
             p: 3,
             overflowY: "auto",
+            // ซ่อนแท่ง scrollbar แต่เลื่อนด้วยล้อเมาส์/สัมผัสได้เหมือนเดิม
+            scrollbarWidth: "none",
+            "&::-webkit-scrollbar": { display: "none" },
             borderRight: isNarrow ? "none" : "1px solid",
             borderBottom: isNarrow ? "1px solid" : "none",
             borderColor: "divider",
@@ -2543,12 +2562,43 @@ function IssueDetailDialog({
               <Typography variant="caption" color="text.secondary" display="block">
                 {t("detail.status")}
               </Typography>
-              <Typography
-                variant="body2"
-                sx={{ mt: 0.5, color: statusName ? "text.primary" : "text.secondary" }}
-              >
-                {emptyLabel(statusName)}
-              </Typography>
+              {canSetStatus && !hideStatusPicker ? (
+                <Box
+                  onClick={saving ? undefined : (e) => setStatusAnchor(e.currentTarget)}
+                  sx={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 0.75,
+                    mt: 0.5,
+                    px: 1.25,
+                    py: 1,
+                    // same white pill as the priority picker — one field name,
+                    // one set of colours, so the two never drift apart
+                    bgcolor: "common.white",
+                    border: "1px solid",
+                    borderColor: "divider",
+                    borderRadius: "10px",
+                    transition: "background-color 150ms ease",
+                    cursor: saving ? "default" : "pointer",
+                    "&:hover": { bgcolor: "grey.50", borderColor: "grey.400" },
+                  }}
+                >
+                  <Typography
+                    variant="body2"
+                    sx={{ fontWeight: 600, color: draftStatusName ? "text.primary" : "text.secondary" }}
+                  >
+                    {draftStatusName ?? t("detail.notSet")}
+                  </Typography>
+                  <ExpandMoreIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+                </Box>
+              ) : (
+                <Typography
+                  variant="body2"
+                  sx={{ mt: 0.5, color: statusName ? "text.primary" : "text.secondary" }}
+                >
+                  {emptyLabel(statusName)}
+                </Typography>
+              )}
             </Grid>
             <Grid item xs={12} sm={4}>
               <Typography variant="caption" color="text.secondary" display="block">
@@ -2575,9 +2625,9 @@ function IssueDetailDialog({
                     mt: 0.5,
                     px: 1.25,
                     py: 1,
-                    // white pill — same recipe as every non-dashboard dropdown
-                    // (PILL_SELECT_SX): white fill + always-on divider border,
-                    // hover grey.50 + darker edge, rounded 10
+                    // white pill — same recipe as every non-dashboard dropdown:
+                    // white fill + always-on divider border, hover grey.50 +
+                    // darker edge, rounded 10
                     bgcolor: "common.white",
                     border: "1px solid",
                     borderColor: "divider",
@@ -2621,9 +2671,9 @@ function IssueDetailDialog({
                     mt: 0.5,
                     px: 1.25,
                     py: 1,
-                    // white pill — same recipe as every non-dashboard dropdown
-                    // (PILL_SELECT_SX): white fill + always-on divider border,
-                    // hover grey.50 + darker edge, rounded 10
+                    // white pill — same recipe as every non-dashboard dropdown:
+                    // white fill + always-on divider border, hover grey.50 +
+                    // darker edge, rounded 10
                     bgcolor: "common.white",
                     border: "1px solid",
                     borderColor: "divider",
@@ -3114,6 +3164,47 @@ function IssueDetailDialog({
             )}
           </Popover>
           <Popover
+            open={Boolean(statusAnchor)}
+            anchorEl={statusAnchor}
+            onClose={() => setStatusAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+            transformOrigin={{ vertical: "top", horizontal: "left" }}
+            PaperProps={{ sx: { ...pillPaperSx(theme), minWidth: 180 } }}
+          >
+            {statuses.map((s) => {
+              const selected = draftStatusId === s.id;
+              return (
+                <Box
+                  key={s.id}
+                  onClick={saving ? undefined : () => handleSetStatus(s.id)}
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    px: 1.25,
+                    py: 0.75,
+                    borderRadius: "8px",
+                    fontSize: 13,
+                    cursor: saving ? "default" : "pointer",
+                    bgcolor: selected ? "action.selected" : "transparent",
+                    "&:hover": { bgcolor: selected ? "action.selected" : "action.hover" },
+                  }}
+                >
+                  <Box sx={{ width: 16, display: "flex", alignItems: "center" }}>
+                    <Box sx={statusDotSx(resolveStatusColor(theme, s.color, s.name))} />
+                  </Box>
+                  <Typography
+                    variant="body2"
+                    sx={{ fontSize: 13, fontWeight: selected ? 600 : 400 }}
+                    color={selected ? "text.primary" : "text.secondary"}
+                  >
+                    {s.customName ?? s.name}
+                  </Typography>
+                </Box>
+              );
+            })}
+          </Popover>
+          <Popover
             open={Boolean(taskTypeAnchor)}
             anchorEl={taskTypeAnchor}
             onClose={() => setTaskTypeAnchor(null)}
@@ -3174,7 +3265,17 @@ function IssueDetailDialog({
               onChange={(e) => setLabelSearch(e.target.value)}
               autoFocus
             />
-            <Box sx={{ maxHeight: 220, overflowY: "auto", display: "flex", flexDirection: "column", gap: 0.25 }}>
+            <Box
+              sx={{
+                maxHeight: 220,
+                overflowY: "auto",
+                scrollbarWidth: "none",
+                "&::-webkit-scrollbar": { display: "none" },
+                display: "flex",
+                flexDirection: "column",
+                gap: 0.25,
+              }}
+            >
               {visibleLabels.length === 0 ? (
                 <Typography variant="caption" color="text.secondary">{t("detail.noLabelsFound")}</Typography>
               ) : (
@@ -3315,7 +3416,16 @@ function IssueDetailDialog({
               </Box>
             )}
             <Typography variant="caption" color="text.secondary">{t("detail.addMembers")}</Typography>
-            <Box sx={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+            <Box
+              sx={{
+                maxHeight: 200,
+                overflowY: "auto",
+                scrollbarWidth: "none",
+                "&::-webkit-scrollbar": { display: "none" },
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
               {visibleProgrammers.length === 0 ? (
                 <Typography variant="caption" color="text.secondary">{t("detail.noMembers")}</Typography>
               ) : (
@@ -3413,7 +3523,20 @@ function IssueDetailDialog({
               </Box>
             </Box>
           )}
-          <Box sx={{ flex: 1, overflowY: "auto", px: 2, py: 2, display: "flex", flexDirection: "column", gap: 2 }}>
+          <Box
+            sx={{
+              flex: 1,
+              overflowY: "auto",
+              // ซ่อนแท่ง scrollbar แต่เลื่อนด้วยล้อเมาส์/สัมผัสได้เหมือนเดิม
+              scrollbarWidth: "none",
+              "&::-webkit-scrollbar": { display: "none" },
+              px: 2,
+              py: 2,
+              display: "flex",
+              flexDirection: "column",
+              gap: 2,
+            }}
+          >
             {loading ? (
               <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
                 <CircularProgress size={24} />
@@ -3560,28 +3683,18 @@ function IssueDetailDialog({
               )
             ) : null}
           </Box>
-          <Dialog
+          <ConfirmDialog
             open={!!deletingComment}
-            onClose={() => !deleteLoading && setDeletingComment(null)}
-            maxWidth="xs"
-          >
-            <DialogTitle>{t("deleteComment")}</DialogTitle>
-            <DialogContent>
-              {deleteLoading ? (
-                <CircularProgress size={24} />
-              ) : (
-                <Typography variant="body2">{t("deleteCommentConfirm")}</Typography>
-              )}
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setDeletingComment(null)} disabled={deleteLoading}>
-                {t("cancel")}
-              </Button>
-              <Button variant="contained" color="error" onClick={handleDeleteComment} disabled={deleteLoading}>
-                {t("remove")}
-              </Button>
-            </DialogActions>
-          </Dialog>
+            title={t("deleteComment")}
+            message={
+              deleteLoading ? <CircularProgress size={24} /> : t("deleteCommentConfirm")
+            }
+            confirmLabel={t("remove")}
+            cancelLabel={t("cancel")}
+            loading={deleteLoading}
+            onConfirm={handleDeleteComment}
+            onClose={() => setDeletingComment(null)}
+          />
         </Box>
       </Box>
       <Divider />
@@ -3858,12 +3971,19 @@ function BoardFilterPanel({
     ),
   }));
 
+  /** "อื่น ๆ" owns every free-text category, so its count includes them all. */
+  const customCategoryCount = Object.keys(countsByGroup.category ?? {})
+    .filter((key) => key.startsWith("x:"))
+    .reduce((sum, key) => sum + (countsByGroup.category[key] ?? 0), 0);
   const categoryOptions: FilterOption[] = categories.map((category) => ({
     id: category.id,
     label: category.name,
     checked: selectedCategoryIds.includes(category.id),
     onToggle: () => onToggleCategory(category.id),
-    count: countsByGroup.category?.[String(category.id)],
+    count: countsByGroup.category
+      ? (countsByGroup.category[String(category.id)] ?? 0) +
+        (category.name === OTHER_CATEGORY ? customCategoryCount : 0)
+      : undefined,
     start: <CategoryIcon sx={{ fontSize: 16, flexShrink: 0, color: "secondary.main" }} />,
   }));
 
@@ -4710,9 +4830,6 @@ function KanbanView({
       <Box
         component="nav"
         sx={{
-          position: "sticky",
-          top: 0,
-          zIndex: 1200,
           bgcolor: "background.default",
           pb: 1,
           mb: 3,
@@ -4841,6 +4958,7 @@ function KanbanView({
         labels={labels}
         setLabels={setLabels}
         onRefresh={onRefresh}
+        hideStatusPicker
       />
       <IssueDialog
         issue={editIssue}
@@ -4853,20 +4971,15 @@ function KanbanView({
         labels={labels}
         priorities={priorities}
       />
-      <Dialog open={!!issueToDelete} onClose={() => setIssueToDelete(null)}>
-        <DialogTitle>{t("confirmCancel")}</DialogTitle>
-        <DialogContent>
-          <Typography>
-            {t("deleteIssueConfirmTrash", { title: issueToDelete?.title ?? "" })}
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setIssueToDelete(null)}>{t("cancel")}</Button>
-          <Button onClick={handleDeleteIssue} color="error">
-            {t("confirm")}
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ConfirmDialog
+        open={!!issueToDelete}
+        title={t("confirmCancel")}
+        message={t("deleteIssueConfirmTrash", { title: issueToDelete?.title ?? "" })}
+        confirmLabel={t("confirm")}
+        cancelLabel={t("cancel")}
+        onConfirm={handleDeleteIssue}
+        onClose={() => setIssueToDelete(null)}
+      />
     </Box>
   );
 }
@@ -5036,9 +5149,6 @@ function TableView({
         <Box
           component="nav"
           sx={{
-            position: "sticky",
-            top: 0,
-            zIndex: 1200,
             bgcolor: "background.default",
             pb: 1,
             mb: 3,
@@ -5278,20 +5388,15 @@ function TableView({
         labels={labels}
         priorities={priorities}
       />
-      <Dialog open={!!issueToDelete} onClose={() => setIssueToDelete(null)}>
-        <DialogTitle>{t("confirmCancel")}</DialogTitle>
-        <DialogContent>
-          <Typography>
-            {t("deleteIssueConfirmTrash", { title: issueToDelete?.title ?? "" })}
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setIssueToDelete(null)}>{t("cancel")}</Button>
-          <Button onClick={handleDeleteIssue} color="error">
-            {t("confirm")}
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ConfirmDialog
+        open={!!issueToDelete}
+        title={t("confirmCancel")}
+        message={t("deleteIssueConfirmTrash", { title: issueToDelete?.title ?? "" })}
+        confirmLabel={t("confirm")}
+        cancelLabel={t("cancel")}
+        onConfirm={handleDeleteIssue}
+        onClose={() => setIssueToDelete(null)}
+      />
     </Box>
   );
 }
@@ -5456,8 +5561,6 @@ function FolderView({
   canSeeReporter,
   staleRules,
   onRefresh,
-  cardOrder,
-  onToggleCardOrder,
   query,
   queryKey,
   refreshVersion,
@@ -5481,17 +5584,6 @@ function FolderView({
   /** Active stale rules ({statusId, days}) — the red card border. */
   staleRules: StaleRule[];
   onRefresh: () => void;
-  /**
-   * Shared ↑↓ direction — of whichever sort criterion this view's dropdown is
-   * on (`sortByEnteredAt` for the entered/created criteria, reversed priority
-   * order for ความสำคัญ). The board/table toolbar no longer renders a flip
-   * button, so **this dropdown's two direction items are the only control
-   * left** — they call `onToggleCardOrder`, and the board/table follow along
-   * because the state is shared.
-   */
-  cardOrder: "desc" | "asc";
-  /** Flip `cardOrder` — the folder view's own direction control (see above). */
-  onToggleCardOrder: () => void;
   /** One shared condition object — every count and every page uses it. */
   query: BoardIssueQuery;
   /** Changes on any filter change → resets the card grid to page 1. */
@@ -5525,36 +5617,17 @@ function FolderView({
   const [cardsLoading, setCardsLoading] = useState(false);
   const cardSeqRef = useRef(0);
   const cardInFlightRef = useRef<string | null>(null);
-  /**
-   * Sort **criterion** for the level-5 card grid — the direction is NOT in
-   * here: the shared `cardOrder` flips it (this dropdown's direction items —
-   * the only direction control left now that the toolbar's ↑↓ is gone), so
-   * no label ever bakes in a direction. `entered` (default) = วันที่เข้าสถานะ,
-   * the very
-   * criterion the board's columns use; `created` = the old creation-date
-   * order; `prio` = ความสำคัญ (criterion borrowed from the old dropdown,
-   * unchanged).
-   */
-  const [sort, setSort] = useState<"entered" | "created" | "prio">("entered");
-  /** Text for one criterion — the DIRECTION lives on `cardOrder`, not here. */
-  const sortLabel = (key: "entered" | "created" | "prio") =>
-    key === "prio"
-      ? t("filter.sectionPriority")
-      : key === "created"
-        ? t("folderSortDate")
-        : t("folderSortEntered");
-  const [movingId, setMovingId] = useState<number | null>(null);
-  /* Status picker on a card: which chip opened it (Drive-like — no bulky
-     inline <Select> on the card face). */
-  const [statusMenu, setStatusMenu] = useState<{ el: HTMLElement; issue: BoardIssue } | null>(null);
   const canViewAttachments = can("board.view");
 
   const level =
     path.st !== null ? 5 : path.prio !== null ? 4 : path.cat !== null ? 3 : path.app !== null ? 2 : 1;
+  /** "อื่น ๆ" drills like any other category — but its free-text cards ride along. */
+  const otherCategoryId = categories.find((c) => c.name === OTHER_CATEGORY)?.id;
 
   const hasActiveFilters =
     query.priorityIds.length > 0 ||
     query.categoryIds.length > 0 ||
+    query.allCustomCategories ||
     query.appIds.length > 0 ||
     query.companyIds.length > 0 ||
     query.assigneeIds.length > 0 ||
@@ -5576,6 +5649,7 @@ function FolderView({
     categoryIds?: number[];
     noCategory?: boolean;
     customCategories?: string[];
+    allCustomCategories?: boolean;
     priorityIds?: number[];
     noPriority?: boolean;
     statuses?: number[];
@@ -5587,6 +5661,7 @@ function FolderView({
       categoryIds?: number[];
       noCategory?: boolean;
       customCategories?: string[];
+      allCustomCategories?: boolean;
       priorityIds?: number[];
       noPriority?: boolean;
       statuses?: number[];
@@ -5603,6 +5678,11 @@ function FolderView({
         p.noCategory = true;
       } else {
         p.categoryIds = [path.cat];
+        if (path.cat === otherCategoryId) {
+          // "อื่น ๆ" keeps its normal drill levels, but its free-text cards
+          // must be counted/shown at every one of them too.
+          p.allCustomCategories = true;
+        }
       }
     }
     if (path.prio !== null) {
@@ -5614,10 +5694,11 @@ function FolderView({
       else p.statuses = [path.st];
     }
     return p;
-  }, [path.app, path.cat, path.prio, path.st]);
+  }, [otherCategoryId, path.app, path.cat, path.prio, path.st]);
 
-  const groupBy = level === 1 ? "app" : level === 2 ? "category" : level === 3 ? "priority" : "status";
-  const cardKey = `${queryKey}|${JSON.stringify(path)}|${sort}`;
+  const groupBy: IssueCountGroup =
+    level === 1 ? "app" : level === 2 ? "category" : level === 3 ? "priority" : "status";
+  const cardKey = `${queryKey}|${JSON.stringify(path)}`;
   const shown = cardData.key === cardKey ? cardData : { key: cardKey, items: EMPTY_ITEMS, page: 0, total: 0 };
 
   /** One grouped request gives every sibling tile its count — no card rows. */
@@ -5647,15 +5728,12 @@ function FolderView({
       const seq = ++cardSeqRef.current;
       setCardsLoading(true);
       try {
-        // `prio` keeps its old visual direction: desc = สำคัญมากก่อน = sortOrder ASC.
-        const field = sort === "prio" ? "prioritySortOrder" : sort === "created" ? "createdAt" : "statusChangedAt";
-        const dir = sort === "prio"
-          ? query.cardOrder === "desc" ? "asc" : "desc"
-          : query.cardOrder;
+        // Same order as the board's columns: when the card entered this
+        // status (the shared `query.cardOrder` carries the direction).
         const res = await fetchBoardIssues(query, targetPage, 10, {
           ...pathParams,
           hideStaleDone: true,
-          sort: { field, dir },
+          sort: { field: "statusChangedAt", dir: query.cardOrder },
         });
         if (cardSeqRef.current !== seq) return;
         setCardData((prev) => {
@@ -5677,7 +5755,7 @@ function FolderView({
         }
       }
     },
-    [query, cardKey, pathParams, sort, refreshVersion, fail, t],
+    [query, cardKey, pathParams, refreshVersion, fail, t],
   );
 
   // Tiles first; cards only once a folder is actually opened (level 5).
@@ -5693,6 +5771,9 @@ function FolderView({
      grouped request. Level 4 keeps the board's status order. */
   const folders: { id: number | string; name: string; count: number; color: string }[] = [];
   const countOf = (key: number | string) => counts[String(key)] ?? 0;
+  const customTotal = Object.keys(counts)
+    .filter((k) => k.startsWith("x:"))
+    .reduce((sum, k) => sum + (counts[k] ?? 0), 0);
   if (level === 1) {
     apps.forEach((a) =>
       folders.push({
@@ -5711,20 +5792,11 @@ function FolderView({
         id: c.id,
         name: c.name,
         color: theme.palette.secondary.main,
-        // a free-text category with the same name folds into its real row
-        count: countOf(c.id) + countOf("x:" + c.name),
+        // "อื่น ๆ" owns every free-text category; a matching name folds into
+        // its real row elsewhere (the old countOf("x:" + name) rule).
+        count: countOf(c.id) + (c.name === OTHER_CATEGORY ? customTotal : countOf("x:" + c.name)),
       }),
     );
-    Object.keys(counts)
-      .filter((k) => k.startsWith("x:") && !categories.some((c) => c.name === k.slice(2)))
-      .forEach((k) =>
-        folders.push({
-          id: k,
-          name: k.slice(2),
-          color: theme.palette.secondary.light,
-          count: counts[k],
-        }),
-      );
     if (countOf(-1) > 0) {
       folders.push({ id: -1, name: t("folderNoCat"), color: theme.palette.text.disabled, count: countOf(-1) });
     }
@@ -5777,31 +5849,6 @@ function FolderView({
             : { ...p, st: typeof id === "number" ? id : null },
     );
     window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const handleMove = async (issue: BoardIssue, statusId: number) => {
-    if (issue.statusId === statusId) return;
-    setMovingId(issue.id);
-    try {
-      await moveIssue(issue.id, statusId);
-      onRefresh();
-    } catch (e) {
-      // Same mapping as the drag handler: 422 = task type missing, 409 =
-      // status lock, 400 = step-only guard — rule refusals are a policy nudge
-      // (warning toast), anything else the error toast
-      const refusal = isApiError(e, 422)
-        ? t("taskTypeRequired")
-        : isApiError(e, 409)
-          ? t("lockedCard")
-          : isApiError(e, 400)
-            ? t("invalidTransition")
-            : null;
-      if (refusal) notify(refusal, "warning");
-      else fail(getErrorMessage(e, t("genericError")));
-      onRefresh();
-    } finally {
-      setMovingId(null);
-    }
   };
 
   /** Resolved status colour for a card — same lookup as the table's column. */
@@ -5887,90 +5934,6 @@ function FolderView({
         )
       ) : (
         <>
-          <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 2, mb: 1.5 }}>
-            <FormControl size="small" sx={{ minWidth: 180 }}>
-              {/* white pill, same recipe as every non-dashboard dropdown
-                  (PILL_SELECT_SX above) — the old compact 28px look was
-                  dropped so it matches the rest */}
-              <Select
-                value={sort}
-                onChange={(e) => {
-                  const v = e.target.value as string;
-                  // The two DIRECTION items live in this menu too (there is no
-                  // toolbar ↑↓ any more, so this menu owns the flip): flip the
-                  // shared order and leave the criterion alone. Only the OTHER
-                  // direction flips, so clicking the state you are already on
-                  // is a no-op.
-                  if (v === "order-desc" || v === "order-asc") {
-                    const want = v === "order-asc" ? "asc" : "desc";
-                    if (want !== cardOrder) onToggleCardOrder();
-                    return;
-                  }
-                  setSort(v as "entered" | "created" | "prio");
-                }}
-                renderValue={(raw) => {
-                  const value = typeof raw === "string" ? raw : "entered";
-                  return (
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
-                      <Typography sx={PILL_VALUE_SX}>{sortLabel(value)}</Typography>
-                      {/* Current direction at a glance — the glyph + rotation
-                          the removed toolbar ↑↓ used to show; this dropdown
-                          is the only place left that carries it. */}
-                      <SwapVertIcon
-                        sx={{
-                          fontSize: 16,
-                          color: "text.secondary",
-                          flexShrink: 0,
-                          transform: cardOrder === "asc" ? "rotate(180deg)" : "none",
-                          transition: "transform 150ms ease-in-out",
-                        }}
-                      />
-                    </Box>
-                  );
-                }}
-                MenuProps={{ slotProps: { paper: { sx: pillPaperSx(theme) } } }}
-                sx={PILL_SELECT_SX}
-              >
-                {([
-                  { key: "entered", label: t("folderSortEntered") },
-                  { key: "created", label: t("folderSortDate") },
-                  { key: "prio", label: t("filter.sectionPriority") },
-                ] as const).map((o) => (
-                  <MenuItem key={o.key} value={o.key} sx={PILL_ITEM_SX}>
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
-                      <Typography sx={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {o.label}
-                      </Typography>
-                      {sort === o.key && (
-                        <CheckIcon sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }} />
-                      )}
-                    </Box>
-                  </MenuItem>
-                ))}
-                {/* DIRECTION — the toolbar's ↑↓ is gone, so the flip lives
-                    here: the two states (✓ = the one you are on), wording
-                    shared with the closed box's glyph. These values are NOT
-                    Select values — the `onChange` above intercepts them and
-                    never touches `sort`. */}
-                <Divider sx={{ my: 0.75 }} />
-                {([
-                  { key: "order-desc", label: t("cardOrderNewest"), on: cardOrder === "desc" },
-                  { key: "order-asc", label: t("cardOrderOldest"), on: cardOrder === "asc" },
-                ] as const).map((o) => (
-                  <MenuItem key={o.key} value={o.key} sx={PILL_ITEM_SX}>
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
-                      <Typography sx={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {o.label}
-                      </Typography>
-                      {o.on && (
-                        <CheckIcon sx={{ fontSize: 16, ml: "auto", flexShrink: 0, color: "primary.main" }} />
-                      )}
-                    </Box>
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Box>
           {cardsBusy && shown.items.length === 0 ? (
             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
               <CircularProgress size={24} />
@@ -5980,7 +5943,7 @@ function FolderView({
               {t("noCards")}
             </Alert>
           ) : (
-            <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 2 }}>
+            <Box sx={{ mt: 2, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 2 }}>
               {shownCards.map((issue) => {
                 const assignee =
                   issue.programmerName ?? (canSeeReporter ? issue.customerName : null);
@@ -5991,7 +5954,6 @@ function FolderView({
                 const allLabels = issue.labels ?? [];
                 const labelBars = allLabels.slice(0, 4);
                 const hiddenLabels = allLabels.slice(4);
-                const statusEditable = canEdit && !issue.isLocked && movingId !== issue.id;
                 const staleDays = staleDaysFor(issue, staleRules);
                 const expiringDays = expiringDaysFor(issue);
                 // แดง "เหลือ N วัน" ชนะส้ม "ค้าง N วัน" — เหมือนการ์ดบนบอร์ด
@@ -6118,12 +6080,6 @@ function FolderView({
                     <Chip
                       size="small"
                       label={issue.statusName ?? "—"}
-                      onClick={(e) => {
-                        if (!statusEditable) return;
-                        e.stopPropagation();
-                        setStatusMenu({ el: e.currentTarget, issue });
-                      }}
-                      clickable={statusEditable}
                       icon={
                         issue.isLocked ? (
                           // `color="inherit"` keeps the lock on the tint's own
@@ -6137,31 +6093,25 @@ function FolderView({
                         // Folder-card metrics: 16px/0.6rem — one notch under
                         // the Kanban card's 18px/0.65rem (TrelloCardContent),
                         // since this cell is compact (220px, p 1.25) and a
-                        // full-size pill out-shouts the title in it.
+                        // full-size pill out-shouts the title in it. Display
+                        // only — the swap button below opens the status menu.
                         height: 16,
                         fontSize: "0.6rem",
                         fontWeight: 600,
-                        cursor: statusEditable ? "pointer" : "default",
-                        // re-assert the tint: MUI's clickable:hover would
-                        // otherwise swap it for the grey action overlay —
-                        // 15% → 20% deepens the pill without leaving its hue.
-                        // 0.25 was the value picked while this chip still
-                        // chased WCAG AA (it cost 4.41:1); with AA dropped in
-                        // favour of vivid text that reason is gone, so 0.2
-                        // simply stayed rather than being re-tuned for looks.
-                        "&:hover": statusEditable
-                          ? { bgcolor: alpha(statusColor, 0.2) }
-                          : undefined,
                       }}
                     />
                     {issue.priorityName && (
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label={priorityLabel(t, issue.priorityName)}
-                        color={PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default"}
-                        sx={{ height: 16, fontSize: "0.6rem", fontWeight: 600 }}
-                      />
+                      <Box
+                        sx={{
+                          ...priorityChipSx(
+                            PRIORITY_COLORS[issue.priorityName.toLowerCase()] ?? "default",
+                            theme,
+                          ),
+                          fontSize: "0.6rem",
+                        }}
+                      >
+                        {priorityLabel(t, issue.priorityName)}
+                      </Box>
                     )}
                     {/* Stale past a rule's day count — the notice lives in the
                         LABEL row above as plain red text (the Kanban card's
@@ -6257,40 +6207,6 @@ function FolderView({
         </>
       )}
 
-      {/* status picker opened from a card's status chip (canEdit + unlocked) */}
-      <Menu
-        anchorEl={statusMenu?.el}
-        open={Boolean(statusMenu)}
-        onClose={() => setStatusMenu(null)}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {statuses.map((s) => (
-          <MenuItem
-            key={s.id}
-            selected={s.id === statusMenu?.issue.statusId}
-            disabled={movingId !== null}
-            onClick={() => {
-              const issue = statusMenu?.issue;
-              setStatusMenu(null);
-              if (issue) handleMove(issue, s.id);
-            }}
-          >
-            <Box
-              component="span"
-              sx={{
-                width: 10,
-                height: 10,
-                borderRadius: "50%",
-                bgcolor: resolveStatusColor(theme, s.color, s.name),
-                mr: 1.25,
-                flexShrink: 0,
-              }}
-            />
-            {s.name}
-          </MenuItem>
-        ))}
-      </Menu>
-
       <IssueDetailDialog
         issue={detailIssue}
         open={!!detailIssue}
@@ -6340,13 +6256,11 @@ function BoardsPageInner() {
    * floats the cards the stale rules are about to catch). The Kanban columns
    * ask the API for it (`?sortBy=statusChangedAt`), the table and the folder
    * grid sort the same list with the same comparator (`sortByEnteredAt`), and
-   * the folder's dropdown picks the CRITERION while this flips its direction —
-   * that dropdown is the ONLY control left (the toolbar's ↑↓ was removed), so
-   * the board and table simply follow whatever it last chose.
-   * `/reports` keeps its own `createdAt` order — out of scope. The choice
-   * survives a reload (localStorage) — read in an effect because SSR has no
-   * `localStorage`, and a stored `desc` equals the default so it never costs
-   * a re-render.
+   * the toolbar's ↑↓ button flips this one shared value, so all views follow.
+   * The choice survives a reload (localStorage) — read in an effect because
+   * SSR has no `localStorage`, and a stored `desc` equals the default so it
+   * never costs a re-render. `/reports` keeps its own `createdAt` order —
+   * out of scope.
    */
   const [cardOrder, setCardOrder] = useState<"desc" | "asc">("desc");
   useEffect(() => {
@@ -6420,11 +6334,15 @@ function BoardsPageInner() {
    * page 1 the moment any of it changes.
    */
   const debouncedSearch = useDebouncedValue(searchQuery);
+  /** Ticking "อื่น ๆ" must also pull in every free-text category (see API flag). */
+  const otherCategoryId = categories.find((c) => c.name === OTHER_CATEGORY)?.id;
+  const allCustomCategories = otherCategoryId != null && selectedCategoryIds.includes(otherCategoryId);
   const query: BoardIssueQuery = useMemo(
     () => ({
       search: debouncedSearch,
       priorityIds: selectedPriorityIds,
       categoryIds: selectedCategoryIds,
+      allCustomCategories,
       appIds: selectedAppIds,
       companyIds: selectedCompanyIds,
       assigneeIds: selectedAssigneeIds,
@@ -6440,6 +6358,7 @@ function BoardsPageInner() {
       debouncedSearch,
       selectedPriorityIds,
       selectedCategoryIds,
+      allCustomCategories,
       selectedAppIds,
       selectedCompanyIds,
       selectedAssigneeIds,
@@ -6480,6 +6399,8 @@ function BoardsPageInner() {
           ...query,
           priorityIds: key === "priority" ? [] : query.priorityIds,
           categoryIds: key === "category" ? [] : query.categoryIds,
+          // "อื่น ๆ" folded into the category group: exclude it while counting.
+          allCustomCategories: key === "category" ? false : query.allCustomCategories,
           appIds: key === "app" ? [] : query.appIds,
           companyIds: key === "company" ? [] : query.companyIds,
           assigneeIds: key === "assignee" ? [] : query.assigneeIds,
@@ -7027,6 +6948,30 @@ function BoardsPageInner() {
             </IconButton>
           </Badge>
         </Tooltip>
+        {/* Shared ↑↓ — flips the one `cardOrder` state every view reads, so
+            Kanban columns, table rows and folder cards all follow. Visible to
+            every role (customers only ever see the table). */}
+        <Tooltip title={cardOrder === "desc" ? t("cardOrderNewest") : t("cardOrderOldest")}>
+          <IconButton
+            size="small"
+            onClick={toggleCardOrder}
+            aria-label={cardOrder === "desc" ? t("cardOrderNewest") : t("cardOrderOldest")}
+            sx={{
+              width: 36,
+              height: 36,
+              color: "text.secondary",
+              "&:hover": { bgcolor: "action.hover" },
+            }}
+          >
+            <SwapVertIcon
+              sx={{
+                fontSize: 20,
+                transform: cardOrder === "asc" ? "rotate(180deg)" : "none",
+                transition: "transform 150ms ease-in-out",
+              }}
+            />
+          </IconButton>
+        </Tooltip>
         <Box
           className="board-toolbar-icons"
           sx={{
@@ -7037,61 +6982,52 @@ function BoardsPageInner() {
           }}
         >
           {!isCustomer && (
-            <>
+            <ToggleButtonGroup
+              exclusive
+              size="small"
+              value={view}
+              onChange={(_e, value: "board" | "table" | "folder" | null) => {
+                if (value) setChosenView(value);
+              }}
+              sx={{
+                bgcolor: "grey.100",
+                borderRadius: "10px",
+                flexShrink: 0,
+                "& .MuiToggleButton-root": {
+                  border: "none",
+                  borderRadius: "8px !important",
+                  // Keep the old 36x36 tap target now that there are no labels.
+                  minWidth: 36,
+                  minHeight: 36,
+                  p: 0,
+                  color: "text.secondary",
+                  "&.Mui-selected": {
+                    bgcolor: "background.paper",
+                    color: "text.primary",
+                    boxShadow: 1,
+                  },
+                },
+              }}
+            >
               <Tooltip title={t("board")}>
-                <IconButton
-                  size="small"
-                  onClick={() => setChosenView("board")}
-                  sx={{
-                    width: 36,
-                    height: 36,
-                    color: isBoardView ? "primary.contrastText" : "text.secondary",
-                    bgcolor: isBoardView ? "primary.main" : "transparent",
-                    "&:hover": { bgcolor: isBoardView ? "primary.dark" : "action.hover" },
-                  }}
-                >
+                <ToggleButton value="board" aria-label={t("board")}>
                   <ViewKanbanIcon fontSize="small" />
-                </IconButton>
+                </ToggleButton>
               </Tooltip>
               <Tooltip title={t("table")}>
-                <IconButton
-                  size="small"
-                  onClick={() => setChosenView("table")}
-                  sx={{
-                    width: 36,
-                    height: 36,
-                    color: isTableView ? "primary.contrastText" : "text.secondary",
-                    bgcolor: isTableView ? "primary.main" : "transparent",
-                    "&:hover": { bgcolor: isTableView ? "primary.dark" : "action.hover" },
-                  }}
-                >
+                <ToggleButton value="table" aria-label={t("table")}>
                   <TableChartIcon fontSize="small" />
-                </IconButton>
+                </ToggleButton>
               </Tooltip>
               <Tooltip title={t("folderView")}>
-                <IconButton
-                  size="small"
-                  aria-label={t("folderView")}
-                  onClick={() => setChosenView("folder")}
-                  sx={{
-                    width: 36,
-                    height: 36,
-                    color: isFolderView ? "primary.contrastText" : "text.secondary",
-                    bgcolor: isFolderView ? "primary.main" : "transparent",
-                    "&:hover": { bgcolor: isFolderView ? "primary.dark" : "action.hover" },
-                  }}
-                >
+                <ToggleButton value="folder" aria-label={t("folderView")}>
                   <FolderIcon fontSize="small" />
-                </IconButton>
+                </ToggleButton>
               </Tooltip>
-            </>
+            </ToggleButtonGroup>
           )}
-          {/* No ↑↓ direction button here — the toolbar used to carry one for
-              the board + table views, and it was removed ("จะมีอันนี้ทำไม").
-              The folder view's sort dropdown is now the ONLY direction
-              control (arrow in the closed box + the two direction items in
-              the menu), and it flips the shared `cardOrder`, so board/table
-              follow whatever that dropdown last chose. */}
+          {/* The ↑↓ order toggle sits with search/date/filter on the left —
+              one flip drives all three views through the shared `cardOrder`. */}
           {can("issue.trash.view") && (
             <Tooltip title={t("recycleBin")}>
               <IconButton
@@ -7135,8 +7071,6 @@ function BoardsPageInner() {
                 canSeeReporter={canSeeReporter}
                 staleRules={staleRules}
                 onRefresh={bumpData}
-                cardOrder={cardOrder}
-                onToggleCardOrder={toggleCardOrder}
                 query={query}
                 queryKey={queryKey}
                 refreshVersion={dataVersion}

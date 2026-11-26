@@ -32,6 +32,7 @@ import DragHandleIcon from "@mui/icons-material/DragHandle";
 import DashboardLayout from "@/components/dashboard/dashboard-layout";
 import DataTable, { DataTableHead, DataTableBody, DataTableRow, DataTableCell } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
+import ConfirmDialog from "@/components/confirm-dialog";
 import { useAuthStore } from "@/lib/auth-store";
 import RulesPanel from "@/components/rules/rules-panel";
 import { usePermissions } from "@/lib/permissions";
@@ -1903,54 +1904,58 @@ const result = await apiFetch<{ canDelete: boolean; issueCount: number; columnCo
             </DialogActions>
           </Dialog>
 
-          <Dialog open={!!deleteTarget} onClose={() => { setDeleteTarget(null); setDeleteCheck(null); }} maxWidth="xs">
-            <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
-            <DialogContent>
-              {deleteLoading ? (
+          <ConfirmDialog
+            open={!!deleteTarget}
+            title={t("deleteConfirmTitle")}
+            message={
+              deleteLoading ? (
                 <CircularProgress size={24} />
               ) : deleteCheck && !deleteCheck.canDelete && deleteTarget ? (
-                <Typography variant="body2">
-                  {deleteTarget.type === "company"
-                    ? t("deleteCompanyInUse", {
+                deleteTarget.type === "company"
+                  ? t("deleteCompanyInUse", {
+                      name: deleteTarget.name,
+                      appCount: deleteCheck.appCount ?? 0,
+                      userCount: deleteCheck.userCount ?? 0,
+                    })
+                  : deleteTarget.type === "app"
+                    /**
+                     * แอปใช้ข้อความของตัวเอง — `deleteInUse` ร่วมกับ status/category
+                     * ฟอร์แมตว่า "{n} งานและ {columnCount} คอลัมน์" ซึ่งฝั่งแอปไม่มี
+                     * columnCount → โชว์เป็น "0 คอลัมน์" ที่งง ๆ (นับเฉพาะงานปกติ —
+                     * ดู `AppsService.check()`)
+                     */
+                    ? t("deleteAppInUse", {
                         name: deleteTarget.name,
-                        appCount: deleteCheck.appCount ?? 0,
-                        userCount: deleteCheck.userCount ?? 0,
+                        issueCount: deleteCheck.issueCount,
                       })
-                    : deleteTarget.type === "app"
-                      /**
-                       * แอปใช้ข้อความของตัวเอง — `deleteInUse` ร่วมกับ status/category
-                       * ฟอร์แมตว่า "{n} งานและ {columnCount} คอลัมน์" ซึ่งฝั่งแอปไม่มี
-                       * columnCount → โชว์เป็น "0 คอลัมน์" ที่งง ๆ (นับเฉพาะงานปกติ —
-                       * ดู `AppsService.check()`)
-                       */
-                      ? t("deleteAppInUse", {
-                          name: deleteTarget.name,
-                          issueCount: deleteCheck.issueCount,
-                        })
-                      : t("deleteInUse", {
-                          name: deleteTarget.name,
-                          issueCount: deleteCheck.issueCount,
-                          columnCount: deleteCheck.columnCount,
-                        })}
-                </Typography>
+                    : t("deleteInUse", {
+                        name: deleteTarget.name,
+                        issueCount: deleteCheck.issueCount,
+                        columnCount: deleteCheck.columnCount,
+                      })
               ) : deleteTarget ? (
-                <Typography variant="body2">
-                  {t("deleteConfirmMessage", {
-                    type: deleteTarget.type === "app" ? t("app") : deleteTarget.type === "company" ? t("company") : deleteTarget.type === "category" ? t("category") : deleteTarget.type === "status" ? t("status") : deleteTarget.type === "priority" ? t("priority") : t("label"),
-                    name: deleteTarget.name,
-                  })}
-                </Typography>
-              ) : null}
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => { setDeleteTarget(null); setDeleteCheck(null); }}>{t("cancel")}</Button>
-              {deleteCheck?.canDelete && (
-                <Button variant="contained" color="error" onClick={confirmDelete}>
-                  {t("delete")}
-                </Button>
-              )}
-            </DialogActions>
-          </Dialog>
+                t("deleteConfirmMessage", {
+                  type: deleteTarget.type === "app" ? t("app") : deleteTarget.type === "company" ? t("company") : deleteTarget.type === "category" ? t("category") : deleteTarget.type === "status" ? t("status") : deleteTarget.type === "priority" ? t("priority") : t("label"),
+                  name: deleteTarget.name,
+                })
+              ) : null
+            }
+            confirmLabel={deleteCheck && !deleteCheck.canDelete ? t("cancel") : t("delete")}
+            cancelLabel={deleteCheck && !deleteCheck.canDelete ? undefined : t("cancel")}
+            loading={deleteLoading}
+            onConfirm={
+              deleteCheck && !deleteCheck.canDelete
+                ? () => {
+                    setDeleteTarget(null);
+                    setDeleteCheck(null);
+                  }
+                : confirmDelete
+            }
+            onClose={() => {
+              setDeleteTarget(null);
+              setDeleteCheck(null);
+            }}
+          />
         </Box>
       </DashboardLayout>
     </RequirePermission>

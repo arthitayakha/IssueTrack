@@ -57,6 +57,8 @@ interface IssueListQuery {
   noApp?: string;
   noStatus?: string;
   customCategories?: string;
+  /** "อื่น ๆ" = every other-category card in one click (union, not AND). */
+  allCustomCategories?: string;
   companyIds?: string;
   assigneeIds?: string;
   reporterIds?: string;
@@ -91,6 +93,7 @@ function parseIssueListQuery(query: IssueListQuery) {
       noApp: flag(query.noApp),
       noStatus: flag(query.noStatus),
       customCategories: parseStringList(query.customCategories),
+      allCustomCategories: flag(query.allCustomCategories),
       companyIds: parseIdList(query.companyIds),
       assigneeIds: parseIdList(query.assigneeIds),
       reporterIds: parseIdList(query.reporterIds),

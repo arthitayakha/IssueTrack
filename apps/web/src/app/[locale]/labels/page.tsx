@@ -31,6 +31,7 @@ import DataTable, {
   DataTableRow,
 } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
+import ConfirmDialog from "@/components/confirm-dialog";
 import { Pagination } from "@/components/pagination";
 import { useNotification } from "@/components/notification";
 import { usePermissions } from "@/lib/permissions";
@@ -365,36 +366,28 @@ export default function LabelsPage() {
           </Dialog>
 
           {/* delete confirmation */}
-          <Dialog open={!!pendingDelete} onClose={() => setPendingDelete(null)} maxWidth="xs" fullWidth>
-            <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
-            <DialogContent>
-              <Typography variant="body2">
-                {t("deleteConfirmMessage", { name: pendingDelete?.name ?? "" })}
-              </Typography>
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setPendingDelete(null)}>{t("cancel")}</Button>
-              <Button variant="contained" color="error" onClick={handleDelete}>
-                {t("delete")}
-              </Button>
-            </DialogActions>
-          </Dialog>
+          <ConfirmDialog
+            open={!!pendingDelete}
+            title={t("deleteConfirmTitle")}
+            message={t("deleteConfirmMessage", { name: pendingDelete?.name ?? "" })}
+            confirmLabel={t("delete")}
+            cancelLabel={t("cancel")}
+            onConfirm={handleDelete}
+            onClose={() => setPendingDelete(null)}
+          />
 
           {/* still used by cards */}
-          <Dialog open={!!inUse} onClose={() => setInUse(null)} maxWidth="xs" fullWidth>
-            <DialogTitle>{t("inUseTitle")}</DialogTitle>
-            <DialogContent>
-              <Typography variant="body2">
-                {t("inUseMessage", {
-                  name: inUse?.label.name ?? "",
-                  count: inUse?.issueCount ?? 0,
-                })}
-              </Typography>
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setInUse(null)}>{t("ok")}</Button>
-            </DialogActions>
-          </Dialog>
+          <ConfirmDialog
+            open={!!inUse}
+            title={t("inUseTitle")}
+            message={t("inUseMessage", {
+              name: inUse?.label.name ?? "",
+              count: inUse?.issueCount ?? 0,
+            })}
+            confirmLabel={t("ok")}
+            onConfirm={() => setInUse(null)}
+            onClose={() => setInUse(null)}
+          />
         </Box>
       </DashboardLayout>
     </RequirePermission>

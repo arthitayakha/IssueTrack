@@ -130,6 +130,8 @@ export interface FindAllFilters {
   noStatus?: boolean;
   /** `issue.category_id IS NULL AND issue.custom_category IN (...)`. */
   customCategories?: string[];
+  /** The "อื่น ๆ" filter: OR every free-text category into the category slice. */
+  allCustomCategories?: boolean;
   companyIds?: number[];
   assigneeIds?: number[];
   reporterIds?: number[];
@@ -286,13 +288,26 @@ private async buildFindAllQuery(
     } else if (filters.noPriority) {
       qb.andWhere("issue.priority_id IS NULL");
     }
+    /**
+     * "อื่น ๆ" is one OR-part of the category dimension, alongside `noCategory`
+     * and the specific `customCategories`: cards bound to the real row plus
+     * cards that only carry free text (`category_id IS NULL`) must both match.
+     */
+    const anyCustom = filters.allCustomCategories
+      ? "(issue.category_id IS NULL AND issue.custom_category IS NOT NULL)"
+      : null;
     if (filters.categoryIds && filters.categoryIds.length > 0) {
-      qb.andWhere(
-        filters.noCategory
-          ? "(issue.category_id IS NULL OR issue.category_id IN (:...categoryIds))"
-          : "issue.category_id IN (:...categoryIds)",
-        { categoryIds: filters.categoryIds },
-      );
+      const parts = [
+        filters.noCategory ? "issue.category_id IS NULL" : null,
+        "issue.category_id IN (:...categoryIds)",
+        anyCustom,
+      ].filter((part): part is string => part !== null);
+      // Keep the exact old SQL when nothing is ORed in (tests + plan caching).
+      qb.andWhere(parts.length === 1 ? parts[0] : `(${parts.join(" OR ")})`, {
+        categoryIds: filters.categoryIds,
+      });
+    } else if (anyCustom && !filters.noCategory) {
+      qb.andWhere(anyCustom);
     } else if (filters.noCategory) {
       qb.andWhere("issue.category_id IS NULL");
     }

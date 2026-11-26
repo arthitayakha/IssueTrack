@@ -1548,6 +1548,48 @@ describe("IssuesService.findAll — noApp / noCategory (the dashboard's NULL sli
   });
 });
 
+describe("IssuesService.findAll — allCustomCategories (หมวด 'อื่น ๆ' โชว์ทุกใบ)", () => {
+  const PARAMS = { page: 1, limit: 20 };
+
+  function whereCalls(issues: { createQueryBuilder: jest.Mock }): unknown[][] {
+    const builder = issues.createQueryBuilder.mock.results.at(-1)?.value;
+    return builder?.andWhere?.mock.calls ?? [];
+  }
+
+  it("flag alone → only free-text cards (no category row)", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { allCustomCategories: true });
+
+    const clause = whereCalls(issues).find(([sql]) => String(sql).includes("category_id"));
+    expect(clause).toBeDefined();
+    expect(String((clause as [string])[0])).toBe(
+      "(issue.category_id IS NULL AND issue.custom_category IS NOT NULL)",
+    );
+  });
+
+  it("flag + categoryIds → ONE OR clause: the real row AND the free-text cards", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { categoryIds: [7], allCustomCategories: true });
+
+    const clauses = whereCalls(issues).filter(([sql]) => String(sql).includes("category_id"));
+    expect(clauses).toHaveLength(1);
+    expect(String((clauses[0] as [string])[0])).toBe(
+      "(issue.category_id IN (:...categoryIds) OR (issue.category_id IS NULL AND issue.custom_category IS NOT NULL))",
+    );
+  });
+
+  it("flag off → the plain IN clause, unchanged", async () => {
+    const { service, issues } = makeService();
+
+    await service.findAll(PARAMS, [], null, undefined, { categoryIds: [7] });
+
+    const clause = whereCalls(issues).find(([sql]) => String(sql).includes("category_id"));
+    expect(String((clause as [string])[0])).toBe("issue.category_id IN (:...categoryIds)");
+  });
+});
+
 describe("IssuesService.findAll — taskTypes / noTaskType (ประเภทงาน)", () => {
   const PARAMS = { page: 1, limit: 20 };
 

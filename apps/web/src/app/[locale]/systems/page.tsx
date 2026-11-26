@@ -8,10 +8,6 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   IconButton,
   TextField,
   Tooltip,
@@ -31,6 +27,7 @@ import DataTable, {
   DataTableRow,
 } from "@/components/data-table";
 import RequirePermission from "@/components/require-permission";
+import ConfirmDialog from "@/components/confirm-dialog";
 import { Pagination } from "@/components/pagination";
 import {
   FilterPanel,
@@ -1219,70 +1216,48 @@ export default function SystemsPage() {
         {/* ยืนยันการ **ลบทั้งคู่** (ทุกช่วงของ แอป×บริษัท) — ข้อความคนละ key กับ
             master-data เพราะต้องบอกจำนวนแถวด้วย · ไม่ต้องเช็ก "งานค้าง" แล้ว
             เพราะไม่ได้ลบแอป */}
-        <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} maxWidth="xs">
-          <DialogTitle>{t("deleteConfirmTitle")}</DialogTitle>
-          <DialogContent>
-            {deleteTarget && (
-              <Typography variant="body2">
-                {t("deleteRecordConfirmMessage", {
-                  type: t("data"),
-                  name: deleteTarget.label,
-                  n: deleteTarget.count,
-                })}
-              </Typography>
-            )}
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setDeleteTarget(null)}>{t("cancel")}</Button>
-            <Button variant="contained" color="error" onClick={confirmDelete}>
-              {t("delete")}
-            </Button>
-          </DialogActions>
-        </Dialog>
+        <ConfirmDialog
+          open={!!deleteTarget}
+          title={t("deleteConfirmTitle")}
+          message={t("deleteRecordConfirmMessage", {
+            type: t("data"),
+            name: deleteTarget?.label ?? "",
+            n: deleteTarget?.count ?? 0,
+          })}
+          confirmLabel={t("delete")}
+          cancelLabel={t("cancel")}
+          onConfirm={confirmDelete}
+          onClose={() => setDeleteTarget(null)}
+        />
 
         {/* ยืนยันการ **ยกเลิกรายการ** — ลบช่วงเดียว (แถวล่าสุดของคู่) ไม่ใช่ทั้งคู่ ·
             ปุ่ม "ยกเลิกรายการ" ในแท็บ "ประวัติการต่ออายุ" เปิดกล่องนี้ — ต่างจากปุ่ม
-            ใน toast หลังบันทึกต่ออายุ/ซื้อชั่วโม์ที่กดได้ทันทีไม่ยืนยัน (อันนั้นเป็น
+            ใน toast หลังบันทึกต่ออายุ/ซื้อชั่วโมงที่กดได้ทันทีไม่ยืนยัน (อันนั้นเป็น
             การแก้สิ่งที่เพิ่งทำเมื่อกี้) ส่วนถังขยะที่ตารางหลักยังลบทั้งคู่เหมือนเดิม */}
-        <Dialog open={!!undoTarget} onClose={() => setUndoTarget(null)} maxWidth="xs">
-          <DialogTitle>{t("undoConfirmTitle")}</DialogTitle>
-          <DialogContent>
-            {undoTarget && (
-              <Typography variant="body2">
-                {t("undoConfirmMessage", { name: undoTarget.label, n: undoTarget.n })}
-              </Typography>
-            )}
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setUndoTarget(null)}>{t("cancel")}</Button>
-            <Button variant="contained" onClick={confirmUndo}>
-              {t("undo")}
-            </Button>
-          </DialogActions>
-        </Dialog>
+        <ConfirmDialog
+          open={!!undoTarget}
+          title={t("undoConfirmTitle")}
+          message={t("undoConfirmMessage", {
+            name: undoTarget?.label ?? "",
+            n: undoTarget?.n ?? 0,
+          })}
+          confirmLabel={t("undo")}
+          cancelLabel={t("cancel")}
+          onConfirm={confirmUndo}
+          onClose={() => setUndoTarget(null)}
+        />
 
         {/* ยืนยัน **ยกเลิกสัญญา** — ไม่ลบข้อมูล/ประวัติ แค่หยุดแจ้งเตือนของคู่
             กดเปิดกลับได้จาก toast หลังยกเลิกหรือปุ่มถาวรในตาราง/ป๊อปอัพ */}
-        <Dialog
+        <ConfirmDialog
           open={contractTarget?.mode === "cancel"}
+          title={t("cancelContractConfirmTitle")}
+          message={t("cancelContractConfirmMessage", { name: contractTarget?.label ?? "" })}
+          confirmLabel={t("cancelContract")}
+          cancelLabel={t("cancel")}
+          onConfirm={confirmContract}
           onClose={() => setContractTarget(null)}
-          maxWidth="xs"
-        >
-          <DialogTitle>{t("cancelContractConfirmTitle")}</DialogTitle>
-          <DialogContent>
-            {contractTarget && (
-              <Typography variant="body2">
-                {t("cancelContractConfirmMessage", { name: contractTarget.label })}
-              </Typography>
-            )}
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setContractTarget(null)}>{t("cancel")}</Button>
-            <Button variant="contained" color="error" onClick={confirmContract}>
-              {t("cancelContract")}
-            </Button>
-          </DialogActions>
-        </Dialog>
+        />
 
       </DashboardLayout>
     </RequirePermission>
